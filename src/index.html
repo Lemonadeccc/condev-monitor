@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>前端监控SDK</title>
+    <!-- <link rel="stylesheet" href="/somelink">                 -->
+    <!-- 资源加载错误 -->
+</head>
+<body>
+    <div id="container">
+        <div class="content" style="width: 600px;height:600px;word-wrap: break-word;background-color: gray;">
+            <!-- <input type="button" value="点击抛出错误" onclick="errorClick()">
+            <input type="button" value="点击抛出Promise错误" onclick="promiseErrorClick()"> -->
+
+            <!-- <input id="successBtn" type="button" value="ajax成功请求" onclick="sendSuccess()">
+            <hr/>
+            <input id="errorBtn" type="button" vlaue="ajax-失败请求" onclick="sendError()"> -->
+            
+            
+            <!-- xxx -->
+
+            <!-- 性能 -->
+            <!-- <p style="color: red;">hello</p> -->
+
+            <button onclick="clickBtn">点我</button>
+        </div>
+    </div>
+    <script>
+        // //js错误
+        // function errorClick(){
+        //     window.someVar.error = 'error';
+        // }
+
+        // //promise错误
+        // function promiseErrorClick(){
+        //     new Promise(function(resolve,reject){
+        //         window.someVar.error = 'error'
+        //         // reject('error')
+        //     }).then(result => {
+        //         console.log(result)
+        //     })
+        // }
+
+        // //第四个我忘了
+        // function sendSuccess(){
+        //     let xhr = new XMLHttpRequest;
+        //     xhr.open('GET','/success',true)
+        //     xhr.responseType = 'json'
+        //     xhr.onload = function(){
+        //         console.log(xhr.response)
+        //     }
+        //     xhr.send()
+        // }
+        // function sendError(){
+        //     let xhr = new XMLHttpRequest;
+        //     xhr.open('POST','/error',true)
+        //     xhr.responseType = 'json'
+        //     xhr.onload = function(){
+        //         console.log(xhr.response)
+        //     }
+        //     xhr.onerror = function(error){
+        //         console.log(error)
+        //     }
+        //     xhr.send("name=condev")
+        // }
+
+
+        // //第五个 白屏错误
+        // let content = document.getElementsByClassName('content')[0]
+        // content.innerHTML = '<span>@</span>'.repeat(10000)
+
+        //加载时间
+        //DOM解析完成之后，即使依赖的资源没有加载完成，也会触发这个时间
+        // document.addEventListener('DOMContentLoaded',() => {
+        //   let start = Date.now()
+        //   while((Date.now() - start) < 1000){}
+        // })
+
+        // document.addEventListener('load',() => {
+        //   let start = Date.now()
+        //   while((Date.now() - start) < 3000){}
+        // })
+
+
+
+        //性能指标2
+        function clickBtn(){
+          let start = Date.now()
+          while((Date.now() - start) < 1000){}
+        }
+
+        //性能指标
+        setTimeout(() => {
+          let content = document.getElementsByClassName('content')[0]
+          let h1  = document.createElement('h1')
+          h1.innerHTML = '我是这个页面中最有意义的内容aehgerth'
+          h1.setAttribute('elementtiming','meaningful')
+          content.appendChild(h1)
+        },3000)
+    </script>
+
+    <!-- 第三个资源加载错误 -->
+    <!-- <script src="someError.js"></script> -->
+</body>
+</html>
