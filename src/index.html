@@ -26,7 +26,7 @@
             <button onclick="clickBtn">点我</button>
 
             <!-- 卡顿 -->
-            <button id="longTaskBtn">执行longTask</button>
+            <!-- <button id="longTaskBtn">执行longTask</button> -->
         </div>
     </div>
     <script>
@@ -103,14 +103,14 @@
         },3000)
 
         //卡顿
-        let longTaskBtn = document.getElementById('longTaskBtn')
-        longTaskBtn.addEventListener('click',longTask)
-        function longTask(){
-          let startLongTask = Date.now()
-          console.log('longTask开始 start',startLongTask)
-          while(Date.now() < (200 + startLongTask)){ }
-          console.log('longTask结束 end',(Date.now() - startLongTask))
-        }
+        // let longTaskBtn = document.getElementById('longTaskBtn')
+        // longTaskBtn.addEventListener('click',longTask)
+        // function longTask(){
+        //   let startLongTask = Date.now()
+        //   console.log('longTask开始 start',startLongTask)
+        //   while(Date.now() < (200 + startLongTask)){ }
+        //   console.log('longTask结束 end',(Date.now() - startLongTask))
+        // }
 
     </script>
 
