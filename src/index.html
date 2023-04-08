@@ -22,9 +22,11 @@
             <!-- xxx -->
 
             <!-- 性能 -->
-            <!-- <p style="color: red;">hello</p> -->
-
+            <p style="color: red;">hello</p>
             <button onclick="clickBtn">点我</button>
+
+            <!-- 卡顿 -->
+            <button id="longTaskBtn">执行longTask</button>
         </div>
     </div>
     <script>
@@ -85,13 +87,13 @@
 
 
 
-        //性能指标2
-        function clickBtn(){
-          let start = Date.now()
-          while((Date.now() - start) < 1000){}
-        }
+        // //性能指标2
+        // function clickBtn(){
+        //   let start = Date.now()
+        //   while((Date.now() - start) < 1000){}
+        // }
 
-        //性能指标
+        // //性能指标
         setTimeout(() => {
           let content = document.getElementsByClassName('content')[0]
           let h1  = document.createElement('h1')
@@ -99,6 +101,17 @@
           h1.setAttribute('elementtiming','meaningful')
           content.appendChild(h1)
         },3000)
+
+        //卡顿
+        let longTaskBtn = document.getElementById('longTaskBtn')
+        longTaskBtn.addEventListener('click',longTask)
+        function longTask(){
+          let startLongTask = Date.now()
+          console.log('longTask开始 start',startLongTask)
+          while(Date.now() < (200 + startLongTask)){ }
+          console.log('longTask结束 end',(Date.now() - startLongTask))
+        }
+
     </script>
 
     <!-- 第三个资源加载错误 -->

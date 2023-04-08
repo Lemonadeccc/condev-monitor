@@ -3,87 +3,6 @@ import onload from "../utils/onload";
 import getLastEvent from "../utils/getLastEvent";
 import getSelector from "../utils/getSelector";
 export function timing() {
-  // let paintObj = {}
-  // const entryHandler = (list) => {
-  //   for (const entry of list.getEntries()) {
-  //     switch(entry.name){
-  //       case 'first-paint':
-  //         paintObj.FP = entry.startTime
-  //         break
-  //       case 'first-contentful-paint':
-  //         paintObj.FCP = entry.startTime
-  //         break
-  //       case 'largest-contentful-paint':
-  //         paintObj.LCP = entry.startTime
-  //         break
-  //       case 'element':
-  //         paintObj.FMP = entry.startTime
-  //         break
-  //       default:break
-  //     }
-
-  //     // console.log(entry)
-
-  //   }
-  //   observer.disconnect();
-  //   console.log('!@##timing-paintObj',{...paintObj})
-  // };
-
-  // const observer = new PerformanceObserver(entryHandler);
-  // // buffered 属性表示是否观察缓存数据，也就是说观察代码添加时机比事件触发时机晚也没关系。
-  // observer.observe({ type: 'paint', buffered: true });
-
-
-
-  // const entryHandlerFP = (list) => {
-  //   for (const entry of list.getEntries()) {
-  //     if (entry.name === 'first-paint') {
-  //       // 其中startTime 就是白屏时间
-  //     // let FP = entry.startTime;
-  //       paintObj.FP = entry.startTime
-  //       observerFP.disconnect();
-  //     }
-  //   }
-  // };
-  // const observerFP = new PerformanceObserver(entryHandlerFP);
-  // // buffered 属性表示是否观察缓存数据，也就是说观察代码添加时机比事件触发时机晚也没关系。
-  // observerFP.observe({ type: 'paint', buffered: true });
-
-
-  // const entryHandlerFCP = (list) => {
-  //   for (const entry of list.getEntries()) {
-  //     if (entry.name === 'first-contentful-paint') {
-  //       // 计算首次内容绘制时间
-  //       paintObj.FCP = entry.startTime
-  //       observerFCP.disconnect();
-  //     }
-
-  //   }
-  // };
-  // const observerFCP = new PerformanceObserver(entryHandlerFCP);
-  // observerFCP.observe({ type: 'paint', buffered: true });
-
-  // const entryHandleLCP = (list) => {
-  //   if (observerLCP) {
-  //     for (const entry of list.getEntries()) {
-  //       // 最大内容绘制时间
-  //       paintObj.LCP = entry.startTime
-  //     }
-  //     observerLCP.disconnect();
-  //   }
-  // };
-  // const observerLCP = new PerformanceObserver(entryHandleLCP);
-  // observerLCP.observe({ type: 'largest-contentful-paint', buffered: true });
-
-
-  // new PerformanceObserver((entryList) => {
-  //   for (const entry of entryList.getEntries()) {
-  //     // 计算首次输入延迟时间
-  //     const FID = entry.processingStart - entry.startTime;
-  //     console.log('FID',FID)
-  //   }
-  // }).observe({ type: 'first-input', buffered: true });
-
 
   // let perfEntries = window.performance.getEntriesByType("paint");
 
@@ -117,7 +36,7 @@ export function timing() {
 
 
   //增加一个性能条目的观察者
-  if (PerformanceObserver) {
+  // if (PerformanceObserver) {
     let FMP, LCP
     new PerformanceObserver((entryList, observer) => {
       let perfEntries = entryList.getEntries()
@@ -155,7 +74,7 @@ export function timing() {
       }
       observer.disconnect()   //不再观察了
     }).observe({ type: 'first-input', buffered: true })    //观察页面中的意义的元素
-  }
+  // }
 
 
 
@@ -167,19 +86,6 @@ export function timing() {
       let perfEntries = window.performance.getEntriesByType("navigation");
       let navigation = perfEntries[0];
 
-      // let performanceObj = {
-      //   fetchStartToNavigationStart: navigation.fetchStart - navigation.navigationStart,
-      //   redirectTime: navigation.redirectEnd - navigation.redirectStart,
-      //   appCacheTime: navigation.domainLookupStart - navigation.fetchStart,
-      //   dnsTime: navigation.domainLookupEnd - navigation.domainLookupStart,
-      //   tcpTime: navigation.connectEnd - navigation.connectStart,
-      //   requestTime: navigation.responseStart - navigation.requestStart,
-      //   responseTime: navigation.responseEnd - navigation.responseStart,
-      //   domParsingTime: navigation.domInteractive - navigation.domLoading,
-      //   domContentLoadedTime: navigation.domContentLoadedEventEnd - navigation.domContentLoadedEventStart,
-      //   pageLoadTime: navigation.loadEventEnd - navigation.loadEventStart
-      // };
-      // console.log(performanceObj);
       tracker.send({
         king: 'experience',  //用户体验指标 ,Measuring TCP handshake time测量TCP握手时间 
         type: 'timing',//统计每个阶段的时间
