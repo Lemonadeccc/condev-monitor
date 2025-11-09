@@ -1,0 +1,21 @@
+services:
+  applications:
+    build:
+      context: .
+      dockerfile: ./apps/applications/Dockerfile
+      target: development
+    command: sh -c "pnpm prisma migrate deploy --schema apps/applications/prisma/schema.prisma && pnpm prisma generate --schema apps/applications/prisma/schema.prisma && pnpm run start:dev applications"
+    depends_on:
+      - postgres
+    env_file:
+      - ./apps/applications/.env
+    ports:
+      - 3000:3000
+    volumes:
+      - .:/usr/src/app
+  postgres:
+    image: postgres
+    ports:
+      - 5432:5432
+    environment:
+      POSTGRES_PASSWORD: postgres
