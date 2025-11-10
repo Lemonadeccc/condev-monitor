@@ -88,9 +88,20 @@ importers:
         specifier: workspace:*
         version: link:../core
 
-  packages/browser-utils: {}
+  packages/browser-utils:
+    dependencies:
+      '@condev-monitor/monitor-sdk-core':
+        specifier: workspace:*
+        version: link:../core
 
-  packages/core: {}
+  packages/core:
+    dependencies:
+      '@condev-monitor/monitor-sdk-browser-utils':
+        specifier: workspace:*
+        version: link:../browser-utils
+      '@condev-monitor/monitor-sdk-core':
+        specifier: workspace:*
+        version: 'link:'
 
 packages:
 

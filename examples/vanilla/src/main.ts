@@ -11,6 +11,8 @@ init({
     dsn: 'http://localhost:8000/appid-xxx',
 })
 
+myFn()
+
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div>
     <a href="https://vite.dev" target="_blank">
