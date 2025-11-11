@@ -16,13 +16,21 @@ const ignores = [
     'eslint.config.js',
     'commitlint.config.js',
     'apps/frontend/monitor/src/components/ui/**/*',
+    '.next/**',
+    'apps/frontend/monitor/.next/**',
     'packages/browser/src/**/*',
     'packages/browser-utils/src/metrics/**/*',
     '.devcontainer/**/*',
 ]
 
 const frontendMonitorConfig = {
-    files: ['apps/frontend/monitor/**/*.{ts,tsx}'],
+    // files: ['apps/frontend/monitor/**/*.{ts,tsx}'],
+    files: [
+        'apps/frontend/monitor/app/**/*.{ts,tsx}',
+        'apps/frontend/monitor/components/providers/*.{ts,tsx}',
+        'apps/frontend/monitor/components/*.{ts,tsx}',
+        'apps/frontend/monitor/lib/**/*.{ts,tsx}',
+    ],
     ignores: ['apps/frontend/monitor/src/components/ui/**/*', '**/*.d.ts'],
     languageOptions: {
         ecmaVersion: 2020,
