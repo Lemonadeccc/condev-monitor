@@ -3,3 +3,4 @@ opennextjs
 logomark
 onTTFB
 rederrer
+clickhouse

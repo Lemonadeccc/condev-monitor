@@ -11,7 +11,7 @@ init({
     dsn: 'http://localhost:8000/appid-xxx',
 })
 
-myFn()
+// myFn()
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div>
