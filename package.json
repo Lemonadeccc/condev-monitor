@@ -4,7 +4,7 @@
     "private": true,
     "scripts": {
         "lint:ts": "eslint \"**/*.{ts,tsx}\"",
-        "lint:fix": "eslint \"**/*.{ts,tsx}\" --fix",
+        "lint": "eslint \"**/*.{ts,tsx}\" --fix",
         "spellcheck": "cspell lint --dot --gitignore --color --cache --show-suggestions \"(packages|apps)/**/*.@(html|js|cjs|mjs|ts|tsx|css|scss|md)\"",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
