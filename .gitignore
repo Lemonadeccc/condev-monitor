@@ -106,3 +106,6 @@ next-env.d.ts
 .wrangler
 # Ensured patterns
 .cspellcache
+
+# Explicitly allow common folder in backend monitor
+!/apps/backend/monitor/src/common/
