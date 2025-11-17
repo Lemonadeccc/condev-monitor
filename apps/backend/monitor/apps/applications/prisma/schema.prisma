@@ -9,10 +9,28 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-model Applications {
+// model Applications {
+//   id          Int      @id @default(autoincrement())
+//   name        String
+//   description String
+//   createdAt   DateTime @default(now())
+//   updatedAt   DateTime @updatedAt
+// }
+enum AppType {
+  vanilla
+  react
+  vue
+}
+
+model Application {
   id          Int      @id @default(autoincrement())
+  appId       String
+  type        AppType
   name        String
-  description String
+  description String?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
+  userId      Int
+
+  @@map("application")
 }

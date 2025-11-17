@@ -14,8 +14,8 @@ export class ApplicationsService {
     return this.prismaService.applications.create({
       data: {
         ...createApplicationDto,
-        timestamp: new Date(),
-        userId: '123',
+        appId: 'vanilla123',
+        userId,
       },
     });
   }
