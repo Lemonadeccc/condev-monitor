@@ -6,6 +6,7 @@ import { AppService } from './app.service'
 // import { CacheModule } from './common/cache/cache.module'
 import { ConfigModule } from './common/config/config.module'
 import { LogsModule } from './common/logger/logs.module'
+import { MailModule } from './common/mail/mail.module'
 
 @Module({
     imports: [
@@ -16,6 +17,7 @@ import { LogsModule } from './common/logger/logs.module'
         NestCacheModule.register({
             ttl: 3 * 1000,
         }),
+        MailModule,
     ],
     controllers: [AppController],
     providers: [AppService],

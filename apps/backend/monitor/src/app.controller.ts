@@ -1,5 +1,6 @@
 import { CACHE_MANAGER, CacheInterceptor } from '@nestjs/cache-manager'
 import { Controller, Get, Inject, Query, UseInterceptors } from '@nestjs/common'
+import { MailerService } from '@nestjs-modules/mailer'
 import { Cache } from 'cache-manager'
 
 // import { InjectRedis } from '@nestjs-modules/ioredis'
@@ -12,7 +13,8 @@ export class AppController {
     constructor(
         private readonly appService: AppService,
         // @InjectRedis() private readonly redis: Redis
-        @Inject(CACHE_MANAGER) private cacheManager: Cache
+        @Inject(CACHE_MANAGER) private cacheManager: Cache,
+        private readonly mailerService: MailerService
     ) {}
 
     @Get()
@@ -34,5 +36,24 @@ export class AppController {
         return {
             token: res,
         }
+    }
+
+    @Get('/mail')
+    async sendMail() {
+        // https://nest-modules.github.io/mailer/docs/mailer
+        this.mailerService
+            .sendMail({
+                to: 'zwjhb12@163.com',
+                from: process.env.EMAIL_SENDER,
+                subject: 'MONITOR WARNING',
+                template: 'welcome', // The `.pug`, `.ejs` or `.hbs` extension is appended automatically.
+                context: {
+                    // Data to be sent to template engine.
+                    code: 'cf1a3f828287',
+                    name: 'john doe',
+                },
+            })
+            .then(() => {})
+            .catch(() => {})
     }
 }
