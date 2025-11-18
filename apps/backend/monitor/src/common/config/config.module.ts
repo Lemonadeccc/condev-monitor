@@ -7,12 +7,14 @@ const envFilePath = [`.env.${process.env.NODE_ENV || `development`}`, '.env']
 const schema = Joi.object({
     // https://joi.dev/api/
     NODE_ENV: Joi.string().valid('development', 'production').default('.development'),
-    TYPE: Joi.string().default('postgres'),
-    HOST: Joi.string().default('localhost'),
-    PORT: Joi.number().port().default(5432),
-    USERNAME: Joi.string().default('postgres'),
-    DATABASE: Joi.string().default('postgres'),
-    SYNCHRONIZE: Joi.boolean().default(true),
+    DB_TYPE: Joi.string().default('mysql'),
+    DB_HOST: Joi.string().default('localhost'),
+    DB_PORT: Joi.number().port().default(3306),
+    DB_USERNAME: Joi.string().default('root'),
+    DB_PASSWORD: Joi.string().allow('').default(''),
+    DB_DATABASE: Joi.string().default('testdb'),
+    DB_AUTOLOAD: Joi.boolean().default(false),
+    DB_SYNC: Joi.boolean().default(false),
 })
 
 @Module({

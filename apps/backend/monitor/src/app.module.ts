@@ -1,5 +1,7 @@
 import { CacheModule as NestCacheModule } from '@nestjs/cache-manager'
 import { Module } from '@nestjs/common'
+import { ConfigService } from '@nestjs/config'
+import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm'
 
 import { AppController } from './app.controller'
 import { AppService } from './app.service'
@@ -20,6 +22,20 @@ import { PrismaModule } from './database/prisma/prisma.module'
         }),
         MailModule,
         PrismaModule,
+        TypeOrmModule.forRootAsync({
+            inject: [ConfigService],
+            useFactory: (configService: ConfigService) =>
+                ({
+                    type: configService.get('DB_TYPE'),
+                    host: configService.get('DB_HOST'),
+                    port: configService.get('DB_PORT'),
+                    username: configService.get('DB_USERNAME'),
+                    password: configService.get('DB_PASSWORD'),
+                    database: configService.get('DB_DATABASE'),
+                    autoLoadEntities: Boolean(configService.get('DB_AUTOLOAD')) || false,
+                    synchronize: Boolean(configService.get('DB_SYNC')) || false,
+                }) as TypeOrmModuleOptions,
+        }),
     ],
     controllers: [AppController],
     providers: [AppService],

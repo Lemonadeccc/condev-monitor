@@ -7,3 +7,4 @@ clickhouse
 nums
 smtps
 autoincrement
+testdb

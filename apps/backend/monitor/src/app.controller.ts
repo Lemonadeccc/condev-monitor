@@ -1,12 +1,15 @@
 import { CACHE_MANAGER, CacheInterceptor } from '@nestjs/cache-manager'
 import { Controller, Get, Inject, Query, UseInterceptors } from '@nestjs/common'
+import { InjectRepository } from '@nestjs/typeorm'
 import { MailerService } from '@nestjs-modules/mailer'
 import { Cache } from 'cache-manager'
+import { Repository } from 'typeorm'
 
 // import { InjectRedis } from '@nestjs-modules/ioredis'
 // import Redis from 'ioredis'
 import { AppService } from './app.service'
 import { PrismaService } from './database/prisma/prisma.service'
+import { User } from './user/user.entity'
 
 @Controller()
 @UseInterceptors(CacheInterceptor)
@@ -16,13 +19,19 @@ export class AppController {
         // @InjectRedis() private readonly redis: Redis
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
         private readonly mailerService: MailerService,
-        private prismaService: PrismaService
+        private prismaService: PrismaService,
+        @InjectRepository(User)
+        private userRepository: Repository<User>
     ) {}
 
     @Get()
     async getHello(): Promise<any> {
         // return this.appService.getHello()
-        const res = await this.prismaService.user.findMany({})
+        // // prisma test
+        // const res = await this.prismaService.user.findMany({})
+        // return res
+        // typeorm test
+        const res = await this.userRepository.find()
         return res
     }
 
