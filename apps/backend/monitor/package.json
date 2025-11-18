@@ -21,7 +21,10 @@
         "prisma:generate": "prisma generate --schema=./prisma/schema.prisma",
         "prisma:migrate": "prisma migrate dev --schema=./prisma/schema.prisma",
         "prisma:studio": "prisma studio --schema=./prisma/schema.prisma",
-        "prisma:dbpush": "prisma db push --schema=./prisma/schema.prisma"
+        "prisma:dbpush": "prisma db push --schema=./prisma/schema.prisma",
+        "typeorm": "typeorm-ts-node-commonjs -d ormconfig.ts",
+        "typeorm:sync": "pnpm run typeorm schema:sync",
+        "typeorm:drop": "pnpm run typeorm schema:drop"
     },
     "dependencies": {
         "@nestjs-modules/mailer": "^2.0.2",
