@@ -15,7 +15,7 @@ import { Repository } from 'typeorm'
 import { AppService } from './app.service'
 import { User } from './user/user.schema'
 // import { PrismaService } from './database/prisma/prisma.service'
-import { User } from './user/user.entity'
+// import { User } from './user/user.entity'
 
 @Controller()
 @UseInterceptors(CacheInterceptor)
