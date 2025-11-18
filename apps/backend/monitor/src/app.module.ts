@@ -1,7 +1,7 @@
 import { CacheModule as NestCacheModule } from '@nestjs/cache-manager'
 import { Module } from '@nestjs/common'
-import { MongooseModule } from '@nestjs/mongoose'
 
+// import { MongooseModule } from '@nestjs/mongoose'
 // import { ConfigService } from '@nestjs/config'
 // import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm'
 import { AppController } from './app.controller'
@@ -10,7 +10,7 @@ import { AppService } from './app.service'
 import { ConfigModule } from './common/config/config.module'
 import { LogsModule } from './common/logger/logs.module'
 import { MailModule } from './common/mail/mail.module'
-import { User, UserSchema } from './user/user.schema'
+// import { User, UserSchema } from './user/user.schema'
 // import { PrismaModule } from './database/prisma/prisma.module'
 
 @Module({
@@ -38,8 +38,8 @@ import { User, UserSchema } from './user/user.schema'
         //             synchronize: Boolean(configService.get('DB_SYNC')) || false,
         //         }) as TypeOrmModuleOptions,
         // }),
-        MongooseModule.forRoot('mongodb://root:example@localhost:27017/nest'),
-        MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
+        // MongooseModule.forRoot('mongodb://root:example@localhost:27017/nest'),
+        // MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
     ],
     controllers: [AppController],
     providers: [AppService],
