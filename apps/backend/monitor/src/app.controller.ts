@@ -23,7 +23,9 @@ export class AppController {
         private readonly mailerService: MailerService,
         // private prismaService: PrismaService,
         @InjectRepository(User)
-        private userRepository: Repository<User>
+        private userRepository: Repository<User>,
+        @InjectRepository(User, 'mysql1')
+        private userRepository1: Repository<User>
         // @InjectModel(User.name)
         // private userModel: Model<User>
     ) {}
@@ -39,6 +41,18 @@ export class AppController {
         return res
         // const res = await this.userModel.find()
         // return res
+    }
+
+    @Get('/multiple/mysql1')
+    async getHelloMySql1(@Query('db') db: string): Promise<any> {
+        // typeorm multiple db test
+        let res
+        if (db === 'mysql1') {
+            res = await this.userRepository1.find()
+        } else {
+            res = await this.userRepository.find()
+        }
+        return res
     }
 
     @Get('/v2')
