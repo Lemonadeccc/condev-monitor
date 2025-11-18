@@ -7,6 +7,7 @@ import { AppService } from './app.service'
 import { ConfigModule } from './common/config/config.module'
 import { LogsModule } from './common/logger/logs.module'
 import { MailModule } from './common/mail/mail.module'
+import { PrismaModule } from './database/prisma/prisma.module'
 
 @Module({
     imports: [
@@ -18,6 +19,7 @@ import { MailModule } from './common/mail/mail.module'
             ttl: 3 * 1000,
         }),
         MailModule,
+        PrismaModule,
     ],
     controllers: [AppController],
     providers: [AppService],

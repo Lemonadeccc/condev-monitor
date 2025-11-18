@@ -109,3 +109,5 @@ next-env.d.ts
 
 # Explicitly allow common folder in backend monitor
 !/apps/backend/monitor/src/common/
+
+/apps/backend/monitor/generated/prisma

@@ -6,6 +6,7 @@ import { Cache } from 'cache-manager'
 // import { InjectRedis } from '@nestjs-modules/ioredis'
 // import Redis from 'ioredis'
 import { AppService } from './app.service'
+import { PrismaService } from './database/prisma/prisma.service'
 
 @Controller()
 @UseInterceptors(CacheInterceptor)
@@ -14,12 +15,15 @@ export class AppController {
         private readonly appService: AppService,
         // @InjectRedis() private readonly redis: Redis
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
-        private readonly mailerService: MailerService
+        private readonly mailerService: MailerService,
+        private prismaService: PrismaService
     ) {}
 
     @Get()
-    getHello(): string {
-        return this.appService.getHello()
+    async getHello(): Promise<any> {
+        // return this.appService.getHello()
+        const res = await this.prismaService.user.findMany({})
+        return res
     }
 
     @Get('/v2')
