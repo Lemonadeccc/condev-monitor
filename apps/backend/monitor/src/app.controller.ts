@@ -1,16 +1,19 @@
 import { CACHE_MANAGER, CacheInterceptor } from '@nestjs/cache-manager'
 import { Controller, Get, Inject, Query, UseInterceptors } from '@nestjs/common'
+import { InjectRepository } from '@nestjs/typeorm'
 // import { InjectModel } from '@nestjs/mongoose'
 // import { InjectRepository } from '@nestjs/typeorm'
 import { MailerService } from '@nestjs-modules/mailer'
 import { Cache } from 'cache-manager'
+import { Repository } from 'typeorm'
 
 // import { Model } from 'mongoose'
 // import { Repository } from 'typeorm'
 // import { InjectRedis } from '@nestjs-modules/ioredis'
 // import Redis from 'ioredis'
 import { AppService } from './app.service'
-import { UserRepository } from './database/user.repository'
+import { User } from './user/user.entity'
+// import { UserRepository } from './database/user.repository'
 // import { PrismaService } from './database/prisma/prisma.service'
 // import { User } from './user/user.entity'
 
@@ -18,7 +21,7 @@ import { UserRepository } from './database/user.repository'
 @UseInterceptors(CacheInterceptor)
 export class AppController {
     // typeorm multiple db test - add userRepository.ts
-    private userRepository
+    // private userRepository
     constructor(
         private readonly appService: AppService,
         // @InjectRedis() private readonly redis: Redis
@@ -32,9 +35,11 @@ export class AppController {
         // @InjectModel(User.name)
         // private userModel: Model<User>,
 
-        private repository: UserRepository
+        // private repository: UserRepository
+        @InjectRepository(User)
+        private userRepository: Repository<User>
     ) {
-        this.userRepository = this.repository.getRepository()
+        // this.userRepository = this.repository.getRepository()
     }
 
     @Get()

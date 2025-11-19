@@ -10,7 +10,7 @@ import { AppService } from './app.service'
 import { ConfigModule } from './common/config/config.module'
 import { LogsModule } from './common/logger/logs.module'
 import { MailModule } from './common/mail/mail.module'
-import { UserRepository } from './database/user.repository'
+// import { UserRepository } from './database/user.repository'
 import { User } from './user/user.entity'
 // import { User, UserSchema } from './user/user.schema'
 // import { PrismaModule } from './database/prisma/prisma.module'
@@ -26,42 +26,44 @@ import { User } from './user/user.entity'
         }),
         MailModule,
         // PrismaModule,
+        // TypeOrmModule.forRootAsync({
+        //     inject: [ConfigService],
+        //     useFactory: (configService: ConfigService) =>
+        //         ({
+        //             type: configService.get('DB_TYPE'),
+        //             host: configService.get('DB_HOST'),
+        //             port: configService.get('DB_PORT'),
+        //             username: configService.get('DB_USERNAME'),
+        //             password: configService.get('DB_PASSWORD'),
+        //             database: configService.get('DB_DATABASE'),
+        //             autoLoadEntities: Boolean(configService.get('DB_AUTOLOAD')) || false,
+        //             synchronize: Boolean(configService.get('DB_SYNC')) || false,
+        //         }) as TypeOrmModuleOptions,
+        // }),
         TypeOrmModule.forRootAsync({
-            inject: [ConfigService],
-            useFactory: (configService: ConfigService) =>
-                ({
+            // name: 'mysql1',
+            inject: [ConfigService, AppService],
+            useFactory: (configService: ConfigService, appService: AppService) => {
+                return {
                     type: configService.get('DB_TYPE'),
                     host: configService.get('DB_HOST'),
-                    port: configService.get('DB_PORT'),
+                    port: appService.getDBPort(),
                     username: configService.get('DB_USERNAME'),
                     password: configService.get('DB_PASSWORD'),
                     database: configService.get('DB_DATABASE'),
                     autoLoadEntities: Boolean(configService.get('DB_AUTOLOAD')) || false,
                     synchronize: Boolean(configService.get('DB_SYNC')) || false,
-                }) as TypeOrmModuleOptions,
-        }),
-        TypeOrmModule.forRootAsync({
-            name: 'mysql1',
-            inject: [ConfigService],
-            useFactory: (configService: ConfigService) =>
-                ({
-                    type: configService.get('DB_TYPE'),
-                    host: configService.get('DB_HOST'),
-                    port: 3307,
-                    username: configService.get('DB_USERNAME'),
-                    password: configService.get('DB_PASSWORD'),
-                    database: configService.get('DB_DATABASE'),
-                    autoLoadEntities: Boolean(configService.get('DB_AUTOLOAD')) || false,
-                    synchronize: Boolean(configService.get('DB_SYNC')) || false,
-                }) as TypeOrmModuleOptions,
+                } as TypeOrmModuleOptions
+            },
+            extraProviders: [AppService],
         }),
         TypeOrmModule.forFeature([User]),
-        TypeOrmModule.forFeature([User], 'mysql1'),
+        // TypeOrmModule.forFeature([User], 'mysql1'),
 
         // MongooseModule.forRoot('mongodb://root:example@localhost:27017/nest'),
         // MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
     ],
     controllers: [AppController],
-    providers: [AppService, UserRepository],
+    providers: [AppService],
 })
 export class AppModule {}
