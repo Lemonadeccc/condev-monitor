@@ -6,12 +6,23 @@ export class AppService {
         @Inject(REQUEST)
         private request: Request
     ) {}
-    getDBPort(): number {
+    getDBConfig(): any {
         const headers = this.request.headers
         const tenantId = headers['x-tenant-id']
         if (tenantId === 'mysql1') {
-            return 3307
+            return {
+                port: 3307,
+            }
+        } else if (tenantId === 'postgresql') {
+            return {
+                type: 'postgresql',
+                port: 5432,
+                username: 'pguser',
+                database: 'testdb',
+            }
         }
-        return 3306
+        return {
+            port: 3306,
+        }
     }
 }

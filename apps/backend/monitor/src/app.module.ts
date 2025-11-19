@@ -44,16 +44,19 @@ import { User } from './user/user.entity'
             // name: 'mysql1',
             inject: [ConfigService, AppService],
             useFactory: (configService: ConfigService, appService: AppService) => {
-                return {
+                const config = appService.getDBConfig()
+                const evnConfig = {
                     type: configService.get('DB_TYPE'),
                     host: configService.get('DB_HOST'),
-                    port: appService.getDBPort(),
+                    port: appService.getDBConfig(),
                     username: configService.get('DB_USERNAME'),
                     password: configService.get('DB_PASSWORD'),
                     database: configService.get('DB_DATABASE'),
                     autoLoadEntities: Boolean(configService.get('DB_AUTOLOAD')) || false,
                     synchronize: Boolean(configService.get('DB_SYNC')) || false,
-                } as TypeOrmModuleOptions
+                }
+                const finalConfig = Object.assign(evnConfig, config) as TypeOrmModuleOptions
+                return finalConfig
             },
             extraProviders: [AppService],
         }),
