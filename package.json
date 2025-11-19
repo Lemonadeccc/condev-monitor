@@ -8,7 +8,7 @@
         "spellcheck": "cspell lint --dot --gitignore --color --cache --show-suggestions \"(packages|apps)/**/*.@(html|js|cjs|mjs|ts|tsx|css|scss|md)\"",
         "format": "prettier --write .",
         "format:check": "prettier --check .",
-        "precheck": "pnpm lint:ts && pnpm format && pnpm spellcheck ",
+        "precheck": "pnpm lint && pnpm format && pnpm spellcheck ",
         "build": "pnpm --filter @condev-monitor/* build",
         "build:watch": "pnpm --filter @condev-monitor/* build:watch",
         "docker:start": "docker compose -p condev-monitor -f .devcontainer/docker-compose.yml up -d",

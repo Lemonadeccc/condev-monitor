@@ -1,8 +1,9 @@
 import { CacheModule as NestCacheModule } from '@nestjs/cache-manager'
 import { Module } from '@nestjs/common'
 // import { MongooseModule } from '@nestjs/mongoose'
-import { ConfigService } from '@nestjs/config'
-import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm'
+// import { ConfigService } from '@nestjs/config'
+import { TypeOrmModule } from '@nestjs/typeorm'
+import { DataSource } from 'typeorm'
 
 import { AppController } from './app.controller'
 import { AppService } from './app.service'
@@ -10,10 +11,12 @@ import { AppService } from './app.service'
 import { ConfigModule } from './common/config/config.module'
 import { LogsModule } from './common/logger/logs.module'
 import { MailModule } from './common/mail/mail.module'
+import { TypeormConfigService } from './database/typeorm/typeorm-config.service'
 // import { UserRepository } from './database/user.repository'
 import { User } from './user/user.entity'
 // import { User, UserSchema } from './user/user.schema'
 // import { PrismaModule } from './database/prisma/prisma.module'
+const connections = new Map()
 
 @Module({
     imports: [
@@ -42,23 +45,34 @@ import { User } from './user/user.entity'
         // }),
         TypeOrmModule.forRootAsync({
             // name: 'mysql1',
-            inject: [ConfigService, AppService],
-            useFactory: (configService: ConfigService, appService: AppService) => {
-                const config = appService.getDBConfig()
-                const evnConfig = {
-                    type: configService.get('DB_TYPE'),
-                    host: configService.get('DB_HOST'),
-                    port: appService.getDBConfig(),
-                    username: configService.get('DB_USERNAME'),
-                    password: configService.get('DB_PASSWORD'),
-                    database: configService.get('DB_DATABASE'),
-                    autoLoadEntities: Boolean(configService.get('DB_AUTOLOAD')) || false,
-                    synchronize: Boolean(configService.get('DB_SYNC')) || false,
+            // inject: [ConfigService, AppService],
+            // useFactory: (configService: ConfigService, appService: AppService) => {
+            //     const config = appService.getDBConfig()
+            //     const evnConfig = {
+            //         type: configService.get('DB_TYPE'),
+            //         host: configService.get('DB_HOST'),
+            //         port: appService.getDBConfig(),
+            //         username: configService.get('DB_USERNAME'),
+            //         password: configService.get('DB_PASSWORD'),
+            //         database: configService.get('DB_DATABASE'),
+            //         autoLoadEntities: Boolean(configService.get('DB_AUTOLOAD')) || false,
+            //         synchronize: Boolean(configService.get('DB_SYNC')) || false,
+            //     }
+            //     const finalConfig = Object.assign(evnConfig, config) as TypeOrmModuleOptions
+            //     return finalConfig
+            // },
+            // extraProviders: [AppService],
+            useClass: TypeormConfigService,
+            dataSourceFactory: async options => {
+                // tenantId
+                const tenantId = options!['tenantId'] || 'default'
+                if (tenantId && connections.has(tenantId)) {
+                    return connections.get(tenantId)
                 }
-                const finalConfig = Object.assign(evnConfig, config) as TypeOrmModuleOptions
-                return finalConfig
+                const dataSource = await new DataSource(options!).initialize()
+                connections.set(tenantId, dataSource)
+                return dataSource
             },
-            extraProviders: [AppService],
         }),
         TypeOrmModule.forFeature([User]),
         // TypeOrmModule.forFeature([User], 'mysql1'),
@@ -67,6 +81,12 @@ import { User } from './user/user.entity'
         // MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
     ],
     controllers: [AppController],
-    providers: [AppService],
+    providers: [
+        AppService,
+        {
+            provide: 'TYPEORM_CONNECTIONS',
+            useValue: connections,
+        },
+    ],
 })
 export class AppModule {}
