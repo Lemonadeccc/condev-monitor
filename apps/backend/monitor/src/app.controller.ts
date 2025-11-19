@@ -1,34 +1,41 @@
 import { CACHE_MANAGER, CacheInterceptor } from '@nestjs/cache-manager'
 import { Controller, Get, Inject, Query, UseInterceptors } from '@nestjs/common'
 // import { InjectModel } from '@nestjs/mongoose'
-import { InjectRepository } from '@nestjs/typeorm'
+// import { InjectRepository } from '@nestjs/typeorm'
 import { MailerService } from '@nestjs-modules/mailer'
 import { Cache } from 'cache-manager'
-// import { Model } from 'mongoose'
-import { Repository } from 'typeorm'
 
+// import { Model } from 'mongoose'
+// import { Repository } from 'typeorm'
 // import { InjectRedis } from '@nestjs-modules/ioredis'
 // import Redis from 'ioredis'
 import { AppService } from './app.service'
+import { UserRepository } from './database/user.repository'
 // import { PrismaService } from './database/prisma/prisma.service'
-import { User } from './user/user.entity'
+// import { User } from './user/user.entity'
 
 @Controller()
 @UseInterceptors(CacheInterceptor)
 export class AppController {
+    // typeorm multiple db test - add userRepository.ts
+    private userRepository
     constructor(
         private readonly appService: AppService,
         // @InjectRedis() private readonly redis: Redis
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
         private readonly mailerService: MailerService,
         // private prismaService: PrismaService,
-        @InjectRepository(User)
-        private userRepository: Repository<User>,
-        @InjectRepository(User, 'mysql1')
-        private userRepository1: Repository<User>
+        // @InjectRepository(User)
+        // private userRepository: Repository<User>,
+        // @InjectRepository(User, 'mysql1')
+        // private userRepository1: Repository<User>,
         // @InjectModel(User.name)
-        // private userModel: Model<User>
-    ) {}
+        // private userModel: Model<User>,
+
+        private repository: UserRepository
+    ) {
+        this.userRepository = this.repository.getRepository()
+    }
 
     @Get()
     async getHello(): Promise<any> {
@@ -44,14 +51,17 @@ export class AppController {
     }
 
     @Get('/multiple/mysql1')
-    async getHelloMySql1(@Query('db') db: string): Promise<any> {
+    async getHelloMySql1(): Promise<any> {
         // typeorm multiple db test
-        let res
-        if (db === 'mysql1') {
-            res = await this.userRepository1.find()
-        } else {
-            res = await this.userRepository.find()
-        }
+        // let res
+        // if (db === 'mysql1') {
+        //     res = await this.userRepository1.find()
+        // } else {
+        //     res = await this.userRepository.find()
+        // }
+        // return res
+        // typeorm multiple db test - add userRepository.ts
+        const res = await this.userRepository.find()
         return res
     }
 

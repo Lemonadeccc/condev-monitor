@@ -10,6 +10,7 @@ import { AppService } from './app.service'
 import { ConfigModule } from './common/config/config.module'
 import { LogsModule } from './common/logger/logs.module'
 import { MailModule } from './common/mail/mail.module'
+import { UserRepository } from './database/user.repository'
 import { User } from './user/user.entity'
 // import { User, UserSchema } from './user/user.schema'
 // import { PrismaModule } from './database/prisma/prisma.module'
@@ -61,6 +62,6 @@ import { User } from './user/user.entity'
         // MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
     ],
     controllers: [AppController],
-    providers: [AppService],
+    providers: [AppService, UserRepository],
 })
 export class AppModule {}
