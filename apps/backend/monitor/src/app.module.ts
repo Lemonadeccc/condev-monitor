@@ -10,6 +10,7 @@ import { AppService } from './app.service'
 import { ConfigModule } from './common/config/config.module'
 import { LogsModule } from './common/logger/logs.module'
 import { MailModule } from './common/mail/mail.module'
+import { PrismaModule } from './database/prisma/prisma.module'
 // import { User, UserSchema } from './user/user.schema'
 // import { PrismaModule } from './database/prisma/prisma.module'
 
@@ -40,6 +41,8 @@ import { MailModule } from './common/mail/mail.module'
         // }),
         // MongooseModule.forRoot('mongodb://root:example@localhost:27017/nest'),
         // MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
+
+        PrismaModule.forRoot('mysql://root:example@localhost:3306/testdb'),
     ],
     controllers: [AppController],
     providers: [AppService],

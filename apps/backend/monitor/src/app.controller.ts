@@ -4,6 +4,7 @@ import { Controller, Get, Inject, Query, UseInterceptors } from '@nestjs/common'
 // import { InjectRepository } from '@nestjs/typeorm'
 import { MailerService } from '@nestjs-modules/mailer'
 import { Cache } from 'cache-manager'
+import { PrismaClient } from 'generated/prisma/client'
 
 // import { Model } from 'mongoose'
 // import { Repository } from 'typeorm'
@@ -20,12 +21,14 @@ export class AppController {
         private readonly appService: AppService,
         // @InjectRedis() private readonly redis: Redis
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
-        private readonly mailerService: MailerService
+        private readonly mailerService: MailerService,
         // private prismaService: PrismaService,
         // @InjectRepository(User)
         // private userRepository: Repository<User>
         // @InjectModel(User.name)
         // private userModel: Model<User>
+
+        private prismaService: PrismaClient
     ) {}
 
     @Get()
@@ -39,6 +42,9 @@ export class AppController {
         // return res
         // const res = await this.userModel.find()
         // return res
+
+        const res = await this.prismaService.user.findMany({})
+        return res
     }
 
     @Get('/v2')
