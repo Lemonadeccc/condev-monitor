@@ -1,8 +1,17 @@
-import { Injectable } from '@nestjs/common'
+import { Inject } from '@nestjs/common'
+import { REQUEST } from '@nestjs/core'
 
-@Injectable()
 export class AppService {
-    getHello(): string {
-        return 'Hello World!'
+    constructor(
+        @Inject(REQUEST)
+        private request: Request
+    ) {}
+    getDBPort(): number {
+        const headers = this.request.headers
+        const tenantId = headers['x-tenant-id']
+        if (tenantId === 'mysql1') {
+            return 3307
+        }
+        return 3306
     }
 }

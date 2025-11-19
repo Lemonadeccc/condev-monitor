@@ -23,7 +23,7 @@ import { User } from './user/user.schema'
 @UseInterceptors(CacheInterceptor)
 export class AppController {
     // typeorm multiple db test - add userRepository.ts
-    private userRepository
+    // private userRepository
     constructor(
         private readonly appService: AppService,
         // @InjectRedis() private readonly redis: Redis
