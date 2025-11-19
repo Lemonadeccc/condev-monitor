@@ -1,8 +1,9 @@
 import { CacheModule as NestCacheModule } from '@nestjs/cache-manager'
 import { Module } from '@nestjs/common'
 // import { MongooseModule } from '@nestjs/mongoose'
-import { ConfigService } from '@nestjs/config'
-import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm'
+// import { ConfigService } from '@nestjs/config'
+import { TypeOrmModule } from '@nestjs/typeorm'
+import { DataSource } from 'typeorm'
 
 import { AppController } from './app.controller'
 import { AppService } from './app.service'
@@ -15,6 +16,7 @@ import { MongooseConfigService } from './database/mongoose/mongoose-config.servi
 import { User, UserSchema } from './user/user.schema'
 // import { User, UserSchema } from './user/user.schema'
 // import { PrismaModule } from './database/prisma/prisma.module'
+const connections = new Map()
 
 @Module({
     imports: [
@@ -41,7 +43,6 @@ import { User, UserSchema } from './user/user.schema'
         //             synchronize: Boolean(configService.get('DB_SYNC')) || false,
         //         }) as TypeOrmModuleOptions,
         // }),
-<<<<<<< HEAD
         // TypeOrmModule.forRootAsync({
         //     name: 'mysql1',
         //     inject: [ConfigService],
@@ -58,29 +59,6 @@ import { User, UserSchema } from './user/user.schema'
         //         }) as TypeOrmModuleOptions,
         // }),
         // TypeOrmModule.forFeature([User]),
-=======
-        TypeOrmModule.forRootAsync({
-            // name: 'mysql1',
-            inject: [ConfigService, AppService],
-            useFactory: (configService: ConfigService, appService: AppService) => {
-                const config = appService.getDBConfig()
-                const evnConfig = {
-                    type: configService.get('DB_TYPE'),
-                    host: configService.get('DB_HOST'),
-                    port: appService.getDBConfig(),
-                    username: configService.get('DB_USERNAME'),
-                    password: configService.get('DB_PASSWORD'),
-                    database: configService.get('DB_DATABASE'),
-                    autoLoadEntities: Boolean(configService.get('DB_AUTOLOAD')) || false,
-                    synchronize: Boolean(configService.get('DB_SYNC')) || false,
-                }
-                const finalConfig = Object.assign(evnConfig, config) as TypeOrmModuleOptions
-                return finalConfig
-            },
-            extraProviders: [AppService],
-        }),
-        TypeOrmModule.forFeature([User]),
->>>>>>> 89365f2 (feat(backend): ✨  typeorm link multiple database type.)
         // TypeOrmModule.forFeature([User], 'mysql1'),
 
         // MongooseModule.forRoot('mongodb://root:example@localhost:27017/nest'),
@@ -89,6 +67,12 @@ import { User, UserSchema } from './user/user.schema'
         MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
     ],
     controllers: [AppController],
-    providers: [AppService],
+    providers: [
+        AppService,
+        {
+            provide: 'TYPEORM_CONNECTIONS',
+            useValue: connections,
+        },
+    ],
 })
 export class AppModule {}
