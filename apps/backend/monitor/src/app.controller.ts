@@ -4,12 +4,15 @@ import { Controller, Get, Inject, Query, UseInterceptors } from '@nestjs/common'
 // import { InjectRepository } from '@nestjs/typeorm'
 import { MailerService } from '@nestjs-modules/mailer'
 import { Cache } from 'cache-manager'
+// import { PrismaClient } from 'generated/prisma/client'
+import { PrismaClient } from 'generated/prisma/client'
 
 // import { Model } from 'mongoose'
 // import { Repository } from 'typeorm'
 // import { InjectRedis } from '@nestjs-modules/ioredis'
 // import Redis from 'ioredis'
 import { AppService } from './app.service'
+import { PRISMA_CONNECTIONS } from './database/prisma/prisma.constants'
 // import { PrismaService } from './database/prisma/prisma.service'
 // import { User } from './user/user.entity'
 
@@ -20,12 +23,20 @@ export class AppController {
         private readonly appService: AppService,
         // @InjectRedis() private readonly redis: Redis
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
-        private readonly mailerService: MailerService
+        private readonly mailerService: MailerService,
         // private prismaService: PrismaService,
         // @InjectRepository(User)
         // private userRepository: Repository<User>
         // @InjectModel(User.name)
         // private userModel: Model<User>
+
+        // @Inject('prismaMysql')
+        // private prismaService: PrismaClient
+        @Inject('prismaPostgresql')
+        private prismaService1: PrismaClient,
+
+        @Inject(PRISMA_CONNECTIONS)
+        private connections: Record<string, PrismaClient>
     ) {}
 
     @Get()
@@ -38,6 +49,17 @@ export class AppController {
         // const res = await this.userRepository.find()
         // return res
         // const res = await this.userModel.find()
+        // return res
+
+        // const res = await this.prismaService.user.findMany({})
+
+        const res = await this.prismaService1.user.findMany({})
+        return res
+    }
+
+    @Get('/v1')
+    async getHelloV1(): Promise<any> {
+        // const res = await this.prismaService1.user.findMany({})
         // return res
     }
 
@@ -76,3 +98,4 @@ export class AppController {
             .catch(() => {})
     }
 }
+//

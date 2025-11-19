@@ -1,3 +1,13 @@
+# # Use root/example as user/password credentials
+
+# services:
+#   db:
+#     image: mysql
+#     restart: always
+#     environment:
+#       MYSQL_ROOT_PASSWORD: example
+#     ports:
+#       - 3306:3306
 # Use root/example as user/password credentials
 
 services:
@@ -7,4 +17,35 @@ services:
     environment:
       MYSQL_ROOT_PASSWORD: example
     ports:
-      - 3306:3306
+      - "3306:3306"
+    volumes:
+      - ./data/mysql-db:/var/lib/mysql
+
+  db1:
+    image: mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: example
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./data/mysql-db1:/var/lib/mysql
+
+  db2:
+    image: postgres
+    restart: always
+    shm_size: 128mb
+    environment:
+      POSTGRES_PASSWORD: example
+      POSTGRES_DB: testdb
+      POSTGRES_USER: pguser
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data/postgres-db:/var/lib/postgresql
+
+  adminer:
+    image: adminer
+    restart: always
+    ports:
+      - "8080:8080"

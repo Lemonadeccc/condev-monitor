@@ -8,3 +8,7 @@ nums
 smtps
 autoincrement
 testdb
+pguser
+
+PROTOCALREGX
+PRISMACLIENT
