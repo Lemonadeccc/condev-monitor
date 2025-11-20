@@ -11,6 +11,7 @@ import { ConfigModule } from './common/config/config.module'
 import { LogsModule } from './common/logger/logs.module'
 import { MailModule } from './common/mail/mail.module'
 import { PrismaModule } from './database/prisma/prisma.module'
+import { PrismaService } from './database/prisma/prisma.service'
 // import { User, UserSchema } from './user/user.schema'
 // import { PrismaModule } from './database/prisma/prisma.module'
 
@@ -42,7 +43,12 @@ import { PrismaModule } from './database/prisma/prisma.module'
         // MongooseModule.forRoot('mongodb://root:example@localhost:27017/nest'),
         // MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
         // PrismaModule.forRoot('mysql://root:example@localhost:3306/testdb', 'prismaMysql'),
-        PrismaModule.forRoot('postgresql://pguser:example@localhost:5432/testdb', 'prismaPostgresql'),
+        // PrismaModule.forRoot('postgresql://pguser:example@localhost:5432/testdb', 'prismaPostgresql'),
+
+        PrismaModule.forRootAsync({
+            name: 'prismaPostgresql',
+            useClass: PrismaService,
+        }),
     ],
     controllers: [AppController],
     providers: [AppService],
