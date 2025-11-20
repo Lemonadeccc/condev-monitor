@@ -4,7 +4,7 @@ import { catchError, defer, lastValueFrom } from 'rxjs'
 // import { PrismaClient } from 'generated/prisma/client'
 import { PrismaClient as MySQLClient } from '../../../prisma/client/mysql/client'
 import { PrismaClient as PgClient } from '../../../prisma/client/postgresql/client'
-import { PRISMA_MODULE_OPTIONS } from './prisma.constants'
+import { PRISMA_CONNECTIONS, PRISMA_MODULE_OPTIONS } from './prisma.constants'
 import { getDBType, handleRetry } from './prisma.utils'
 import {
     PrismaModuleAsyncOptions,
@@ -16,8 +16,17 @@ import {
 @Module({})
 @Global()
 export class PrismaCoreModule implements OnApplicationShutdown {
+    private static connections: Record<string, any> = {}
     onApplicationShutdown() {
-        throw new Error('Method not implemented.')
+        // throw new Error('Method not implemented.')
+        if (PrismaCoreModule.connections && Object.keys(PrismaCoreModule.connections).length > 0) {
+            for (const key of Object.keys(PrismaCoreModule.connections)) {
+                const connection = PrismaCoreModule.connections[key]
+                if (connection && typeof connection.$disconnect == 'function') {
+                    connection.$disconnect()
+                }
+            }
+        }
     }
 
     static forRoot(_options: PrismaModuleOptions) {
@@ -42,7 +51,14 @@ export class PrismaCoreModule implements OnApplicationShutdown {
             provide: providerName,
             useFactory: async () => {
                 // add error retry
-                const client = await prismaConnectionFactory(newOptions, providerName)
+                if (!url) {
+                    throw new Error('Prisma url is required')
+                }
+                if (this.connections[url]) {
+                    return this.connections[url]
+                }
+                const client = await prismaConnectionFactory(newOptions, _prismaClient)
+                this.connections[url] = client
                 return lastValueFrom(
                     defer(() => client.$connect()).pipe(
                         handleRetry(retryAttempts, retryDelay),
@@ -53,9 +69,13 @@ export class PrismaCoreModule implements OnApplicationShutdown {
                 ).then(() => client)
             },
         }
+        const connectionsProvider = {
+            provide: PRISMA_CONNECTIONS,
+            useValue: this.connections,
+        }
         return {
             module: PrismaCoreModule,
-            providers: [prismaClientProvider],
+            providers: [prismaClientProvider, connectionsProvider],
             exports: [prismaClientProvider],
         }
     }
@@ -93,7 +113,12 @@ export class PrismaCoreModule implements OnApplicationShutdown {
                 const prismaConnectionFactory = connectionFactory || (clientOptions => new _prismaClient(clientOptions))
                 return lastValueFrom(
                     defer(async () => {
-                        const client = prismaConnectionFactory(newOptions, prismaModuleOptions.name || 'PrismaClient')
+                        const url = newOptions.datasourceUrl!
+                        if (this.connections[url]) {
+                            return this.connections[url]
+                        }
+                        const client = await prismaConnectionFactory(newOptions, _prismaClient)
+                        this.connections[url] = client
                         return client
                     }).pipe(
                         handleRetry(retryAttempts, retryDelay),
@@ -106,11 +131,14 @@ export class PrismaCoreModule implements OnApplicationShutdown {
             inject: [PRISMA_MODULE_OPTIONS],
         }
         const asyncProviders = this.createAsyncProviders(_options)
-
+        const connectionsProvider = {
+            provide: PRISMA_CONNECTIONS,
+            useValue: this.connections,
+        }
         return {
             module: PrismaCoreModule,
-            providers: [...asyncProviders, prismaClientProvider],
-            exports: [prismaClientProvider],
+            providers: [...asyncProviders, prismaClientProvider, connectionsProvider],
+            exports: [prismaClientProvider, connectionsProvider],
         }
     }
     private static createAsyncProviders(options: PrismaModuleAsyncOptions) {

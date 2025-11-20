@@ -6,7 +6,7 @@ export interface PrismaModuleOptions {
     name?: string
     retryAttempts?: number
     retryDelay?: number
-    connectionFactory?: (connection: any, name: string) => any
+    connectionFactory?: (connection: any, clientClass: any) => any
     connectionErrorFactory?: (error: Prisma.PrismaClientKnownRequestError) => Prisma.PrismaClientKnownRequestError
 }
 

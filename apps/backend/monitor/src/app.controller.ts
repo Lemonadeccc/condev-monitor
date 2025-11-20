@@ -12,6 +12,7 @@ import { PrismaClient } from 'generated/prisma/client'
 // import { InjectRedis } from '@nestjs-modules/ioredis'
 // import Redis from 'ioredis'
 import { AppService } from './app.service'
+import { PRISMA_CONNECTIONS } from './database/prisma/prisma.constants'
 // import { PrismaService } from './database/prisma/prisma.service'
 // import { User } from './user/user.entity'
 
@@ -32,7 +33,10 @@ export class AppController {
         // @Inject('prismaMysql')
         // private prismaService: PrismaClient
         @Inject('prismaPostgresql')
-        private prismaService1: PrismaClient
+        private prismaService1: PrismaClient,
+
+        @Inject(PRISMA_CONNECTIONS)
+        private connections: Record<string, PrismaClient>
     ) {}
 
     @Get()
@@ -48,8 +52,8 @@ export class AppController {
         // return res
 
         // const res = await this.prismaService.user.findMany({})
-        const res = await this.prismaService1.user.findMany({})
 
+        const res = await this.prismaService1.user.findMany({})
         return res
     }
 
