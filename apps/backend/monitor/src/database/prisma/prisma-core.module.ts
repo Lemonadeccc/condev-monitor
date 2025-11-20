@@ -1,9 +1,10 @@
 import { Global, Module, OnApplicationShutdown, Provider } from '@nestjs/common'
+import { catchError, defer, lastValueFrom } from 'rxjs'
 
 // import { PrismaClient } from 'generated/prisma/client'
 import { PrismaClient as MySQLClient } from '../../../prisma/client/mysql/client'
 import { PrismaClient as PgClient } from '../../../prisma/client/postgresql/client'
-import { getDBType } from './prisma.utils'
+import { getDBType, handleRetry } from './prisma.utils'
 import { PrismaModuleOptions } from './prisma-options.interface'
 
 @Module({})
@@ -14,24 +15,36 @@ export class PrismaCoreModule implements OnApplicationShutdown {
     }
 
     static forRoot(_options: PrismaModuleOptions) {
-        const { url, options = {}, name } = _options
+        const { url, options = {}, name, retryAttempts = 3, retryDelay = 3000, connectionErrorFactory, connectionFactory } = _options
         const newOptions = {
             ...options,
             ...(url ? { datasourceUrl: url } : {}),
         }
+        let _prismaClient
+        const dbType = getDBType(url!)
+        if (dbType === 'mysql') {
+            _prismaClient = MySQLClient
+        } else if (dbType === 'postgresql') {
+            _prismaClient = PgClient
+        } else {
+            throw new Error(`Unsupported database type: ${dbType}`)
+        }
         const providerName = name || 'PRISMACLIENT'
+        const prismaConnectionErrorFactory = connectionErrorFactory || (err => err)
+        const prismaConnectionFactory = connectionFactory || (clientOptions => new _prismaClient(clientOptions))
         const prismaClientProvider: Provider = {
             provide: providerName,
-            useFactory: () => {
-                // const url = options.url!
-                const dbType = getDBType(url!)
-                if (dbType === 'mysql') {
-                    return new MySQLClient(newOptions!)
-                } else if (dbType === 'postgresql') {
-                    return new PgClient(newOptions)
-                } else {
-                    throw new Error(`Unsupported database type: ${dbType}`)
-                }
+            useFactory: async () => {
+                // add error retry
+                const client = await prismaConnectionFactory(newOptions, providerName)
+                return lastValueFrom(
+                    defer(() => client.$connect()).pipe(
+                        handleRetry(retryAttempts, retryDelay),
+                        catchError(err => {
+                            throw prismaConnectionErrorFactory(err)
+                        })
+                    )
+                ).then(() => client)
             },
         }
         return {

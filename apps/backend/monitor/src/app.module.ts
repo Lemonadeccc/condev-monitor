@@ -41,7 +41,7 @@ import { PrismaModule } from './database/prisma/prisma.module'
         // }),
         // MongooseModule.forRoot('mongodb://root:example@localhost:27017/nest'),
         // MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
-        PrismaModule.forRoot('mysql://root:example@localhost:3306/testdb', 'prismaMysql'),
+        // PrismaModule.forRoot('mysql://root:example@localhost:3306/testdb', 'prismaMysql'),
         PrismaModule.forRoot('postgresql://pguser:example@localhost:5432/testdb', 'prismaPostgresql'),
     ],
     controllers: [AppController],

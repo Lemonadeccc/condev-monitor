@@ -29,8 +29,8 @@ export class AppController {
         // @InjectModel(User.name)
         // private userModel: Model<User>
 
-        @Inject('prismaMysql')
-        private prismaService: PrismaClient,
+        // @Inject('prismaMysql')
+        // private prismaService: PrismaClient
         @Inject('prismaPostgresql')
         private prismaService1: PrismaClient
     ) {}
@@ -47,14 +47,16 @@ export class AppController {
         // const res = await this.userModel.find()
         // return res
 
-        const res = await this.prismaService.user.findMany({})
+        // const res = await this.prismaService.user.findMany({})
+        const res = await this.prismaService1.user.findMany({})
+
         return res
     }
 
     @Get('/v1')
     async getHelloV1(): Promise<any> {
-        const res = await this.prismaService1.user.findMany({})
-        return res
+        // const res = await this.prismaService1.user.findMany({})
+        // return res
     }
 
     @Get('/v2')
@@ -92,3 +94,4 @@ export class AppController {
             .catch(() => {})
     }
 }
+//
