@@ -6,13 +6,13 @@
 
 generator client {
   provider = "prisma-client"
-  // output   = "./client/mysql"
-  output   = "./client/postgresql"
+  output   = "./client/mysql"
+  // output   = "./client/postgresql"
 }
 
 datasource db {
-  // provider = "mysql"
-  provider = "postgresql"
+  provider = "mysql"
+  // provider = "postgresql"
   url      = env("DATABASE_URL")
 }
 

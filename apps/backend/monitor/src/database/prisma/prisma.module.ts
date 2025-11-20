@@ -11,9 +11,12 @@ import { PrismaModuleOptions } from './prisma-options.interface'
 export class PrismaModule {
     static forRoot(options: PrismaModuleOptions): DynamicModule
     static forRoot(url: string): DynamicModule
-    static forRoot(arg: any): DynamicModule {
+    static forRoot(url: string, name?: string): DynamicModule
+    static forRoot(arg: any, ...args): DynamicModule {
         let _options: PrismaModuleOptions
-        if (typeof arg === 'string') {
+        if (args && args.length) {
+            _options = { url: arg, name: args[0] }
+        } else if (typeof arg === 'string') {
             _options = { url: arg }
         } else {
             _options = arg

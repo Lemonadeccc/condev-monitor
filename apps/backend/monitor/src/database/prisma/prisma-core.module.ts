@@ -13,16 +13,22 @@ export class PrismaCoreModule implements OnApplicationShutdown {
         throw new Error('Method not implemented.')
     }
 
-    static forRoot(options: PrismaModuleOptions) {
+    static forRoot(_options: PrismaModuleOptions) {
+        const { url, options = {}, name } = _options
+        const newOptions = {
+            ...options,
+            ...(url ? { datasourceUrl: url } : {}),
+        }
+        const providerName = name || 'PRISMACLIENT'
         const prismaClientProvider: Provider = {
-            provide: 'PRISMACLIENT',
+            provide: providerName,
             useFactory: () => {
-                const url = options.url || ''
-                const dbType = getDBType(url)
+                // const url = options.url!
+                const dbType = getDBType(url!)
                 if (dbType === 'mysql') {
-                    return new MySQLClient({ datasourceUrl: options.url, ...options.options })
+                    return new MySQLClient(newOptions!)
                 } else if (dbType === 'postgresql') {
-                    return new PgClient({ datasourceUrl: options.url, ...options.options })
+                    return new PgClient(newOptions)
                 } else {
                     throw new Error(`Unsupported database type: ${dbType}`)
                 }

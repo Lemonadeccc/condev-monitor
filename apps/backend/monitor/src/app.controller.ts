@@ -29,8 +29,10 @@ export class AppController {
         // @InjectModel(User.name)
         // private userModel: Model<User>
 
-        @Inject('PRISMACLIENT')
-        private prismaService: PrismaClient
+        @Inject('prismaMysql')
+        private prismaService: PrismaClient,
+        @Inject('prismaPostgresql')
+        private prismaService1: PrismaClient
     ) {}
 
     @Get()
@@ -46,6 +48,12 @@ export class AppController {
         // return res
 
         const res = await this.prismaService.user.findMany({})
+        return res
+    }
+
+    @Get('/v1')
+    async getHelloV1(): Promise<any> {
+        const res = await this.prismaService1.user.findMany({})
         return res
     }
 
