@@ -1,15 +1,18 @@
 import { CACHE_MANAGER, CacheInterceptor } from '@nestjs/cache-manager'
 import { Controller, Get, Inject, Query, UseInterceptors } from '@nestjs/common'
+import { InjectModel } from '@nestjs/mongoose'
 // import { InjectModel } from '@nestjs/mongoose'
 // import { InjectRepository } from '@nestjs/typeorm'
 import { MailerService } from '@nestjs-modules/mailer'
 import { Cache } from 'cache-manager'
+import { Model } from 'mongoose'
 
 // import { Model } from 'mongoose'
 // import { Repository } from 'typeorm'
 // import { InjectRedis } from '@nestjs-modules/ioredis'
 // import Redis from 'ioredis'
 import { AppService } from './app.service'
+import { User } from './user/user.schema'
 // import { PrismaService } from './database/prisma/prisma.service'
 // import { User } from './user/user.entity'
 
@@ -20,12 +23,15 @@ export class AppController {
         private readonly appService: AppService,
         // @InjectRedis() private readonly redis: Redis
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
-        private readonly mailerService: MailerService
+        private readonly mailerService: MailerService,
         // private prismaService: PrismaService,
         // @InjectRepository(User)
         // private userRepository: Repository<User>
         // @InjectModel(User.name)
         // private userModel: Model<User>
+
+        @InjectModel(User.name)
+        private userModel: Model<User>
     ) {}
 
     @Get()
@@ -39,6 +45,9 @@ export class AppController {
         // return res
         // const res = await this.userModel.find()
         // return res
+
+        const res = await this.userModel.find()
+        return res
     }
 
     @Get('/v2')
