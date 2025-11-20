@@ -1,12 +1,12 @@
 import { DynamicModule, Module } from '@nestjs/common'
 
-import { PrismaService } from './prisma.service'
+// import { PrismaService } from './prisma.service'
 import { PrismaCoreModule } from './prisma-core.module'
 import { PrismaModuleOptions } from './prisma-options.interface'
 
 @Module({
-    providers: [PrismaService],
-    exports: [PrismaService],
+    // providers: [PrismaService],
+    // exports: [PrismaService],
 })
 export class PrismaModule {
     static forRoot(options: PrismaModuleOptions): DynamicModule

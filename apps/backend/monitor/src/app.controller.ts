@@ -4,6 +4,7 @@ import { Controller, Get, Inject, Query, UseInterceptors } from '@nestjs/common'
 // import { InjectRepository } from '@nestjs/typeorm'
 import { MailerService } from '@nestjs-modules/mailer'
 import { Cache } from 'cache-manager'
+// import { PrismaClient } from 'generated/prisma/client'
 import { PrismaClient } from 'generated/prisma/client'
 
 // import { Model } from 'mongoose'
@@ -28,6 +29,7 @@ export class AppController {
         // @InjectModel(User.name)
         // private userModel: Model<User>
 
+        @Inject('PRISMACLIENT')
         private prismaService: PrismaClient
     ) {}
 

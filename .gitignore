@@ -111,4 +111,5 @@ next-env.d.ts
 !/apps/backend/monitor/src/common/
 
 /apps/backend/monitor/generated/prisma
+/apps/backend/monitor/prisma/client
 /apps/backend/monitor/data/
