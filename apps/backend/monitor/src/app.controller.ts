@@ -14,7 +14,7 @@ import { Cache } from 'cache-manager'
 // import { InjectRedis } from '@nestjs-modules/ioredis'
 // import Redis from 'ioredis'
 // import { AppService } from './app.service'
-import { UserRepository } from './user/user.repository'
+// import { UserRepository } from './user/user.repository'
 // import { User } from './user/user.schema'
 // import { PrismaService } from './database/prisma/prisma.service'
 // import { User } from './user/user.entity'
@@ -28,7 +28,7 @@ export class AppController {
         // private readonly appService: AppService,
         // @InjectRedis() private readonly redis: Redis
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
-        private readonly mailerService: MailerService,
+        private readonly mailerService: MailerService
         // private prismaService: PrismaService,
         // @InjectRepository(User)
         // private userRepository: Repository<User>,
@@ -38,26 +38,26 @@ export class AppController {
         // @InjectModel(User.name)
         // private userModel: Model<User>,
 
-        private userRepository: UserRepository
+        // private userRepository: UserRepository
     ) {}
 
-    @Get()
-    async getHello(): Promise<any> {
-        // return this.appService.getHello()
-        // // prisma test
-        // const res = await this.prismaService.user.findMany({})
-        // return res
-        // typeorm test
-        // const res = await this.userRepository.find()
-        // return res
-        // const res = await this.userModel.find()
-        // return res
+    // @Get()
+    // async getHello(): Promise<any> {
+    //     // return this.appService.getHello()
+    //     // // prisma test
+    //     // const res = await this.prismaService.user.findMany({})
+    //     // return res
+    //     // typeorm test
+    //     // const res = await this.userRepository.find()
+    //     // return res
+    //     // const res = await this.userModel.find()
+    //     // return res
 
-        // const res = await this.userModel.find()
-        // return res
-        const res = await this.userRepository.find()
-        return res
-    }
+    //     // const res = await this.userModel.find()
+    //     // return res
+    //     const res = await this.userRepository.find()
+    //     return res
+    // }
 
     @Get('/v2')
     async getHello2(@Query('token') token): Promise<any> {

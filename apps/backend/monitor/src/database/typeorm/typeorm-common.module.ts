@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common'
 import { TypeOrmModule } from '@nestjs/typeorm'
 import { UserTypeormRepository } from 'src/user/repository/user.typeorm.repository'
-import { User } from 'src/user/user.entity'
+// import { User } from 'src/user/user.entity'
 import { DataSource } from 'typeorm'
 
 import { TYPEORM_DATABASE } from '../database-constant'
@@ -26,7 +26,6 @@ const connections = new Map()
                 return dataSource
             },
         }),
-        TypeOrmModule.forFeature([User], TYPEORM_DATABASE),
     ],
     providers: [
         TypeormProvider,
@@ -34,7 +33,6 @@ const connections = new Map()
             provide: 'TYPEORM_CONNECTIONS',
             useValue: connections,
         },
-        UserTypeormRepository,
     ],
     exports: [UserTypeormRepository],
 })

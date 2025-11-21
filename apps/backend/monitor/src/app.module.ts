@@ -16,6 +16,7 @@ import { MailModule } from './common/mail/mail.module'
 import { DatabaseModule } from './database/database.module'
 import { MongooseModule } from './database/mongoose/mongoose.module'
 import { MongooseConfigService } from './database/mongoose/mongoose-config.service'
+import { UserModule } from './user/user.module'
 import { User, UserSchema } from './user/user.schema'
 const connections = new Map()
 
@@ -67,6 +68,7 @@ const connections = new Map()
         MongooseModule.forRootAsync({ useClass: MongooseConfigService }),
         MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
         DatabaseModule,
+        UserModule,
     ],
     controllers: [AppController],
     providers: [
