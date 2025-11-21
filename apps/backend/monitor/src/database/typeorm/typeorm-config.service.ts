@@ -27,11 +27,11 @@ export class TypeormConfigService implements TypeOrmOptionsFactory {
             // 额外的参数
             tenantId,
         }
-        if (tenantId === 'mysql1') {
+        if (tenantId === 'typeorm2') {
             config = {
                 port: 3307,
             }
-        } else if (tenantId === 'postgresql') {
+        } else if (tenantId === 'typeorm3') {
             config = {
                 type: 'postgres',
                 port: 5432,

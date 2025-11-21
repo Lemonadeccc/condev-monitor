@@ -21,9 +21,12 @@ import { catchError } from 'rxjs/operators'
 // } from './interfaces/mongoose-options.interface';
 import { MONGOOSE_CONNECTION_NAME, MONGOOSE_MODULE_OPTIONS } from './mongoose.constants'
 import { handleRetry } from './mongoose.utils'
+import { MongooseCommonModule } from './mongoose-common.module'
 
 @Global()
-@Module({})
+@Module({
+    imports: [MongooseCommonModule],
+})
 export class MongooseCoreModule implements OnApplicationShutdown {
     private static connections: Record<string, mongoose.Connection> = {}
     constructor(
@@ -93,6 +96,7 @@ export class MongooseCoreModule implements OnApplicationShutdown {
         const connectionProvider = {
             provide: mongooseConnectionName,
             useFactory: async (mongooseModuleOptions: MongooseModuleFactoryOptions): Promise<any> => {
+                if (!mongooseModuleOptions) return
                 const {
                     retryAttempts,
                     retryDelay,

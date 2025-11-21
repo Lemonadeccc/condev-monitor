@@ -15,13 +15,14 @@ export class PrismaService extends PrismaClient implements OnModuleInit, PrismaM
     createPrismaModuleOptions(): Promise<PrismaModuleOptions> | PrismaModuleOptions {
         const headers = this.request.headers
         const tenantId = headers['x-tenant-id'] || 'default'
-        if (tenantId === 'default1') {
+        if (tenantId === 'prisma1') {
             return { url: 'mysql://root:example@localhost:3307/testdb' }
-        } else if (tenantId === 'default2') {
+        } else if (tenantId === 'prisma2') {
             return { url: 'postgresql://pguser:example@localhost:5433/testdb' }
         }
-        // Explicitly fail for unsupported tenants so we never return undefined
-        throw new Error(`Unsupported tenant id: ${tenantId}`)
+        // Return empty options for non-Prisma tenants (mongo, typeorm, etc.)
+        // PrismaCoreModule will skip initialization if url is not provided
+        return {} as PrismaModuleOptions
     }
 
     async onModuleInit() {

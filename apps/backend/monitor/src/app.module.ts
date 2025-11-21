@@ -1,21 +1,22 @@
 import { CacheModule as NestCacheModule } from '@nestjs/cache-manager'
 import { Module } from '@nestjs/common'
+
 // import { MongooseModule } from '@nestjs/mongoose'
 // import { ConfigService } from '@nestjs/config'
-import { TypeOrmModule } from '@nestjs/typeorm'
-import { DataSource } from 'typeorm'
-
+// import { TypeOrmModule } from '@nestjs/typeorm'
+// import { DataSource } from 'typeorm'
 import { AppController } from './app.controller'
 import { AppService } from './app.service'
 // import { CacheModule } from './common/cache/cache.module'
 import { ConfigModule } from './common/config/config.module'
 import { LogsModule } from './common/logger/logs.module'
 import { MailModule } from './common/mail/mail.module'
+// import { User, UserSchema } from './user/user.schema'
+// import { PrismaModule } from './database/prisma/prisma.module'
+import { DatabaseModule } from './database/database.module'
 import { MongooseModule } from './database/mongoose/mongoose.module'
 import { MongooseConfigService } from './database/mongoose/mongoose-config.service'
 import { User, UserSchema } from './user/user.schema'
-// import { User, UserSchema } from './user/user.schema'
-// import { PrismaModule } from './database/prisma/prisma.module'
 const connections = new Map()
 
 @Module({
@@ -65,6 +66,7 @@ const connections = new Map()
         // MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
         MongooseModule.forRootAsync({ useClass: MongooseConfigService }),
         MongooseModule.forFeature([{ name: User.name, schema: UserSchema }]),
+        DatabaseModule,
     ],
     controllers: [AppController],
     providers: [

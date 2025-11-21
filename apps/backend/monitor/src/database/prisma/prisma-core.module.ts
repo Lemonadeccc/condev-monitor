@@ -85,6 +85,7 @@ export class PrismaCoreModule implements OnApplicationShutdown {
         const prismaClientProvider: Provider = {
             provide: providerName,
             useFactory: (prismaModuleOptions: PrismaModuleOptions) => {
+                if (!prismaModuleOptions) return
                 const {
                     url,
                     options = {},

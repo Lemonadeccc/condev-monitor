@@ -1,21 +1,21 @@
 import { CACHE_MANAGER, CacheInterceptor } from '@nestjs/cache-manager'
 import { Controller, Get, Inject, Query, UseInterceptors } from '@nestjs/common'
-import { InjectModel } from '@nestjs/mongoose'
+// import { InjectModel } from '@nestjs/mongoose'
 // import { InjectModel } from '@nestjs/mongoose'
 // import { InjectRepository } from '@nestjs/typeorm'
 import { MailerService } from '@nestjs-modules/mailer'
 import { Cache } from 'cache-manager'
-import { Model } from 'mongoose'
 
 // import { Model } from 'mongoose'
-import { Repository } from 'typeorm'
-
+// import { Model } from 'mongoose'
+// import { Repository } from 'typeorm'
 // import { Model } from 'mongoose'
 // import { Repository } from 'typeorm'
 // import { InjectRedis } from '@nestjs-modules/ioredis'
 // import Redis from 'ioredis'
-import { AppService } from './app.service'
-import { User } from './user/user.schema'
+// import { AppService } from './app.service'
+import { UserRepository } from './user/user.repository'
+// import { User } from './user/user.schema'
 // import { PrismaService } from './database/prisma/prisma.service'
 // import { User } from './user/user.entity'
 
@@ -25,7 +25,7 @@ export class AppController {
     // typeorm multiple db test - add userRepository.ts
     // private userRepository
     constructor(
-        private readonly appService: AppService,
+        // private readonly appService: AppService,
         // @InjectRedis() private readonly redis: Redis
         @Inject(CACHE_MANAGER) private cacheManager: Cache,
         private readonly mailerService: MailerService,
@@ -35,8 +35,10 @@ export class AppController {
         // @InjectModel(User.name)
         // private userModel: Model<User>
 
-        @InjectModel(User.name)
-        private userModel: Model<User>
+        // @InjectModel(User.name)
+        // private userModel: Model<User>,
+
+        private userRepository: UserRepository
     ) {}
 
     @Get()
@@ -51,7 +53,9 @@ export class AppController {
         // const res = await this.userModel.find()
         // return res
 
-        const res = await this.userModel.find()
+        // const res = await this.userModel.find()
+        // return res
+        const res = await this.userRepository.find()
         return res
     }
 

@@ -10,10 +10,12 @@ export class MongooseConfigService implements MongooseOptionsFactory {
         const tenantId = headers['x-tenant-id'] || 'default'
         let url
         const defaultUrl = 'mongodb://root:example@localhost:27017/nest?authSource=admin'
-        if (tenantId === 'default') {
+        if (tenantId === 'mongo') {
             url = defaultUrl
-        } else {
+        } else if (tenantId === 'mongo1') {
             url = 'mongodb://root:example@localhost:27018/nest?authSource=admin'
+        } else {
+            // url = defaultUrl
         }
         return {
             uri: url,
