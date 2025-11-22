@@ -2,7 +2,6 @@ import { Inject, Injectable, OnModuleInit } from '@nestjs/common'
 import { REQUEST } from '@nestjs/core'
 import { Request } from 'express'
 
-// import { PrismaClient } from 'generated/prisma'
 import { PrismaClient } from '../../../generated/prisma/client'
 import { PrismaModuleOptions, PrismaModuleOptionsFactory } from './prisma-options.interface'
 
@@ -20,8 +19,6 @@ export class PrismaService extends PrismaClient implements OnModuleInit, PrismaM
         } else if (tenantId === 'prisma2') {
             return { url: 'postgresql://pguser:example@localhost:5433/testdb' }
         }
-        // Return empty options for non-Prisma tenants (mongo, typeorm, etc.)
-        // PrismaCoreModule will skip initialization if url is not provided
         return {} as PrismaModuleOptions
     }
 

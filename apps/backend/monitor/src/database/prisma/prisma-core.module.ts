@@ -2,6 +2,8 @@ import { DynamicModule, Global, Module, OnApplicationShutdown, Provider, Type } 
 import { catchError, defer, lastValueFrom } from 'rxjs'
 
 // import { PrismaClient } from 'generated/prisma/client'
+// import { PrismaClient as MySQLClient } from 'prisma-mysql'
+// import { PrismaClient as PgClient } from 'prisma-postgresql'
 import { PrismaClient as MySQLClient } from '../../../prisma/client/mysql/client'
 import { PrismaClient as PgClient } from '../../../prisma/client/postgresql/client'
 import { PRISMA_CONNECTIONS, PRISMA_MODULE_OPTIONS } from './prisma.constants'
@@ -94,6 +96,12 @@ export class PrismaCoreModule implements OnApplicationShutdown {
                     connectionErrorFactory,
                     connectionFactory,
                 } = prismaModuleOptions
+
+                // Skip Prisma initialization if no url is provided (for non-Prisma tenants)
+                if (!url) {
+                    return null
+                }
+
                 let newOptions = { datasourceUrl: url }
                 if (!Object.keys(options).length) {
                     newOptions = {
@@ -102,7 +110,7 @@ export class PrismaCoreModule implements OnApplicationShutdown {
                     }
                 }
                 let _prismaClient
-                const dbType = getDBType(url!)
+                const dbType = getDBType(url)
                 if (dbType === 'mysql') {
                     _prismaClient = MySQLClient
                 } else if (dbType === 'postgresql') {

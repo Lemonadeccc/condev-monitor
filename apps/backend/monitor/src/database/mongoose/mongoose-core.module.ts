@@ -21,11 +21,11 @@ import { catchError } from 'rxjs/operators'
 // } from './interfaces/mongoose-options.interface';
 import { MONGOOSE_CONNECTION_NAME, MONGOOSE_MODULE_OPTIONS } from './mongoose.constants'
 import { handleRetry } from './mongoose.utils'
-import { MongooseCommonModule } from './mongoose-common.module'
+// import { MongooseCommonModule } from './mongoose-common.module'
 
 @Global()
 @Module({
-    imports: [MongooseCommonModule],
+    // imports: [MongooseCommonModule],
 })
 export class MongooseCoreModule implements OnApplicationShutdown {
     private static connections: Record<string, mongoose.Connection> = {}

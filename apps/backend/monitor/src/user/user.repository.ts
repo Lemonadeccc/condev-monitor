@@ -1,4 +1,4 @@
-import { Inject } from '@nestjs/common'
+import { Inject, Optional } from '@nestjs/common'
 import { REQUEST } from '@nestjs/core'
 import { Request } from 'express'
 
@@ -10,9 +10,9 @@ import { UserAdapter } from './user.interface'
 export class UserRepository implements UserAdapter {
     constructor(
         @Inject(REQUEST) private request: Request,
-        private UserMongooseRepository: UserMongooseRepository,
-        private UserTypeormRepository: UserTypeormRepository,
-        private UserPrismaRepository: UserPrismaRepository
+        @Optional() private userMongooseRepository: UserMongooseRepository,
+        @Optional() private userTypeormRepository: UserTypeormRepository,
+        @Optional() private userPrismaRepository: UserPrismaRepository
     ) {}
     find(): Promise<any[]> {
         const client = this.getRepository()
@@ -38,12 +38,13 @@ export class UserRepository implements UserAdapter {
         const headers = this.request.headers
         const tenantId = headers['x-tenant-id'] || 'default'
         if (tenantId === 'mongo' || tenantId === 'mongo1') {
-            return this.UserMongooseRepository
+            return this.userMongooseRepository
         } else if (tenantId === 'typeorm1' || tenantId === 'typeorm2' || tenantId === 'typeorm3') {
-            return this.UserTypeormRepository
+            return this.userTypeormRepository
         } else if (tenantId === 'prisma1' || tenantId === 'prisma2') {
-            return this.UserPrismaRepository
+            return this.userPrismaRepository
         }
-        return this.UserTypeormRepository
+        // 默认返回 Prisma，与原版保持一致
+        return this.userPrismaRepository
     }
 }

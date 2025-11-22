@@ -27,6 +27,8 @@
         "typeorm:drop": "pnpm run typeorm schema:drop"
     },
     "dependencies": {
+        "prisma-mysql": "link:client/mysql",
+        "prisma-postgresql": "link:client/postgresql",
         "@nestjs-modules/mailer": "^2.0.2",
         "@nestjs/cache-manager": "^3.0.1",
         "@nestjs/common": "^11.1.9",

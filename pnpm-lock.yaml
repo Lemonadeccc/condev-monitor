@@ -207,6 +207,12 @@ importers:
       pino-roll:
         specifier: ^4.0.0
         version: 4.0.0
+      prisma-mysql:
+        specifier: link:client/mysql
+        version: link:client/mysql
+      prisma-postgresql:
+        specifier: link:client/postgresql
+        version: link:client/postgresql
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
