@@ -7,6 +7,7 @@ import { AdminModule } from './admin/admin.module'
 import { AppController } from './app.controller'
 import { AppService } from './app.service'
 import { ApplicationModule } from './application/application.module'
+import { AuthModule } from './auth/auth.module'
 import { ConfigModule } from './common/config/config.module'
 import { LogsModule } from './common/logger/logs.module'
 import { MailModule } from './common/mail/mail.module'
@@ -23,6 +24,7 @@ import { MailModule } from './common/mail/mail.module'
         MailModule,
         ApplicationModule,
         AdminModule,
+        AuthModule,
         TypeOrmModule.forRootAsync({
             inject: [ConfigService],
             useFactory: (configService: ConfigService) =>
