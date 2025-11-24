@@ -1,44 +1,54 @@
 'use client'
 
+import { zodResolver } from '@hookform/resolvers/zod'
 import Link from 'next/link'
 import { useState } from 'react'
+import { useForm } from 'react-hook-form'
+import { z } from 'zod'
 
 import { useAuth } from '@/components/providers'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
+import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
+
+const registerSchema = z
+    .object({
+        username: z.string().min(2, 'Username must be at least 2 characters'),
+        email: z.string().email('Invalid email address').optional().or(z.literal('')),
+        password: z.string().min(6, 'Password must be at least 6 characters'),
+        confirmPassword: z.string(),
+    })
+    .refine(data => data.password === data.confirmPassword, {
+        message: "Passwords don't match",
+        path: ['confirmPassword'],
+    })
+
+type RegisterFormValues = z.infer<typeof registerSchema>
 
 export default function RegisterPage() {
     const { register } = useAuth()
-    const [formData, setFormData] = useState({
-        username: '',
-        password: '',
-        confirmPassword: '',
-        email: '',
-    })
     const [error, setError] = useState('')
     const [loading, setLoading] = useState(false)
 
-    const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-        setFormData({ ...formData, [e.target.id]: e.target.value })
-    }
+    const form = useForm<RegisterFormValues>({
+        resolver: zodResolver(registerSchema),
+        defaultValues: {
+            username: '',
+            email: '',
+            password: '',
+            confirmPassword: '',
+        },
+    })
 
-    const handleSubmit = async (e: React.FormEvent) => {
-        e.preventDefault()
+    const onSubmit = async (data: RegisterFormValues) => {
         setError('')
-
-        if (formData.password !== formData.confirmPassword) {
-            setError("Passwords don't match")
-            return
-        }
-
         setLoading(true)
 
         try {
             // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            const { confirmPassword, ...data } = formData
-            await register(data)
+            const { confirmPassword, ...registerData } = data
+            await register(registerData)
         } catch (err: unknown) {
             setError((err as Error).message || 'Registration failed')
         } finally {
@@ -47,66 +57,54 @@ export default function RegisterPage() {
     }
 
     return (
-        <div className="flex min-h-screen w-full items-center justify-center bg-gray-100 dark:bg-gray-900">
-            <Card className="w-full max-w-md">
-                <CardHeader>
-                    <CardTitle className="text-2xl font-bold">Register</CardTitle>
-                    <CardDescription>Create a new account to access the monitor.</CardDescription>
-                </CardHeader>
-                <form onSubmit={handleSubmit}>
-                    <CardContent className="space-y-4">
-                        {error && <div className="text-destructive text-sm font-medium">{error}</div>}
-                        <div className="space-y-2">
-                            <Label htmlFor="username">Username</Label>
-                            <Input
-                                id="username"
-                                type="text"
-                                placeholder="Choose a username"
-                                value={formData.username}
-                                onChange={handleChange}
-                                required
-                            />
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="email">Email (Optional)</Label>
-                            <Input id="email" type="email" placeholder="Enter your email" value={formData.email} onChange={handleChange} />
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="password">Password</Label>
-                            <Input
-                                id="password"
-                                type="password"
-                                placeholder="Choose a password"
-                                value={formData.password}
-                                onChange={handleChange}
-                                required
-                            />
-                        </div>
-                        <div className="space-y-2">
-                            <Label htmlFor="confirmPassword">Confirm Password</Label>
-                            <Input
-                                id="confirmPassword"
-                                type="password"
-                                placeholder="Confirm your password"
-                                value={formData.confirmPassword}
-                                onChange={handleChange}
-                                required
-                            />
-                        </div>
+        <div className="relative h-screen w-full bg-black">
+            <div className="absolute left-8 top-8 text-2xl font-bold text-white">CONDEV-MONITOR</div>
+            <div className="flex h-screen w-full items-center justify-center">
+                <Card className="w-full max-w-md">
+                    <CardHeader>
+                        <CardTitle className="text-2xl font-bold">Register</CardTitle>
+                        <CardDescription>Create a new account to get started</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                        {error && (
+                            <div className="mb-4 rounded bg-red-100 p-2 text-red-600 dark:bg-red-900/30 dark:text-red-400">{error}</div>
+                        )}
+                        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+                            <Field>
+                                <FieldLabel>Username</FieldLabel>
+                                <Input placeholder="Enter your username" {...form.register('username')} />
+                                <FieldError errors={[form.formState.errors.username]} />
+                            </Field>
+                            <Field>
+                                <FieldLabel>Email (Optional)</FieldLabel>
+                                <Input type="email" placeholder="Enter your email" {...form.register('email')} />
+                                <FieldError errors={[form.formState.errors.email]} />
+                            </Field>
+                            <Field>
+                                <FieldLabel>Password</FieldLabel>
+                                <Input type="password" placeholder="Enter your password" {...form.register('password')} />
+                                <FieldError errors={[form.formState.errors.password]} />
+                            </Field>
+                            <Field>
+                                <FieldLabel>Confirm Password</FieldLabel>
+                                <Input type="password" placeholder="Confirm your password" {...form.register('confirmPassword')} />
+                                <FieldError errors={[form.formState.errors.confirmPassword]} />
+                            </Field>
+                            <Button type="submit" className="w-full" disabled={loading}>
+                                {loading ? 'Creating account...' : 'Register'}
+                            </Button>
+                        </form>
                     </CardContent>
-                    <CardFooter className="flex flex-col space-y-4">
-                        <Button type="submit" className="w-full" disabled={loading}>
-                            {loading ? 'Creating account...' : 'Register'}
-                        </Button>
-                        <div className="text-center text-sm">
+                    <CardFooter className="flex justify-center">
+                        <p className="text-sm text-gray-500 dark:text-gray-400">
                             Already have an account?{' '}
-                            <Link href="/login" className="text-primary hover:underline">
+                            <Link href="/login" className="font-medium text-blue-600 hover:underline dark:text-blue-400">
                                 Login
                             </Link>
-                        </div>
+                        </p>
                     </CardFooter>
-                </form>
-            </Card>
+                </Card>
+            </div>
         </div>
     )
 }

@@ -5,6 +5,7 @@ import Link from 'next/link'
 import { useTheme } from 'next-themes'
 import React from 'react'
 
+import { useAuth } from '@/components/providers'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
 import {
     DropdownMenu,
@@ -20,6 +21,7 @@ import { SidebarTrigger } from './ui/sidebar'
 
 const Navbar = () => {
     const { setTheme } = useTheme()
+    const { user, logout } = useAuth()
 
     return (
         <nav className="flex justify-between items-center p-4">
@@ -46,12 +48,12 @@ const Navbar = () => {
                 <DropdownMenu>
                     <DropdownMenuTrigger>
                         <Avatar>
-                            <AvatarImage src="https://github.com/shadcn.png" />
-                            <AvatarFallback>CN</AvatarFallback>
+                            <AvatarImage src="" />
+                            <AvatarFallback>{user?.username?.[0]?.toUpperCase() || 'U'}</AvatarFallback>
                         </Avatar>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent sideOffset={10}>
-                        <DropdownMenuLabel>My Account</DropdownMenuLabel>
+                        <DropdownMenuLabel>{user?.username || 'My Account'}</DropdownMenuLabel>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem>
                             <User className="h-[1.2rem] w-[1.2rem] mr-2" />
@@ -61,7 +63,7 @@ const Navbar = () => {
                             <Settings className="h-[1.2rem] w-[1.2rem] mr-2" />
                             Settings
                         </DropdownMenuItem>
-                        <DropdownMenuItem variant="destructive">
+                        <DropdownMenuItem variant="destructive" onClick={() => logout()}>
                             <LogOut className="h-[1.2rem] w-[1.2rem] mr-2" />
                             Logout
                         </DropdownMenuItem>

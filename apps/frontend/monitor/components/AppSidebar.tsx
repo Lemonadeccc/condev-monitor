@@ -4,6 +4,8 @@ import Image from 'next/image'
 import Link from 'next/link'
 import React from 'react'
 
+import { useAuth } from '@/components/providers'
+
 import {
     Sidebar,
     SidebarContent,
@@ -58,6 +60,7 @@ const items = [
 ]
 
 const AppSidebar = () => {
+    const { user, logout } = useAuth()
     return (
         <Sidebar collapsible="icon">
             <SidebarHeader className="py-4">
@@ -106,7 +109,7 @@ const AppSidebar = () => {
                             <DropdownMenuTrigger asChild>
                                 <SidebarMenuButton>
                                     <User2 />
-                                    Test
+                                    {user?.username || 'User'}
                                     <ChevronUp className="ml-auto" />
                                 </SidebarMenuButton>
                             </DropdownMenuTrigger>
@@ -114,7 +117,7 @@ const AppSidebar = () => {
                             <DropdownMenuContent align="end">
                                 <DropdownMenuItem>Account</DropdownMenuItem>
                                 <DropdownMenuItem>Setting</DropdownMenuItem>
-                                <DropdownMenuItem>Sign out</DropdownMenuItem>
+                                <DropdownMenuItem onClick={() => logout()}>Sign out</DropdownMenuItem>
                             </DropdownMenuContent>
                         </DropdownMenu>
                     </SidebarMenuItem>

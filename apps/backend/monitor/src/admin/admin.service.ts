@@ -25,6 +25,16 @@ export class AdminService {
         if (adminIsExist) {
             throw new HttpException({ message: 'user is existed', error: 'user is existed' }, 400)
         }
+
+        if (body.email) {
+            const emailIsExist = await this.adminRepository.findOne({
+                where: { email: body.email },
+            })
+            if (emailIsExist) {
+                throw new HttpException({ message: 'email is existed', error: 'email is existed' }, 400)
+            }
+        }
+
         const admin = await this.adminRepository.create(body)
         await this.adminRepository.save(admin)
         return admin
