@@ -29,4 +29,8 @@ export class AdminService {
         await this.adminRepository.save(admin)
         return admin
     }
+
+    async findOne(username: string): Promise<any> {
+        return this.adminRepository.findOne({ where: { username } })
+    }
 }

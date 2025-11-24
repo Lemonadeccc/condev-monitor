@@ -9,14 +9,14 @@ import { jwtConstants } from './constants'
 export class JwtStrategy extends PassportStrategy(Strategy) {
     constructor(private readonly adminService: AdminService) {
         super({
-            jwtFromRequest: ExtractJwt.fromHeader('token'),
+            jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
             ignoreExpiration: false,
             secretOrKey: jwtConstants.secret,
         })
     }
 
     async validate(payload: any) {
-        const user = await this.adminService.validateUser(payload.username, payload.password)
+        const user = await this.adminService.findOne(payload.username)
         return user
     }
 }

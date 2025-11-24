@@ -116,3 +116,4 @@ apps/backend/monitor/prisma/client/
 
 .devcontainer/data
 .devcontainer/postgressql_data
+.devcontainer/postgresql_data
