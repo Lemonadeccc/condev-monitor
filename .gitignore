@@ -111,3 +111,8 @@ next-env.d.ts
 !/apps/backend/monitor/src/common/
 
 /apps/backend/monitor/generated/prisma
+/apps/backend/monitor/data/
+apps/backend/monitor/prisma/client/
+
+.devcontainer/data
+.devcontainer/postgressql_data

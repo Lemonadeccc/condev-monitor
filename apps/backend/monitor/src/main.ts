@@ -29,6 +29,8 @@ async function bootstrap() {
     // const prefix = configService.get('PREFIX', '/api')
     // app.setGlobalPrefix(prefix)
 
+    app.setGlobalPrefix('api')
+
     const errorFilterFlag = configService.get<string>('ERROR_FILTER')
     if (errorFilterFlag) {
         const httpAdapter = app.get(HttpAdapterHost)
@@ -37,6 +39,6 @@ async function bootstrap() {
     // const configService = app.get(ConfigService)
     // const port = configService.get<number>('PORT', 3000)
     // await app.listen(port)
-    await app.listen(3000)
+    await app.listen(8091)
 }
 bootstrap()
