@@ -10,7 +10,7 @@ const nextConfig: NextConfig = {
             },
             {
                 source: '/dsn-api/:path*',
-                destination: 'http://localhost:9001/dsn-api/:path*',
+                destination: 'http://localhost:8000/dsn-api/:path*',
             },
         ]
     },

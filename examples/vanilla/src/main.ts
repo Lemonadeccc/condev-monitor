@@ -9,10 +9,12 @@ import typescriptLogo from './typescript.svg'
 
 init({
     // dsn: 'http://localhost:8000/appid-xxx',
-    dsn: 'http://localhost:8000/vanilla28R8is/tracing',
+    dsn: 'http://localhost:8000/tracing/vanilla28R8is',
 })
 
-// myFn()
+myFn()
+
+Promise.reject('test')
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div>
