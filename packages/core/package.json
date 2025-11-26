@@ -27,9 +27,5 @@
     "keywords": [],
     "author": "",
     "license": "ISC",
-    "description": "",
-    "dependencies": {
-        "@condev-monitor/monitor-sdk-core": "workspace:*",
-        "@condev-monitor/monitor-sdk-browser-utils": "workspace:*"
-    }
+    "description": ""
 }

@@ -11,6 +11,15 @@
         "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
         "cf-typegen": "wrangler types --env-interface CloudflareEnv ./cloudflare-env.d.ts"
     },
+    "turbo": {
+        "pipeline": {
+            "build": {
+                "outputs": [
+                    ".next/**"
+                ]
+            }
+        }
+    },
     "dependencies": {
         "@hookform/resolvers": "^5.2.2",
         "@opennextjs/cloudflare": "^1.11.0",

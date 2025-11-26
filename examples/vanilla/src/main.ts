@@ -12,9 +12,9 @@ init({
     dsn: 'http://localhost:8000/tracing/vanilla28R8is',
 })
 
-myFn()
+// myFn()
 
-Promise.reject('test')
+// Promise.reject('test')
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
   <div>

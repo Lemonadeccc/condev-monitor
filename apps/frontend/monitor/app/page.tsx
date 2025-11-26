@@ -10,10 +10,12 @@ import type { Application, ApplicationListResponse } from '@/types/application'
 export default function Home() {
     const { data } = useQuery<ApplicationListResponse>({
         queryKey: ['applications'],
-        queryFn: async () => {
+        queryFn: async (): Promise<ApplicationListResponse> => {
             const res = await fetch('/api/application', { method: 'GET' })
-            const data = await res.json()
-            return data
+            if (!res.ok) {
+                throw new Error('Failed to load applications')
+            }
+            return (await res.json()) as ApplicationListResponse
         },
     })
 

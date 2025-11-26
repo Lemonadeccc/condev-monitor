@@ -1,0 +1,24 @@
+{
+    "$schema": "http://turbo.build/schema.json",
+    "tasks": {
+        "build:watch": {
+            "cache": false,
+            "persistent": true
+        },
+        "build": {
+            "dependsOn": ["^build"],
+            "outputs": ["dist/**", "apps/frontend/monitor/.next/**"]
+        },
+        "dev": {
+            "cache": false,
+            "persistent": true
+        },
+        "start:dev": {
+            "dependsOn": ["^start:dev"],
+            "cache": false,
+            "persistent": true
+        }
+    },
+    "ui": "tui",
+    "cacheDir": ".turbo/cache"
+}
