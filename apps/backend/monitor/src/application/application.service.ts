@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { Injectable, NotFoundException } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 
@@ -16,18 +16,43 @@ export class ApplicationService {
         return application
     }
 
-    async list() {
-        const params = { id: 1 } //cookie获取用户id
-        const [data, count] = await this.applicationRepository.findAndCount({
-            where: {
-                user: {
-                    id: params.id,
-                },
-            },
+    async update(payload: { id: number; type?: string; name?: string; description?: string }) {
+        const application = await this.applicationRepository.findOne({
+            where: { id: payload.id },
         })
+
+        if (!application) {
+            throw new Error('Application not found')
+        }
+
+        if (payload.type !== undefined) application.type = payload.type as any
+        if (payload.name !== undefined) application.name = payload.name
+        if (payload.description !== undefined) application.description = payload.description
+
+        application.updatedAt = new Date()
+
+        await this.applicationRepository.save(application)
+        return application
+    }
+
+    async list(params: { userId: number }) {
+        const [data, count] = await this.applicationRepository.findAndCount({
+            where: { user: { id: params.userId } },
+        })
+
         return {
-            application: data,
+            applications: data,
             count,
         }
+    }
+
+    async delete(payload: { appId: string; userId: number }) {
+        const res = await this.applicationRepository.delete({ appId: payload.appId, user: { id: payload.userId } })
+
+        if (res.affected === 0) {
+            return new NotFoundException('Application not found')
+        }
+
+        return res.raw[0]
     }
 }

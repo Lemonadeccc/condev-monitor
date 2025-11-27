@@ -1,34 +1,44 @@
-import { Body, Controller, Get, Post } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Post, Put, Request, UseGuards } from '@nestjs/common'
+import { AuthGuard } from '@nestjs/passport'
+import { nanoid } from 'nanoid'
 
-import { AdminEntity } from '../admin/admin.entity'
-import { Serialize } from '../common/decorators/serialize.decorator'
+import { AdminEntity } from '../admin/entity/admin.entity'
 import { ApplicationService } from './application.service'
-import { ApplicationListResponseDto, ApplicationResponseDto, CreateApplicationDto } from './dto'
+import { CreateApplicationDto, UpdateApplicationDto } from './dto'
+import { DeleteApplicationDto } from './dto/delete-application.dto'
 import { ApplicationEntity } from './entity/application.entity'
 
 @Controller('/application')
+@UseGuards(AuthGuard('jwt'))
 export class ApplicationController {
     constructor(private readonly applicationService: ApplicationService) {}
 
-    @Get()
-    @Serialize(ApplicationListResponseDto, true)
-    list() {
-        return this.applicationService.list()
-    }
-
     @Post()
-    @Serialize(ApplicationResponseDto, true)
-    create(@Body() body: CreateApplicationDto) {
-        const application = new ApplicationEntity(body)
+    async create(@Body() body: CreateApplicationDto, @Request() req) {
         const admin = new AdminEntity()
-        admin.id = 1 // 人为写的，后面id要从cookie获取
-        application.appId = Math.random().toString(36).substring(2)
-        const res = this.applicationService.create({ ...application, user: admin })
-        return res
+        admin.id = req.user.id
+        const application = new ApplicationEntity(body)
+        application.appId = application.type + nanoid(6)
+
+        const newUser = await this.applicationService.create({ ...application, user: admin })
+        return { data: newUser, success: true }
     }
 
-    @Get('hello')
-    getHello() {
-        return { message: 'Hello World!' }
+    @Put()
+    async update(@Body() body: UpdateApplicationDto) {
+        const updatedApplication = await this.applicationService.update(body)
+        return { data: updatedApplication, success: true }
+    }
+
+    @Get()
+    async list(@Request() req) {
+        const list = await this.applicationService.list({ userId: req.user.id })
+        return { data: list, success: true }
+    }
+
+    @Delete()
+    async delete(@Body() body: DeleteApplicationDto, @Request() req) {
+        const newUser = await this.applicationService.delete({ appId: body.appId, userId: req.user.id })
+        return { data: newUser, success: true }
     }
 }

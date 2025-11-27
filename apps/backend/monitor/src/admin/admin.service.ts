@@ -3,8 +3,8 @@ import { InjectRepository } from '@nestjs/typeorm'
 import { hash, verify } from 'argon2'
 import { Repository } from 'typeorm'
 
-import { AdminEntity } from './admin.entity'
 import { RegisterDto } from './dto'
+import { AdminEntity } from './entity/admin.entity'
 
 @Injectable()
 export class AdminService {

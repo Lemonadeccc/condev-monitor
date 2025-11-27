@@ -1,7 +1,7 @@
 import { IsEnum, IsNotEmpty, IsOptional, IsString, Length } from 'class-validator'
 import { Column, Entity, ManyToOne, PrimaryGeneratedColumn } from 'typeorm'
 
-import { AdminEntity } from '../../admin/admin.entity'
+import { AdminEntity } from '../../admin/entity/admin.entity'
 
 @Entity('application')
 export class ApplicationEntity {

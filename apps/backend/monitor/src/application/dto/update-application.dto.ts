@@ -1,8 +1,12 @@
-import { IsEnum, IsOptional, IsString, Length } from 'class-validator'
+import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Length } from 'class-validator'
 
 import { ApplicationType } from './create-application.dto'
 
 export class UpdateApplicationDto {
+    @IsNotEmpty({ message: 'ID is required' })
+    @IsNumber({}, { message: 'ID must be a number' })
+    id: number
+
     @IsOptional()
     @IsEnum(ApplicationType, { message: 'Type must be one of: vanilla, react, vue' })
     type?: ApplicationType
