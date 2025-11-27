@@ -13,8 +13,8 @@ import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 
 const loginSchema = z.object({
-    username: z.string().min(1, 'Username is required'),
-    password: z.string().min(1, 'Password is required'),
+    username: z.string().min(1, 'Username is required').max(20, 'Username is too long'),
+    password: z.string().min(1, 'Password is required').max(50, 'Password is too long'),
 })
 
 type LoginFormValues = z.infer<typeof loginSchema>
