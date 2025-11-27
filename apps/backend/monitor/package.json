@@ -30,6 +30,7 @@
         "@nestjs/passport": "^11.0.5",
         "@nestjs/platform-express": "^11.1.9",
         "@nestjs/typeorm": "^11.0.0",
+        "argon2": "^0.44.0",
         "cache-manager": "^7.2.5",
         "dotenv": "^17.2.3",
         "handlebars": "^4.7.8",
