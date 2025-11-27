@@ -2,9 +2,9 @@ import { Body, Controller, Get, Post } from '@nestjs/common'
 
 import { AdminEntity } from '../admin/admin.entity'
 import { Serialize } from '../common/decorators/serialize.decorator'
-import { ApplicationEntity } from './application.entity'
 import { ApplicationService } from './application.service'
 import { ApplicationListResponseDto, ApplicationResponseDto, CreateApplicationDto } from './dto'
+import { ApplicationEntity } from './entity/application.entity'
 
 @Controller('/application')
 export class ApplicationController {
