@@ -1,20 +1,24 @@
 import { Body, Controller, Get, Post } from '@nestjs/common'
 
 import { AdminEntity } from '../admin/admin.entity'
+import { Serialize } from '../common/decorators/serialize.decorator'
 import { ApplicationEntity } from './application.entity'
 import { ApplicationService } from './application.service'
+import { ApplicationListResponseDto, ApplicationResponseDto, CreateApplicationDto } from './dto'
 
 @Controller('/application')
 export class ApplicationController {
     constructor(private readonly applicationService: ApplicationService) {}
 
     @Get()
+    @Serialize(ApplicationListResponseDto, true)
     list() {
         return this.applicationService.list()
     }
 
     @Post()
-    create(@Body() body) {
+    @Serialize(ApplicationResponseDto, true)
+    create(@Body() body: CreateApplicationDto) {
         const application = new ApplicationEntity(body)
         const admin = new AdminEntity()
         admin.id = 1 // 人为写的，后面id要从cookie获取

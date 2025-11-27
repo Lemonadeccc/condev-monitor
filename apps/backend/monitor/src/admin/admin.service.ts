@@ -4,6 +4,7 @@ import { hash, verify } from 'argon2'
 import { Repository } from 'typeorm'
 
 import { AdminEntity } from './admin.entity'
+import { RegisterDto } from './dto'
 
 @Injectable()
 export class AdminService {
@@ -29,7 +30,7 @@ export class AdminService {
         return admin
     }
 
-    async register(body) {
+    async register(body: RegisterDto): Promise<AdminEntity> {
         const adminIsExist = await this.adminRepository.findOne({
             where: { username: body.username },
         })
@@ -51,7 +52,9 @@ export class AdminService {
             password: await hash(body.password),
         })
         await this.adminRepository.save(admin)
-        return admin
+        // eslint-disable-next-line @typescript-eslint/no-unused-vars
+        const { password: _password, ...adminWithoutPassword } = admin
+        return adminWithoutPassword as AdminEntity
     }
 
     async findOne(username: string): Promise<any> {

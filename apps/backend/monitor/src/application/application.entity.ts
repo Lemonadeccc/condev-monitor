@@ -1,3 +1,4 @@
+import { IsEnum, IsNotEmpty, IsOptional, IsString, Length } from 'class-validator'
 import { Column, Entity, ManyToOne, PrimaryGeneratedColumn } from 'typeorm'
 
 import { AdminEntity } from '../admin/admin.entity'
@@ -22,24 +23,34 @@ export class ApplicationEntity {
      * app id
      */
     @Column({ type: 'varchar', length: 80 })
+    @IsNotEmpty({ message: 'App ID is required' })
+    @IsString({ message: 'App ID must be a string' })
+    @Length(1, 80, { message: 'App ID must be between 1 and 80 characters' })
     appId: string
 
     /**
      * type
      */
     @Column({ type: 'enum', enum: ['vanilla', 'react', 'vue'] })
+    @IsNotEmpty({ message: 'Type is required' })
+    @IsEnum(['vanilla', 'react', 'vue'], { message: 'Type must be one of: vanilla, react, vue' })
     type: 'vanilla' | 'react' | 'vue'
 
     /**
      * name
      */
     @Column({ type: 'varchar', length: 255 })
+    @IsNotEmpty({ message: 'Name is required' })
+    @IsString({ message: 'Name must be a string' })
+    @Length(1, 255, { message: 'Name must be between 1 and 255 characters' })
     name: string
 
     /**
      * description
      */
     @Column({ type: 'text', nullable: true })
+    @IsOptional()
+    @IsString({ message: 'Description must be a string' })
     description: string
 
     /**

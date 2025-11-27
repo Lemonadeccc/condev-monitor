@@ -1,3 +1,4 @@
+import { ValidationPipe } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { HttpAdapterHost, NestFactory } from '@nestjs/core'
 
@@ -10,6 +11,18 @@ async function bootstrap() {
         // logger: ['error', 'warn'],
     })
     const configService = app.get(ConfigService)
+
+    // Enable validation globally
+    app.useGlobalPipes(
+        new ValidationPipe({
+            transform: true,
+            whitelist: true,
+            forbidNonWhitelisted: true,
+            transformOptions: {
+                enableImplicitConversion: true,
+            },
+        })
+    )
 
     const cors = configService.get('CORS', true)
     if (cors === 'true') {
