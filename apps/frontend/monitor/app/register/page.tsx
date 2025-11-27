@@ -14,9 +14,20 @@ import { Input } from '@/components/ui/input'
 
 const registerSchema = z
     .object({
-        username: z.string().min(2, 'Username must be at least 2 characters'),
-        email: z.string().email('Invalid email address').optional().or(z.literal('')),
-        password: z.string().min(6, 'Password must be at least 6 characters'),
+        username: z
+            .string()
+            .min(3, 'Username must be between 3 and 20 characters')
+            .max(20, 'Username must be between 3 and 20 characters')
+            .regex(/^[a-zA-Z0-9_-]+$/, 'Username can only contain letters, numbers, underscores and hyphens'),
+        email: z.string().email('Invalid email format').optional().or(z.literal('')),
+        password: z
+            .string()
+            .min(6, 'Password must be between 6 and 50 characters')
+            .max(50, 'Password must be between 6 and 50 characters')
+            .regex(
+                /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)[^]{6,}$/,
+                'Password must contain at least one uppercase letter, one lowercase letter and one number'
+            ),
         confirmPassword: z.string(),
     })
     .refine(data => data.password === data.confirmPassword, {
@@ -47,8 +58,10 @@ export default function RegisterPage() {
 
         try {
             // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            const { confirmPassword, ...registerData } = data
-            await register(registerData)
+            const { confirmPassword, email, ...registerData } = data
+            // Only include email if it's not empty
+            const finalData = email ? { ...registerData, email } : registerData
+            await register(finalData)
         } catch (err: unknown) {
             setError((err as Error).message || 'Registration failed')
         } finally {
