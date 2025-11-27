@@ -8,8 +8,8 @@ import { setupCounter } from './counter.ts'
 import typescriptLogo from './typescript.svg'
 
 init({
-    // dsn: 'http://localhost:8000/appid-xxx',
-    dsn: 'http://localhost:8000/tracing/vanilla28R8is',
+    // dsn: 'http://localhost:8080/appid-xxx',
+    dsn: 'http://localhost:8080/tracing/vanilla28R8is',
 })
 
 // myFn()

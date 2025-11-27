@@ -6,11 +6,11 @@ const nextConfig: NextConfig = {
         return [
             {
                 source: '/api/:path*',
-                destination: 'http://localhost:8091/api/:path*',
+                destination: 'http://localhost:8081/api/:path*',
             },
             {
                 source: '/dsn-api/:path*',
-                destination: 'http://localhost:8000/dsn-api/:path*',
+                destination: 'http://localhost:8080/dsn-api/:path*',
             },
         ]
     },
