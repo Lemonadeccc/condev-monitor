@@ -2,11 +2,25 @@ import { Transport } from '@condev-monitor/monitor-sdk-core'
 
 import { onCLS, onFCP, onINP, onLCP, onTTFB } from '../metrics'
 
-export class Metrics {
-    transport: Transport
-    constructor(transport: Transport) {
-        this.transport = transport
+export const onLoad = (callback: (metric: { name: string; value: number }) => void) => {
+    const navigationEntries = performance.getEntriesByType('navigation')
+
+    if (navigationEntries.length > 0) {
+        const entry = navigationEntries[0] as PerformanceNavigationTiming
+        let loadTime = entry ? entry.loadEventEnd - entry.startTime : 10
+        if (loadTime <= 0) {
+            loadTime = performance.now()
+        }
+
+        callback({ name: 'LOAD', value: loadTime })
+    } else {
+        const loadTime = performance.now()
+        callback({ name: 'LOAD', value: loadTime })
     }
+}
+
+export class Metrics {
+    constructor(private transport: Transport) {}
 
     init() {
         ;[onCLS, onFCP, onINP, onLCP, onTTFB].forEach(metricFn => {

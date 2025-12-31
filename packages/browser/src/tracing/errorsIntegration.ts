@@ -1,5 +1,12 @@
 import { Transport } from '@condev-monitor/monitor-sdk-core'
 
+export interface OnUnhandledRejectionErrorPayload {
+    type: string
+    stack: string
+    message: string
+    path: string
+}
+
 export class Errors {
     transport: Transport
     constructor(transport: Transport) {

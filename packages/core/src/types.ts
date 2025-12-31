@@ -5,6 +5,7 @@ export interface IIntegration {
 }
 
 export class Integration implements IIntegration {
+    constructor(private callback: () => void) {}
     transport: Transport | null = null
 
     init(transport: Transport): void {

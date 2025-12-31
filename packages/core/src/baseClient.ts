@@ -16,11 +16,11 @@ export class Monitoring {
         })
     }
 
-    // reportMessage(message: string) {
-    //     this.transport?.send({ type: 'message', message })
-    // }
+    reportMessage(message: string) {
+        this.transport?.send({ type: 'message', message })
+    }
 
-    // reportEvent(event: unknown) {
-    //     this.transport?.send({ type: 'event', event })
-    // }
+    reportEvent(event: unknown) {
+        this.transport?.send({ type: 'event', event })
+    }
 }
