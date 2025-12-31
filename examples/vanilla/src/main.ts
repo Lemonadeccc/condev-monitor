@@ -7,7 +7,8 @@ import viteLogo from '/vite.svg'
 import { setupCounter } from './counter.ts'
 import typescriptLogo from './typescript.svg'
 
-const monitoring = init({
+// const monitoring =
+init({
     // dsn: 'http://localhost:8080/appid-xxx',
     dsn: 'http://localhost:8080/tracking/vanilla28R8is',
 })
@@ -15,7 +16,7 @@ const monitoring = init({
 //     monitoring.reportEvent({ type: 'click' })
 //     monitoring.reportMessage('event')
 // })
-// myFn()
+myFn()
 
 // Promise.reject('test')
 

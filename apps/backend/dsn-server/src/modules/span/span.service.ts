@@ -1,11 +1,14 @@
 import { ClickHouseClient } from '@clickhouse/client'
 import { Inject, Injectable } from '@nestjs/common'
 
+import { EmailService } from '../email/email.service'
+
 @Injectable()
 export class SpanService {
     constructor(
         @Inject('CLICKHOUSE_CLIENT')
-        private readonly clickhouseClient: ClickHouseClient
+        private readonly clickhouseClient: ClickHouseClient,
+        private readonly emailService: EmailService
     ) {}
 
     async span() {
@@ -18,13 +21,32 @@ export class SpanService {
     }
 
     async tracking(app_id: string, body: Record<string, unknown>) {
-        const { event_type, type, message, ...info } = body
+        const { event_type, message, ...info } = body
+
+        const values = {
+            app_id,
+            event_type,
+            message,
+            info,
+        }
+
+        // TODO目标邮箱更改
+        if (event_type === 'error') {
+            await this.emailService.alert({
+                to: 'zwjhb12@163.com',
+                subject: 'Error Event - Condev Monitor',
+                params: {
+                    ...body,
+                    ...values,
+                },
+            })
+        }
 
         await this.clickhouseClient.insert({
             table: 'lemonade.base_monitor_storage',
             columns: ['app_id', 'event_type', 'message', 'info'],
             format: 'JSONEachRow',
-            values: [{ app_id, event_type, message, info }],
+            values: [values],
         })
     }
 
