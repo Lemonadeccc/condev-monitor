@@ -9,12 +9,12 @@ import typescriptLogo from './typescript.svg'
 
 const monitoring = init({
     // dsn: 'http://localhost:8080/appid-xxx',
-    dsn: 'http://localhost:8080/tracing/vanilla28R8is',
+    dsn: 'http://localhost:8080/tracking/vanilla28R8is',
 })
-document.addEventListener('click', () => {
-    monitoring.reportEvent({ type: 'click' })
-    monitoring.reportMessage('event')
-})
+// document.addEventListener('click', () => {
+//     monitoring.reportEvent({ type: 'click' })
+//     monitoring.reportMessage('event')
+// })
 // myFn()
 
 // Promise.reject('test')

@@ -1,30 +1,42 @@
-version: '3'
+version: "3"
 
 services:
-    condev-monitor-clickhouse:
-        image: bitnamilegacy/clickhouse:25.3.1
-        container_name: condev-monitor-clickhouse
-        ports:
-            - 8123:8123
-            - 9000:9000
-        environment:
-            - CLICKHOUSE_USER=default
-            - CLICKHOUSE_PASSWORD=condevClickhouse
-            - CLICKHOUSE_DATABASE=default
+  # condev-monitor-clickhouse:
+  #     image: bitnamilegacy/clickhouse:25.3.1
+  #     container_name: condev-monitor-clickhouse
+  #     ports:
+  #         - 8123:8123
+  #         - 9000:9000
+  #     environment:
+  #         - CLICKHOUSE_USER=default
+  #         - CLICKHOUSE_PASSWORD=condevClickhouse
+  #         - CLICKHOUSE_DATABASE=default
+  condev-monitor-clickhouse:
+    image: clickhouse:25.10
+    container_name: condev-monitor-clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    environment:
+      - CLICKHOUSE_USER=lemonade
+      - CLICKHOUSE_PASSWORD=condevClickhouse
+      - CLICKHOUSE_DB=lemonade
+    volumes:
+      - ./clickhouse_data:/var/lib/clickhouse/
 
-    condev-monitor-postgres:
-        image: bitnamilegacy/postgresql:17.5.0
-        container_name: condev-monitor-postgres
-        ports:
-            - 5432:5432
-        environment:
-            - POSTGRES_USERNAME=postgres
-            - ALLOW_EMPTY_PASSWORD=yes
-            - POSTGRES_DATABASE=postgres
-        volumes:
-            - ./postgresql_data:/bitnami/postgresql
+  condev-monitor-postgres:
+    image: bitnamilegacy/postgresql:17.5.0
+    container_name: condev-monitor-postgres
+    ports:
+      - 5432:5432
+    environment:
+      - POSTGRES_USERNAME=postgres
+      - ALLOW_EMPTY_PASSWORD=yes
+      - POSTGRES_DATABASE=postgres
+    volumes:
+      - ./postgresql_data:/bitnami/postgresql
 
 networks:
-    default:
-        name: condev-monitor-network
-        driver: bridge
+  default:
+    name: condev-monitor-network
+    driver: bridge

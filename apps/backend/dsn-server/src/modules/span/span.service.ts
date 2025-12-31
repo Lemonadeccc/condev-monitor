@@ -10,32 +10,27 @@ export class SpanService {
 
     async span() {
         const res = await this.clickhouseClient.query({
-            query: `SELECT * FROM base_monitor_view;`,
+            query: `SELECT * FROM lemonade.base_monitor_view;`,
             format: 'JSON',
         })
         const data = await res.json()
         return data.data
     }
 
-    async tracing(appId: string, body: any) {
-        const values = {
-            app_id: appId,
-            event_type: body.event_type,
-            message: body.message,
-            info: body,
-        }
+    async tracking(app_id: string, body: Record<string, unknown>) {
+        const { event_type, type, message, ...info } = body
 
-        this.clickhouseClient.insert({
-            table: 'base_monitor_storage',
+        await this.clickhouseClient.insert({
+            table: 'lemonade.base_monitor_storage',
             columns: ['app_id', 'event_type', 'message', 'info'],
-            values,
             format: 'JSONEachRow',
+            values: [{ app_id, event_type, message, info }],
         })
     }
 
     async bugs() {
         const res = await this.clickhouseClient.query({
-            query: `SELECT * FROM base_monitor_view WHERE event_type='error';`,
+            query: `SELECT * FROM lemonade.base_monitor_view WHERE event_type='error';`,
             format: 'JSON',
         })
         const data = await res.json()

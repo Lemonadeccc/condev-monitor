@@ -11,10 +11,9 @@ export class SpanController {
         return this.spanService.span()
     }
 
-    @Post('/tracing/:appId')
-    tracing(@Body() body, @Query() Query, @Param() param) {
-        const { appId } = param
-        return this.spanService.tracing(appId, body)
+    @Post('/tracking/:app_id')
+    tracking(@Param() { app_id }: { app_id: string }, @Body() params: { event_type: string; message: string }) {
+        return this.spanService.tracking(app_id, params)
     }
 
     @Get('/bugs')
