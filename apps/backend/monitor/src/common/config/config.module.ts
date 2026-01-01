@@ -15,6 +15,9 @@ const schema = Joi.object({
     DB_DATABASE: Joi.string().default('testdb'),
     DB_AUTOLOAD: Joi.boolean().default(false),
     DB_SYNC: Joi.boolean().default(false),
+    CLICKHOUSE_URL: Joi.string().required(),
+    CLICKHOUSE_USERNAME: Joi.string().required(),
+    CLICKHOUSE_PASSWORD: Joi.string().allow('').required(),
 })
 
 @Module({

@@ -49,15 +49,17 @@ const Navbar = () => {
                     <DropdownMenuTrigger>
                         <Avatar>
                             <AvatarImage src="" />
-                            <AvatarFallback>{user?.username?.[0]?.toUpperCase() || 'U'}</AvatarFallback>
+                            <AvatarFallback>{user?.email?.[0]?.toUpperCase() || 'U'}</AvatarFallback>
                         </Avatar>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent sideOffset={10}>
-                        <DropdownMenuLabel>{user?.username || 'My Account'}</DropdownMenuLabel>
+                        <DropdownMenuLabel>{user?.email || 'My Account'}</DropdownMenuLabel>
                         <DropdownMenuSeparator />
-                        <DropdownMenuItem>
-                            <User className="h-[1.2rem] w-[1.2rem] mr-2" />
-                            Profile
+                        <DropdownMenuItem asChild>
+                            <Link href="/profile">
+                                <User className="h-[1.2rem] w-[1.2rem] mr-2" />
+                                Profile
+                            </Link>
                         </DropdownMenuItem>
                         <DropdownMenuItem>
                             <Settings className="h-[1.2rem] w-[1.2rem] mr-2" />

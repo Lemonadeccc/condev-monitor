@@ -9,7 +9,7 @@ import { SidebarProvider } from '@/components/ui/sidebar'
 
 export function ClientLayout({ children, defaultOpen }: { children: React.ReactNode; defaultOpen: boolean }) {
     const pathname = usePathname()
-    const isPublic = ['/login', '/register'].includes(pathname)
+    const isPublic = ['/login', '/register', '/forgot-password', '/reset-password', '/confirm-email', '/verify-email'].includes(pathname)
 
     if (isPublic) {
         return <AuthProvider>{children}</AuthProvider>

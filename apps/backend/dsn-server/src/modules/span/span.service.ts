@@ -20,11 +20,11 @@ export class SpanService {
         return data.data
     }
 
-    async tracking(app_id: string, body: Record<string, unknown>) {
+    async tracking(appId: string, body: Record<string, unknown>) {
         const { event_type, message, ...info } = body
 
         const values = {
-            app_id,
+            app_id: appId,
             event_type,
             message,
             info,

@@ -1,1 +1,7 @@
 export * from './current-user-response.dto'
+export * from './forgot-password.dto'
+export * from './reset-password.dto'
+export * from './change-email-request.dto'
+export * from './change-email-confirm.dto'
+export * from './verify-reset-password.dto'
+export * from './verify-email.dto'

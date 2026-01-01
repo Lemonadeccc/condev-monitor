@@ -109,13 +109,15 @@ const AppSidebar = () => {
                             <DropdownMenuTrigger asChild>
                                 <SidebarMenuButton>
                                     <User2 />
-                                    {user?.username || 'User'}
+                                    {user?.email || 'User'}
                                     <ChevronUp className="ml-auto" />
                                 </SidebarMenuButton>
                             </DropdownMenuTrigger>
 
                             <DropdownMenuContent align="end">
-                                <DropdownMenuItem>Account</DropdownMenuItem>
+                                <DropdownMenuItem asChild>
+                                    <Link href="/profile">Account</Link>
+                                </DropdownMenuItem>
                                 <DropdownMenuItem>Setting</DropdownMenuItem>
                                 <DropdownMenuItem onClick={() => logout()}>Sign out</DropdownMenuItem>
                             </DropdownMenuContent>

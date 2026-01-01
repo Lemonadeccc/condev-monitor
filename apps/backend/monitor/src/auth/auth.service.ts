@@ -1,5 +1,7 @@
 import { Injectable } from '@nestjs/common'
 import { JwtService } from '@nestjs/jwt'
+import { MailerService } from '@nestjs-modules/mailer'
+import { hash } from 'argon2'
 
 import { AdminService } from '../admin/admin.service'
 
@@ -7,11 +9,12 @@ import { AdminService } from '../admin/admin.service'
 export class AuthService {
     constructor(
         private readonly jwtService: JwtService,
-        private readonly adminService: AdminService
+        private readonly adminService: AdminService,
+        private readonly mailerService: MailerService
     ) {}
 
-    async validateUser(username: string, pass: string): Promise<any> {
-        const admin = await this.adminService.validateUser(username, pass)
+    async validateUser(email: string, pass: string): Promise<any> {
+        const admin = await this.adminService.validateUser(email, pass)
         if (admin) {
             // eslint-disable-next-line @typescript-eslint/no-unused-vars
             const { password, ...result } = admin
@@ -21,10 +24,111 @@ export class AuthService {
     }
 
     async login(user: any): Promise<any> {
-        const payload = { username: user.username, sub: user.id }
+        const payload = { sub: user.id, email: user.email, tokenType: 'access' }
         return {
             access_token: this.jwtService.sign(payload),
         }
+    }
+
+    async forgotPassword(email: string): Promise<{ success: boolean }> {
+        const user = await this.adminService.findOneByEmail(email)
+        if (!user) return { success: true }
+
+        const token = this.jwtService.sign(
+            { sub: user.id, tokenType: 'reset' },
+            {
+                expiresIn: '15m',
+            }
+        )
+
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
+        const resetUrl = `${frontendUrl}/reset-password?token=${encodeURIComponent(token)}`
+
+        try {
+            await this.mailerService.sendMail({
+                to: user.email,
+                subject: 'Reset your password',
+                template: 'reset-password',
+                context: {
+                    resetUrl,
+                    expiresInMinutes: 15,
+                },
+            })
+        } catch (error) {
+            // Avoid leaking whether a user exists; also keep endpoint from 500'ing on SMTP issues.
+            // eslint-disable-next-line no-console
+            console.error('Failed to send reset password email', error)
+        }
+
+        return { success: true }
+    }
+
+    async resetPassword(token: string, password: string): Promise<{ success: boolean }> {
+        const payload = this.jwtService.verify(token) as { sub?: number; tokenType?: string }
+        if (!payload?.sub || payload.tokenType !== 'reset') {
+            return { success: false }
+        }
+
+        const user = await this.adminService.findOneById(payload.sub)
+        if (!user) return { success: false }
+
+        await this.adminService.updatePassword({ id: user.id, passwordHash: await hash(password) })
+        return { success: true }
+    }
+
+    async verifyResetPasswordToken(token: string): Promise<{ success: boolean; email?: string }> {
+        const payload = this.jwtService.verify(token) as { sub?: number; tokenType?: string }
+        if (!payload?.sub || payload.tokenType !== 'reset') {
+            return { success: false }
+        }
+
+        const user = await this.adminService.findOneById(payload.sub)
+        if (!user) return { success: false }
+
+        return { success: true, email: user.email }
+    }
+
+    async verifyEmail(token: string): Promise<{ success: boolean }> {
+        const payload = this.jwtService.verify(token) as { sub?: number; tokenType?: string }
+        if (!payload?.sub || payload.tokenType !== 'verify-email') {
+            return { success: false }
+        }
+        await this.adminService.verifyEmail(payload.sub)
+        return { success: true }
+    }
+
+    async requestEmailChange(userId: number, newEmail: string): Promise<{ success: boolean }> {
+        const token = this.jwtService.sign(
+            { sub: userId, tokenType: 'email-change', newEmail },
+            {
+                expiresIn: '15m',
+            }
+        )
+
+        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
+        const confirmUrl = `${frontendUrl}/confirm-email?token=${encodeURIComponent(token)}`
+
+        await this.mailerService.sendMail({
+            to: newEmail,
+            subject: 'Confirm your email change',
+            template: 'update-email',
+            context: {
+                confirmUrl,
+                expiresInMinutes: 15,
+            },
+        })
+
+        return { success: true }
+    }
+
+    async confirmEmailChange(token: string): Promise<{ success: boolean }> {
+        const payload = this.jwtService.verify(token) as { sub?: number; tokenType?: string; newEmail?: string }
+        if (!payload?.sub || payload.tokenType !== 'email-change' || !payload.newEmail) {
+            return { success: false }
+        }
+
+        await this.adminService.updateProfile({ id: payload.sub, email: payload.newEmail })
+        return { success: true }
     }
 
     async logout(/* user: any */): Promise<any> {

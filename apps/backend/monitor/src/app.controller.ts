@@ -65,11 +65,10 @@ export class AppController {
                 to: 'zwjhb12@163.com',
                 from: process.env.EMAIL_SENDER,
                 subject: 'MONITOR WARNING',
-                template: 'welcome', // The `.pug`, `.ejs` or `.hbs` extension is appended automatically.
+                template: 'index', // The `.pug`, `.ejs` or `.hbs` extension is appended automatically.
                 context: {
                     // Data to be sent to template engine.
-                    code: 'cf1a3f828287',
-                    name: 'john doe',
+                    text: '事务告警：请尽快处理。',
                 },
             })
             .then(() => {})

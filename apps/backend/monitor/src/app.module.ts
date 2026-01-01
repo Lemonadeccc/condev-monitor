@@ -8,6 +8,7 @@ import { AppController } from './app.controller'
 import { AppService } from './app.service'
 import { ApplicationModule } from './application/application.module'
 import { AuthModule } from './auth/auth.module'
+import { ClickhouseModule } from './common/clickhouse/clickhouse.module'
 import { ConfigModule } from './common/config/config.module'
 import { LogsModule } from './common/logger/logs.module'
 import { MailModule } from './common/mail/mail.module'
@@ -25,6 +26,7 @@ import { MailModule } from './common/mail/mail.module'
         ApplicationModule,
         AdminModule,
         AuthModule,
+        ClickhouseModule,
         TypeOrmModule.forRootAsync({
             inject: [ConfigService],
             useFactory: (configService: ConfigService) =>
@@ -33,7 +35,7 @@ import { MailModule } from './common/mail/mail.module'
                     host: configService.get('DB_HOST'),
                     port: configService.get('DB_PORT'),
                     username: configService.get('DB_USERNAME'),
-                    // password: configService.get('DB_PASSWORD'),
+                    password: configService.get('DB_PASSWORD'),
                     database: configService.get('DB_DATABASE'),
                     autoLoadEntities: Boolean(configService.get('DB_AUTOLOAD')) || false,
                     synchronize: Boolean(configService.get('DB_SYNC')) || false,

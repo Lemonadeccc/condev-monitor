@@ -6,40 +6,46 @@ import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 
-import { useAuth } from '@/components/providers'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 
-const loginSchema = z.object({
+const schema = z.object({
     email: z.string().min(1, 'Email is required').email('Invalid email format'),
-    password: z.string().min(1, 'Password is required').max(50, 'Password is too long'),
 })
 
-type LoginFormValues = z.infer<typeof loginSchema>
+type FormValues = z.infer<typeof schema>
 
-export default function LoginPage() {
-    const { login } = useAuth()
+export default function ForgotPasswordPage() {
     const [error, setError] = useState('')
+    const [success, setSuccess] = useState('')
     const [loading, setLoading] = useState(false)
 
-    const form = useForm<LoginFormValues>({
-        resolver: zodResolver(loginSchema),
-        defaultValues: {
-            email: '',
-            password: '',
-        },
+    const form = useForm<FormValues>({
+        resolver: zodResolver(schema),
+        defaultValues: { email: '' },
     })
 
-    const onSubmit = async (data: LoginFormValues) => {
+    const onSubmit = async (data: FormValues) => {
         setError('')
+        setSuccess('')
         setLoading(true)
-
         try {
-            await login(data)
+            const res = await fetch('/api/auth/forgot-password', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            })
+
+            if (!res.ok) {
+                const body = (await res.json()) as { message?: string }
+                throw new Error(body.message || 'Request failed')
+            }
+
+            setSuccess('If the email exists, a reset link has been sent.')
         } catch (err: unknown) {
-            setError((err as Error).message || 'Login failed')
+            setError((err as Error).message || 'Request failed')
         } finally {
             setLoading(false)
         }
@@ -51,12 +57,17 @@ export default function LoginPage() {
             <div className="flex h-screen w-full items-center justify-center">
                 <Card className="w-full max-w-md">
                     <CardHeader>
-                        <CardTitle className="text-2xl font-bold">Login</CardTitle>
-                        <CardDescription>Enter your credentials to access your account</CardDescription>
+                        <CardTitle className="text-2xl font-bold">Forgot password</CardTitle>
+                        <CardDescription>Enter your email to receive a reset link</CardDescription>
                     </CardHeader>
                     <CardContent>
                         {error && (
                             <div className="mb-4 rounded bg-red-100 p-2 text-red-600 dark:bg-red-900/30 dark:text-red-400">{error}</div>
+                        )}
+                        {success && (
+                            <div className="mb-4 rounded bg-green-100 p-2 text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                                {success}
+                            </div>
                         )}
                         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
                             <Field>
@@ -64,28 +75,15 @@ export default function LoginPage() {
                                 <Input type="email" placeholder="Enter your email" {...form.register('email')} />
                                 <FieldError errors={[form.formState.errors.email]} />
                             </Field>
-                            <Field>
-                                <FieldLabel>Password</FieldLabel>
-                                <Input type="password" placeholder="Enter your password" {...form.register('password')} />
-                                <FieldError errors={[form.formState.errors.password]} />
-                            </Field>
                             <Button type="submit" className="w-full" disabled={loading}>
-                                {loading ? 'Logging in...' : 'Login'}
+                                {loading ? 'Sending...' : 'Send reset link'}
                             </Button>
                         </form>
                     </CardContent>
                     <CardFooter className="flex justify-center">
-                        <div className="flex w-full justify-between text-sm text-gray-500 dark:text-gray-400">
-                            <Link href="/forgot-password" className="font-medium text-blue-600 hover:underline dark:text-blue-400">
-                                Forgot password?
-                            </Link>
-                            <span>
-                                Don&apos;t have an account?{' '}
-                                <Link href="/register" className="font-medium text-blue-600 hover:underline dark:text-blue-400">
-                                    Register
-                                </Link>
-                            </span>
-                        </div>
+                        <Link href="/login" className="text-sm font-medium text-blue-600 hover:underline dark:text-blue-400">
+                            Back to login
+                        </Link>
                     </CardFooter>
                 </Card>
             </div>

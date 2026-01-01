@@ -54,6 +54,12 @@ export class ApplicationEntity {
     description: string
 
     /**
+     * is delete
+     */
+    @Column({ default: false })
+    isDelete: boolean
+
+    /**
      * create time
      */
     @Column({ nullable: true, default: () => 'CURRENT_TIMESTAMP' })

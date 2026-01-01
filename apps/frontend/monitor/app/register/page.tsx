@@ -14,12 +14,7 @@ import { Input } from '@/components/ui/input'
 
 const registerSchema = z
     .object({
-        username: z
-            .string()
-            .min(3, 'Username must be between 3 and 20 characters')
-            .max(20, 'Username must be between 3 and 20 characters')
-            .regex(/^[a-zA-Z0-9_-]+$/, 'Username can only contain letters, numbers, underscores and hyphens'),
-        email: z.string().email('Invalid email format').optional().or(z.literal('')),
+        email: z.string().min(1, 'Email is required').email('Invalid email format'),
         password: z
             .string()
             .min(6, 'Password must be between 6 and 50 characters')
@@ -45,7 +40,6 @@ export default function RegisterPage() {
     const form = useForm<RegisterFormValues>({
         resolver: zodResolver(registerSchema),
         defaultValues: {
-            username: '',
             email: '',
             password: '',
             confirmPassword: '',
@@ -58,10 +52,8 @@ export default function RegisterPage() {
 
         try {
             // eslint-disable-next-line @typescript-eslint/no-unused-vars
-            const { confirmPassword, email, ...registerData } = data
-            // Only include email if it's not empty
-            const finalData = email ? { ...registerData, email } : registerData
-            await register(finalData)
+            const { confirmPassword, ...registerData } = data
+            await register(registerData)
         } catch (err: unknown) {
             setError((err as Error).message || 'Registration failed')
         } finally {
@@ -84,12 +76,7 @@ export default function RegisterPage() {
                         )}
                         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
                             <Field>
-                                <FieldLabel>Username</FieldLabel>
-                                <Input placeholder="Enter your username" {...form.register('username')} />
-                                <FieldError errors={[form.formState.errors.username]} />
-                            </Field>
-                            <Field>
-                                <FieldLabel>Email (Optional)</FieldLabel>
+                                <FieldLabel>Email</FieldLabel>
                                 <Input type="email" placeholder="Enter your email" {...form.register('email')} />
                                 <FieldError errors={[form.formState.errors.email]} />
                             </Field>

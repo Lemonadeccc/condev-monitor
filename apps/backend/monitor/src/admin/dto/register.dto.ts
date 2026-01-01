@@ -1,11 +1,9 @@
 import { IsEmail, IsNotEmpty, IsOptional, IsString, Length, Matches } from 'class-validator'
 
 export class RegisterDto {
-    @IsNotEmpty({ message: 'Username is required' })
-    @IsString({ message: 'Username must be a string' })
-    @Length(3, 20, { message: 'Username must be between 3 and 20 characters' })
-    @Matches(/^[a-zA-Z0-9_-]+$/, { message: 'Username can only contain letters, numbers, underscores and hyphens' })
-    username: string
+    @IsNotEmpty({ message: 'Email is required' })
+    @IsEmail({}, { message: 'Invalid email format' })
+    email: string
 
     @IsNotEmpty({ message: 'Password is required' })
     @IsString({ message: 'Password must be a string' })
@@ -14,10 +12,6 @@ export class RegisterDto {
         message: 'Password must contain at least one uppercase letter, one lowercase letter and one number',
     })
     password: string
-
-    @IsOptional()
-    @IsEmail({}, { message: 'Invalid email format' })
-    email?: string
 
     @IsOptional()
     @IsString({ message: 'Phone must be a string' })

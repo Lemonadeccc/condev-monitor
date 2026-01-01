@@ -10,7 +10,7 @@
         "build:watch": "turbo build:watch",
         "docker:start": "docker compose -p condev-monitor -f .devcontainer/docker-compose.yml up -d",
         "docker:stop": "docker compose -p condev-monitor -f .devcontainer/docker-compose.yml down",
-        "precheck": "pnpm lint && pnpm format && pnpm spellcheck",
+        "check": "pnpm lint && pnpm format && pnpm spellcheck",
         "lint:ts": "eslint \"**/*.{ts,tsx}\"",
         "lint": "eslint \"**/*.{ts,tsx}\" --fix",
         "format": "prettier --write .",

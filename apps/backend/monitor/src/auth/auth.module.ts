@@ -3,6 +3,7 @@ import { JwtModule } from '@nestjs/jwt'
 import { PassportModule } from '@nestjs/passport'
 
 import { AdminModule } from '../admin/admin.module'
+import { MailModule } from '../common/mail/mail.module'
 import { AuthController } from './auth.controller'
 import { AuthService } from './auth.service'
 import { jwtConstants } from './constants'
@@ -17,6 +18,7 @@ import { LocalStrategy } from './local.strategy'
             signOptions: { expiresIn: '1 days' },
         }),
         AdminModule,
+        MailModule,
     ],
     controllers: [AuthController],
     providers: [AuthService, LocalStrategy, JwtStrategy],

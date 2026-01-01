@@ -5,10 +5,7 @@ export class AdminResponseDto {
     id: number
 
     @Expose()
-    username: string
-
-    @Expose()
-    email?: string
+    email: string
 
     @Expose()
     phone?: string

@@ -25,8 +25,8 @@ export class ApplicationController {
     }
 
     @Put()
-    async update(@Body() body: UpdateApplicationDto) {
-        const updatedApplication = await this.applicationService.update(body)
+    async update(@Body() body: UpdateApplicationDto, @Request() req) {
+        const updatedApplication = await this.applicationService.update({ ...body, userId: req.user.id })
         return { data: updatedApplication, success: true }
     }
 

@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common'
+import { Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 
@@ -16,9 +16,9 @@ export class ApplicationService {
         return application
     }
 
-    async update(payload: { id: number; type?: string; name?: string; description?: string }) {
+    async update(payload: { id: number; userId: number; type?: string; name?: string; description?: string }) {
         const application = await this.applicationRepository.findOne({
-            where: { id: payload.id },
+            where: { id: payload.id, user: { id: payload.userId }, isDelete: false },
         })
 
         if (!application) {
@@ -37,7 +37,7 @@ export class ApplicationService {
 
     async list(params: { userId: number }) {
         const [data, count] = await this.applicationRepository.findAndCount({
-            where: { user: { id: params.userId } },
+            where: { user: { id: params.userId }, isDelete: false },
         })
 
         return {
@@ -46,13 +46,36 @@ export class ApplicationService {
         }
     }
 
-    async delete(payload: { appId: string; userId: number }) {
-        const res = await this.applicationRepository.delete({ appId: payload.appId, user: { id: payload.userId } })
+    async getOne(params: { id: number; userId: number }) {
+        const application = await this.applicationRepository.findOne({
+            where: {
+                id: params.id,
+                user: { id: params.userId },
+                isDelete: false,
+            },
+        })
 
-        if (res.affected === 0) {
-            return new NotFoundException('Application not found')
+        return application
+    }
+
+    async delete(payload: { appId: string; userId: number }) {
+        const application = await this.applicationRepository.findOne({
+            where: {
+                appId: payload.appId,
+                user: { id: payload.userId },
+                isDelete: false,
+            },
+        })
+
+        if (!application) {
+            throw new Error('Application not found')
         }
 
-        return res.raw[0]
+        await this.applicationRepository.update(application.id, {
+            isDelete: true,
+            updatedAt: new Date(),
+        })
+
+        return { success: true }
     }
 }
