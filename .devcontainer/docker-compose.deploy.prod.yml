@@ -1,0 +1,86 @@
+services:
+    condev-monitor-clickhouse:
+        image: clickhouse:25.10
+        container_name: condev-monitor-clickhouse
+        environment:
+            - CLICKHOUSE_USER=${CLICKHOUSE_USERNAME}
+            - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+            - CLICKHOUSE_DB=${CLICKHOUSE_DB:-default}
+        volumes:
+            - clickhouse_data:/var/lib/clickhouse/
+
+    condev-monitor-postgres:
+        image: postgres:18.1
+        container_name: condev-monitor-postgres
+        environment:
+            - POSTGRES_USER=${DB_USERNAME}
+            - POSTGRES_PASSWORD=${DB_PASSWORD}
+            - POSTGRES_DB=${DB_DATABASE}
+        volumes:
+            - postgres_data:/var/lib/postgresql/data
+
+    condev-monitor-server:
+        build:
+            context: ..
+            dockerfile: apps/backend/monitor/Dockerfile
+        container_name: condev-monitor-server
+        env_file:
+            - .env.deploy.prod
+        environment:
+            - NODE_ENV=production
+            - DB_HOST=condev-monitor-postgres
+            - DB_PORT=5432
+            - DB_SYNC=false
+            - CLICKHOUSE_URL=http://condev-monitor-clickhouse:8123
+        depends_on:
+            - condev-monitor-postgres
+            - condev-monitor-clickhouse
+
+    condev-dsn-server:
+        build:
+            context: ..
+            dockerfile: apps/backend/dsn-server/Dockerfile
+        container_name: condev-dsn-server
+        env_file:
+            - .env.deploy.prod
+        environment:
+            - NODE_ENV=production
+            - PORT=8080
+            - CLICKHOUSE_URL=http://condev-monitor-clickhouse:8123
+        depends_on:
+            - condev-monitor-clickhouse
+
+    condev-monitor-web:
+        build:
+            context: ..
+            dockerfile: apps/frontend/monitor/Dockerfile
+        container_name: condev-monitor-web
+        environment:
+            - NODE_ENV=production
+            - NEXT_TELEMETRY_DISABLED=1
+        depends_on:
+            - condev-monitor-server
+            - condev-dsn-server
+
+    condev-monitor-caddy:
+        image: caddy:2.11-alpine
+        container_name: condev-monitor-caddy
+        ports:
+            - '80:80'
+            - '443:443'
+        env_file:
+            - .env.deploy.prod
+        volumes:
+            - ./caddy/Caddyfile.prod:/etc/caddy/Caddyfile
+            - caddy_data:/data
+            - caddy_config:/config
+        depends_on:
+            - condev-monitor-server
+            - condev-monitor-web
+            - condev-dsn-server
+
+volumes:
+    clickhouse_data:
+    postgres_data:
+    caddy_data:
+    caddy_config:

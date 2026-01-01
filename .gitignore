@@ -120,3 +120,8 @@ apps/backend/monitor/prisma/client/
 .devcontainer/postgressql_data
 .devcontainer/postgresql_data
 .devcontainer/clickhouse_data
+
+
+.devcontainer/.env.deploy.local
+.devcontainer/.env.deploy.prod
+.env.deploy

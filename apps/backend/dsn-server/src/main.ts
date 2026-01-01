@@ -1,3 +1,4 @@
+import { ConfigService } from '@nestjs/config'
 import { NestFactory } from '@nestjs/core'
 
 import { AppModule } from './app.module'
@@ -13,18 +14,19 @@ function parseAllowedCorsOrigins() {
 
 async function bootstrap() {
     const app = await NestFactory.create(AppModule)
+    const configService = app.get(ConfigService)
     const allowedOrigins = new Set<string>(parseAllowedCorsOrigins())
-    const frontendUrl = process.env.FRONTEND_URL
+    const frontendUrl = configService.get<string>('FRONTEND_URL')
     if (frontendUrl) allowedOrigins.add(frontendUrl)
 
     app.enableCors({
-        origin: (origin, callback) => {
-            if (!origin) {
-                callback(null, true)
-                return
-            }
+        origin: (originValue, callback) => {
+            if (!originValue) return callback(null, true)
+            const origin = Array.isArray(originValue) ? originValue[0] : originValue
+            if (typeof origin !== 'string') return callback(new Error('Invalid origin'))
 
-            const devAllow = process.env.NODE_ENV !== 'production' && (origin.includes('localhost') || origin.includes('127.0.0.1'))
+            const devAllow =
+                configService.get('NODE_ENV') !== 'production' && (origin.includes('192.168.158.81') || origin.includes('127.0.0.1'))
 
             const allowByList =
                 allowedOrigins.size > 0 && [...allowedOrigins].some(allowed => origin === allowed || origin.includes(allowed))
@@ -36,13 +38,13 @@ async function bootstrap() {
                 origin.includes('condevtools') ||
                 origin.includes('condev-monitor')
             ) {
-                callback(null, true)
+                return callback(null, true)
             } else {
-                callback(new Error('Not allowed by CORS'))
+                return callback(new Error('Not allowed by CORS'))
             }
         },
         credentials: true,
     })
-    await app.listen(process.env.PORT ?? 8080)
+    await app.listen(configService.get<number>('PORT') ?? 8080)
 }
 bootstrap()

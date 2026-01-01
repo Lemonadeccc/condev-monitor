@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common'
 import { ConfigModule } from '@nestjs/config'
+import { ConfigService } from '@nestjs/config'
 
 import { AppController } from './app.controller'
 import { AppService } from './app.service'
@@ -9,21 +10,29 @@ import { SpanModule } from './modules/span/span.module'
 
 @Module({
     imports: [
-        ConfigModule.forRoot(),
-        ClickhouseModule.forRoot({
-            url: 'http://192.168.158.81:8123',
-            username: 'lemonade',
-            password: 'condevClickhouse',
+        ConfigModule.forRoot({ isGlobal: true }),
+        ClickhouseModule.forRootAsync({
+            imports: [ConfigModule],
+            inject: [ConfigService],
+            useFactory: (configService: ConfigService) => ({
+                url: configService.get<string>('CLICKHOUSE_URL')!,
+                username: configService.get<string>('CLICKHOUSE_USERNAME')!,
+                password: configService.get<string>('CLICKHOUSE_PASSWORD')!,
+            }),
         }),
         SpanModule,
-        EmailModule.forRoot({
-            host: 'smtp.163.com',
-            port: 465,
-            secure: true,
-            auth: {
-                user: 'condevtools@163.com',
-                pass: process.env.EMAIL_PASS,
-            },
+        EmailModule.forRootAsync({
+            imports: [ConfigModule],
+            inject: [ConfigService],
+            useFactory: (configService: ConfigService) => ({
+                host: 'smtp.163.com',
+                port: 465,
+                secure: true,
+                auth: {
+                    user: configService.get<string>('EMAIL_SENDER')!,
+                    pass: configService.get<string>('EMAIL_SENDER_PASSWORD')!,
+                },
+            }),
         }),
     ],
     controllers: [AppController],

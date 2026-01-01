@@ -1,4 +1,5 @@
 import { DynamicModule, Global, Module } from '@nestjs/common'
+import type { ModuleMetadata } from '@nestjs/common/interfaces'
 import { createTransport } from 'nodemailer'
 
 @Global()
@@ -17,6 +18,21 @@ export class EmailModule {
                     useFactory: () => {
                         return createTransport(options)
                     },
+                },
+            ],
+            exports: ['EMAIL_CLIENT'],
+        }
+    }
+
+    static forRootAsync(options: Pick<ModuleMetadata, 'imports'> & { inject?: any[]; useFactory: (...args: any[]) => any }): DynamicModule {
+        return {
+            module: EmailModule,
+            imports: options.imports,
+            providers: [
+                {
+                    provide: 'EMAIL_CLIENT',
+                    inject: options.inject ?? [],
+                    useFactory: (...args: any[]) => createTransport(options.useFactory(...args)),
                 },
             ],
             exports: ['EMAIL_CLIENT'],

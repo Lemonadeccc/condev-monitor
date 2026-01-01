@@ -1,48 +1,29 @@
-# 本地调试示例
-:5173 {
+:80 {
 
 
 encode zstd gzip
 
 header +Cache-Control "max-age=0, private, must-revalidate"
 
-# 保留 /api 前缀
-# handle_path /api/* {
-#         rewrite * {path}
-#         reverse_proxy 192.168.3.19:3000
-# }
-
 handle_path /api/* {
 # reverse_proxy 192.168.3.19:3000
 rewrite * /api{path}
-reverse_proxy 192.168.158.81:8081
+reverse_proxy condev-monitor-server:8081
 }
 
-
-uri strip_suffix /
-
-root * /app/frontend/monitor/dist
+handle_path /dsn-api/* {
+	reverse_proxy condev-dsn-server:8080
+}
 
 handle {
-
-
-templates
-try_files {path}.html {path} /
-file_server
+	reverse_proxy condev-monitor-web:3000
 }
 
 }
 
-
-# 用于证书测试
-# let encrypt 有请求限制，如果每周请求次数超过 5 次，就会被限制
-# 我之前因为测试次数较多，被限制了
-# {
-#         acme_ca https://acme-staging-v02.api.letsencrypt.org/directory
-# }
 
 # # 线上监控示例
-# monitoring.miaomaedu.com {
+# monitor.condevtools.com {
 
 
 #         encode zstd gzip

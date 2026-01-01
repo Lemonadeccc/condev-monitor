@@ -1,0 +1,64 @@
+include:
+    - docker-compose.yml
+
+services:
+    condev-monitor-server:
+        build:
+            context: ..
+            dockerfile: apps/backend/monitor/Dockerfile
+        container_name: condev-monitor-server
+        ports:
+            - '${MONITOR_SERVER_HOST_PORT:-18081}:8081'
+        env_file:
+            - .env.deploy.local
+        environment:
+            - NODE_ENV=${NODE_ENV:-production}
+            - DB_HOST=${DB_HOST:-condev-monitor-postgres}
+            - DB_PORT=${DB_PORT:-5432}
+            - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
+        depends_on:
+            - condev-monitor-postgres
+            - condev-monitor-clickhouse
+
+    condev-dsn-server:
+        build:
+            context: ..
+            dockerfile: apps/backend/dsn-server/Dockerfile
+        container_name: condev-dsn-server
+        ports:
+            - '${DSN_SERVER_HOST_PORT:-18080}:8080'
+        env_file:
+            - .env.deploy.local
+        environment:
+            - NODE_ENV=${NODE_ENV:-production}
+            - PORT=8080
+            - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
+            - FRONTEND_URL=http://localhost:${CADDY_HTTP_HOST_PORT:-8888}
+        depends_on:
+            - condev-monitor-clickhouse
+
+    condev-monitor-web:
+        build:
+            context: ..
+            dockerfile: apps/frontend/monitor/Dockerfile
+        container_name: condev-monitor-web
+        ports:
+            - '${MONITOR_WEB_HOST_PORT:-13000}:3000'
+        environment:
+            - NODE_ENV=${NODE_ENV:-production}
+            - NEXT_TELEMETRY_DISABLED=1
+        depends_on:
+            - condev-monitor-server
+            - condev-dsn-server
+
+    condev-monitor-caddy:
+        image: caddy:2.11-alpine
+        container_name: condev-monitor-caddy
+        ports:
+            - '${CADDY_HTTP_HOST_PORT:-8888}:80'
+        volumes:
+            - ./caddy/Caddyfile.local:/etc/caddy/Caddyfile
+        depends_on:
+            - condev-monitor-server
+            - condev-monitor-web
+            - condev-dsn-server
