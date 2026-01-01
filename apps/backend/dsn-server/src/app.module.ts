@@ -11,7 +11,7 @@ import { SpanModule } from './modules/span/span.module'
     imports: [
         ConfigModule.forRoot(),
         ClickhouseModule.forRoot({
-            url: 'http://localhost:8123',
+            url: 'http://192.168.158.81:8123',
             username: 'lemonade',
             password: 'condevClickhouse',
         }),

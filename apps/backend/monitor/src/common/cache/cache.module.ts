@@ -6,7 +6,7 @@ import { Module } from '@nestjs/common'
     imports: [
         // RedisModule.forRoot({
         //     type: 'single',
-        //     url: 'redis://localhost:6379',
+        //     url: 'redis://192.168.158.81:6379',
         //     options: {
         //         password: 'example',
         //     },
@@ -18,7 +18,7 @@ import { Module } from '@nestjs/common'
         //         return {
         //             port: port,
         //             type: 'single',
-        //             url: 'localhost:6479',
+        //             url: '192.168.158.81:6479',
         //             options: {
         //                 password: 'example',
         //             },

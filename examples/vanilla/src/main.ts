@@ -9,8 +9,8 @@ import typescriptLogo from './typescript.svg'
 
 // const monitoring =
 init({
-    // dsn: 'http://localhost:8080/appid-xxx',
-    dsn: 'http://localhost:8080/tracking/vanilla28R8is',
+    // dsn: 'http://192.168.158.81:8080/appid-xxx',
+    dsn: 'http://192.168.158.81:8080/tracking/vanilla28R8is',
 })
 // document.addEventListener('click', () => {
 //     monitoring.reportEvent({ type: 'click' })

@@ -21,7 +21,6 @@
     },
     "dependencies": {
         "@clickhouse/client": "^1.13.0",
-        "@nestjs-modules/mailer": "^2.0.2",
         "@nestjs/cache-manager": "^3.0.1",
         "@nestjs/common": "^11.1.9",
         "@nestjs/config": "^4.0.2",

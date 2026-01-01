@@ -17,16 +17,15 @@ services:
         depends_on:
             - condev-monitor-postgres
             - condev-monitor-clickhouse
-    # condev-monitor-caddy:
-    #     image: caddy:latest
-    #     container_name: condev-monitor-caddy
-    #     ports:
-    #         - 80:80
-    #         - 443:443
-    #         - 443:443/udp
-    #         - 5173:5173
-    #     volumes:
-    #         - ./caddy:/etc/caddy
-    #         # - ../:/app
-    #         - ../apps/frontend/monitor/dist:/app/frontend/monitor/dist
-    #     # command: ["caddy", "run", "--resume", "--config", "/etc/caddy/Caddyfile"]
+    condev-monitor-caddy:
+        image: caddy:2.11-alpine
+        container_name: condev-monitor-caddy
+        # 暴露端口
+        ports:
+            - '8888:5173'
+            - '443:443'
+        volumes:
+            - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+            - ./dist:/app/frontend/monitor/dist
+        depends_on:
+            - condev-monitor-server

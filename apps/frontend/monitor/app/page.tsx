@@ -5,13 +5,20 @@ import { useQuery } from '@tanstack/react-query'
 import AppAreaChart from '@/components/AppAreaChart'
 import AppBarChart from '@/components/AppBarChart'
 import AppLineChart from '@/components/AppLineChart'
+import { useAuth } from '@/components/providers'
 import type { Application, ApplicationListResponse } from '@/types/application'
 
 export default function Home() {
+    const { user, loading } = useAuth()
     const { data } = useQuery<ApplicationListResponse>({
         queryKey: ['applications'],
+        enabled: !loading && Boolean(user),
         queryFn: async (): Promise<ApplicationListResponse> => {
-            const res = await fetch('/api/application', { method: 'GET' })
+            const token = localStorage.getItem('access_token')
+            const res = await fetch('/api/application', {
+                method: 'GET',
+                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            })
             if (!res.ok) {
                 throw new Error('Failed to load applications')
             }

@@ -1,17 +1,23 @@
-import { Injectable } from '@nestjs/common'
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common'
+import { ConfigService } from '@nestjs/config'
 import { JwtService } from '@nestjs/jwt'
-import { MailerService } from '@nestjs-modules/mailer'
 import { hash } from 'argon2'
 
 import { AdminService } from '../admin/admin.service'
+import { MailService } from '../common/mail/mail.service'
 
 @Injectable()
 export class AuthService {
+    private readonly mailOn: boolean
+
     constructor(
         private readonly jwtService: JwtService,
         private readonly adminService: AdminService,
-        private readonly mailerService: MailerService
-    ) {}
+        private readonly mailerService: MailService,
+        private readonly configService: ConfigService
+    ) {
+        this.mailOn = Boolean(this.configService.get('MAIL_ON'))
+    }
 
     async validateUser(email: string, pass: string): Promise<any> {
         const admin = await this.adminService.validateUser(email, pass)
@@ -31,6 +37,8 @@ export class AuthService {
     }
 
     async forgotPassword(email: string): Promise<{ success: boolean }> {
+        if (!this.mailOn) return { success: true }
+
         const user = await this.adminService.findOneByEmail(email)
         if (!user) return { success: true }
 
@@ -41,7 +49,7 @@ export class AuthService {
             }
         )
 
-        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
+        const frontendUrl = process.env.FRONTEND_URL || 'http://192.168.158.81:3000'
         const resetUrl = `${frontendUrl}/reset-password?token=${encodeURIComponent(token)}`
 
         try {
@@ -64,7 +72,12 @@ export class AuthService {
     }
 
     async resetPassword(token: string, password: string): Promise<{ success: boolean }> {
-        const payload = this.jwtService.verify(token) as { sub?: number; tokenType?: string }
+        let payload: { sub?: number; tokenType?: string }
+        try {
+            payload = this.jwtService.verify(token) as { sub?: number; tokenType?: string }
+        } catch {
+            return { success: false }
+        }
         if (!payload?.sub || payload.tokenType !== 'reset') {
             return { success: false }
         }
@@ -77,7 +90,12 @@ export class AuthService {
     }
 
     async verifyResetPasswordToken(token: string): Promise<{ success: boolean; email?: string }> {
-        const payload = this.jwtService.verify(token) as { sub?: number; tokenType?: string }
+        let payload: { sub?: number; tokenType?: string }
+        try {
+            payload = this.jwtService.verify(token) as { sub?: number; tokenType?: string }
+        } catch {
+            return { success: false }
+        }
         if (!payload?.sub || payload.tokenType !== 'reset') {
             return { success: false }
         }
@@ -89,7 +107,12 @@ export class AuthService {
     }
 
     async verifyEmail(token: string): Promise<{ success: boolean }> {
-        const payload = this.jwtService.verify(token) as { sub?: number; tokenType?: string }
+        let payload: { sub?: number; tokenType?: string }
+        try {
+            payload = this.jwtService.verify(token) as { sub?: number; tokenType?: string }
+        } catch {
+            return { success: false }
+        }
         if (!payload?.sub || payload.tokenType !== 'verify-email') {
             return { success: false }
         }
@@ -98,6 +121,8 @@ export class AuthService {
     }
 
     async requestEmailChange(userId: number, newEmail: string): Promise<{ success: boolean }> {
+        if (!this.mailOn) return { success: true }
+
         const token = this.jwtService.sign(
             { sub: userId, tokenType: 'email-change', newEmail },
             {
@@ -105,24 +130,33 @@ export class AuthService {
             }
         )
 
-        const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000'
+        const frontendUrl = process.env.FRONTEND_URL || 'http://192.168.158.81:3000'
         const confirmUrl = `${frontendUrl}/confirm-email?token=${encodeURIComponent(token)}`
 
-        await this.mailerService.sendMail({
-            to: newEmail,
-            subject: 'Confirm your email change',
-            template: 'update-email',
-            context: {
-                confirmUrl,
-                expiresInMinutes: 15,
-            },
-        })
+        try {
+            await this.mailerService.sendMail({
+                to: newEmail,
+                subject: 'Confirm your email change',
+                template: 'update-email',
+                context: {
+                    confirmUrl,
+                    expiresInMinutes: 15,
+                },
+            })
+        } catch {
+            throw new HttpException({ message: 'Failed to send confirmation email', error: 'EMAIL_SEND_FAILED' }, HttpStatus.BAD_GATEWAY)
+        }
 
         return { success: true }
     }
 
     async confirmEmailChange(token: string): Promise<{ success: boolean }> {
-        const payload = this.jwtService.verify(token) as { sub?: number; tokenType?: string; newEmail?: string }
+        let payload: { sub?: number; tokenType?: string; newEmail?: string }
+        try {
+            payload = this.jwtService.verify(token) as { sub?: number; tokenType?: string; newEmail?: string }
+        } catch {
+            return { success: false }
+        }
         if (!payload?.sub || payload.tokenType !== 'email-change' || !payload.newEmail) {
             return { success: false }
         }
