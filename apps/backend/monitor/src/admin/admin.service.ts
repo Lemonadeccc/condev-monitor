@@ -2,7 +2,7 @@ import { HttpException, HttpStatus, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { JwtService } from '@nestjs/jwt'
 import { InjectRepository } from '@nestjs/typeorm'
-import { hash, verify } from 'argon2'
+import { compare, hash } from 'bcryptjs'
 import { Repository } from 'typeorm'
 
 import { MailService } from '../common/mail/mail.service'
@@ -11,6 +11,7 @@ import { AdminEntity } from './entity/admin.entity'
 
 @Injectable()
 export class AdminService {
+    private readonly passwordHashRounds = 12
     private readonly requireEmailVerification: boolean
     private readonly mailOn: boolean
     private readonly effectiveRequireEmailVerification: boolean
@@ -22,8 +23,8 @@ export class AdminService {
         private readonly mailerService: MailService,
         private readonly configService: ConfigService
     ) {
-        this.requireEmailVerification = Boolean(this.configService.get('AUTH_REQUIRE_EMAIL_VERIFICATION'))
-        this.mailOn = Boolean(this.configService.get('MAIL_ON'))
+        this.requireEmailVerification = this.configService.get<boolean>('AUTH_REQUIRE_EMAIL_VERIFICATION') === true
+        this.mailOn = this.configService.get<boolean>('MAIL_ON') === true
         this.effectiveRequireEmailVerification = this.requireEmailVerification && this.mailOn
     }
 
@@ -36,7 +37,7 @@ export class AdminService {
             throw new HttpException({ message: 'User not found', error: 'INVALID_EMAIL' }, HttpStatus.BAD_REQUEST)
         }
 
-        const isValid = await verify(admin.password, pass)
+        const isValid = await compare(pass, admin.password)
         if (!isValid) {
             throw new HttpException({ message: 'Invalid password', error: 'INVALID_PASSWORD' }, HttpStatus.BAD_REQUEST)
         }
@@ -58,7 +59,7 @@ export class AdminService {
 
         const admin = await this.adminRepository.create({
             ...body,
-            password: await hash(body.password),
+            password: await hash(body.password, this.passwordHashRounds),
             isVerified: !this.effectiveRequireEmailVerification,
         })
         await this.adminRepository.save(admin)

@@ -14,7 +14,7 @@ ENV PNPM_CONFIG_PRODUCTION=false
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/backend/monitor/package.json ./apps/backend/monitor/package.json
 
-RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i --frozen-lockfile
+RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i
 
 FROM base AS builder
 WORKDIR /app

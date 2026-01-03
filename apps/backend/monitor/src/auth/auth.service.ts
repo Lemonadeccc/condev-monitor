@@ -1,13 +1,14 @@
 import { HttpException, HttpStatus, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { JwtService } from '@nestjs/jwt'
-import { hash } from 'argon2'
+import { hash } from 'bcryptjs'
 
 import { AdminService } from '../admin/admin.service'
 import { MailService } from '../common/mail/mail.service'
 
 @Injectable()
 export class AuthService {
+    private readonly passwordHashRounds = 12
     private readonly mailOn: boolean
 
     constructor(
@@ -16,7 +17,7 @@ export class AuthService {
         private readonly mailerService: MailService,
         private readonly configService: ConfigService
     ) {
-        this.mailOn = Boolean(this.configService.get('MAIL_ON'))
+        this.mailOn = this.configService.get<boolean>('MAIL_ON') === true
     }
 
     async validateUser(email: string, pass: string): Promise<any> {
@@ -85,7 +86,7 @@ export class AuthService {
         const user = await this.adminService.findOneById(payload.sub)
         if (!user) return { success: false }
 
-        await this.adminService.updatePassword({ id: user.id, passwordHash: await hash(password) })
+        await this.adminService.updatePassword({ id: user.id, passwordHash: await hash(password, this.passwordHashRounds) })
         return { success: true }
     }
 
