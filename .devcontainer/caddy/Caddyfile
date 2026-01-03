@@ -5,7 +5,6 @@ encode zstd gzip
 header +Cache-Control "max-age=0, private, must-revalidate"
 
 handle_path /api/* {
-# reverse_proxy 192.168.3.19:3000
 rewrite * /api{path}
 reverse_proxy condev-monitor-server:8081
 }
