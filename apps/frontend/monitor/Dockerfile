@@ -7,6 +7,10 @@ FROM base AS deps
 RUN apk add --no-cache libc6-compat
 WORKDIR /app
 
+# Force devDependencies install even if Coolify injects NODE_ENV=production at build-time.
+ENV NODE_ENV=development
+ENV PNPM_CONFIG_PRODUCTION=false
+
 # Monorepo manifests
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/frontend/monitor/package.json ./apps/frontend/monitor/package.json
@@ -16,6 +20,7 @@ RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && 
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/apps/frontend/monitor/node_modules ./apps/frontend/monitor/node_modules
 COPY --from=deps /corepack /corepack
 COPY . .
 
