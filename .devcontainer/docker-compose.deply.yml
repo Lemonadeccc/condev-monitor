@@ -2,9 +2,12 @@ services:
     condev-monitor-clickhouse:
         image: clickhouse:25.10
         container_name: condev-monitor-clickhouse
-        ports:
-            - '${CLICKHOUSE_HTTP_PORT:-8123}:8123'
-            - '${CLICKHOUSE_NATIVE_PORT:-9000}:9000'
+        # Do not publish ClickHouse ports on the host in Coolify/Compose deployments.
+        # Publishing `8123` commonly conflicts with other stacks on the same node
+        # ("port is already allocated"). Service-to-service access works via `expose`.
+        expose:
+            - '8123'
+            - '9000'
         env_file:
             - .env
         environment:
@@ -17,8 +20,9 @@ services:
     condev-monitor-postgres:
         image: postgres:18.1
         container_name: condev-monitor-postgres
-        ports:
-            - '${POSTGRES_PORT:-5432}:5432'
+        # Keep Postgres internal to the Compose network by default (no host port publish).
+        expose:
+            - '5432'
         env_file:
             - .env
         environment:
