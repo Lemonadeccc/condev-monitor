@@ -10,6 +10,7 @@ reverse_proxy condev-monitor-server:8081
 }
 
 handle_path /dsn-api/* {
+	rewrite * /dsn-api{path}
 	reverse_proxy condev-dsn-server:8080
 }
 

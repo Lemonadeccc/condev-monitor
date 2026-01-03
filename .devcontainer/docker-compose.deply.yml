@@ -37,8 +37,9 @@ services:
             context: ..
             dockerfile: apps/backend/monitor/Dockerfile
         container_name: condev-monitor-server
-        ports:
-            - '${MONITOR_SERVER_HOST_PORT:-18081}:8081'
+        # Internal API; Caddy is the public entrypoint in this stack.
+        expose:
+            - '8081'
         env_file:
             - .env
         environment:
@@ -64,8 +65,9 @@ services:
             context: ..
             dockerfile: apps/backend/dsn-server/Dockerfile
         container_name: condev-dsn-server
-        ports:
-            - '${DSN_SERVER_HOST_PORT:-18080}:8080'
+        # Internal API; Caddy is the public entrypoint in this stack.
+        expose:
+            - '8080'
         env_file:
             - .env
         environment:
@@ -81,8 +83,9 @@ services:
             context: ..
             dockerfile: apps/frontend/monitor/Dockerfile
         container_name: condev-monitor-web
-        ports:
-            - '${MONITOR_WEB_HOST_PORT:-13000}:3000'
+        # Internal web; Caddy is the public entrypoint in this stack.
+        expose:
+            - '3000'
         environment:
             - NODE_ENV=${NODE_ENV:-production}
             - NEXT_TELEMETRY_DISABLED=1
