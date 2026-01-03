@@ -74,6 +74,9 @@ services:
         environment:
             - NODE_ENV=${NODE_ENV:-production}
             - NEXT_TELEMETRY_DISABLED=1
+            # Internal service-to-service proxy targets (avoid hardcoding host IPs)
+            - API_PROXY_TARGET=http://condev-monitor-server:8081
+            - DSN_API_PROXY_TARGET=http://condev-dsn-server:8080
         depends_on:
             - condev-monitor-server
             - condev-dsn-server

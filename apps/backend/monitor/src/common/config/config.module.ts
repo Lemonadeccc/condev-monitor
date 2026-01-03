@@ -18,7 +18,8 @@ const schema = Joi.object({
     // https://joi.dev/api/
     NODE_ENV: Joi.string().valid('development', 'production').default('development'),
     DB_TYPE: Joi.string().default('mysql'),
-    DB_HOST: Joi.string().default('192.168.158.81'),
+    // Prefer docker service name by default; override via env for non-docker setups.
+    DB_HOST: Joi.string().default('condev-monitor-postgres'),
     DB_PORT: Joi.number().port().default(3306),
     DB_USERNAME: Joi.string().default('root'),
     DB_PASSWORD: Joi.string().allow('').default(''),

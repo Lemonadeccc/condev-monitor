@@ -14,6 +14,18 @@ handle_path /dsn-api/* {
 	reverse_proxy condev-dsn-server:8080
 }
 
+handle /tracking/* {
+	reverse_proxy condev-dsn-server:8080
+}
+
+handle /span {
+	reverse_proxy condev-dsn-server:8080
+}
+
+handle /bugs {
+	reverse_proxy condev-dsn-server:8080
+}
+
 handle {
 	reverse_proxy condev-monitor-web:3000
 }
