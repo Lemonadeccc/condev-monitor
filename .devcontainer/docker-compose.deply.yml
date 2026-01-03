@@ -39,10 +39,18 @@ services:
             - .env
         environment:
             - NODE_ENV=${NODE_ENV:-production}
+            - DB_TYPE=${DB_TYPE:-postgres}
             - DB_HOST=${DB_HOST:-condev-monitor-postgres}
             - DB_PORT=${DB_PORT:-5432}
+            - DB_USERNAME=${DB_USERNAME:-postgres}
+            - DB_PASSWORD=${DB_PASSWORD:-condevPostgres}
+            - DB_DATABASE=${DB_DATABASE:-postgres}
+            - DB_AUTOLOAD=${DB_AUTOLOAD:-true}
+            - DB_SYNC=${DB_SYNC:-true}
             - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
             - FRONTEND_URL=${FRONTEND_URL:-http://152.53.88.58:8888}
+            - MAIL_ON=${MAIL_ON:-false}
+            - AUTH_REQUIRE_EMAIL_VERIFICATION=${AUTH_REQUIRE_EMAIL_VERIFICATION:-false}
         depends_on:
             - condev-monitor-postgres
             - condev-monitor-clickhouse

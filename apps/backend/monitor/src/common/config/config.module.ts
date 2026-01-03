@@ -17,17 +17,18 @@ const envFilePaths = [
 const schema = Joi.object({
     // https://joi.dev/api/
     NODE_ENV: Joi.string().valid('development', 'production').default('development'),
-    DB_TYPE: Joi.string().default('mysql'),
+    // This project ships with Postgres in docker-compose; keep defaults aligned.
+    DB_TYPE: Joi.string().default('postgres'),
     // Prefer docker service name by default; override via env for non-docker setups.
     DB_HOST: Joi.string().default('condev-monitor-postgres'),
-    DB_PORT: Joi.number().port().default(3306),
-    DB_USERNAME: Joi.string().default('root'),
+    DB_PORT: Joi.number().port().default(5432),
+    DB_USERNAME: Joi.string().default('postgres'),
     DB_PASSWORD: Joi.string().allow('').default(''),
-    DB_DATABASE: Joi.string().default('testdb'),
+    DB_DATABASE: Joi.string().default('postgres'),
     DB_AUTOLOAD: Joi.boolean().default(false),
     DB_SYNC: Joi.boolean().default(false),
-    MAIL_ON: Joi.boolean().default(true),
-    AUTH_REQUIRE_EMAIL_VERIFICATION: Joi.boolean().default(true),
+    MAIL_ON: Joi.boolean().default(false),
+    AUTH_REQUIRE_EMAIL_VERIFICATION: Joi.boolean().default(false),
     FRONTEND_URL: Joi.string().default('http://localhost:8888'),
     CLICKHOUSE_URL: Joi.string().required(),
     CLICKHOUSE_USERNAME: Joi.string().required(),
