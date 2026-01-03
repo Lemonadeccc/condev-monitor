@@ -42,6 +42,7 @@ services:
             - DB_HOST=${DB_HOST:-condev-monitor-postgres}
             - DB_PORT=${DB_PORT:-5432}
             - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
+            - FRONTEND_URL=${FRONTEND_URL:-http://${PUBLIC_HOST:-localhost}:${CADDY_HTTP_HOST_PORT:-8888}}
         depends_on:
             - condev-monitor-postgres
             - condev-monitor-clickhouse
@@ -59,7 +60,7 @@ services:
             - NODE_ENV=${NODE_ENV:-production}
             - PORT=8080
             - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
-            - FRONTEND_URL=${FRONTEND_URL:-http://localhost:${CADDY_HTTP_HOST_PORT:-8888}}
+            - FRONTEND_URL=${FRONTEND_URL:-http://${PUBLIC_HOST:-localhost}:${CADDY_HTTP_HOST_PORT:-8888}}
         depends_on:
             - condev-monitor-clickhouse
 
@@ -81,10 +82,12 @@ services:
         image: caddy:2.11-alpine
         container_name: condev-monitor-caddy
         ports:
-            - '${CADDY_HTTP_HOST_PORT:-8888}:80'
+            - '${CADDY_HTTP_HOST_PORT:-8888}:${CADDY_HTTP_CONTAINER_PORT:-80}'
             - '${CADDY_HTTPS_HOST_PORT:-8443}:443'
         env_file:
             - .env
+        environment:
+            - CADDY_HTTP_CONTAINER_PORT=${CADDY_HTTP_CONTAINER_PORT:-80}
         volumes:
             - ./caddy/Caddyfile:/etc/caddy/Caddyfile
             - caddy_data:/data

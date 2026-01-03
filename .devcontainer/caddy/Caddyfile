@@ -1,6 +1,5 @@
-:80 {
-
-
+:{$CADDY_HTTP_CONTAINER_PORT} {
+	
 encode zstd gzip
 
 header +Cache-Control "max-age=0, private, must-revalidate"

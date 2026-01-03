@@ -49,7 +49,7 @@ export class AuthService {
             }
         )
 
-        const frontendUrl = process.env.FRONTEND_URL || 'http://192.168.158.81:3000'
+        const frontendUrl = this.configService.get<string>('FRONTEND_URL') ?? 'http://localhost:8888'
         const resetUrl = `${frontendUrl}/reset-password?token=${encodeURIComponent(token)}`
 
         try {
@@ -130,7 +130,7 @@ export class AuthService {
             }
         )
 
-        const frontendUrl = process.env.FRONTEND_URL || 'http://192.168.158.81:3000'
+        const frontendUrl = this.configService.get<string>('FRONTEND_URL') ?? 'http://localhost:8888'
         const confirmUrl = `${frontendUrl}/confirm-email?token=${encodeURIComponent(token)}`
 
         try {

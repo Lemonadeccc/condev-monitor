@@ -1,4 +1,6 @@
 FROM node:22-alpine AS base
+ENV COREPACK_HOME=/corepack
+ENV PNPM_VERSION=10.10.0
 
 FROM base AS deps
 # See https://github.com/nodejs/docker-node/tree/main#nodealpine
@@ -9,11 +11,12 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/frontend/monitor/package.json ./apps/frontend/monitor/package.json
 
-RUN corepack enable pnpm && pnpm i --frozen-lockfile
+RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i --frozen-lockfile
 
 FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /corepack /corepack
 COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1

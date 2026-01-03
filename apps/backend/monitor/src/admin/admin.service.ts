@@ -75,7 +75,7 @@ export class AdminService {
                 expiresIn: '1d',
             }
         )
-        const frontendUrl = process.env.FRONTEND_URL || 'http://192.168.158.81:3000'
+        const frontendUrl = this.configService.get<string>('FRONTEND_URL') ?? 'http://localhost:8888'
         const verifyUrl = `${frontendUrl}/verify-email?token=${encodeURIComponent(token)}`
 
         try {
