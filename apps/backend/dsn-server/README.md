@@ -31,6 +31,16 @@
 $ pnpm install
 ```
 
+## Environment variables
+
+This service reads environment variables via `@nestjs/config` (`ConfigModule.forRoot`).
+
+- `PORT` (optional, default `8080`)
+- `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`
+- Email alerts (optional; if not set, email sending is disabled in dev):
+    - `EMAIL_SENDER`
+    - `EMAIL_SENDER_PASSWORD` (or `EMAIL_PASS`)
+
 ## Compile and run the project
 
 ```bash

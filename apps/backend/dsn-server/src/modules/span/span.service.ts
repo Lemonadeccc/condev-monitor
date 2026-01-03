@@ -1,5 +1,5 @@
 import { ClickHouseClient } from '@clickhouse/client'
-import { Inject, Injectable } from '@nestjs/common'
+import { Inject, Injectable, Logger } from '@nestjs/common'
 
 import { EmailService } from '../email/email.service'
 
@@ -30,24 +30,29 @@ export class SpanService {
             info,
         }
 
-        // TODO目标邮箱更改
-        if (event_type === 'error') {
-            await this.emailService.alert({
-                to: 'zwjhb12@163.com',
-                subject: 'Error Event - Condev Monitor',
-                params: {
-                    ...body,
-                    ...values,
-                },
-            })
-        }
-
         await this.clickhouseClient.insert({
             table: 'lemonade.base_monitor_storage',
             columns: ['app_id', 'event_type', 'message', 'info'],
             format: 'JSONEachRow',
             values: [values],
         })
+
+        if (event_type === 'error') {
+            void this.emailService
+                .alert({
+                    to: 'zwjhb12@163.com',
+                    subject: 'Condev Monitor - Error Event',
+                    params: {
+                        ...body,
+                        ...values,
+                    },
+                })
+                .catch(err => {
+                    Logger.error('Failed to send alert email', err instanceof Error ? err.stack : String(err))
+                })
+        }
+
+        return { ok: true }
     }
 
     async bugs() {

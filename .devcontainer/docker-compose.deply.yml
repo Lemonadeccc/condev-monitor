@@ -1,7 +1,33 @@
-include:
-    - docker-compose.yml
-
 services:
+    condev-monitor-clickhouse:
+        image: clickhouse:25.10
+        container_name: condev-monitor-clickhouse
+        ports:
+            - '${CLICKHOUSE_HTTP_PORT:-8123}:8123'
+            - '${CLICKHOUSE_NATIVE_PORT:-9000}:9000'
+        env_file:
+            - .env
+        environment:
+            - CLICKHOUSE_USER=${CLICKHOUSE_USERNAME:-lemonade}
+            - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-condevClickhouse}
+            - CLICKHOUSE_DB=${CLICKHOUSE_DB:-lemonade}
+        volumes:
+            - clickhouse_data:/var/lib/clickhouse/
+
+    condev-monitor-postgres:
+        image: postgres:18.1
+        container_name: condev-monitor-postgres
+        ports:
+            - '${POSTGRES_PORT:-5432}:5432'
+        env_file:
+            - .env
+        environment:
+            - POSTGRES_USER=${DB_USERNAME:-postgres}
+            - POSTGRES_PASSWORD=${DB_PASSWORD:-condevPostgres}
+            - POSTGRES_DB=${DB_DATABASE:-postgres}
+        volumes:
+            - postgres_data:/var/lib/postgresql/
+
     condev-monitor-server:
         build:
             context: ..
@@ -10,7 +36,7 @@ services:
         ports:
             - '${MONITOR_SERVER_HOST_PORT:-18081}:8081'
         env_file:
-            - .env.deploy.local
+            - .env
         environment:
             - NODE_ENV=${NODE_ENV:-production}
             - DB_HOST=${DB_HOST:-condev-monitor-postgres}
@@ -28,12 +54,12 @@ services:
         ports:
             - '${DSN_SERVER_HOST_PORT:-18080}:8080'
         env_file:
-            - .env.deploy.local
+            - .env
         environment:
             - NODE_ENV=${NODE_ENV:-production}
             - PORT=8080
             - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
-            - FRONTEND_URL=http://localhost:${CADDY_HTTP_HOST_PORT:-8888}
+            - FRONTEND_URL=${FRONTEND_URL:-http://localhost:${CADDY_HTTP_HOST_PORT:-8888}}
         depends_on:
             - condev-monitor-clickhouse
 
@@ -56,9 +82,25 @@ services:
         container_name: condev-monitor-caddy
         ports:
             - '${CADDY_HTTP_HOST_PORT:-8888}:80'
+            - '${CADDY_HTTPS_HOST_PORT:-8443}:443'
+        env_file:
+            - .env
         volumes:
-            - ./caddy/Caddyfile.local:/etc/caddy/Caddyfile
+            - ./caddy/Caddyfile:/etc/caddy/Caddyfile
+            - caddy_data:/data
+            - caddy_config:/config
         depends_on:
             - condev-monitor-server
             - condev-monitor-web
             - condev-dsn-server
+
+volumes:
+    clickhouse_data:
+    postgres_data:
+    caddy_data:
+    caddy_config:
+
+networks:
+    default:
+        name: condev-monitor-network
+        driver: bridge

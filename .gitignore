@@ -49,15 +49,7 @@ Thumbs.db
 .settings/
 *.sublime-workspace
 # Env files
-.env
-.env.local
-.env.development.local
-.env.development
-.env.test.local
-.env.production.local
-.env.production
-.env*.local
-!.env.example
+
 # TypeScript
 *.tsbuildinfo
 # Runtime data
@@ -122,6 +114,4 @@ apps/backend/monitor/prisma/client/
 .devcontainer/clickhouse_data
 
 
-.devcontainer/.env.deploy.local
-.devcontainer/.env.deploy.prod
-.env.deploy
+
