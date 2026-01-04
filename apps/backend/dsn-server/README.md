@@ -35,7 +35,7 @@ $ pnpm install
 
 This service reads environment variables via `@nestjs/config` (`ConfigModule.forRoot`).
 
-- `PORT` (optional, default `8080`)
+- `PORT` (optional, default `8082`)
 - `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`
 - Email alerts (optional; if not set, email sending is disabled in dev):
     - `EMAIL_SENDER`

@@ -29,12 +29,12 @@ FROM base AS runner
 WORKDIR /app/apps/backend/dsn-server
 
 ENV NODE_ENV=production
-ENV PORT=8080
+ENV PORT=8082
 
 COPY --from=builder /app/apps/backend/dsn-server/dist ./dist
 COPY --from=builder /app/apps/backend/dsn-server/package.json ./package.json
 COPY --from=builder /app/node_modules /app/node_modules
 COPY --from=builder /app/apps/backend/dsn-server/node_modules ./node_modules
 
-EXPOSE 8080
+EXPOSE 8082
 CMD ["node", "dist/main.js"]

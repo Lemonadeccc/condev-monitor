@@ -58,12 +58,12 @@ services:
             context: ..
             dockerfile: apps/backend/dsn-server/Dockerfile
         expose:
-            - '8080'
+            - '8082'
         env_file:
             - .env
         environment:
             - NODE_ENV=${NODE_ENV:-production}
-            - PORT=8080
+            - PORT=8082
             - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
             - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8888}
         depends_on:
@@ -79,7 +79,7 @@ services:
             - NODE_ENV=${NODE_ENV:-production}
             - NEXT_TELEMETRY_DISABLED=1
             - API_PROXY_TARGET=http://condev-monitor-server:8081
-            - DSN_API_PROXY_TARGET=http://condev-dsn-server:8080
+            - DSN_API_PROXY_TARGET=http://condev-dsn-server:8082
         depends_on:
             - condev-monitor-server
             - condev-dsn-server

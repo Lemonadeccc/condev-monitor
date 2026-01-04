@@ -21,7 +21,7 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 The UI calls backend APIs via Next.js rewrites:
 
 - `/api/*` -> `API_PROXY_TARGET` (default `http://localhost:8081`)
-- `/dsn-api/*` -> `DSN_API_PROXY_TARGET` (default `http://localhost:8080`)
+- `/dsn-api/*` -> `DSN_API_PROXY_TARGET` (default `http://localhost:8082`)
 
 If you run the backend on a different host/port (e.g. Docker), set these env vars before `pnpm dev`.
 
