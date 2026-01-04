@@ -3,13 +3,14 @@ import * as path from 'node:path'
 
 import { Inject, Injectable } from '@nestjs/common'
 import { compile } from 'handlebars'
-import type { SendMailOptions, Transporter } from 'nodemailer'
 
-export type MailSendOptions = Omit<SendMailOptions, 'from' | 'html'> & {
-    from?: string
+import type { EmailSendParams } from './email-client'
+import type { EmailClient } from './email-client'
+import type { MailMode } from './mail.module'
+
+export type MailSendOptions = EmailSendParams & {
     template?: string
     context?: Record<string, any>
-    html?: string
 }
 
 @Injectable()
@@ -18,11 +19,11 @@ export class MailService {
     private readonly defaultFrom: string
 
     constructor(
-        @Inject('EMAIL_CLIENT') private readonly emailClient: Transporter,
-        @Inject('MAIL_MODE') private readonly mailMode: 'off' | 'json' | 'smtp'
+        @Inject('EMAIL_CLIENT') private readonly emailClient: EmailClient,
+        @Inject('MAIL_MODE') private readonly mailMode: MailMode
     ) {
         this.templatesDir = this.resolveTemplatesDir()
-        this.defaultFrom = `"condev-monitor" <${process.env.EMAIL_SENDER ?? 'no-reply@condev.local'}>`
+        this.defaultFrom = process.env.RESEND_FROM ?? `"condev-monitor" <${process.env.EMAIL_SENDER ?? 'no-reply@condev.local'}>`
     }
 
     async sendMail(options: MailSendOptions) {
@@ -30,10 +31,13 @@ export class MailService {
 
         if (this.mailMode === 'json') {
             // eslint-disable-next-line no-console
-            console.warn('MAIL_ON is true but SMTP credentials are missing; email will not be delivered.', {
-                to: rest.to,
-                subject: rest.subject,
-            })
+            console.warn(
+                'MAIL_ON is true but no email provider is configured (RESEND_API_KEY or SMTP credentials); email will not be delivered.',
+                {
+                    to: rest.to,
+                    subject: rest.subject,
+                }
+            )
         }
 
         const resolvedHtml =

@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt'
 import { hash } from 'bcryptjs'
 
 import { AdminService } from '../admin/admin.service'
+import type { MailMode } from '../common/mail/mail.module'
 import { MailService } from '../common/mail/mail.service'
 
 @Injectable()
@@ -16,9 +17,9 @@ export class AuthService {
         private readonly adminService: AdminService,
         private readonly mailerService: MailService,
         private readonly configService: ConfigService,
-        @Inject('MAIL_MODE') private readonly mailMode: 'off' | 'json' | 'smtp'
+        @Inject('MAIL_MODE') private readonly mailMode: MailMode
     ) {
-        this.mailOn = this.mailMode === 'smtp'
+        this.mailOn = this.mailMode === 'smtp' || this.mailMode === 'resend'
     }
 
     async validateUser(email: string, pass: string): Promise<any> {
@@ -54,8 +55,8 @@ export class AuthService {
         const frontendUrl = this.configService.get<string>('FRONTEND_URL') ?? 'http://localhost:8888'
         const resetUrl = `${frontendUrl}/reset-password?token=${encodeURIComponent(token)}`
 
-        try {
-            await this.mailerService.sendMail({
+        void this.mailerService
+            .sendMail({
                 to: user.email,
                 subject: 'Reset your password',
                 template: 'reset-password',
@@ -64,11 +65,10 @@ export class AuthService {
                     expiresInMinutes: 15,
                 },
             })
-        } catch (error) {
-            // Avoid leaking whether a user exists; also keep endpoint from 500'ing on SMTP issues.
-            // eslint-disable-next-line no-console
-            console.error('Failed to send reset password email', error)
-        }
+            .catch(error => {
+                // eslint-disable-next-line no-console
+                console.error('Failed to send reset password email', error)
+            })
 
         return { success: true }
     }

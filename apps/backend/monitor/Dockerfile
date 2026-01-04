@@ -36,4 +36,4 @@ COPY --from=builder /app/node_modules /app/node_modules
 COPY --from=builder /app/apps/backend/monitor/node_modules ./node_modules
 
 EXPOSE 8081
-CMD ["node", "dist/src/main.js"]
+CMD ["sh", "-c", "node dist/src/main.js 2>/dev/null || node dist/main.js"]

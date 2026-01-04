@@ -10,7 +10,8 @@ import typescriptLogo from './typescript.svg'
 // const monitoring =
 init({
     // dsn: 'http://localhost:8888/appid-xxx',
-    dsn: 'http://localhost:8888/tracking/vanilla28R8is',
+    // target ip
+    dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanilla28R8is',
 })
 // document.addEventListener('click', () => {
 //     monitoring.reportEvent({ type: 'click' })

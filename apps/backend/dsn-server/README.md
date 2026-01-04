@@ -38,6 +38,9 @@ This service reads environment variables via `@nestjs/config` (`ConfigModule.for
 - `PORT` (optional, default `8082`)
 - `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`
 - Email alerts (optional; if not set, email sending is disabled in dev):
+    - Resend (recommended; HTTPS):
+        - `RESEND_API_KEY`
+        - `RESEND_FROM` (e.g. `"condev-monitor" <no-reply@mail.condevtools.com>`)
     - `EMAIL_SENDER`
     - `EMAIL_SENDER_PASSWORD` (or `EMAIL_PASS`)
 

@@ -113,5 +113,7 @@ apps/backend/monitor/prisma/client/
 .devcontainer/postgresql_data
 .devcontainer/clickhouse_data
 
-
-
+.devcontainer/.env
+apps/backend/dsn-server/.env
+apps/backend/monitor/.env
+!**/.env.example

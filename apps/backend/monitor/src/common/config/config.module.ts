@@ -26,6 +26,8 @@ const schema = Joi.object({
     DB_AUTOLOAD: Joi.boolean().default(false),
     DB_SYNC: Joi.boolean().default(false),
     MAIL_ON: Joi.boolean().default(false),
+    RESEND_API_KEY: Joi.string().optional(),
+    RESEND_FROM: Joi.string().optional(),
     AUTH_REQUIRE_EMAIL_VERIFICATION: Joi.boolean().optional(),
     FRONTEND_URL: Joi.string().default('http://localhost:8888'),
     CLICKHOUSE_URL: Joi.string().required(),

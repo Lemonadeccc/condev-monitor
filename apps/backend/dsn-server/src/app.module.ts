@@ -34,6 +34,7 @@ const envFilePaths = existsSync(dsnServerEnvFilePath) ? [dsnServerEnvFilePath] :
             imports: [ConfigModule],
             inject: [ConfigService],
             useFactory: (configService: ConfigService) => {
+                const resendApiKey = configService.get<string>('RESEND_API_KEY') ?? ''
                 const emailSender = configService.get<string>('EMAIL_SENDER') ?? 'condevtools@163.com'
                 const emailSenderPassword =
                     configService.get<string>('EMAIL_SENDER_PASSWORD') ??
@@ -41,11 +42,16 @@ const envFilePaths = existsSync(dsnServerEnvFilePath) ? [dsnServerEnvFilePath] :
                     configService.get<string>('EMAIL_PASSWORD') ??
                     ''
 
+                if (resendApiKey) {
+                    return { provider: 'resend', apiKey: resendApiKey }
+                }
+
                 if (!emailSenderPassword) {
-                    return { jsonTransport: true }
+                    return { provider: 'json' }
                 }
 
                 return {
+                    provider: 'smtp',
                     host: 'smtp.163.com',
                     port: 465,
                     secure: true,

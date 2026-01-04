@@ -5,6 +5,7 @@ import { InjectRepository } from '@nestjs/typeorm'
 import { compare, hash } from 'bcryptjs'
 import { Repository } from 'typeorm'
 
+import type { MailMode } from '../common/mail/mail.module'
 import { MailService } from '../common/mail/mail.service'
 import { RegisterDto } from './dto'
 import { AdminEntity } from './entity/admin.entity'
@@ -20,12 +21,12 @@ export class AdminService {
         private readonly jwtService: JwtService,
         private readonly mailerService: MailService,
         private readonly configService: ConfigService,
-        @Inject('MAIL_MODE') private readonly mailMode: 'off' | 'json' | 'smtp'
+        @Inject('MAIL_MODE') private readonly mailMode: MailMode
     ) {
         const requireEmailVerificationConfig = this.configService.get<boolean>('AUTH_REQUIRE_EMAIL_VERIFICATION')
         // Default behavior: if SMTP is usable, require users to verify email before login.
         // Can be overridden explicitly via AUTH_REQUIRE_EMAIL_VERIFICATION=true/false.
-        this.requireEmailVerification = requireEmailVerificationConfig ?? this.mailMode === 'smtp'
+        this.requireEmailVerification = requireEmailVerificationConfig ?? (this.mailMode === 'smtp' || this.mailMode === 'resend')
     }
 
     async validateUser(email: string, pass: string): Promise<any> {
@@ -64,7 +65,7 @@ export class AdminService {
         })
         await this.adminRepository.save(admin)
 
-        if (this.mailMode !== 'smtp') {
+        if (this.mailMode !== 'smtp' && this.mailMode !== 'resend') {
             // eslint-disable-next-line @typescript-eslint/no-unused-vars
             const { password: _password, ...adminWithoutPassword } = admin
             return adminWithoutPassword as AdminEntity

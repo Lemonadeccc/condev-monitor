@@ -1,4 +1,4 @@
-:{$CADDY_HTTP_CONTAINER_PORT} {
+monitor.condevtools.com {
 	
 encode zstd gzip
 
@@ -15,14 +15,17 @@ handle_path /dsn-api/* {
 }
 
 handle /tracking/* {
+	rewrite * /dsn-api{uri}
 	reverse_proxy condev-dsn-server:8082
 }
 
 handle /span {
+	rewrite * /dsn-api{uri}
 	reverse_proxy condev-dsn-server:8082
 }
 
 handle /bugs {
+	rewrite * /dsn-api{uri}
 	reverse_proxy condev-dsn-server:8082
 }
 
@@ -31,40 +34,3 @@ handle {
 }
 
 }
-
-
-# # 线上监控示例
-# monitor.condevtools.com {
-
-
-#         encode zstd gzip
-
-#         header +Cache-Control "max-age=0, private, must-revalidate"
-
-#         # 保留 /api 前缀
-#         # handle_path /api/* {
-#         #         rewrite * {path}
-#         #         reverse_proxy 192.168.3.19:3000
-#         # }
-
-#         handle_path /api/* {
-#                 # rewrite * /{path.1}   # 重写去掉 /api 前缀
-#                 rewrite * /api{path}
-#                 # reverse_proxy 47.98.248.76:8081
-#                 reverse_proxy 172.28.49.109:8081
-#         }
-
-
-#         uri strip_suffix /
-
-#         root * /app/frontend/monitor/dist
-
-#         handle {
-
-
-#                 templates
-#                 try_files {path}.html {path} /
-#                 file_server
-#         }
-
-# }
