@@ -4,8 +4,10 @@ const nextConfig: NextConfig = {
     /* config options here */
     output: 'standalone',
     async rewrites() {
-        const apiProxyTarget = process.env.API_PROXY_TARGET ?? 'http://localhost:18081'
-        const dsnApiProxyTarget = process.env.DSN_API_PROXY_TARGET ?? 'http://localhost:18080'
+        // Local dev defaults: Nest APIs run on 8081/8080 (see apps/backend/*/src/main.ts)
+        // Override in docker/production via env.
+        const apiProxyTarget = process.env.API_PROXY_TARGET ?? 'http://localhost:8081'
+        const dsnApiProxyTarget = process.env.DSN_API_PROXY_TARGET ?? 'http://localhost:8080'
 
         return [
             {

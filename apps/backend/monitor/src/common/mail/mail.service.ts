@@ -17,13 +17,24 @@ export class MailService {
     private readonly templatesDir: string
     private readonly defaultFrom: string
 
-    constructor(@Inject('EMAIL_CLIENT') private readonly emailClient: Transporter) {
+    constructor(
+        @Inject('EMAIL_CLIENT') private readonly emailClient: Transporter,
+        @Inject('MAIL_MODE') private readonly mailMode: 'off' | 'json' | 'smtp'
+    ) {
         this.templatesDir = this.resolveTemplatesDir()
-        this.defaultFrom = `"condev-monitor" <${process.env.EMAIL_SENDER}>`
+        this.defaultFrom = `"condev-monitor" <${process.env.EMAIL_SENDER ?? 'no-reply@condev.local'}>`
     }
 
     async sendMail(options: MailSendOptions) {
         const { template, context, from, html, ...rest } = options
+
+        if (this.mailMode === 'json') {
+            // eslint-disable-next-line no-console
+            console.warn('MAIL_ON is true but SMTP credentials are missing; email will not be delivered.', {
+                to: rest.to,
+                subject: rest.subject,
+            })
+        }
 
         const resolvedHtml =
             html ??

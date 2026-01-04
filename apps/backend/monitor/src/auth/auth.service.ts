@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common'
+import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { JwtService } from '@nestjs/jwt'
 import { hash } from 'bcryptjs'
@@ -15,9 +15,10 @@ export class AuthService {
         private readonly jwtService: JwtService,
         private readonly adminService: AdminService,
         private readonly mailerService: MailService,
-        private readonly configService: ConfigService
+        private readonly configService: ConfigService,
+        @Inject('MAIL_MODE') private readonly mailMode: 'off' | 'json' | 'smtp'
     ) {
-        this.mailOn = this.configService.get<boolean>('MAIL_ON') === true
+        this.mailOn = this.mailMode === 'smtp'
     }
 
     async validateUser(email: string, pass: string): Promise<any> {

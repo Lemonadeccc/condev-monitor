@@ -1,9 +1,7 @@
 services:
     condev-monitor-clickhouse:
         image: clickhouse:25.10
-        # Do not publish ClickHouse ports on the host in Coolify/Compose deployments.
-        # Publishing `8123` commonly conflicts with other stacks on the same node
-        # ("port is already allocated"). Service-to-service access works via `expose`.
+
         expose:
             - '8123'
             - '9000'
@@ -18,7 +16,6 @@ services:
 
     condev-monitor-postgres:
         image: postgres:18.1
-        # Keep Postgres internal to the Compose network by default (no host port publish).
         expose:
             - '5432'
         env_file:
@@ -34,7 +31,6 @@ services:
         build:
             context: ..
             dockerfile: apps/backend/monitor/Dockerfile
-        # Internal API; Caddy is the public entrypoint in this stack.
         expose:
             - '8081'
         env_file:
@@ -50,7 +46,7 @@ services:
             - DB_AUTOLOAD=${DB_AUTOLOAD:-true}
             - DB_SYNC=${DB_SYNC:-true}
             - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
-            - FRONTEND_URL=${FRONTEND_URL:-http://152.53.88.58:8888}
+            - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8888}
             - MAIL_ON=${MAIL_ON:-false}
             - AUTH_REQUIRE_EMAIL_VERIFICATION=${AUTH_REQUIRE_EMAIL_VERIFICATION:-false}
         depends_on:
@@ -61,7 +57,6 @@ services:
         build:
             context: ..
             dockerfile: apps/backend/dsn-server/Dockerfile
-        # Internal API; Caddy is the public entrypoint in this stack.
         expose:
             - '8080'
         env_file:
@@ -70,7 +65,7 @@ services:
             - NODE_ENV=${NODE_ENV:-production}
             - PORT=8080
             - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
-            - FRONTEND_URL=${FRONTEND_URL:-http://152.53.88.58:8888}
+            - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8888}
         depends_on:
             - condev-monitor-clickhouse
 
@@ -78,13 +73,11 @@ services:
         build:
             context: ..
             dockerfile: apps/frontend/monitor/Dockerfile
-        # Internal web; Caddy is the public entrypoint in this stack.
         expose:
             - '3000'
         environment:
             - NODE_ENV=${NODE_ENV:-production}
             - NEXT_TELEMETRY_DISABLED=1
-            # Internal service-to-service proxy targets (avoid hardcoding host IPs)
             - API_PROXY_TARGET=http://condev-monitor-server:8081
             - DSN_API_PROXY_TARGET=http://condev-dsn-server:8080
         depends_on:
@@ -101,8 +94,6 @@ services:
         environment:
             - CADDY_HTTP_CONTAINER_PORT=${CADDY_HTTP_CONTAINER_PORT:-80}
         volumes:
-            # Mount the whole directory to avoid file/dir bind-mount mismatches on hosts
-            # where the source file may not exist yet (Docker would create a directory).
             - ./caddy:/etc/caddy:ro
             - caddy_data:/data
             - caddy_config:/config

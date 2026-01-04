@@ -1,4 +1,4 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common'
+import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { JwtService } from '@nestjs/jwt'
 import { InjectRepository } from '@nestjs/typeorm'
@@ -13,19 +13,19 @@ import { AdminEntity } from './entity/admin.entity'
 export class AdminService {
     private readonly passwordHashRounds = 12
     private readonly requireEmailVerification: boolean
-    private readonly mailOn: boolean
-    private readonly effectiveRequireEmailVerification: boolean
 
     constructor(
         @InjectRepository(AdminEntity)
         private readonly adminRepository: Repository<AdminEntity>,
         private readonly jwtService: JwtService,
         private readonly mailerService: MailService,
-        private readonly configService: ConfigService
+        private readonly configService: ConfigService,
+        @Inject('MAIL_MODE') private readonly mailMode: 'off' | 'json' | 'smtp'
     ) {
-        this.requireEmailVerification = this.configService.get<boolean>('AUTH_REQUIRE_EMAIL_VERIFICATION') === true
-        this.mailOn = this.configService.get<boolean>('MAIL_ON') === true
-        this.effectiveRequireEmailVerification = this.requireEmailVerification && this.mailOn
+        const requireEmailVerificationConfig = this.configService.get<boolean>('AUTH_REQUIRE_EMAIL_VERIFICATION')
+        // Default behavior: if SMTP is usable, require users to verify email before login.
+        // Can be overridden explicitly via AUTH_REQUIRE_EMAIL_VERIFICATION=true/false.
+        this.requireEmailVerification = requireEmailVerificationConfig ?? this.mailMode === 'smtp'
     }
 
     async validateUser(email: string, pass: string): Promise<any> {
@@ -42,7 +42,7 @@ export class AdminService {
             throw new HttpException({ message: 'Invalid password', error: 'INVALID_PASSWORD' }, HttpStatus.BAD_REQUEST)
         }
 
-        if (this.effectiveRequireEmailVerification && !admin.isVerified) {
+        if (this.requireEmailVerification && !admin.isVerified) {
             throw new HttpException({ message: 'Email not verified', error: 'EMAIL_NOT_VERIFIED' }, HttpStatus.FORBIDDEN)
         }
 
@@ -60,11 +60,11 @@ export class AdminService {
         const admin = await this.adminRepository.create({
             ...body,
             password: await hash(body.password, this.passwordHashRounds),
-            isVerified: !this.effectiveRequireEmailVerification,
+            isVerified: !this.requireEmailVerification,
         })
         await this.adminRepository.save(admin)
 
-        if (!this.effectiveRequireEmailVerification) {
+        if (this.mailMode !== 'smtp') {
             // eslint-disable-next-line @typescript-eslint/no-unused-vars
             const { password: _password, ...adminWithoutPassword } = admin
             return adminWithoutPassword as AdminEntity
@@ -90,8 +90,13 @@ export class AdminService {
                 },
             })
         } catch {
-            await this.adminRepository.delete({ id: admin.id })
-            throw new HttpException({ message: 'Failed to send verification email', error: 'EMAIL_SEND_FAILED' }, HttpStatus.BAD_GATEWAY)
+            if (this.requireEmailVerification) {
+                await this.adminRepository.delete({ id: admin.id })
+                throw new HttpException(
+                    { message: 'Failed to send verification email', error: 'EMAIL_SEND_FAILED' },
+                    HttpStatus.BAD_GATEWAY
+                )
+            }
         }
 
         // eslint-disable-next-line @typescript-eslint/no-unused-vars

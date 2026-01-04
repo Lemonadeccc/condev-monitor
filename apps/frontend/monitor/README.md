@@ -14,7 +14,16 @@ pnpm dev
 bun dev
 ```
 
-Open [http://192.168.158.81:3000](http://192.168.158.81:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+
+### API proxy (dev)
+
+The UI calls backend APIs via Next.js rewrites:
+
+- `/api/*` -> `API_PROXY_TARGET` (default `http://localhost:8081`)
+- `/dsn-api/*` -> `DSN_API_PROXY_TARGET` (default `http://localhost:8080`)
+
+If you run the backend on a different host/port (e.g. Docker), set these env vars before `pnpm dev`.
 
 You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
 

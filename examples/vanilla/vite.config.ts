@@ -5,9 +5,9 @@ export default defineConfig({
     server: {
         proxy: {
             '/dsn-api': {
-                target: 'http://152.53.88.58:8080',
+                // When using the repo docker-compose, access APIs via Caddy (default http://localhost:8888).
+                target: 'http://localhost:8888',
                 changeOrigin: true,
-                rewrite: path => path.replace(/^\/dsn-api/, ''),
             },
         },
     },
