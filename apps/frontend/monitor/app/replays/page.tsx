@@ -50,7 +50,10 @@ export default function ReplaysPage() {
     const [selectedAppId, setSelectedAppId] = useState<string>('')
 
     const { listQuery } = useApplications({ enabled })
-    const applications = useMemo(() => listQuery.data?.data?.applications ?? [], [listQuery.data?.data?.applications])
+    const applications = useMemo(() => {
+        const list = listQuery.data?.data?.applications ?? []
+        return list.filter(app => app.replayEnabled)
+    }, [listQuery.data?.data?.applications])
     const effectiveAppId = selectedAppId || applications[0]?.appId || ''
 
     const appById = useMemo(() => new Map(applications.map(app => [app.appId, app])), [applications])
@@ -85,7 +88,7 @@ export default function ReplaysPage() {
                 <p className="text-sm text-muted-foreground">Minimal session replays captured on errors (snapshot + event trail).</p>
             </header>
 
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
                 <div className="flex items-center gap-2">
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
