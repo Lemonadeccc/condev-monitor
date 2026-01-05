@@ -11,7 +11,6 @@ export const init = (options: { dsn: string; integrations?: Integration[] }) => 
     })
 
     const transport = new BrowserTransport(options.dsn)
-    console.log('transport', transport)
     monitoring.init(transport)
 
     new Errors(transport).init()

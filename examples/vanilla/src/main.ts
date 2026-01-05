@@ -34,6 +34,7 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     </div>
     <div class="card" style="padding-top: 0;">
       <button id="unhandledrejection-btn" type="button" style="background-color: #ff9800;">Unhandled Rejection</button>
+      <button id="resource-error-btn" type="button" style="margin-left: 10px; background-color: #03a9f4;">Resource Load Error</button>
       <button id="caught-error-manual-btn" type="button" style="margin-left: 10px; background-color: #9c27b0;">Caught Error (manual)</button>
       <button id="custom-message-btn" type="button" style="margin-left: 10px; background-color: #607d8b;">Custom Message</button>
       <button id="custom-event-btn" type="button" style="margin-left: 10px; background-color: #4caf50;">Custom Event</button>
@@ -60,6 +61,16 @@ document.querySelector<HTMLButtonElement>('#uncaught-referenceerror-btn')!.addEv
 
 document.querySelector<HTMLButtonElement>('#unhandledrejection-btn')!.addEventListener('click', () => {
     Promise.reject(new Error('Unhandled promise rejection from button click'))
+})
+
+document.querySelector<HTMLButtonElement>('#resource-error-btn')!.addEventListener('click', () => {
+    const img = new Image()
+    img.alt = 'broken image (for resource error test)'
+    img.style.width = '64px'
+    img.style.height = '64px'
+    img.style.marginLeft = '10px'
+    img.src = `/__condev_monitor_resource_error_test__.png?t=${Date.now()}`
+    document.querySelector<HTMLDivElement>('#app')!.appendChild(img)
 })
 
 document.querySelector<HTMLButtonElement>('#caught-error-manual-btn')!.addEventListener('click', () => {
