@@ -18,7 +18,6 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { useApplications } from '@/hooks/use-applications'
 import { formatDateTime } from '@/lib/datetime'
-import { cn } from '@/lib/utils'
 
 type MetricApiResponse = {
     success: boolean
@@ -105,13 +104,7 @@ export default function MetricPage() {
                 </p>
             </header>
 
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="inline-flex items-center gap-1 rounded-md bg-muted p-1">
-                    <button type="button" className={cn('h-8 px-3 text-sm rounded-md bg-background text-foreground shadow-sm')}>
-                        Overview
-                    </button>
-                </div>
-
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
                 <div className="flex items-center gap-2">
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
