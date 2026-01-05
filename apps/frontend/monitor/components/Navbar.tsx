@@ -1,6 +1,6 @@
 'use client'
 
-import { LogOut, Moon, Settings, Sun, User } from 'lucide-react'
+import { LogOut, Moon, Sun, User } from 'lucide-react'
 import Link from 'next/link'
 import { useTheme } from 'next-themes'
 import React from 'react'
@@ -60,10 +60,6 @@ const Navbar = () => {
                                 <User className="h-[1.2rem] w-[1.2rem] mr-2" />
                                 Profile
                             </Link>
-                        </DropdownMenuItem>
-                        <DropdownMenuItem>
-                            <Settings className="h-[1.2rem] w-[1.2rem] mr-2" />
-                            Settings
                         </DropdownMenuItem>
                         <DropdownMenuItem variant="destructive" onClick={() => logout()}>
                             <LogOut className="h-[1.2rem] w-[1.2rem] mr-2" />

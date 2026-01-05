@@ -81,6 +81,7 @@ export default function ProfilePage() {
                     <CardDescription>Current email: {currentEmail || '-'}</CardDescription>
                 </CardHeader>
                 <CardContent>
+                    <h3 className="mb-4 text-lg font-medium">Change Email Address</h3>
                     {error && <div className="mb-4 rounded bg-red-100 p-2 text-red-600 dark:bg-red-900/30 dark:text-red-400">{error}</div>}
                     {success && (
                         <div className="mb-4 rounded bg-green-100 p-2 text-green-700 dark:bg-green-900/30 dark:text-green-400">
