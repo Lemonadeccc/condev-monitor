@@ -113,22 +113,24 @@ export class SpanService {
     ) {}
 
     private async getReplayEnabled(appId: string): Promise<boolean> {
-        const monitorApiUrl = (this.configService.get<string>('MONITOR_API_URL') ?? 'http://localhost:8081').replace(/\/+$/, '')
-
         try {
-            const url = new URL(`${monitorApiUrl}/api/application/public/config`)
-            url.searchParams.set('appId', appId)
-            const res = await fetch(url.toString(), { method: 'GET' })
-            if (res.ok) {
-                const json = (await res.json()) as { data?: { replayEnabled?: boolean } }
-                return Boolean(json?.data?.replayEnabled)
-            }
+            const res = await this.clickhouseClient.query({
+                query: `
+                    SELECT replay_enabled
+                    FROM lemonade.app_settings
+                    WHERE app_id = {appId:String}
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                `,
+                query_params: { appId },
+                format: 'JSON',
+            })
+            const json = await res.json()
+            const row = (json.data ?? [])[0] as { replay_enabled?: number } | undefined
+            return row ? Boolean(row.replay_enabled) : false
         } catch {
-            // ignore and fall back
+            return false
         }
-
-        // Fallback: treat as disabled when monitor API is unavailable.
-        return false
     }
 
     async span() {

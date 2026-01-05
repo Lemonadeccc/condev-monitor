@@ -20,11 +20,22 @@ function parseDsn(dsn: string): ParsedDsn | null {
     try {
         const url = new URL(dsn)
         const parts = url.pathname.split('/').filter(Boolean)
+        let appId: string | undefined
+        let basePath: string
+
         const trackingIndex = parts.indexOf('tracking')
-        if (trackingIndex === -1) return null
-        const appId = parts[trackingIndex + 1]
+        if (trackingIndex !== -1) {
+            appId = parts[trackingIndex + 1]
+            basePath = '/' + parts.slice(0, trackingIndex).join('/')
+        } else {
+            // Fallback: assume standard structure [ ...base, endpoint, appId ]
+            // where we replace {endpoint} with 'replay' in the constructed URL later.
+            if (parts.length < 2) return null
+            appId = parts[parts.length - 1]
+            basePath = '/' + parts.slice(0, parts.length - 2).join('/')
+        }
+
         if (!appId) return null
-        const basePath = '/' + parts.slice(0, trackingIndex).join('/')
         return { appId, origin: url.origin, basePath }
     } catch {
         return null
