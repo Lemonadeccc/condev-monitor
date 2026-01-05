@@ -24,11 +24,6 @@ handle /span {
 	reverse_proxy condev-dsn-server:8082
 }
 
-handle /bugs {
-	rewrite * /dsn-api{uri}
-	reverse_proxy condev-dsn-server:8082
-}
-
 handle {
 	reverse_proxy condev-monitor-web:3000
 }
