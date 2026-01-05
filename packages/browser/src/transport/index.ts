@@ -7,8 +7,12 @@ export class BrowserTransport implements Transport {
     send(data: Record<string, unknown>) {
         const browserInfo = getBrowserInfo()
 
+        const rawMessage = (data as { message?: unknown } | undefined)?.message
+        const message = typeof rawMessage === 'string' ? rawMessage : ''
+
         const payload = {
             ...data,
+            message,
             browserInfo,
         }
 

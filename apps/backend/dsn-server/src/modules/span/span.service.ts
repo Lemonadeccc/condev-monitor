@@ -11,6 +11,40 @@ type OverviewBucket = {
     errors: number
 }
 
+type MetricBucket = {
+    ts: string
+    webVitals: number
+    longTask: number
+    jank: number
+    lowFps: number
+}
+
+type MetricVitalSummary = {
+    name: string
+    samples: number
+    avg: number
+    p50: number
+    p75: number
+    p95: number
+}
+
+type IssueTrendBucket = {
+    ts: string
+    count: number
+}
+
+type IssueItem = {
+    id: string
+    appId: string
+    type: string
+    message: string
+    path: string
+    events: number
+    firstSeenAt: string
+    lastSeenAt: string
+    trend: IssueTrendBucket[]
+}
+
 @Injectable()
 export class SpanService {
     constructor(
@@ -31,10 +65,12 @@ export class SpanService {
     async tracking(appId: string, body: Record<string, unknown>) {
         const { event_type, message, ...info } = body
 
+        const normalizedMessage = typeof message === 'string' ? message : ''
+
         const values = {
             app_id: appId,
             event_type,
-            message,
+            message: normalizedMessage,
             info,
         }
 
@@ -101,15 +137,15 @@ export class SpanService {
                     countIf(event_type = 'error') AS errors
                 FROM lemonade.base_monitor_view
                 WHERE app_id = {appId:String}
-                  AND created_at >= {from:DateTime}
-                  AND created_at < {to:DateTime}
+                  AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
+                  AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
                 GROUP BY bucket_ts
                 ORDER BY bucket_ts ASC
             `,
             query_params: {
                 appId,
-                from: toClickhouseDateTime(from),
-                to: toClickhouseDateTime(now),
+                fromSeconds,
+                toSeconds,
                 intervalSeconds: interval,
                 offsetSeconds,
             },
@@ -157,6 +193,274 @@ export class SpanService {
             },
         }
     }
+
+    async issues(params: { appId?: string; range: OverviewRange; limit: number }) {
+        const range =
+            params.range === '1h' || params.range === '3h' || params.range === '1d' || params.range === '7d' || params.range === '1m'
+                ? params.range
+                : '7d'
+        const limit = Number.isFinite(params.limit) ? Math.max(1, Math.min(500, Math.floor(params.limit))) : 200
+
+        const now = new Date()
+        const { from, interval } = resolveRange(now, range)
+        const fromSeconds = Math.floor(from.getTime() / 1000)
+        const offsetSeconds = interval > 0 ? fromSeconds % interval : 0
+        const toSeconds = Math.floor(now.getTime() / 1000)
+
+        const appId = (params.appId ?? '').trim()
+        const appFilter = appId ? 'AND app_id = {appId:String}' : ''
+
+        const res = await this.clickhouseClient.query({
+            query: `
+                SELECT
+                    app_id,
+                    issue_type,
+                    message,
+                    path,
+                    events,
+                    first_seen,
+                    last_seen,
+                    arrayMap(t -> t.1, buckets) AS bucket_ts,
+                    arrayMap(t -> t.2, buckets) AS bucket_counts
+                FROM
+                (
+                    SELECT
+                        app_id,
+                        issue_type,
+                        message,
+                        path,
+                        sum(cnt) AS events,
+                        min(first_seen) AS first_seen,
+                        max(last_seen) AS last_seen,
+                        arraySort(groupArray((bucket_ts, cnt))) AS buckets
+                    FROM
+                    (
+                        SELECT
+                            app_id,
+                            coalesce(JSONExtractString(toJSONString(info), 'type'), '') AS issue_type,
+                            message,
+                            coalesce(JSONExtractString(toJSONString(info), 'path'), '') AS path,
+                            toUnixTimestamp(
+                                toStartOfInterval(
+                                    created_at - toIntervalSecond({offsetSeconds:UInt32}),
+                                    toIntervalSecond({intervalSeconds:UInt32})
+                                ) + toIntervalSecond({offsetSeconds:UInt32})
+                            ) AS bucket_ts,
+                            count() AS cnt,
+                            min(created_at) AS first_seen,
+                            max(created_at) AS last_seen
+                        FROM lemonade.base_monitor_view
+                        WHERE event_type = 'error'
+                          ${appFilter}
+                          AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
+                          AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
+                        GROUP BY app_id, issue_type, message, path, bucket_ts
+                    )
+                    GROUP BY app_id, issue_type, message, path
+                )
+                ORDER BY last_seen DESC
+                LIMIT {limit:UInt32}
+            `,
+            query_params: {
+                ...(appId ? { appId } : {}),
+                fromSeconds,
+                toSeconds,
+                intervalSeconds: interval,
+                offsetSeconds,
+                limit,
+            },
+            format: 'JSON',
+        })
+
+        const json = await res.json()
+
+        const items: IssueItem[] = (json.data ?? []).map((row: any) => {
+            const rowAppId = String(row.app_id ?? '')
+            const type = String(row.issue_type ?? '')
+            const message = String(row.message ?? '')
+            const path = String(row.path ?? '')
+            const events = Number(row.events ?? 0)
+            const firstSeenAt = new Date(String(row.first_seen ?? '')).toISOString()
+            const lastSeenAt = new Date(String(row.last_seen ?? '')).toISOString()
+
+            const bucketTs = (row.bucket_ts ?? []) as number[]
+            const bucketCounts = (row.bucket_counts ?? []) as number[]
+            const byTs = new Map<number, number>()
+            for (let i = 0; i < bucketTs.length; i += 1) {
+                byTs.set(Number(bucketTs[i] ?? 0), Number(bucketCounts[i] ?? 0))
+            }
+
+            const trend: IssueTrendBucket[] = []
+            for (let t = fromSeconds; t <= toSeconds; t += interval) {
+                trend.push({ ts: new Date(t * 1000).toISOString(), count: byTs.get(t) ?? 0 })
+            }
+
+            return {
+                id: `${rowAppId}:${type}:${path}:${message}`,
+                appId: rowAppId,
+                type,
+                message,
+                path,
+                events,
+                firstSeenAt,
+                lastSeenAt,
+                trend,
+            }
+        })
+
+        return {
+            success: true,
+            data: {
+                appId: appId || null,
+                range,
+                from: from.toISOString(),
+                to: now.toISOString(),
+                intervalSeconds: interval,
+                issues: items,
+            },
+        }
+    }
+
+    async metric(params: { appId: string; range: OverviewRange }) {
+        const appId = (params.appId ?? '').trim()
+        if (!appId) {
+            throw new BadRequestException({ message: 'appId is required', error: 'APP_ID_REQUIRED' })
+        }
+
+        const range =
+            params.range === '1h' || params.range === '3h' || params.range === '1d' || params.range === '7d' || params.range === '1m'
+                ? params.range
+                : '7d'
+
+        const now = new Date()
+        const { from, interval } = resolveRange(now, range)
+        const fromSeconds = Math.floor(from.getTime() / 1000)
+        const offsetSeconds = interval > 0 ? fromSeconds % interval : 0
+        const toSeconds = Math.floor(now.getTime() / 1000)
+
+        const seriesRes = await this.clickhouseClient.query({
+            query: `
+                SELECT
+                    toUnixTimestamp(
+                        toStartOfInterval(
+                            created_at - toIntervalSecond({offsetSeconds:UInt32}),
+                            toIntervalSecond({intervalSeconds:UInt32})
+                        ) + toIntervalSecond({offsetSeconds:UInt32})
+                    ) AS bucket_ts,
+                    countIf(JSONExtractString(toJSONString(info), 'type') = 'webVital') AS web_vitals,
+                    countIf(JSONExtractString(toJSONString(info), 'type') = 'longTask') AS long_task,
+                    countIf(JSONExtractString(toJSONString(info), 'type') = 'jank') AS jank,
+                    countIf(JSONExtractString(toJSONString(info), 'type') = 'lowFps') AS low_fps
+                FROM lemonade.base_monitor_view
+                WHERE app_id = {appId:String}
+                  AND event_type = 'performance'
+                  AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
+                  AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
+                GROUP BY bucket_ts
+                ORDER BY bucket_ts ASC
+            `,
+            query_params: {
+                appId,
+                fromSeconds,
+                toSeconds,
+                intervalSeconds: interval,
+                offsetSeconds,
+            },
+            format: 'JSON',
+        })
+
+        const seriesJson = await seriesRes.json()
+        const seriesRows: Array<{
+            tsSeconds: number
+            webVitals: number
+            longTask: number
+            jank: number
+            lowFps: number
+        }> = (seriesJson.data ?? []).map((row: any) => ({
+            tsSeconds: Number(row.bucket_ts ?? 0),
+            webVitals: Number(row.web_vitals ?? 0),
+            longTask: Number(row.long_task ?? 0),
+            jank: Number(row.jank ?? 0),
+            lowFps: Number(row.low_fps ?? 0),
+        }))
+
+        const byTs = new Map(seriesRows.map(r => [r.tsSeconds, r]))
+        const series: MetricBucket[] = []
+        for (let t = fromSeconds; t <= toSeconds; t += interval) {
+            const row = byTs.get(t)
+            series.push({
+                ts: new Date(t * 1000).toISOString(),
+                webVitals: row?.webVitals ?? 0,
+                longTask: row?.longTask ?? 0,
+                jank: row?.jank ?? 0,
+                lowFps: row?.lowFps ?? 0,
+            })
+        }
+
+        const totals = series.reduce(
+            (acc, b) => {
+                acc.webVitals += b.webVitals
+                acc.longTask += b.longTask
+                acc.jank += b.jank
+                acc.lowFps += b.lowFps
+                return acc
+            },
+            { webVitals: 0, longTask: 0, jank: 0, lowFps: 0 }
+        )
+
+        const vitalsRes = await this.clickhouseClient.query({
+            query: `
+                SELECT
+                    coalesce(JSONExtractString(toJSONString(info), 'name'), '') AS name,
+                    count() AS samples,
+                    avg(JSONExtractFloat(toJSONString(info), 'value')) AS avg,
+                    quantile(0.5)(JSONExtractFloat(toJSONString(info), 'value')) AS p50,
+                    quantile(0.75)(JSONExtractFloat(toJSONString(info), 'value')) AS p75,
+                    quantile(0.95)(JSONExtractFloat(toJSONString(info), 'value')) AS p95
+                FROM lemonade.base_monitor_view
+                WHERE app_id = {appId:String}
+                  AND event_type = 'performance'
+                  AND JSONExtractString(toJSONString(info), 'type') = 'webVital'
+                  AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
+                  AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
+                GROUP BY name
+                ORDER BY name ASC
+            `,
+            query_params: {
+                appId,
+                fromSeconds,
+                toSeconds,
+            },
+            format: 'JSON',
+        })
+
+        const vitalsJson = await vitalsRes.json()
+        const vitals: MetricVitalSummary[] = (vitalsJson.data ?? []).map((row: any) => ({
+            name: String(row.name ?? ''),
+            samples: Number(row.samples ?? 0),
+            avg: Number(row.avg ?? 0),
+            p50: Number(row.p50 ?? 0),
+            p75: Number(row.p75 ?? 0),
+            p95: Number(row.p95 ?? 0),
+        }))
+
+        return {
+            success: true,
+            data: {
+                appId,
+                range,
+                from: from.toISOString(),
+                to: now.toISOString(),
+                intervalSeconds: interval,
+                totals: {
+                    total: totals.webVitals + totals.longTask + totals.jank + totals.lowFps,
+                    ...totals,
+                },
+                series,
+                vitals,
+            },
+        }
+    }
 }
 
 function resolveRange(now: Date, range: OverviewRange): { from: Date; interval: number } {
@@ -181,11 +485,4 @@ function resolveRange(now: Date, range: OverviewRange): { from: Date; interval: 
     // default 7d
     from.setDate(from.getDate() - 7)
     return { from, interval: 24 * 60 * 60 } // 1 day
-}
-
-function toClickhouseDateTime(date: Date) {
-    const pad = (n: number) => String(n).padStart(2, '0')
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(
-        date.getSeconds()
-    )}`
 }
