@@ -71,6 +71,19 @@ const DEFAULT_POINTS: Array<[number, number]> = [
     [0.9, 0.5],
 ]
 
+type WhiteScreenDefaultOptions = Required<Omit<WhiteScreenOptions, 'watchRootSelector'>> & { watchRootSelector?: string }
+
+export const DEFAULT_WHITE_SCREEN_OPTIONS: WhiteScreenDefaultOptions = {
+    wrapperSelectors: ['html', 'body', '#app', '#root'],
+    checkDelayMs: 1000,
+    maxChecks: 3,
+    checkIntervalMs: 1000,
+    points: DEFAULT_POINTS,
+    runtimeWatch: false,
+    watchDurationMs: 10_000,
+    debounceMs: 200,
+}
+
 function toSimpleSelector(el: Element): string {
     const tag = el.tagName.toLowerCase()
     const id = (el as HTMLElement).id ? `#${(el as HTMLElement).id}` : ''
@@ -109,12 +122,12 @@ export class WhiteScreen {
 
     init() {
         const startAuto = () => {
-            const delay = this.options.checkDelayMs ?? 1000
+            const delay = this.options.checkDelayMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.checkDelayMs
             window.setTimeout(() => this.startPolling('auto'), delay)
 
             if (this.options.runtimeWatch) {
                 // Arm for a short window after initial load.
-                const duration = this.options.watchDurationMs ?? 10_000
+                const duration = this.options.watchDurationMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.watchDurationMs
                 this.armRuntimeWatch('load', duration)
                 this.initRuntimeWatch()
             }
@@ -129,7 +142,7 @@ export class WhiteScreen {
 
     trigger(reason = 'manual') {
         if (this.options.runtimeWatch) {
-            const duration = this.options.watchDurationMs ?? 10_000
+            const duration = this.options.watchDurationMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.watchDurationMs
             this.armRuntimeWatch(reason, duration)
         }
         this.checkAndReport(reason)
@@ -139,8 +152,8 @@ export class WhiteScreen {
         this.stopPolling()
         this.checkCount = 0
 
-        const interval = this.options.checkIntervalMs ?? 1000
-        const maxChecks = this.options.maxChecks ?? 3
+        const interval = this.options.checkIntervalMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.checkIntervalMs
+        const maxChecks = this.options.maxChecks ?? DEFAULT_WHITE_SCREEN_OPTIONS.maxChecks
 
         const tick = () => {
             this.checkCount += 1
@@ -186,7 +199,7 @@ export class WhiteScreen {
         const observeRoot = this.pickWatchRoot()
         if (!observeRoot) return
 
-        const debounceMs = this.options.debounceMs ?? 200
+        const debounceMs = this.options.debounceMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.debounceMs
         this.mutationObserver = new MutationObserver(() => {
             if (!this.isRuntimeArmed() || this.hasReported) return
             if (this.mutationDebounceTimer !== null) {
@@ -221,7 +234,7 @@ export class WhiteScreen {
     }
 
     private bindRuntimeArmEvents() {
-        const duration = this.options.watchDurationMs ?? 10_000
+        const duration = this.options.watchDurationMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.watchDurationMs
 
         window.addEventListener(
             'click',
@@ -292,8 +305,8 @@ export class WhiteScreen {
     }
 
     private check(): WhiteScreenCheckResult {
-        const points = this.options.points ?? DEFAULT_POINTS
-        const wrapperSelectors = this.options.wrapperSelectors ?? ['html', 'body', '#app', '#root']
+        const points = this.options.points ?? DEFAULT_WHITE_SCREEN_OPTIONS.points
+        const wrapperSelectors = this.options.wrapperSelectors ?? DEFAULT_WHITE_SCREEN_OPTIONS.wrapperSelectors
         const wrappers = pickWrapperElements(wrapperSelectors)
 
         const width = window.innerWidth || document.documentElement.clientWidth || 0

@@ -14,10 +14,37 @@ init({
     whiteScreen: {
         runtimeWatch: true,
     },
+    performance: {
+        lowFpsThreshold: 55,
+        lowFpsConsecutive: 1,
+    },
 })
 
 function myFn() {
     throw new Error('This is a test error triggered by button click')
+}
+
+function blockMainThread(durationMs: number) {
+    const start = performance.now()
+    while (performance.now() - start < durationMs) {
+        // busy loop
+    }
+}
+
+let fpsStressRafId: number | null = null
+function toggleFpsStress() {
+    if (fpsStressRafId !== null) {
+        cancelAnimationFrame(fpsStressRafId)
+        fpsStressRafId = null
+        return
+    }
+
+    const loop = () => {
+        // Do some work each frame to intentionally drop FPS.
+        blockMainThread(35)
+        fpsStressRafId = requestAnimationFrame(loop)
+    }
+    fpsStressRafId = requestAnimationFrame(loop)
 }
 
 document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
@@ -46,6 +73,11 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
     <div class="card" style="padding-top: 0;">
       <button id="route-change-btn" type="button" style="background-color: #2196f3;">Route: pushState</button>
       <button id="route-change-white-screen-btn" type="button" style="margin-left: 10px; background-color: #e91e63;">Route: pushState + White Screen</button>
+    </div>
+    <div class="card" style="padding-top: 0;">
+      <button id="longtask-btn" type="button" style="background-color: #ff5722;">Long Task (200ms)</button>
+      <button id="jank-btn" type="button" style="margin-left: 10px; background-color: #795548;">Jank (5s)</button>
+      <button id="fps-btn" type="button" style="margin-left: 10px; background-color: #00bcd4;">Toggle FPS Stress</button>
     </div>
     <p class="read-the-docs">
       Click on the Vite and TypeScript logos to learn more
@@ -145,4 +177,22 @@ document.querySelector<HTMLButtonElement>('#route-change-white-screen-btn')!.add
     document.documentElement.style.backgroundColor = '#ffffff'
     document.body.style.backgroundColor = '#ffffff'
     document.body.style.color = '#111111'
+})
+
+document.querySelector<HTMLButtonElement>('#longtask-btn')!.addEventListener('click', () => {
+    blockMainThread(200)
+})
+
+document.querySelector<HTMLButtonElement>('#jank-btn')!.addEventListener('click', () => {
+    const startedAt = Date.now()
+    const timer = window.setInterval(() => {
+        blockMainThread(150)
+        if (Date.now() - startedAt > 5000) {
+            window.clearInterval(timer)
+        }
+    }, 500)
+})
+
+document.querySelector<HTMLButtonElement>('#fps-btn')!.addEventListener('click', () => {
+    toggleFpsStress()
 })

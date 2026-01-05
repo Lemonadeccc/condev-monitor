@@ -12,3 +12,5 @@ condevtools
 Cffb
 initdb
 BSUs
+jank
+longtask
