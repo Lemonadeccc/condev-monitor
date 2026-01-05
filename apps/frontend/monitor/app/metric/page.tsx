@@ -7,7 +7,7 @@ import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts'
 import { useAuth } from '@/components/providers'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import { type ChartConfig, ChartContainer } from '@/components/ui/chart'
+import { type ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -31,6 +31,9 @@ type MetricApiResponse = {
         totals: { total: number; webVitals: number; longTask: number; jank: number; lowFps: number }
         series: Array<{ ts: string; webVitals: number; longTask: number; jank: number; lowFps: number }>
         vitals: Array<{ name: string; samples: number; avg: number; p50: number; p75: number; p95: number }>
+        paths: Array<{ path: string; total: number; webVitals: number; longTask: number; jank: number; lowFps: number }>
+        longTaskDuration: { samples: number; avg: number; p50: number; p75: number; p95: number; max: number }
+        longTaskDurationByPath: Array<{ path: string; samples: number; avg: number; p50: number; p75: number; p95: number; max: number }>
     }
 }
 
@@ -74,12 +77,15 @@ export default function MetricPage() {
     const summary = metricQuery.data?.data?.totals
     const series = metricQuery.data?.data?.series ?? []
     const vitals = metricQuery.data?.data?.vitals ?? []
+    const paths = metricQuery.data?.data?.paths ?? []
+    const longTaskDuration = metricQuery.data?.data?.longTaskDuration
+    const longTaskDurationByPath = metricQuery.data?.data?.longTaskDurationByPath ?? []
 
     const chartConfig: ChartConfig = {
-        webVitals: { label: 'Web Vitals', color: 'var(--chart-1)' },
-        longTask: { label: 'Long Task', color: 'var(--chart-2)' },
-        jank: { label: 'Jank', color: 'var(--chart-3)' },
-        lowFps: { label: 'Low FPS', color: 'var(--chart-4)' },
+        webVitals: { label: 'Web Vitals', color: '#2ecc71' },
+        longTask: { label: 'Long Task', color: '#3498db' },
+        jank: { label: 'Jank', color: '#e67e22' },
+        lowFps: { label: 'Low FPS', color: '#e74c3c' },
     }
 
     if (loading) {
@@ -94,7 +100,9 @@ export default function MetricPage() {
         <div className="flex flex-col gap-4 pb-10">
             <header className="flex flex-col gap-1">
                 <h1 className="text-xl font-semibold">Metric</h1>
-                <p className="text-sm text-muted-foreground">Counts `event_type=performance` and summarizes Web Vitals.</p>
+                <p className="text-sm text-muted-foreground">
+                    Counts `event_type=performance`, summarizes Web Vitals (incl. LOAD), and breaks down by path.
+                </p>
             </header>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -107,7 +115,7 @@ export default function MetricPage() {
                 <div className="flex items-center gap-2">
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                            <Button variant="outline" size="sm" className="h-8 text-foreground">
+                            <Button variant="default" size="sm">
                                 {appById.get(effectiveAppId)?.name || 'Select app'}
                             </Button>
                         </DropdownMenuTrigger>
@@ -124,7 +132,7 @@ export default function MetricPage() {
 
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                            <Button variant="outline" size="sm" className="h-8 text-foreground">
+                            <Button variant="default" size="sm">
                                 {range.toUpperCase()}
                             </Button>
                         </DropdownMenuTrigger>
@@ -141,7 +149,7 @@ export default function MetricPage() {
                 </div>
             </div>
 
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-5">
                 <Card className="bg-primary-foreground shadow-none">
                     <CardHeader className="gap-1">
                         <CardTitle className="text-sm font-medium text-muted-foreground">Total</CardTitle>
@@ -163,6 +171,14 @@ export default function MetricPage() {
                         <CardTitle className="text-sm font-medium text-muted-foreground">Long task</CardTitle>
                         <CardDescription className="text-2xl font-semibold text-foreground">
                             {(summary?.longTask ?? 0).toLocaleString()}
+                        </CardDescription>
+                    </CardHeader>
+                </Card>
+                <Card className="bg-primary-foreground shadow-none">
+                    <CardHeader className="gap-1">
+                        <CardTitle className="text-sm font-medium text-muted-foreground">Jank</CardTitle>
+                        <CardDescription className="text-2xl font-semibold text-foreground">
+                            {(summary?.jank ?? 0).toLocaleString()}
                         </CardDescription>
                     </CardHeader>
                 </Card>
@@ -201,16 +217,35 @@ export default function MetricPage() {
                                     tickFormatter={value => {
                                         const d = new Date(value)
                                         if (range === '1h' || range === '3h') {
-                                            return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                                            return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
                                         }
-                                        if (range === '1d') return d.toLocaleTimeString([], { hour: '2-digit' })
-                                        return d.toLocaleDateString([], { month: 'short', day: '2-digit' })
+                                        if (range === '1d') return d.toLocaleTimeString('en-US', { hour: '2-digit' })
+                                        return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' })
                                     }}
                                 />
                                 <Line dataKey="webVitals" type="monotone" stroke="var(--color-webVitals)" strokeWidth={2} dot={false} />
                                 <Line dataKey="longTask" type="monotone" stroke="var(--color-longTask)" strokeWidth={2} dot={false} />
                                 <Line dataKey="jank" type="monotone" stroke="var(--color-jank)" strokeWidth={2} dot={false} />
                                 <Line dataKey="lowFps" type="monotone" stroke="var(--color-lowFps)" strokeWidth={2} dot={false} />
+                                <ChartTooltip
+                                    content={
+                                        <ChartTooltipContent
+                                            labelKey="ts"
+                                            labelFormatter={value => formatTime(String(value))}
+                                            formatter={(value, name) => (
+                                                <div className="flex flex-1 justify-between leading-none">
+                                                    <span className="text-muted-foreground">
+                                                        {chartConfig[String(name)]?.label ?? String(name)}
+                                                    </span>
+                                                    <span className="text-foreground font-mono font-medium tabular-nums">
+                                                        {Number(value).toLocaleString()} times
+                                                    </span>
+                                                </div>
+                                            )}
+                                        />
+                                    }
+                                />
+                                <ChartLegend content={<ChartLegendContent />} />
                             </LineChart>
                         </ChartContainer>
                     )}
@@ -256,6 +291,153 @@ export default function MetricPage() {
                         </div>
                     ) : (
                         <div className="px-6 py-10 text-sm text-muted-foreground">No Web Vitals found.</div>
+                    )}
+                </CardContent>
+            </Card>
+
+            <Card className="bg-primary-foreground shadow-none">
+                <CardHeader className="border-b">
+                    <CardTitle className="text-base">Long task duration</CardTitle>
+                    <CardDescription className="text-sm">Percentiles across all long tasks (ms)</CardDescription>
+                </CardHeader>
+                <CardContent className="px-0">
+                    {metricQuery.isLoading ? (
+                        <div className="px-6 py-10 text-sm text-muted-foreground">Loading...</div>
+                    ) : metricQuery.isError ? (
+                        <div className="px-6 py-10 text-sm text-destructive">Failed to load. Please try again.</div>
+                    ) : (longTaskDuration?.samples ?? 0) > 0 ? (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                                <thead className="bg-muted/40 text-xs text-muted-foreground">
+                                    <tr className="[&_th]:font-medium">
+                                        <th className="px-6 py-3 text-right">Samples</th>
+                                        <th className="px-6 py-3 text-right">Avg</th>
+                                        <th className="px-6 py-3 text-right">P50</th>
+                                        <th className="px-6 py-3 text-right">P75</th>
+                                        <th className="px-6 py-3 text-right">P95</th>
+                                        <th className="px-6 py-3 text-right">Max</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    <tr className="hover:bg-muted/20">
+                                        <td className="px-6 py-4 text-right font-mono tabular-nums">
+                                            {(longTaskDuration?.samples ?? 0).toLocaleString()}
+                                        </td>
+                                        <td className="px-6 py-4 text-right font-mono tabular-nums">
+                                            {formatNumber(longTaskDuration?.avg ?? 0)}
+                                        </td>
+                                        <td className="px-6 py-4 text-right font-mono tabular-nums">
+                                            {formatNumber(longTaskDuration?.p50 ?? 0)}
+                                        </td>
+                                        <td className="px-6 py-4 text-right font-mono tabular-nums">
+                                            {formatNumber(longTaskDuration?.p75 ?? 0)}
+                                        </td>
+                                        <td className="px-6 py-4 text-right font-mono tabular-nums">
+                                            {formatNumber(longTaskDuration?.p95 ?? 0)}
+                                        </td>
+                                        <td className="px-6 py-4 text-right font-mono tabular-nums">
+                                            {formatNumber(longTaskDuration?.max ?? 0)}
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                    ) : (
+                        <div className="px-6 py-10 text-sm text-muted-foreground">No long tasks found.</div>
+                    )}
+                </CardContent>
+            </Card>
+
+            <Card className="bg-primary-foreground shadow-none">
+                <CardHeader className="border-b">
+                    <CardTitle className="text-base">By path</CardTitle>
+                    <CardDescription className="text-sm">Top paths by total performance events</CardDescription>
+                </CardHeader>
+                <CardContent className="px-0">
+                    {metricQuery.isLoading ? (
+                        <div className="px-6 py-10 text-sm text-muted-foreground">Loading...</div>
+                    ) : metricQuery.isError ? (
+                        <div className="px-6 py-10 text-sm text-destructive">Failed to load. Please try again.</div>
+                    ) : paths.length ? (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                                <thead className="bg-muted/40 text-xs text-muted-foreground">
+                                    <tr className="[&_th]:font-medium">
+                                        <th className="px-6 py-3 text-left">Path</th>
+                                        <th className="px-6 py-3 text-right">Total</th>
+                                        <th className="px-6 py-3 text-right">Web Vitals</th>
+                                        <th className="px-6 py-3 text-right">Long task</th>
+                                        <th className="px-6 py-3 text-right">Jank</th>
+                                        <th className="px-6 py-3 text-right">Low FPS</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    {paths.slice(0, 12).map((row, idx) => (
+                                        <tr key={`${row.path || '(unknown)'}:${idx}`} className="hover:bg-muted/20">
+                                            <td className="px-6 py-4 font-medium max-w-[420px] truncate" title={row.path || ''}>
+                                                {row.path || '(unknown)'}
+                                            </td>
+                                            <td className="px-6 py-4 text-right font-mono tabular-nums">{row.total.toLocaleString()}</td>
+                                            <td className="px-6 py-4 text-right font-mono tabular-nums">
+                                                {row.webVitals.toLocaleString()}
+                                            </td>
+                                            <td className="px-6 py-4 text-right font-mono tabular-nums">{row.longTask.toLocaleString()}</td>
+                                            <td className="px-6 py-4 text-right font-mono tabular-nums">{row.jank.toLocaleString()}</td>
+                                            <td className="px-6 py-4 text-right font-mono tabular-nums">{row.lowFps.toLocaleString()}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    ) : (
+                        <div className="px-6 py-10 text-sm text-muted-foreground">No performance events found.</div>
+                    )}
+                </CardContent>
+            </Card>
+
+            <Card className="bg-primary-foreground shadow-none">
+                <CardHeader className="border-b">
+                    <CardTitle className="text-base">Long task by path</CardTitle>
+                    <CardDescription className="text-sm">Top paths by long task samples (ms)</CardDescription>
+                </CardHeader>
+                <CardContent className="px-0">
+                    {metricQuery.isLoading ? (
+                        <div className="px-6 py-10 text-sm text-muted-foreground">Loading...</div>
+                    ) : metricQuery.isError ? (
+                        <div className="px-6 py-10 text-sm text-destructive">Failed to load. Please try again.</div>
+                    ) : longTaskDurationByPath.length ? (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                                <thead className="bg-muted/40 text-xs text-muted-foreground">
+                                    <tr className="[&_th]:font-medium">
+                                        <th className="px-6 py-3 text-left">Path</th>
+                                        <th className="px-6 py-3 text-right">Samples</th>
+                                        <th className="px-6 py-3 text-right">Avg</th>
+                                        <th className="px-6 py-3 text-right">P50</th>
+                                        <th className="px-6 py-3 text-right">P75</th>
+                                        <th className="px-6 py-3 text-right">P95</th>
+                                        <th className="px-6 py-3 text-right">Max</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    {longTaskDurationByPath.slice(0, 12).map((row, idx) => (
+                                        <tr key={`${row.path || '(unknown)'}:${idx}`} className="hover:bg-muted/20">
+                                            <td className="px-6 py-4 font-medium max-w-[420px] truncate" title={row.path || ''}>
+                                                {row.path || '(unknown)'}
+                                            </td>
+                                            <td className="px-6 py-4 text-right font-mono tabular-nums">{row.samples.toLocaleString()}</td>
+                                            <td className="px-6 py-4 text-right font-mono tabular-nums">{formatNumber(row.avg)}</td>
+                                            <td className="px-6 py-4 text-right font-mono tabular-nums">{formatNumber(row.p50)}</td>
+                                            <td className="px-6 py-4 text-right font-mono tabular-nums">{formatNumber(row.p75)}</td>
+                                            <td className="px-6 py-4 text-right font-mono tabular-nums">{formatNumber(row.p95)}</td>
+                                            <td className="px-6 py-4 text-right font-mono tabular-nums">{formatNumber(row.max)}</td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        </div>
+                    ) : (
+                        <div className="px-6 py-10 text-sm text-muted-foreground">No long tasks found.</div>
                     )}
                 </CardContent>
             </Card>

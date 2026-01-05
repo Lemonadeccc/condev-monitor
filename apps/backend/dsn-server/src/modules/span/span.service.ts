@@ -28,6 +28,26 @@ type MetricVitalSummary = {
     p95: number
 }
 
+type MetricPathSummary = {
+    path: string
+    total: number
+    webVitals: number
+    longTask: number
+    jank: number
+    lowFps: number
+}
+
+type LongTaskDurationSummary = {
+    samples: number
+    avg: number
+    p50: number
+    p75: number
+    p95: number
+    max: number
+}
+
+type LongTaskDurationByPath = LongTaskDurationSummary & { path: string }
+
 type IssueTrendBucket = {
     ts: string
     count: number
@@ -444,6 +464,128 @@ export class SpanService {
             p95: Number(row.p95 ?? 0),
         }))
 
+        const pathsRes = await this.clickhouseClient.query({
+            query: `
+                WITH
+                    coalesce(JSONExtractString(toJSONString(info), 'path'), '') AS path,
+                    coalesce(JSONExtractString(toJSONString(info), 'type'), '') AS metric_type
+                SELECT
+                    path,
+                    count() AS total,
+                    countIf(metric_type = 'webVital') AS web_vitals,
+                    countIf(metric_type = 'longTask') AS long_task,
+                    countIf(metric_type = 'jank') AS jank,
+                    countIf(metric_type = 'lowFps') AS low_fps
+                FROM lemonade.base_monitor_view
+                WHERE app_id = {appId:String}
+                  AND event_type = 'performance'
+                  AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
+                  AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
+                GROUP BY path
+                ORDER BY total DESC
+                LIMIT 50
+            `,
+            query_params: {
+                appId,
+                fromSeconds,
+                toSeconds,
+            },
+            format: 'JSON',
+        })
+
+        const pathsJson = await pathsRes.json()
+        const paths: MetricPathSummary[] = (pathsJson.data ?? []).map((row: any) => ({
+            path: String(row.path ?? ''),
+            total: Number(row.total ?? 0),
+            webVitals: Number(row.web_vitals ?? 0),
+            longTask: Number(row.long_task ?? 0),
+            jank: Number(row.jank ?? 0),
+            lowFps: Number(row.low_fps ?? 0),
+        }))
+
+        const longTaskDurationRes = await this.clickhouseClient.query({
+            query: `
+                WITH
+                    coalesce(JSONExtractString(toJSONString(info), 'type'), '') AS metric_type,
+                    JSONExtractFloat(toJSONString(info), 'duration') AS duration
+                SELECT
+                    count() AS samples,
+                    avg(duration) AS avg,
+                    quantile(0.5)(duration) AS p50,
+                    quantile(0.75)(duration) AS p75,
+                    quantile(0.95)(duration) AS p95,
+                    max(duration) AS max
+                FROM lemonade.base_monitor_view
+                WHERE app_id = {appId:String}
+                  AND event_type = 'performance'
+                  AND metric_type = 'longTask'
+                  AND duration > 0
+                  AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
+                  AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
+            `,
+            query_params: {
+                appId,
+                fromSeconds,
+                toSeconds,
+            },
+            format: 'JSON',
+        })
+
+        const longTaskDurationJson = await longTaskDurationRes.json()
+        const longTaskDurationRow = (longTaskDurationJson.data ?? [])[0] as any
+        const longTaskDuration: LongTaskDurationSummary = {
+            samples: Number(longTaskDurationRow?.samples ?? 0),
+            avg: Number(longTaskDurationRow?.avg ?? 0),
+            p50: Number(longTaskDurationRow?.p50 ?? 0),
+            p75: Number(longTaskDurationRow?.p75 ?? 0),
+            p95: Number(longTaskDurationRow?.p95 ?? 0),
+            max: Number(longTaskDurationRow?.max ?? 0),
+        }
+
+        const longTaskDurationByPathRes = await this.clickhouseClient.query({
+            query: `
+                WITH
+                    coalesce(JSONExtractString(toJSONString(info), 'path'), '') AS path,
+                    coalesce(JSONExtractString(toJSONString(info), 'type'), '') AS metric_type,
+                    JSONExtractFloat(toJSONString(info), 'duration') AS duration
+                SELECT
+                    path,
+                    count() AS samples,
+                    avg(duration) AS avg,
+                    quantile(0.5)(duration) AS p50,
+                    quantile(0.75)(duration) AS p75,
+                    quantile(0.95)(duration) AS p95,
+                    max(duration) AS max
+                FROM lemonade.base_monitor_view
+                WHERE app_id = {appId:String}
+                  AND event_type = 'performance'
+                  AND metric_type = 'longTask'
+                  AND duration > 0
+                  AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
+                  AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
+                GROUP BY path
+                ORDER BY samples DESC
+                LIMIT 20
+            `,
+            query_params: {
+                appId,
+                fromSeconds,
+                toSeconds,
+            },
+            format: 'JSON',
+        })
+
+        const longTaskDurationByPathJson = await longTaskDurationByPathRes.json()
+        const longTaskDurationByPath: LongTaskDurationByPath[] = (longTaskDurationByPathJson.data ?? []).map((row: any) => ({
+            path: String(row.path ?? ''),
+            samples: Number(row.samples ?? 0),
+            avg: Number(row.avg ?? 0),
+            p50: Number(row.p50 ?? 0),
+            p75: Number(row.p75 ?? 0),
+            p95: Number(row.p95 ?? 0),
+            max: Number(row.max ?? 0),
+        }))
+
         return {
             success: true,
             data: {
@@ -458,6 +600,9 @@ export class SpanService {
                 },
                 series,
                 vitals,
+                paths,
+                longTaskDuration,
+                longTaskDurationByPath,
             },
         }
     }
