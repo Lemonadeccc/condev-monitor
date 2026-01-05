@@ -10,7 +10,9 @@ import typescriptLogo from './typescript.svg'
 
 init({
     // target ip
-    dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanilla28R8is',
+    // target ip
+    // dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanilla28R8is',
+    dsn: 'http://localhost:8082/dsn-api/tracking/vanillauLBvtd',
     whiteScreen: {
         runtimeWatch: true,
     },

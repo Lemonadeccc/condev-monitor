@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post } from '@nestjs/common'
+import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common'
 
 import { SpanService } from './span.service'
 
@@ -19,5 +19,10 @@ export class SpanController {
     @Get('/bugs')
     bugs() {
         return this.spanService.bugs()
+    }
+
+    @Get('/overview')
+    overview(@Query('appId') appId: string, @Query('range') range: '1h' | '3h' | '1d' | '7d' | '1m' = '1h') {
+        return this.spanService.overview({ appId, range })
     }
 }

@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common'
+import { HttpException, HttpStatus, Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 
@@ -11,7 +11,20 @@ export class ApplicationService {
         private readonly applicationRepository: Repository<ApplicationEntity>
     ) {}
 
+    private normalizeName(name: string | undefined) {
+        return (name ?? '').trim()
+    }
+
     async create(application: ApplicationEntity) {
+        application.name = this.normalizeName(application.name)
+
+        const existing = await this.applicationRepository.findOne({
+            where: { name: application.name, user: { id: application.user.id }, isDelete: false },
+        })
+        if (existing) {
+            throw new HttpException({ message: 'Application name already exists', error: 'NAME_EXISTS' }, HttpStatus.CONFLICT)
+        }
+
         await this.applicationRepository.save(application)
         return application
     }
@@ -22,11 +35,22 @@ export class ApplicationService {
         })
 
         if (!application) {
-            throw new Error('Application not found')
+            throw new HttpException({ message: 'Application not found', error: 'NOT_FOUND' }, HttpStatus.NOT_FOUND)
         }
 
         if (payload.type !== undefined) application.type = payload.type as any
-        if (payload.name !== undefined) application.name = payload.name
+        if (payload.name !== undefined) {
+            const nextName = this.normalizeName(payload.name)
+            if (nextName !== application.name) {
+                const existing = await this.applicationRepository.findOne({
+                    where: { name: nextName, user: { id: payload.userId }, isDelete: false },
+                })
+                if (existing && existing.id !== application.id) {
+                    throw new HttpException({ message: 'Application name already exists', error: 'NAME_EXISTS' }, HttpStatus.CONFLICT)
+                }
+            }
+            application.name = nextName
+        }
         if (payload.description !== undefined) application.description = payload.description
 
         application.updatedAt = new Date()

@@ -1,53 +1,72 @@
 'use client'
 
-import { useQuery } from '@tanstack/react-query'
+import { useState } from 'react'
 
-import AppAreaChart from '@/components/AppAreaChart'
-import AppBarChart from '@/components/AppBarChart'
-import AppLineChart from '@/components/AppLineChart'
+import { ApplicationCard } from '@/components/overview/ApplicationCard'
+import { CreateApplicationDialog } from '@/components/overview/CreateApplicationDialog'
 import { useAuth } from '@/components/providers'
-import type { Application, ApplicationListResponse } from '@/types/application'
+import { Button } from '@/components/ui/button'
+import { useApplications } from '@/hooks/use-applications'
+import { useIssueCounts } from '@/hooks/use-issue-counts'
 
 export default function Home() {
     const { user, loading } = useAuth()
-    const { data } = useQuery<ApplicationListResponse>({
-        queryKey: ['applications'],
-        enabled: !loading && Boolean(user),
-        queryFn: async (): Promise<ApplicationListResponse> => {
-            const token = localStorage.getItem('access_token')
-            const res = await fetch('/api/application', {
-                method: 'GET',
-                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-            })
-            if (!res.ok) {
-                throw new Error('Failed to load applications')
-            }
-            return (await res.json()) as ApplicationListResponse
-        },
-    })
+    const [createOpen, setCreateOpen] = useState(false)
+    const enabled = !loading && Boolean(user)
+
+    const { listQuery, createMutation, deleteMutation, updateMutation } = useApplications({ enabled })
+    const { issuesCountByAppId } = useIssueCounts({ enabled })
+
+    const applications = listQuery.data?.data?.applications ?? []
+
+    if (loading) {
+        return <div className="text-sm text-muted-foreground">Loading...</div>
+    }
+
+    if (!user) {
+        return null
+    }
 
     return (
-        <div className="grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4">
-            <div className="bg-primary-foreground p-4 rounded-lg">
-                <AppAreaChart />
-            </div>
-            <div className="bg-primary-foreground p-4 rounded-lg">
-                <AppBarChart />
-            </div>
-            <div className="bg-primary-foreground p-4 rounded-lg">
-                <AppLineChart />
-            </div>
-            <div className="bg-primary-foreground p-4 rounded-lg">
-                {data?.application?.map((item: Application) => (
-                    <div key={item.id} className="mb-2 p-2 border rounded">
-                        <h3 className="font-bold">{item.name}</h3>
-                        <p className="text-sm text-muted-foreground">{item.description}</p>
-                        <p className="text-xs">App ID: {item.appId}</p>
-                    </div>
-                ))}
-            </div>
-            <div className="bg-primary-foreground p-4 rounded-lg">Test</div>
-            <div className="bg-primary-foreground p-4 rounded-lg">Test</div>
+        <div className="flex flex-col gap-4 pb-10">
+            <header className="flex items-center justify-between">
+                <h1 className="text-xl font-semibold">Overview</h1>
+                <Button onClick={() => setCreateOpen(true)}>Create app</Button>
+            </header>
+
+            {listQuery.isLoading ? (
+                <div className="text-sm text-muted-foreground">Loading...</div>
+            ) : listQuery.isError ? (
+                <div className="text-sm text-destructive">Failed to load. Please try again.</div>
+            ) : applications.length ? (
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                    {applications.map(app => (
+                        <ApplicationCard
+                            key={app.appId}
+                            application={app}
+                            issuesCount={issuesCountByAppId.get(app.appId) ?? 0}
+                            onDelete={() => deleteMutation.mutate(app.appId)}
+                            onRename={async nextName => {
+                                await updateMutation.mutateAsync({ id: app.id, name: nextName })
+                            }}
+                        />
+                    ))}
+                </div>
+            ) : (
+                <div className="flex flex-col items-center justify-center rounded-lg border bg-primary-foreground p-10 gap-4">
+                    <div className="text-lg font-medium">No applications yet</div>
+                    <div className="text-sm text-muted-foreground">Create a new monitoring application to get started.</div>
+                    <Button onClick={() => setCreateOpen(true)}>Create app</Button>
+                </div>
+            )}
+
+            <CreateApplicationDialog
+                open={createOpen}
+                onOpenChange={setCreateOpen}
+                onCreate={async values => {
+                    await createMutation.mutateAsync(values)
+                }}
+            />
         </div>
     )
 }
