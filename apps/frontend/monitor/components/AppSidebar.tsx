@@ -1,4 +1,3 @@
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@radix-ui/react-dropdown-menu'
 import { Bug, Home, Play, User2, Zap } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
@@ -87,22 +86,10 @@ const AppSidebar = () => {
             <SidebarFooter>
                 <SidebarMenu>
                     <SidebarMenuItem>
-                        <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                                <SidebarMenuButton>
-                                    <User2 />
-                                    {user?.email || 'User'}
-                                </SidebarMenuButton>
-                            </DropdownMenuTrigger>
-
-                            <DropdownMenuContent align="end">
-                                <DropdownMenuItem asChild>
-                                    <Link href="/profile">Account</Link>
-                                </DropdownMenuItem>
-                                <DropdownMenuItem>Setting</DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => logout()}>Sign out</DropdownMenuItem>
-                            </DropdownMenuContent>
-                        </DropdownMenu>
+                        <SidebarMenuButton onClick={() => logout()}>
+                            <User2 />
+                            {user?.email || 'User'}
+                        </SidebarMenuButton>
                     </SidebarMenuItem>
                 </SidebarMenu>
             </SidebarFooter>
