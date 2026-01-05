@@ -1,6 +1,6 @@
 import './style.css'
 
-import { init } from '@condev-monitor/monitor-sdk-browser'
+import { init, triggerWhiteScreenCheck } from '@condev-monitor/monitor-sdk-browser'
 import { captureEvent, captureException, captureMessage } from '@condev-monitor/monitor-sdk-core'
 
 import viteLogo from '/vite.svg'
@@ -11,6 +11,9 @@ import typescriptLogo from './typescript.svg'
 init({
     // target ip
     dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanilla28R8is',
+    whiteScreen: {
+        runtimeWatch: true,
+    },
 })
 
 function myFn() {
@@ -38,6 +41,11 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <button id="caught-error-manual-btn" type="button" style="margin-left: 10px; background-color: #9c27b0;">Caught Error (manual)</button>
       <button id="custom-message-btn" type="button" style="margin-left: 10px; background-color: #607d8b;">Custom Message</button>
       <button id="custom-event-btn" type="button" style="margin-left: 10px; background-color: #4caf50;">Custom Event</button>
+      <button id="white-screen-btn" type="button" style="margin-left: 10px; background-color: #ffffff; color: #111;">White Screen</button>
+    </div>
+    <div class="card" style="padding-top: 0;">
+      <button id="route-change-btn" type="button" style="background-color: #2196f3;">Route: pushState</button>
+      <button id="route-change-white-screen-btn" type="button" style="margin-left: 10px; background-color: #e91e63;">Route: pushState + White Screen</button>
     </div>
     <p class="read-the-docs">
       Click on the Vite and TypeScript logos to learn more
@@ -94,4 +102,47 @@ document.querySelector<HTMLButtonElement>('#custom-event-btn')!.addEventListener
             path: window.location.pathname,
         },
     })
+})
+
+document.querySelector<HTMLButtonElement>('#white-screen-btn')!.addEventListener('click', () => {
+    const app = document.querySelector<HTMLDivElement>('#app')
+    if (app) {
+        app.innerHTML = ''
+        app.style.minHeight = '100vh'
+        app.style.width = '100vw'
+        app.style.padding = '0'
+    }
+    document.documentElement.style.backgroundColor = '#ffffff'
+    document.body.style.backgroundColor = '#ffffff'
+    document.body.style.color = '#111111'
+
+    triggerWhiteScreenCheck('vanilla-button')
+})
+
+document.querySelector<HTMLButtonElement>('#route-change-btn')!.addEventListener('click', () => {
+    history.pushState({}, '', `/route-test-${Date.now()}`)
+
+    // Create a small visible DOM mutation so MutationObserver path can run a non-white-screen check.
+    const status = document.createElement('div')
+    status.style.marginTop = '12px'
+    status.style.fontSize = '12px'
+    status.style.opacity = '0.7'
+    status.textContent = `route changed to: ${window.location.pathname}`
+    document.querySelector<HTMLDivElement>('#app')!.appendChild(status)
+})
+
+document.querySelector<HTMLButtonElement>('#route-change-white-screen-btn')!.addEventListener('click', () => {
+    history.pushState({}, '', `/route-white-screen-${Date.now()}`)
+
+    // Simulate route-render failure: DOM becomes blank after route change.
+    const app = document.querySelector<HTMLDivElement>('#app')
+    if (app) {
+        app.innerHTML = ''
+        app.style.minHeight = '100vh'
+        app.style.width = '100vw'
+        app.style.padding = '0'
+    }
+    document.documentElement.style.backgroundColor = '#ffffff'
+    document.body.style.backgroundColor = '#ffffff'
+    document.body.style.color = '#111111'
 })
