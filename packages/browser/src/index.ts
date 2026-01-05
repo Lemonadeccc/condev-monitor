@@ -5,6 +5,7 @@ import { Errors } from './tracing/errorsIntegration'
 import { DEFAULT_WHITE_SCREEN_OPTIONS, WhiteScreen, WhiteScreenOptions } from './tracing/whiteScreenIntegration'
 import { DEFAULT_RUNTIME_PERFORMANCE_OPTIONS, RuntimePerformance, RuntimePerformanceOptions } from './tracing/runtimePerformanceIntegration'
 import { Metrics } from '@condev-monitor/monitor-sdk-browser-utils'
+import { Replay } from './replay/replayIntegration'
 
 let whiteScreen: WhiteScreen | null = null
 
@@ -29,6 +30,12 @@ export const init = (options: {
      * Defaults to enabled.
      */
     performance?: boolean | RuntimePerformanceOptions
+    /**
+     * Enable/disable minimal session replay (DOM snapshot + event trail) on errors.
+     * Requires app-level toggle enabled in the monitor UI.
+     * Defaults to disabled.
+     */
+    replay?: boolean
 }) => {
     const monitoring = new Monitoring({
         dsn: options.dsn,
@@ -40,6 +47,10 @@ export const init = (options: {
 
     new Errors(transport).init()
     new Metrics(transport).init()
+
+    if (options.replay) {
+        new Replay(transport, options.dsn).init()
+    }
 
     if (options.performance !== false) {
         const perfOptions = typeof options.performance === 'object' ? options.performance : {}

@@ -1,4 +1,5 @@
-import { HttpException, HttpStatus, Injectable } from '@nestjs/common'
+import { ClickHouseClient } from '@clickhouse/client'
+import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 
@@ -7,6 +8,8 @@ import { ApplicationEntity } from './entity/application.entity'
 @Injectable()
 export class ApplicationService {
     constructor(
+        @Inject('CLICKHOUSE_CLIENT')
+        private readonly clickhouseClient: ClickHouseClient,
         @InjectRepository(ApplicationEntity)
         private readonly applicationRepository: Repository<ApplicationEntity>
     ) {}
@@ -26,10 +29,17 @@ export class ApplicationService {
         }
 
         await this.applicationRepository.save(application)
+        try {
+            await this.syncReplaySetting({ appId: application.appId, replayEnabled: Boolean(application.replayEnabled) })
+        } catch (err) {
+            // ClickHouse is best-effort for app settings sync; do not block API writes.
+            // eslint-disable-next-line no-console
+            console.error('Failed to sync replay setting to ClickHouse', err)
+        }
         return application
     }
 
-    async update(payload: { id: number; userId: number; type?: string; name?: string; description?: string }) {
+    async update(payload: { id: number; userId: number; type?: string; name?: string; description?: string; replayEnabled?: boolean }) {
         const application = await this.applicationRepository.findOne({
             where: { id: payload.id, user: { id: payload.userId }, isDelete: false },
         })
@@ -52,10 +62,19 @@ export class ApplicationService {
             application.name = nextName
         }
         if (payload.description !== undefined) application.description = payload.description
+        if (payload.replayEnabled !== undefined) {
+            application.replayEnabled = Boolean(payload.replayEnabled)
+        }
 
         application.updatedAt = new Date()
 
         await this.applicationRepository.save(application)
+        try {
+            await this.syncReplaySetting({ appId: application.appId, replayEnabled: Boolean(application.replayEnabled) })
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('Failed to sync replay setting to ClickHouse', err)
+        }
         return application
     }
 
@@ -101,5 +120,62 @@ export class ApplicationService {
         })
 
         return { success: true }
+    }
+
+    async publicConfig(params: { appId: string }) {
+        const appId = (params.appId ?? '').trim()
+        if (!appId) {
+            throw new HttpException({ message: 'appId is required', error: 'APP_ID_REQUIRED' }, HttpStatus.BAD_REQUEST)
+        }
+
+        const application = await this.applicationRepository.findOne({
+            where: { appId, isDelete: false },
+        })
+
+        if (!application) {
+            throw new HttpException({ message: 'Application not found', error: 'NOT_FOUND' }, HttpStatus.NOT_FOUND)
+        }
+
+        return {
+            success: true,
+            data: {
+                appId: application.appId,
+                replayEnabled: Boolean(application.replayEnabled),
+            },
+        }
+    }
+
+    private async ensureAppSettingsTable() {
+        await this.clickhouseClient.command({
+            query: `
+                CREATE TABLE IF NOT EXISTS lemonade.app_settings
+                (
+                    app_id String,
+                    replay_enabled UInt8,
+                    updated_at DateTime
+                )
+                ENGINE = ReplacingMergeTree(updated_at)
+                ORDER BY app_id
+            `,
+        })
+    }
+
+    private async syncReplaySetting(params: { appId: string; replayEnabled: boolean }) {
+        const appId = (params.appId ?? '').trim()
+        if (!appId) return
+
+        await this.ensureAppSettingsTable()
+        await this.clickhouseClient.insert({
+            table: 'lemonade.app_settings',
+            columns: ['app_id', 'replay_enabled', 'updated_at'],
+            format: 'JSONEachRow',
+            values: [
+                {
+                    app_id: appId,
+                    replay_enabled: params.replayEnabled ? 1 : 0,
+                    updated_at: new Date().toISOString(),
+                },
+            ],
+        })
     }
 }

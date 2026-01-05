@@ -30,7 +30,8 @@
     "license": "ISC",
     "description": "",
     "dependencies": {
+        "@condev-monitor/monitor-sdk-browser-utils": "workspace:*",
         "@condev-monitor/monitor-sdk-core": "workspace:*",
-        "@condev-monitor/monitor-sdk-browser-utils": "workspace:*"
+        "rrweb": "2.0.0-alpha.4"
     }
 }

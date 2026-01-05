@@ -39,4 +39,28 @@ export class SpanController {
     overview(@Query('appId') appId: string, @Query('range') range: '1h' | '3h' | '1d' | '7d' | '1m' = '1h') {
         return this.spanService.overview({ appId, range })
     }
+
+    @Get('/app-config')
+    appConfig(@Query('appId') appId: string) {
+        return this.spanService.appConfig({ appId })
+    }
+
+    @Post('/replay/:app_id')
+    replay(@Param('app_id') appId: string, @Body() body: Record<string, unknown>) {
+        return this.spanService.replayUpload({ appId, body })
+    }
+
+    @Get('/replay')
+    replayGet(@Query('appId') appId: string, @Query('replayId') replayId: string) {
+        return this.spanService.replayGet({ appId, replayId })
+    }
+
+    @Get('/replays')
+    replays(@Query('appId') appId: string, @Query('range') range: '1h' | '3h' | '1d' | '7d' | '1m' = '7d', @Query('limit') limit = '50') {
+        return this.spanService.replays({
+            appId,
+            range,
+            limit: Number(limit) || 50,
+        })
+    }
 }

@@ -1,7 +1,7 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { Copy, Settings } from 'lucide-react'
+import { Copy, Settings, Video, VideoOff } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts'
 
@@ -21,16 +21,20 @@ import { Input } from '../ui/input'
 export function ApplicationCard(props: {
     application: Application
     issuesCount: number
+    replayEnabled: boolean
+    onSetReplayEnabled: (enabled: boolean) => Promise<void>
     onDelete: () => void
     onRename: (nextName: string) => Promise<void>
 }) {
-    const { application, issuesCount, onDelete, onRename } = props
+    const { application, issuesCount, replayEnabled, onSetReplayEnabled, onDelete, onRename } = props
     const [copied, setCopied] = useState(false)
     const [range, setRange] = useState<'1h' | '3h' | '1d' | '7d' | '1m'>('1h')
     const [renameOpen, setRenameOpen] = useState(false)
     const [renameValue, setRenameValue] = useState(application.name)
     const [renameSubmitting, setRenameSubmitting] = useState(false)
     const [renameError, setRenameError] = useState<string | null>(null)
+    const [replaySubmitting, setReplaySubmitting] = useState(false)
+    const [replayError, setReplayError] = useState<string | null>(null)
 
     const { data: overviewData } = useQuery({
         queryKey: ['app-overview', application.appId, range],
@@ -110,6 +114,26 @@ export function ApplicationCard(props: {
                     <CardDescription className="text-xs">Issues: {effectiveIssues}</CardDescription>
                 </div>
                 <div className="flex items-center gap-2">
+                    <Button
+                        variant={replayEnabled ? 'default' : 'outline'}
+                        size="icon-sm"
+                        disabled={replaySubmitting}
+                        aria-label={replayEnabled ? 'Disable replay recording' : 'Enable replay recording'}
+                        title={replayEnabled ? 'Replay: ON' : 'Replay: OFF'}
+                        onClick={async () => {
+                            setReplayError(null)
+                            setReplaySubmitting(true)
+                            try {
+                                await onSetReplayEnabled(!replayEnabled)
+                            } catch (e) {
+                                setReplayError((e as Error)?.message || 'Failed to update replay setting')
+                            } finally {
+                                setReplaySubmitting(false)
+                            }
+                        }}
+                    >
+                        {replayEnabled ? <Video className="h-4 w-4" /> : <VideoOff className="h-4 w-4" />}
+                    </Button>
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                             <Button variant="outline" size="sm" className="h-8 px-2 text-xs">
@@ -240,21 +264,24 @@ export function ApplicationCard(props: {
 
             <CardFooter className="flex items-center justify-between pt-6">
                 <p className="text-xs text-muted-foreground">Created: {createdAtLabel}</p>
-                <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={async () => {
-                        const ok = await copyToClipboard(application.appId)
-                        if (ok) {
-                            setCopied(true)
-                            window.setTimeout(() => setCopied(false), 1200)
-                        }
-                    }}
-                >
-                    <span className="text-xs">{copied ? 'Copied' : `App ID: ${application.appId}`}</span>
-                    <Copy className="h-4 w-4 ml-2" />
-                </Button>
+                <div className="flex items-center gap-2">
+                    <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={async () => {
+                            const ok = await copyToClipboard(application.appId)
+                            if (ok) {
+                                setCopied(true)
+                                window.setTimeout(() => setCopied(false), 1200)
+                            }
+                        }}
+                    >
+                        <span className="text-xs">{copied ? 'Copied' : `App ID: ${application.appId}`}</span>
+                        <Copy className="h-4 w-4 ml-2" />
+                    </Button>
+                </div>
             </CardFooter>
+            {replayError ? <div className="px-6 pb-4 text-xs text-destructive">{replayError}</div> : null}
 
             <Dialog
                 open={renameOpen}

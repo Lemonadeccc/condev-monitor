@@ -1,4 +1,4 @@
-import { IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Length } from 'class-validator'
+import { IsBoolean, IsEnum, IsNotEmpty, IsNumber, IsOptional, IsString, Length } from 'class-validator'
 
 import { ApplicationType } from './create-application.dto'
 
@@ -19,4 +19,8 @@ export class UpdateApplicationDto {
     @IsOptional()
     @IsString({ message: 'Description must be a string' })
     description?: string
+
+    @IsOptional()
+    @IsBoolean({ message: 'Replay enabled must be a boolean' })
+    replayEnabled?: boolean
 }

@@ -1,5 +1,6 @@
 import { ClickHouseClient } from '@clickhouse/client'
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common'
+import { ConfigService } from '@nestjs/config'
 
 import { EmailService } from '../email/email.service'
 
@@ -65,13 +66,70 @@ type IssueItem = {
     trend: IssueTrendBucket[]
 }
 
+type ReplayEvent = Record<string, unknown>
+
+type ReplayItem = {
+    appId: string
+    replayId: string
+    createdAt: string
+    startedAt?: string
+    endedAt?: string
+    errorAt?: string
+    path?: string
+    url?: string
+    userAgent?: string
+    events: ReplayEvent[]
+    snapshot?: string
+}
+
+function normalizeReplayEvents(rawEvents: unknown, maxEvents: number): unknown[] {
+    const list = Array.isArray(rawEvents) ? rawEvents : []
+    if (list.length <= maxEvents) return list
+
+    // Prefer keeping a rrweb FullSnapshot event as the first event (EventType.FullSnapshot = 2).
+    const fullSnapshotIdx = list.findIndex(e => {
+        if (!e || typeof e !== 'object') return false
+        const t = (e as any).type
+        return typeof t === 'number' && t === 2
+    })
+
+    if (fullSnapshotIdx === -1) {
+        return list.slice(-maxEvents)
+    }
+
+    const head = list[fullSnapshotIdx]
+    const tail = list.slice(fullSnapshotIdx + 1)
+    const trimmedTail = tail.length > maxEvents - 1 ? tail.slice(-(maxEvents - 1)) : tail
+    return [head, ...trimmedTail]
+}
+
 @Injectable()
 export class SpanService {
     constructor(
         @Inject('CLICKHOUSE_CLIENT')
         private readonly clickhouseClient: ClickHouseClient,
-        private readonly emailService: EmailService
+        private readonly emailService: EmailService,
+        private readonly configService: ConfigService
     ) {}
+
+    private async getReplayEnabled(appId: string): Promise<boolean> {
+        const monitorApiUrl = (this.configService.get<string>('MONITOR_API_URL') ?? 'http://localhost:8081').replace(/\/+$/, '')
+
+        try {
+            const url = new URL(`${monitorApiUrl}/api/application/public/config`)
+            url.searchParams.set('appId', appId)
+            const res = await fetch(url.toString(), { method: 'GET' })
+            if (res.ok) {
+                const json = (await res.json()) as { data?: { replayEnabled?: boolean } }
+                return Boolean(json?.data?.replayEnabled)
+            }
+        } catch {
+            // ignore and fall back
+        }
+
+        // Fallback: treat as disabled when monitor API is unavailable.
+        return false
+    }
 
     async span() {
         const res = await this.clickhouseClient.query({
@@ -126,6 +184,19 @@ export class SpanService {
         })
         const data = await res.json()
         return data.data
+    }
+
+    async appConfig(params: { appId: string }) {
+        const appId = (params.appId ?? '').trim()
+        if (!appId) {
+            throw new BadRequestException({ message: 'appId is required', error: 'APP_ID_REQUIRED' })
+        }
+
+        const replayEnabled = await this.getReplayEnabled(appId)
+        return {
+            success: true,
+            data: { appId, replayEnabled },
+        }
     }
 
     async overview(params: { appId: string; range: OverviewRange }) {
@@ -603,6 +674,203 @@ export class SpanService {
                 paths,
                 longTaskDuration,
                 longTaskDurationByPath,
+            },
+        }
+    }
+
+    async replayUpload(params: { appId: string; body: Record<string, unknown> }) {
+        const appId = (params.appId ?? '').trim()
+        if (!appId) {
+            throw new BadRequestException({ message: 'appId is required', error: 'APP_ID_REQUIRED' })
+        }
+
+        const replayEnabled = await this.getReplayEnabled(appId)
+        if (!replayEnabled) {
+            return { ok: true, skipped: true }
+        }
+
+        const replayId = String(params.body.replayId ?? '').trim()
+        if (!replayId) {
+            throw new BadRequestException({ message: 'replayId is required', error: 'REPLAY_ID_REQUIRED' })
+        }
+
+        const startedAt = typeof params.body.startedAt === 'string' ? params.body.startedAt : undefined
+        const endedAt = typeof params.body.endedAt === 'string' ? params.body.endedAt : undefined
+        const errorAt = typeof params.body.errorAt === 'string' ? params.body.errorAt : undefined
+        const url = typeof params.body.url === 'string' ? params.body.url : undefined
+        const path = typeof params.body.path === 'string' ? params.body.path : undefined
+        const userAgent = typeof params.body.userAgent === 'string' ? params.body.userAgent : undefined
+
+        const rawEvents = params.body.events
+        const events = normalizeReplayEvents(rawEvents, 2000) as ReplayEvent[]
+        const snapshot = typeof params.body.snapshot === 'string' ? params.body.snapshot.slice(0, 500_000) : undefined
+
+        await this.clickhouseClient.insert({
+            table: 'lemonade.base_monitor_storage',
+            columns: ['app_id', 'event_type', 'message', 'info'],
+            format: 'JSONEachRow',
+            values: [
+                {
+                    app_id: appId,
+                    event_type: 'replay',
+                    message: '',
+                    info: {
+                        replayId,
+                        startedAt,
+                        endedAt,
+                        errorAt,
+                        url,
+                        path,
+                        userAgent,
+                        events,
+                        snapshot,
+                    },
+                },
+            ],
+        })
+
+        return { ok: true }
+    }
+
+    async replayGet(params: { appId: string; replayId: string }) {
+        const appId = (params.appId ?? '').trim()
+        const replayId = (params.replayId ?? '').trim()
+        if (!appId) {
+            throw new BadRequestException({ message: 'appId is required', error: 'APP_ID_REQUIRED' })
+        }
+        if (!replayId) {
+            throw new BadRequestException({ message: 'replayId is required', error: 'REPLAY_ID_REQUIRED' })
+        }
+
+        const replayEnabled = await this.getReplayEnabled(appId)
+        if (!replayEnabled) {
+            return { success: true, data: null }
+        }
+
+        const res = await this.clickhouseClient.query({
+            query: `
+                SELECT
+                    app_id,
+                    created_at,
+                    JSONExtractString(toJSONString(info), 'replayId') AS replay_id,
+                    JSONExtractString(toJSONString(info), 'startedAt') AS started_at,
+                    JSONExtractString(toJSONString(info), 'endedAt') AS ended_at,
+                    JSONExtractString(toJSONString(info), 'errorAt') AS error_at,
+                    JSONExtractString(toJSONString(info), 'path') AS path,
+                    JSONExtractString(toJSONString(info), 'url') AS url,
+                    JSONExtractString(toJSONString(info), 'userAgent') AS user_agent,
+                    JSONExtractString(toJSONString(info), 'snapshot') AS snapshot,
+                    JSONExtractRaw(toJSONString(info), 'events') AS events
+                FROM lemonade.base_monitor_view
+                WHERE app_id = {appId:String}
+                  AND event_type = 'replay'
+                  AND JSONExtractString(toJSONString(info), 'replayId') = {replayId:String}
+                ORDER BY created_at DESC
+                LIMIT 1
+            `,
+            query_params: { appId, replayId },
+            format: 'JSON',
+        })
+
+        const json = await res.json()
+        const row = (json.data ?? [])[0] as any
+        if (!row) {
+            return { success: true, data: null }
+        }
+
+        let events: ReplayEvent[] = []
+        try {
+            const parsed = row.events ? JSON.parse(row.events) : []
+            if (Array.isArray(parsed)) events = parsed as ReplayEvent[]
+        } catch {
+            events = []
+        }
+
+        const item: ReplayItem = {
+            appId: String(row.app_id ?? appId),
+            replayId: String(row.replay_id ?? replayId),
+            createdAt: new Date(String(row.created_at ?? '')).toISOString(),
+            startedAt: row.started_at ? String(row.started_at) : undefined,
+            endedAt: row.ended_at ? String(row.ended_at) : undefined,
+            errorAt: row.error_at ? String(row.error_at) : undefined,
+            path: row.path ? String(row.path) : undefined,
+            url: row.url ? String(row.url) : undefined,
+            userAgent: row.user_agent ? String(row.user_agent) : undefined,
+            snapshot: row.snapshot ? String(row.snapshot) : undefined,
+            events,
+        }
+
+        return { success: true, data: item }
+    }
+
+    async replays(params: { appId: string; range: OverviewRange; limit: number }) {
+        const appId = (params.appId ?? '').trim()
+        if (!appId) {
+            throw new BadRequestException({ message: 'appId is required', error: 'APP_ID_REQUIRED' })
+        }
+
+        const replayEnabled = await this.getReplayEnabled(appId)
+        if (!replayEnabled) {
+            return {
+                success: true,
+                data: {
+                    appId,
+                    range: params.range,
+                    from: new Date().toISOString(),
+                    to: new Date().toISOString(),
+                    items: [],
+                },
+            }
+        }
+
+        const range =
+            params.range === '1h' || params.range === '3h' || params.range === '1d' || params.range === '7d' || params.range === '1m'
+                ? params.range
+                : '7d'
+        const limit = Number.isFinite(params.limit) ? Math.max(1, Math.min(200, Math.floor(params.limit))) : 50
+
+        const now = new Date()
+        const { from } = resolveRange(now, range)
+        const fromSeconds = Math.floor(from.getTime() / 1000)
+        const toSeconds = Math.floor(now.getTime() / 1000)
+
+        const res = await this.clickhouseClient.query({
+            query: `
+                SELECT
+                    app_id,
+                    created_at,
+                    JSONExtractString(toJSONString(info), 'replayId') AS replay_id,
+                    JSONExtractString(toJSONString(info), 'errorAt') AS error_at,
+                    JSONExtractString(toJSONString(info), 'path') AS path
+                FROM lemonade.base_monitor_view
+                WHERE app_id = {appId:String}
+                  AND event_type = 'replay'
+                  AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
+                  AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
+                ORDER BY created_at DESC
+                LIMIT {limit:UInt32}
+            `,
+            query_params: { appId, fromSeconds, toSeconds, limit },
+            format: 'JSON',
+        })
+
+        const json = await res.json()
+        const items = (json.data ?? []).map((row: any) => ({
+            appId: String(row.app_id ?? appId),
+            replayId: String(row.replay_id ?? ''),
+            createdAt: new Date(String(row.created_at ?? '')).toISOString(),
+            errorAt: row.error_at ? String(row.error_at) : null,
+            path: row.path ? String(row.path) : null,
+        }))
+
+        return {
+            success: true,
+            data: {
+                appId,
+                range,
+                from: from.toISOString(),
+                to: now.toISOString(),
+                items,
             },
         }
     }

@@ -4,6 +4,7 @@ export interface Application {
     type: 'vanilla' | 'react' | 'vue'
     name: string
     description?: string | null
+    replayEnabled?: boolean
     createdAt?: string
     updatedAt?: string
     user?: {

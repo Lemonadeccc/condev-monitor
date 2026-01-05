@@ -90,7 +90,7 @@ export function useApplications(params: { enabled: boolean }) {
     })
 
     const updateMutation = useMutation({
-        mutationFn: async (payload: { id: number; name: string }) => {
+        mutationFn: async (payload: { id: number; name?: string; replayEnabled?: boolean }) => {
             const token = getAccessToken()
             const res = await fetch('/api/application', {
                 method: 'PUT',
@@ -104,16 +104,26 @@ export function useApplications(params: { enabled: boolean }) {
                 const err = (await res.json().catch(() => ({}))) as { message?: string }
                 throw new Error(err.message || 'Update application failed')
             }
-            return (await res.json()) as { success: boolean; data: { id: number; name: string } }
+            return (await res.json()) as { success: boolean; data: { id: number; name: string; replayEnabled?: boolean } }
         },
-        onSuccess: res => {
+        onSuccess: (res, payload) => {
             queryClient.setQueryData<ApplicationListResponse>(['applications'], old => {
                 if (!old?.data?.applications) return old
                 return {
                     ...old,
                     data: {
                         ...old.data,
-                        applications: old.data.applications.map(app => (app.id === res.data.id ? { ...app, name: res.data.name } : app)),
+                        applications: old.data.applications.map(app => {
+                            if (app.id !== res.data.id) return app
+                            return {
+                                ...app,
+                                name: res.data.name ?? app.name,
+                                replayEnabled:
+                                    payload.replayEnabled !== undefined
+                                        ? payload.replayEnabled
+                                        : (res.data.replayEnabled ?? app.replayEnabled),
+                            }
+                        }),
                     },
                 }
             })

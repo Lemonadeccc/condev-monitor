@@ -60,6 +60,12 @@ export class ApplicationEntity {
     isDelete: boolean
 
     /**
+     * session replay enabled
+     */
+    @Column({ default: false })
+    replayEnabled: boolean
+
+    /**
      * create time
      */
     @Column({ nullable: true, default: () => 'CURRENT_TIMESTAMP' })

@@ -14,3 +14,4 @@ initdb
 BSUs
 jank
 longtask
+rrweb

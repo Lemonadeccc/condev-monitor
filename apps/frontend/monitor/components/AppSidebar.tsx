@@ -1,5 +1,5 @@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@radix-ui/react-dropdown-menu'
-import { Bug, CalendarCheck, ChevronUp, Home, Lightbulb, Settings, Siren, User2, Zap } from 'lucide-react'
+import { Bug, CalendarCheck, ChevronUp, Home, Lightbulb, Play, Settings, Siren, User2, Zap } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import React from 'react'
@@ -36,6 +36,11 @@ const items = [
         title: 'Metric',
         url: '/metric',
         icon: Zap,
+    },
+    {
+        title: 'Replays',
+        url: '/replays',
+        icon: Play,
     },
     {
         title: 'Monitor',

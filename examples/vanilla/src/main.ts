@@ -20,6 +20,7 @@ init({
         lowFpsThreshold: 55,
         lowFpsConsecutive: 1,
     },
+    replay: true,
 })
 
 function myFn() {

@@ -45,6 +45,10 @@ export default function Home() {
                             key={app.appId}
                             application={app}
                             issuesCount={issuesCountByAppId.get(app.appId) ?? 0}
+                            replayEnabled={Boolean(app.replayEnabled)}
+                            onSetReplayEnabled={async enabledValue => {
+                                await updateMutation.mutateAsync({ id: app.id, replayEnabled: enabledValue })
+                            }}
                             onDelete={() => deleteMutation.mutate(app.appId)}
                             onRename={async nextName => {
                                 await updateMutation.mutateAsync({ id: app.id, name: nextName })
