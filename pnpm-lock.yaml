@@ -458,6 +458,9 @@ importers:
       '@condev-monitor/monitor-sdk-browser':
         specifier: workspace:*
         version: link:../../packages/browser
+      '@condev-monitor/monitor-sdk-core':
+        specifier: workspace:*
+        version: link:../../packages/core
     devDependencies:
       typescript:
         specifier: ~5.9.3

@@ -9,7 +9,8 @@
         "preview": "vite preview"
     },
     "dependencies": {
-        "@condev-monitor/monitor-sdk-browser": "workspace:*"
+        "@condev-monitor/monitor-sdk-browser": "workspace:*",
+        "@condev-monitor/monitor-sdk-core": "workspace:*"
     },
     "devDependencies": {
         "typescript": "~5.9.3",
