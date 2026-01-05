@@ -43,7 +43,7 @@ const items = [
 ]
 
 const AppSidebar = () => {
-    const { user, logout } = useAuth()
+    const { user } = useAuth()
     return (
         <Sidebar collapsible="icon">
             <SidebarHeader className="py-4">
@@ -86,7 +86,7 @@ const AppSidebar = () => {
             <SidebarFooter>
                 <SidebarMenu>
                     <SidebarMenuItem>
-                        <SidebarMenuButton onClick={() => logout()}>
+                        <SidebarMenuButton>
                             <User2 />
                             {user?.email || 'User'}
                         </SidebarMenuButton>
