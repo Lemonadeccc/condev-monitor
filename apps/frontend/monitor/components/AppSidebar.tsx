@@ -1,5 +1,5 @@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@radix-ui/react-dropdown-menu'
-import { Bug, ChevronUp, Home, Play, User2, Zap } from 'lucide-react'
+import { Bug, Home, Play, User2, Zap } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import React from 'react'
@@ -92,7 +92,6 @@ const AppSidebar = () => {
                                 <SidebarMenuButton>
                                     <User2 />
                                     {user?.email || 'User'}
-                                    <ChevronUp className="ml-auto" />
                                 </SidebarMenuButton>
                             </DropdownMenuTrigger>
 
