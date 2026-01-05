@@ -115,6 +115,10 @@ export class Replay {
             if (!this.enabled) return originalSend(data)
 
             if (data.event_type === 'error') {
+                if (this.pendingUpload) {
+                    return originalSend({ ...data, replayId: this.pendingUpload.replayId })
+                }
+
                 if (!this.pendingUpload) {
                     const replayId = `replay_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
                     const errorAtMs = nowMs()
