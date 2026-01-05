@@ -1,5 +1,5 @@
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@radix-ui/react-dropdown-menu'
-import { Bug, CalendarCheck, ChevronUp, Home, Lightbulb, Play, Settings, Siren, User2, Zap } from 'lucide-react'
+import { Bug, ChevronUp, Home, Play, User2, Zap } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import React from 'react'
@@ -15,7 +15,6 @@ import {
     SidebarGroupLabel,
     SidebarHeader,
     SidebarMenu,
-    SidebarMenuBadge,
     SidebarMenuButton,
     SidebarMenuItem,
     SidebarSeparator,
@@ -41,26 +40,6 @@ const items = [
         title: 'Replays',
         url: '/replays',
         icon: Play,
-    },
-    {
-        title: 'Monitor',
-        url: '/monitor',
-        icon: Lightbulb,
-    },
-    {
-        title: 'Cron',
-        url: '/cron',
-        icon: CalendarCheck,
-    },
-    {
-        title: 'Warning',
-        url: '/warning',
-        icon: Siren,
-    },
-    {
-        title: 'Settings',
-        url: '/settings',
-        icon: Settings,
     },
 ]
 
@@ -97,8 +76,6 @@ const AppSidebar = () => {
                                                 <span>{item.title}</span>
                                             </Link>
                                         </SidebarMenuButton>
-
-                                        {item.title === 'Bugs' && <SidebarMenuBadge>24</SidebarMenuBadge>}
                                     </SidebarMenuItem>
                                 )
                             })}
