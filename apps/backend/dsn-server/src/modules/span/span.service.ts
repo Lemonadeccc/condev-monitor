@@ -113,6 +113,7 @@ export class SpanService {
     ) {}
 
     private async getReplayEnabled(appId: string): Promise<boolean> {
+        // 1. Try ClickHouse (fast path)
         try {
             const res = await this.clickhouseClient.query({
                 query: `
@@ -127,10 +128,30 @@ export class SpanService {
             })
             const json = await res.json()
             const row = (json.data ?? [])[0] as { replay_enabled?: number } | undefined
-            return row ? Boolean(row.replay_enabled) : false
+
+            // If row exists, trust it (even if 0/false)
+            if (row) {
+                return Boolean(row.replay_enabled)
+            }
         } catch {
-            return false
+            // Ignore ClickHouse errors (e.g. table not exists) and proceed to fallback
         }
+
+        // 2. Fallback: Query Monitor API (slow path, for legacy/unsynced apps)
+        const monitorApiUrl = (this.configService.get<string>('MONITOR_API_URL') ?? 'http://localhost:8081').replace(/\/+$/, '')
+        try {
+            const url = new URL(`${monitorApiUrl}/api/application/public/config`)
+            url.searchParams.set('appId', appId)
+            const res = await fetch(url.toString(), { method: 'GET' })
+            if (res.ok) {
+                const json = (await res.json()) as { data?: { replayEnabled?: boolean } }
+                return Boolean(json?.data?.replayEnabled)
+            }
+        } catch {
+            // ignore
+        }
+
+        return false
     }
 
     async span() {
