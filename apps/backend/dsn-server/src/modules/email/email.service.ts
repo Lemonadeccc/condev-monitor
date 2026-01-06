@@ -2,6 +2,7 @@ import * as fs from 'node:fs'
 import { join } from 'node:path'
 
 import { Inject, Injectable, Logger } from '@nestjs/common'
+import { ConfigService } from '@nestjs/config'
 import { compile } from 'handlebars'
 
 import type { EmailClient } from '../../fundamentals/email/email-client'
@@ -10,8 +11,13 @@ import type { EmailClient } from '../../fundamentals/email/email-client'
 export class EmailService {
     private readonly defaultFrom: string
 
-    constructor(@Inject('EMAIL_CLIENT') private readonly emailClient: EmailClient) {
-        this.defaultFrom = process.env.RESEND_FROM ?? `"condev-monitor" <${process.env.EMAIL_SENDER ?? 'no-reply@condev.local'}>`
+    constructor(
+        @Inject('EMAIL_CLIENT') private readonly emailClient: EmailClient,
+        private readonly configService: ConfigService
+    ) {
+        const resendFrom = this.configService.get<string>('RESEND_FROM') ?? ''
+        const senderEmail = this.configService.get<string>('EMAIL_SENDER') ?? 'no-reply@condev.local'
+        this.defaultFrom = resendFrom || `"condev-monitor" <${senderEmail}>`
     }
 
     async alert(params: { to: string; subject: string; params: any }) {

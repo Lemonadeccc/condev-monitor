@@ -37,6 +37,10 @@ This service reads environment variables via `@nestjs/config` (`ConfigModule.for
 
 - `PORT` (optional, default `8082`)
 - `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`
+- Postgres (used to resolve `appId -> owner email` for error alerts):
+    - `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`
+    - Optional: `ALERT_EMAIL_FALLBACK` (used when the `appId` is not found)
+    - Optional: `APP_OWNER_EMAIL_CACHE_TTL_MS` (default `300000`)
 - Email alerts (optional; if not set, email sending is disabled in dev):
     - Resend (recommended; HTTPS):
         - `RESEND_API_KEY`

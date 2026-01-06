@@ -1,6 +1,7 @@
 import { ClickHouseClient } from '@clickhouse/client'
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
+import type { Pool } from 'pg'
 
 import { EmailService } from '../email/email.service'
 
@@ -122,9 +123,73 @@ export class SpanService {
     constructor(
         @Inject('CLICKHOUSE_CLIENT')
         private readonly clickhouseClient: ClickHouseClient,
+        @Inject('PG_POOL')
+        private readonly pgPool: Pool,
         private readonly emailService: EmailService,
         private readonly configService: ConfigService
     ) {}
+
+    private readonly appOwnerEmailCache = new Map<string, { email: string; expiresAt: number }>()
+    private appTableColumnsPromise: Promise<Set<string>> | null = null
+
+    private async getApplicationTableColumns(): Promise<Set<string>> {
+        if (!this.appTableColumnsPromise) {
+            this.appTableColumnsPromise = this.pgPool
+                .query<{ column_name: string }>(
+                    `
+                        SELECT column_name
+                        FROM information_schema.columns
+                        WHERE table_schema = 'public' AND table_name = 'application'
+                    `
+                )
+                .then(res => new Set((res.rows ?? []).map(r => r.column_name)))
+                .catch(() => new Set<string>())
+        }
+        return this.appTableColumnsPromise
+    }
+
+    private async resolveOwnerEmailByAppId(appId: string): Promise<string | null> {
+        const normalizedAppId = (appId ?? '').trim()
+        if (!normalizedAppId) return null
+
+        const now = Date.now()
+        const cached = this.appOwnerEmailCache.get(normalizedAppId)
+        if (cached && cached.expiresAt > now) return cached.email
+
+        const cols = await this.getApplicationTableColumns()
+        const appIdCol = cols.has('appId') ? 'appId' : cols.has('app_id') ? 'app_id' : 'appId'
+        const isDeleteCol = cols.has('isDelete') ? 'isDelete' : cols.has('is_delete') ? 'is_delete' : 'isDelete'
+        const userIdCol = cols.has('userId') ? 'userId' : cols.has('user_id') ? 'user_id' : 'userId'
+
+        // Defensive: only allow identifiers from our small whitelist.
+        const allowed = new Set(['appId', 'app_id', 'isDelete', 'is_delete', 'userId', 'user_id'])
+        if (!allowed.has(appIdCol) || !allowed.has(isDeleteCol) || !allowed.has(userIdCol)) {
+            return null
+        }
+
+        try {
+            const res = await this.pgPool.query<{ email: string }>(
+                `
+                    SELECT a.email AS email
+                    FROM "application" app
+                    JOIN "admin" a ON app."${userIdCol}" = a.id
+                    WHERE app."${appIdCol}" = $1
+                      AND app."${isDeleteCol}" = false
+                    LIMIT 1
+                `,
+                [normalizedAppId]
+            )
+            const email = res.rows?.[0]?.email ?? null
+            if (!email) return null
+
+            const ttlMs = Number(this.configService.get<string>('APP_OWNER_EMAIL_CACHE_TTL_MS') ?? 5 * 60 * 1000)
+            this.appOwnerEmailCache.set(normalizedAppId, { email, expiresAt: now + (Number.isFinite(ttlMs) ? ttlMs : 5 * 60 * 1000) })
+            return email
+        } catch (err) {
+            Logger.warn(`Failed to resolve owner email for appId=${normalizedAppId}`, err instanceof Error ? err.stack : String(err))
+            return null
+        }
+    }
 
     private async getReplayEnabled(appId: string): Promise<boolean> {
         // 1. Try ClickHouse (fast path)
@@ -197,13 +262,18 @@ export class SpanService {
         })
 
         if (event_type === 'error') {
+            const fallbackEmail = this.configService.get<string>('ALERT_EMAIL_FALLBACK') ?? 'zwjhb12@163.com'
+            const ownerEmail = await this.resolveOwnerEmailByAppId(appId)
+            const toEmail = ownerEmail ?? fallbackEmail
+
             void this.emailService
                 .alert({
-                    to: 'zwjhb12@163.com',
+                    to: toEmail,
                     subject: 'Condev Monitor - Error Event',
                     params: {
                         ...body,
                         ...values,
+                        ownerEmail,
                     },
                 })
                 .catch(err => {
