@@ -2,127 +2,231 @@
 
 # ConDev Monitor
 
-ConDev Monitor 是一个前端监控平台，旨在帮助开发者理解用户交互、调试问题并优化用户体验。它采用现代化的可扩展架构构建，利用 Monorepo 结构统一了数据摄取服务、API 后端、前端仪表盘和浏览器 SDK。
+ConDev Monitor 是一个可自托管的前端监控平台：浏览器 SDK 采集错误与性能信号，DSN 服务负责高吞吐写入 ClickHouse 并提供查询 API，仪表盘用于查看 Issues、指标与会话回放。
 
-## 功能特性
+## 亮点
 
-- **会话回放:** 使用 `rrweb` 进行高保真的用户会话录制和回放。
-- **可扩展摄取:** 专用的 `dsn-server` 用于高吞吐量事件摄取。
-- **分析:** 由 ClickHouse 驱动，支持实时、极速的分析查询。
-- **现代技术栈:** 基于 TypeScript, NestJS, Next.js 和 TurboRepo 构建。
-- **支持自托管:** 提供完整的 Docker Compose 设置，便于部署。
+- **错误监控：** JS 运行时错误、资源加载错误、未处理 Promise Rejection。
+- **性能监控：** Web Vitals（CLS/LCP/INP/FCP/TTFB/LOAD）+ 运行时性能（Long Task、Jank、低 FPS）。
+- **白屏检测：** 视口采样 + 可选的 MutationObserver 运行时监控。
+- **会话回放（仅错误触发）：** 基于 `rrweb`，在错误前后窗口上传最小事件流（按应用开关）。
+- **自托管部署：** 提供 Docker Compose（ClickHouse/Postgres）与带 Caddy 的整栈部署方案。
 
-## 技术栈
-
-- **Monorepo:** [TurboRepo](https://turbo.build/) & [PNPM](https://pnpm.io/)
-- **前端:** [Next.js](https://nextjs.org/) (React)
-- **后端:** [NestJS](https://nestjs.com/)
-- **数据库:**
-    - [ClickHouse](https://clickhouse.com/) (会话数据 & 分析)
-    - [PostgreSQL](https://www.postgresql.org/) (应用数据)
-    - [Redis](https://redis.io/) (缓存 & 队列)
-- **SDK:** 基于 [rrweb](https://github.com/rrweb-io/rrweb) 的自定义浏览器 SDK
-
-## 项目结构
+## Monorepo 结构
 
 ```bash
 condev-monitor/
 ├── apps/
 │   ├── backend/
-│   │   ├── dsn-server/    # 高性能数据摄取服务
-│   │   └── monitor/       # 主 API 服务器 (业务逻辑, 认证等)
+│   │   ├── dsn-server/         # 摄取 + ClickHouse 查询 API + replay 上传
+│   │   └── monitor/            # 登录/用户/应用管理（Postgres）
 │   └── frontend/
-│       └── monitor/       # 管理仪表盘 & 回放查看器 (Next.js)
+│       └── monitor/            # 控制台（Next.js）+ rrweb-player 回放
 ├── packages/
-│   ├── browser/           # 用于会话录制的浏览器 SDK
-│   ├── browser-utils/     # 共享浏览器工具
-│   └── core/              # 核心共享逻辑和类型
-├── .devcontainer/         # Docker Compose 配置
-└── scripts/               # 实用脚本 (例如: ClickHouse 初始化)
+│   ├── core/                   # SDK 核心 + capture APIs
+│   ├── browser-utils/          # 浏览器工具 + Web Vitals
+│   └── browser/                # 浏览器 SDK（错误/性能/白屏/replay）
+├── .devcontainer/              # Compose + Caddy 配置 + env 示例
+└── scripts/                    # 工具脚本（如 ClickHouse 初始化）
 ```
 
-## 快速开始
+## 架构（数据流）
+
+```text
+业务前端
+  └─ @condev-monitor/monitor-sdk-browser
+       ├─ POST /tracking/:appId  (错误/性能/自定义事件)
+       ├─ GET  /app-config       (replay 开关)
+       └─ POST /replay/:appId    (错误触发上传 rrweb events)
+                │
+                ▼
+         apps/backend/dsn-server
+                │
+                ▼
+           ClickHouse（事件 + 回放）
+
+控制台（Next.js）──(代理 /api/*)──► apps/backend/monitor（Postgres：用户/应用/配置）
+控制台（Next.js）──(代理 /dsn-api/*)► apps/backend/dsn-server（Issues/指标/回放查询）
+```
+
+## 快速开始（本地开发）
 
 ### 前置要求
 
-- [Node.js](https://nodejs.org/) (推荐 v20+)
-- [PNPM](https://pnpm.io/) (`npm install -g pnpm`)
-- [Docker](https://www.docker.com/) & Docker Compose
+- Node.js 20+
+- pnpm（`npm i -g pnpm`）
+- Docker + Docker Compose
 
-### 本地开发设置
+### 1) 安装依赖
 
-1.  **克隆仓库:**
+```bash
+pnpm install
+```
+
+### 2) 启动基础设施（ClickHouse + Postgres）
+
+```bash
+pnpm docker:start
+pnpm docker:init-clickhouse
+```
+
+### 3) 启动后端服务
+
+```bash
+pnpm start:dev
+```
+
+- Monitor API：`http://localhost:8081/api/*`
+- DSN Server：`http://localhost:8082/dsn-api/*`
+
+### 4) 启动控制台
+
+```bash
+pnpm start:fro
+```
+
+- 控制台：`http://localhost:3000`
+
+### 环境变量（开发）
+
+- `apps/backend/monitor/.env`（参考 `apps/backend/monitor/.env.example`）
+- `apps/backend/dsn-server/.env`（参考 `apps/backend/dsn-server/.env.example`）
+
+## 浏览器 SDK 使用方式
+
+### 安装（发包到 npm 之后）
+
+```bash
+pnpm add @condev-monitor/monitor-sdk-browser @condev-monitor/monitor-sdk-core
+```
+
+### 初始化
+
+```ts
+import { init } from '@condev-monitor/monitor-sdk-browser'
+
+init({
+    dsn: 'http://localhost:8082/dsn-api/tracking/<appId>',
+    performance: true,
+    whiteScreen: { runtimeWatch: true },
+    replay: true,
+})
+```
+
+### 自定义上报（capture APIs）
+
+```ts
+import { captureException, captureMessage, captureEvent } from '@condev-monitor/monitor-sdk-core'
+
+captureMessage('hello')
+captureEvent({ eventType: 'cta_click', data: { id: 'buy', at: Date.now() } })
+captureException(new Error('manual error'))
+```
+
+### DSN 地址格式
+
+- **走 Caddy（自托管推荐）：** `https://<你的域名>/tracking/<appId>`
+- **直连 DSN Server：** `http://<dsn-host>:8082/dsn-api/tracking/<appId>`
+
+SDK 的 replay 模块会调用 `GET /app-config?appId=...` 判断是否允许回放。开关在控制台中按应用配置（存储在 Postgres，并会同步到 ClickHouse）。
+
+## DSN Server API（摘要）
+
+所有接口都有全局前缀 `/dsn-api`。
+
+- 摄取：`POST /dsn-api/tracking/:app_id`
+- 概览：`GET /dsn-api/overview?appId=...&range=...`
+- 指标：`GET /dsn-api/metric?appId=...&range=...`
+- Issues：`GET /dsn-api/issues?appId=...&range=...&limit=...`
+- 回放上传：`POST /dsn-api/replay/:app_id`
+- 回放获取：`GET /dsn-api/replay?appId=...&replayId=...`
+- 回放列表：`GET /dsn-api/replays?appId=...&range=...&limit=...`
+
+## Packages（后续发包到 npm）
+
+- `@condev-monitor/monitor-sdk-core`：核心 `Monitoring` 客户端 + `capture*` 能力。
+- `@condev-monitor/monitor-sdk-browser-utils`：浏览器工具 + Web Vitals（CLS/LCP/INP/FCP/TTFB/LOAD）。
+- `@condev-monitor/monitor-sdk-browser`：开箱即用浏览器 SDK（错误/性能/白屏/回放），基于 `rrweb`。
+
+构建产物：
+
+- CJS：`build/cjs`
+- ESM：`build/esm`
+- Types：`build/types`
+- UMD/IIFE：`build/umd`（tsup `iife`）
+
+## 发布到 npm（建议流程）
+
+1. 确保 `packages/*` 下每个包的 `name`、`version`、`license` 等字段正确。
+2. 统一构建：
 
     ```bash
-    git clone https://github.com/your-org/condev-monitor.git
-    cd condev-monitor
+    pnpm -r --filter "./packages/*" build
     ```
 
-2.  **安装依赖:**
+3. 登录并发布：
 
     ```bash
-    pnpm install
+    npm login
+    pnpm -r --filter "./packages/*" publish --access public
     ```
 
-3.  **启动基础设施:**
-    使用 Docker 启动所需的数据库 (ClickHouse, Postgres, Redis)。
+注意：
 
-    ```bash
-    pnpm docker:start
-    ```
+- 如果内部依赖使用 `workspace:*`，建议一次性发布全部 `@condev-monitor/*` 包，并保持版本一致。
+- 如果你希望有更完整的发版体验（自动变更日志 + 版本管理），可以引入 Changesets；但当前仓库并未强制要求。
 
-4.  **初始化 ClickHouse:**
-    创建必要的表和 schema。
+## 部署（Docker Compose + Caddy）
 
-    ```bash
-    pnpm docker:init-clickhouse
-    ```
+仓库提供的整栈部署 compose 会构建并运行：
 
-5.  **运行开发服务器:**
-    以开发模式启动所有应用程序 (前端, 后端 API, DSN Server)。
+- `apps/backend/monitor`（API，容器内 `8081`）
+- `apps/backend/dsn-server`（摄取/查询 API，容器内 `8082`）
+- `apps/frontend/monitor`（Next.js，容器内 `3000`）
+- ClickHouse + Postgres
+- Caddy 反向代理（对外提供 HTTP/HTTPS）
 
-    ```bash
-    pnpm start:dev
-    ```
+### 1) 配置环境变量
 
-    - **前端:** http://localhost:3000 (请检查终端以获取确切端口)
-    - **API:** http://localhost:3001 (请检查终端以获取确切端口)
+- 复制 `./.devcontainer/.env.example` 到 `./.devcontainer/.env` 并修改：
+    - DB + ClickHouse 账号密码
+    - `FRONTEND_URL`（控制台公网 URL）
+    - 邮件服务配置（可选）
+- 修改 `./.devcontainer/caddy/Caddyfile` 里的站点域名：
+    - 当前写死为 `monitor.condevtools.com`
+    - 本地仅 HTTP 测试时，可临时改成 `:80`
 
-### 部署
-
-使用 Docker Compose 部署整个栈:
+### 2) 部署
 
 ```bash
 pnpm docker:deploy
 ```
 
-部署说明:
+默认对外端口由以下变量控制：
 
-- `.devcontainer/docker-compose.deply.yml` 会让 `condev-dsn-server` 连接 Postgres，用于按 `appId` 查询应用所属用户邮箱并发送告警。
-- 邮件相关配置和兜底收件人请在 `.devcontainer/.env` 配置（参考 `.devcontainer/.env.example`）。
+- `CADDY_HTTP_HOST_PORT`（默认 `80`）
+- `CADDY_HTTPS_HOST_PORT`（默认 `443`）
 
-停止部署:
+### 3) 停止
 
 ```bash
 pnpm docker:deploy:stop
 ```
 
-## 质量控制
+## 可选：控制台部署到 Cloudflare
 
-- **代码检查:** `pnpm lint`
-- **格式化:** `pnpm format`
-- **类型检查:** `pnpm check`
+控制台应用集成了 OpenNext：
 
-## 贡献
+- 构建并部署：`pnpm --filter @condev-monitor/monitor-client deploy`
+- 预览：`pnpm --filter @condev-monitor/monitor-client preview`
 
-欢迎贡献！请确保遵守项目的编码规范。
+## 开发与质量检查
 
-1.  Fork 本仓库。
-2.  创建你的特性分支 (`git checkout -b feature/amazing-feature`)。
-3.  提交你的更改 (`git commit -m 'feat: add some amazing feature'`)。
-4.  推送到分支 (`git push origin feature/amazing-feature`)。
-5.  开启一个 Pull Request。
+- Build：`pnpm build`
+- Lint：`pnpm lint`
+- Format：`pnpm format`
+- Spellcheck：`pnpm spellcheck`
 
 ## 许可证
 
-本项目基于 Apache-2.0 许可证开源 - 详情请参阅 [LICENSE](LICENSE) 文件。
+Apache-2.0，见 `LICENSE`。
