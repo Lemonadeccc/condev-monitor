@@ -3,6 +3,7 @@ monitor.condevtools.com {
 encode zstd gzip
 
 header +Cache-Control "max-age=0, private, must-revalidate"
+header +Vary "RSC, Next-Router-Prefetch, Next-Router-State-Tree, Next-Url"
 
 handle_path /api/* {
 rewrite * /api{path}
@@ -14,7 +15,17 @@ handle_path /dsn-api/* {
 	reverse_proxy condev-dsn-server:8082
 }
 
+handle /app-config {
+	rewrite * /dsn-api{uri}
+	reverse_proxy condev-dsn-server:8082
+}
+
 handle /tracking/* {
+	rewrite * /dsn-api{uri}
+	reverse_proxy condev-dsn-server:8082
+}
+
+handle /replay/* {
 	rewrite * /dsn-api{uri}
 	reverse_proxy condev-dsn-server:8082
 }

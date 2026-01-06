@@ -66,6 +66,7 @@ services:
             - NODE_ENV=${NODE_ENV:-production}
             - PORT=8082
             - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
+            - MONITOR_API_URL=${MONITOR_API_URL:-http://condev-monitor-server:8081}
             - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8888}
         depends_on:
             - condev-monitor-clickhouse

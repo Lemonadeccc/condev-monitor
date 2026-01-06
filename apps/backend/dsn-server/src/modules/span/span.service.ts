@@ -346,8 +346,8 @@ export class SpanService {
                     message,
                     path,
                     events,
-                    first_seen,
-                    last_seen,
+                    first_seen_ts,
+                    last_seen_ts,
                     arrayMap(t -> t.1, buckets) AS bucket_ts,
                     arrayMap(t -> t.2, buckets) AS bucket_counts
                 FROM
@@ -358,8 +358,8 @@ export class SpanService {
                         message,
                         path,
                         sum(cnt) AS events,
-                        min(first_seen) AS first_seen,
-                        max(last_seen) AS last_seen,
+                        min(first_seen_ts) AS first_seen_ts,
+                        max(last_seen_ts) AS last_seen_ts,
                         arraySort(groupArray((bucket_ts, cnt))) AS buckets
                     FROM
                     (
@@ -375,8 +375,8 @@ export class SpanService {
                                 ) + toIntervalSecond({offsetSeconds:UInt32})
                             ) AS bucket_ts,
                             count() AS cnt,
-                            min(created_at) AS first_seen,
-                            max(created_at) AS last_seen
+                            min(toUnixTimestamp(created_at)) AS first_seen_ts,
+                            max(toUnixTimestamp(created_at)) AS last_seen_ts
                         FROM lemonade.base_monitor_view
                         WHERE event_type = 'error'
                           ${appFilter}
@@ -386,7 +386,7 @@ export class SpanService {
                     )
                     GROUP BY app_id, issue_type, message, path
                 )
-                ORDER BY last_seen DESC
+                ORDER BY last_seen_ts DESC
                 LIMIT {limit:UInt32}
             `,
             query_params: {
@@ -408,8 +408,8 @@ export class SpanService {
             const message = String(row.message ?? '')
             const path = String(row.path ?? '')
             const events = Number(row.events ?? 0)
-            const firstSeenAt = new Date(String(row.first_seen ?? '')).toISOString()
-            const lastSeenAt = new Date(String(row.last_seen ?? '')).toISOString()
+            const firstSeenAt = new Date(Number(row.first_seen_ts ?? 0) * 1000).toISOString()
+            const lastSeenAt = new Date(Number(row.last_seen_ts ?? 0) * 1000).toISOString()
 
             const bucketTs = (row.bucket_ts ?? []) as number[]
             const bucketCounts = (row.bucket_counts ?? []) as number[]
@@ -788,7 +788,7 @@ export class SpanService {
             query: `
                 SELECT
                     app_id,
-                    created_at,
+                    toUnixTimestamp(created_at) AS created_at_ts,
                     JSONExtractString(toJSONString(info), 'replayId') AS replay_id,
                     JSONExtractString(toJSONString(info), 'startedAt') AS started_at,
                     JSONExtractString(toJSONString(info), 'endedAt') AS ended_at,
@@ -826,7 +826,7 @@ export class SpanService {
         const item: ReplayItem = {
             appId: String(row.app_id ?? appId),
             replayId: String(row.replay_id ?? replayId),
-            createdAt: new Date(String(row.created_at ?? '')).toISOString(),
+            createdAt: new Date(Number(row.created_at_ts ?? 0) * 1000).toISOString(),
             startedAt: row.started_at ? String(row.started_at) : undefined,
             endedAt: row.ended_at ? String(row.ended_at) : undefined,
             errorAt: row.error_at ? String(row.error_at) : undefined,
@@ -875,7 +875,7 @@ export class SpanService {
             query: `
                 SELECT
                     app_id,
-                    created_at,
+                    toUnixTimestamp(created_at) AS created_at_ts,
                     JSONExtractString(toJSONString(info), 'replayId') AS replay_id,
                     JSONExtractString(toJSONString(info), 'errorAt') AS error_at,
                     JSONExtractString(toJSONString(info), 'path') AS path
@@ -895,7 +895,7 @@ export class SpanService {
         const items = (json.data ?? []).map((row: any) => ({
             appId: String(row.app_id ?? appId),
             replayId: String(row.replay_id ?? ''),
-            createdAt: new Date(String(row.created_at ?? '')).toISOString(),
+            createdAt: new Date(Number(row.created_at_ts ?? 0) * 1000).toISOString(),
             errorAt: row.error_at ? String(row.error_at) : null,
             path: row.path ? String(row.path) : null,
         }))
