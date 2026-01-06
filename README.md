@@ -96,6 +96,11 @@ To deploy the stack using Docker Compose:
 pnpm docker:deploy
 ```
 
+Deployment notes:
+
+- `.devcontainer/docker-compose.deply.yml` runs `condev-dsn-server` with Postgres access so it can resolve `appId -> owner email` for alert emails.
+- Configure email + fallback recipients in `.devcontainer/.env` (see `.devcontainer/.env.example`).
+
 To stop the deployment:
 
 ```bash

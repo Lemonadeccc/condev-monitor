@@ -66,10 +66,17 @@ services:
             - NODE_ENV=${NODE_ENV:-production}
             - PORT=8082
             - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
+            - DB_TYPE=${DB_TYPE:-postgres}
+            - DB_HOST=${DB_HOST:-condev-monitor-postgres}
+            - DB_PORT=${DB_PORT:-5432}
+            - DB_USERNAME=${DB_USERNAME:-postgres}
+            - DB_PASSWORD=${DB_PASSWORD:-condevPostgres}
+            - DB_DATABASE=${DB_DATABASE:-postgres}
             - MONITOR_API_URL=${MONITOR_API_URL:-http://condev-monitor-server:8081}
             - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8888}
         depends_on:
             - condev-monitor-clickhouse
+            - condev-monitor-postgres
 
     condev-monitor-web:
         build:

@@ -96,6 +96,11 @@ condev-monitor/
 pnpm docker:deploy
 ```
 
+部署说明:
+
+- `.devcontainer/docker-compose.deply.yml` 会让 `condev-dsn-server` 连接 Postgres，用于按 `appId` 查询应用所属用户邮箱并发送告警。
+- 邮件相关配置和兜底收件人请在 `.devcontainer/.env` 配置（参考 `.devcontainer/.env.example`）。
+
 停止部署:
 
 ```bash
