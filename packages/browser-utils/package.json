@@ -1,9 +1,12 @@
 {
     "name": "@condev-monitor/monitor-sdk-browser-utils",
-    "version": "1.0.0",
+    "version": "0.0.2",
     "main": "build/cjs/index.js",
     "module": "build/esm/index.mjs",
     "types": "build/types/index.d.ts",
+    "files": [
+        "build"
+    ],
     "exports": {
         "./package.json": "./package.json",
         ".": {
@@ -32,6 +35,6 @@
     "license": "",
     "description": "",
     "dependencies": {
-        "@condev-monitor/monitor-sdk-core": "workspace:*"
+        "@condev-monitor/monitor-sdk-core": "0.0.2"
     }
 }
