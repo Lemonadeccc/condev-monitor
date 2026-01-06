@@ -86,7 +86,7 @@ function normalizeReplayEvents(rawEvents: unknown, maxEvents: number): unknown[]
     const list = Array.isArray(rawEvents) ? rawEvents : []
     if (list.length <= maxEvents) return list
 
-    // Prefer keeping a rrweb FullSnapshot event as the first event (EventType.FullSnapshot = 2).
+    // Prefer keeping a rrweb Meta + FullSnapshot header when trimming (Meta = 0, FullSnapshot = 2).
     const fullSnapshotIdx = list.findIndex(e => {
         if (!e || typeof e !== 'object') return false
         const t = (e as any).type
@@ -97,10 +97,24 @@ function normalizeReplayEvents(rawEvents: unknown, maxEvents: number): unknown[]
         return list.slice(-maxEvents)
     }
 
-    const head = list[fullSnapshotIdx]
+    const metaIdx = (() => {
+        for (let i = fullSnapshotIdx; i >= 0; i -= 1) {
+            const e = list[i]
+            if (!e || typeof e !== 'object') continue
+            const t = (e as any).type
+            if (typeof t === 'number' && t === 0) return i
+        }
+        return -1
+    })()
+
+    const headEvents: unknown[] = []
+    if (metaIdx !== -1) headEvents.push(list[metaIdx])
+    headEvents.push(list[fullSnapshotIdx])
+
     const tail = list.slice(fullSnapshotIdx + 1)
-    const trimmedTail = tail.length > maxEvents - 1 ? tail.slice(-(maxEvents - 1)) : tail
-    return [head, ...trimmedTail]
+    const remaining = Math.max(0, maxEvents - headEvents.length)
+    const trimmedTail = tail.length > remaining ? tail.slice(-remaining) : tail
+    return [...headEvents, ...trimmedTail]
 }
 
 @Injectable()

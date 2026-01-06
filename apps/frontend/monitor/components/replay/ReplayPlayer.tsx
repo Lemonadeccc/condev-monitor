@@ -12,6 +12,10 @@ export type ReplayEvent = {
     data: unknown
 }
 
+function cloneRrwebEventWithNewTimestamp(event: ReplayEvent, timestamp: number): ReplayEvent {
+    return { ...event, timestamp }
+}
+
 function isRrwebEvent(value: unknown): value is ReplayEvent {
     if (!value || typeof value !== 'object') return false
     const obj = value as Record<string, unknown>
@@ -28,12 +32,26 @@ export function ReplayPlayer(props: { snapshot: string; events: unknown[]; error
     const playerRef = useRef<(InstanceType<typeof RRWebPlayer> & { $destroy?: () => void }) | null>(null)
     const [ready, setReady] = useState(false)
 
-    const rrwebEvents = useMemo(() => {
+    const rrwebEventsRaw = useMemo(() => {
         if (!isRrwebEventArray(events)) return []
         const list = events.slice()
         list.sort((a, b) => a.timestamp - b.timestamp)
         return list
     }, [events])
+
+    const rrwebEvents = useMemo(() => {
+        if (rrwebEventsRaw.length !== 1) return rrwebEventsRaw
+
+        const only = rrwebEventsRaw[0]
+        if (!only) return []
+
+        // rrweb-player throws when events length < 2; duplicate the only event to make it playable.
+        // If the only event is Meta (0) without a snapshot, replay still isn't possible.
+        if (only.type === 0) return rrwebEventsRaw
+
+        const nextTs = only.timestamp + 1
+        return [only, cloneRrwebEventWithNewTimestamp(only, nextTs)]
+    }, [rrwebEventsRaw])
 
     const startTs = rrwebEvents.length ? rrwebEvents[0]!.timestamp : null
     const errorOffset = useMemo(() => {
@@ -54,7 +72,7 @@ export function ReplayPlayer(props: { snapshot: string; events: unknown[]; error
             playerRef.current = null
         }
 
-        if (!rrwebEvents.length) return
+        if (rrwebEvents.length < 2) return
 
         playerRef.current = new RRWebPlayer({
             target: container,
@@ -80,6 +98,14 @@ export function ReplayPlayer(props: { snapshot: string; events: unknown[]; error
 
     if (!rrwebEvents.length) {
         return <div className={cn('text-sm text-muted-foreground', className)}>No rrweb events found. Please record a new replay.</div>
+    }
+
+    if (rrwebEvents.length < 2) {
+        return (
+            <div className={cn('text-sm text-muted-foreground', className)}>
+                Not enough rrweb data to replay. Trigger an error after a bit of interaction, then try again.
+            </div>
+        )
     }
 
     return (

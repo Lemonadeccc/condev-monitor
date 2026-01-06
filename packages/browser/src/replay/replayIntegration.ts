@@ -177,6 +177,32 @@ export class Replay {
         while (this.events.length && (this.events[0]?.timestamp ?? 0) < cutoff) this.events.shift()
     }
 
+    private findMetaEvent(beforeTimestamp: number) {
+        for (let i = this.events.length - 1; i >= 0; i -= 1) {
+            const e = this.events[i]
+            if (!e) continue
+            if (e.type === EventType.Meta && e.timestamp <= beforeTimestamp) return e
+        }
+        for (let i = this.events.length - 1; i >= 0; i -= 1) {
+            const e = this.events[i]
+            if (!e) continue
+            if (e.type === EventType.Meta) return e
+        }
+        return null
+    }
+
+    private withMetaFirst(events: eventWithTime[], headTimestamp: number) {
+        if (events.length === 0) return events
+        if (events[0]?.type === EventType.Meta) return events
+
+        const meta = this.findMetaEvent(headTimestamp)
+        if (!meta) return events
+
+        const adjustedTimestamp = Math.min(meta.timestamp, headTimestamp - 1)
+        const metaEvent = adjustedTimestamp === meta.timestamp ? meta : { ...meta, timestamp: adjustedTimestamp }
+        return [metaEvent, ...events]
+    }
+
     private pickEvents(windowStartMs: number, windowEndMs: number) {
         const fullSnapshotIndex = (() => {
             for (let i = this.events.length - 1; i >= 0; i -= 1) {
@@ -194,17 +220,22 @@ export class Replay {
         const baseStartMs = this.events[fullSnapshotIndex]?.timestamp ?? windowStartMs
         const base = this.events.filter(e => e.timestamp >= baseStartMs && e.timestamp <= windowEndMs)
 
-        // rrweb replay requires a FullSnapshot as the first event.
+        // rrweb replay expects a Meta + FullSnapshot header (Meta = 0, FullSnapshot = 2).
         const firstFullSnapshotIdx = base.findIndex(e => e.type === EventType.FullSnapshot)
         if (firstFullSnapshotIdx === -1) {
-            return { startedAtMs: baseStartMs, events: base.slice(-this.maxEvents) }
+            const picked = base.slice(-this.maxEvents)
+            const startedAtMs = picked[0]?.timestamp ?? baseStartMs
+            const normalized = this.withMetaFirst(picked, startedAtMs)
+            return { startedAtMs: normalized[0]?.timestamp ?? startedAtMs, events: normalized }
         }
 
         const head = base[firstFullSnapshotIdx]!
         const tail = base.slice(firstFullSnapshotIdx + 1)
         const trimmed = tail.length > this.maxEvents - 1 ? tail.slice(-(this.maxEvents - 1)) : tail
 
-        return { startedAtMs: head.timestamp, events: [head, ...trimmed] }
+        const picked = [head, ...trimmed]
+        const normalized = this.withMetaFirst(picked, head.timestamp)
+        return { startedAtMs: normalized[0]?.timestamp ?? head.timestamp, events: normalized }
     }
 
     private async flushPending() {
