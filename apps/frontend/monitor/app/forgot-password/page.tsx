@@ -6,6 +6,7 @@ import { useState } from 'react'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 
+import Beams from '@/components/Beams'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, FieldError, FieldLabel } from '@/components/ui/field'
@@ -52,9 +53,21 @@ export default function ForgotPasswordPage() {
     }
 
     return (
-        <div className="relative h-screen w-full bg-black">
-            <div className="absolute left-8 top-8 text-2xl font-bold text-white">CONDEV-MONITOR</div>
-            <div className="flex h-screen w-full items-center justify-center">
+        <div className="relative min-h-screen w-full overflow-hidden bg-black">
+            <div className="pointer-events-none absolute inset-0 z-0" aria-hidden="true">
+                <Beams
+                    beamWidth={2}
+                    beamHeight={15}
+                    beamNumber={12}
+                    lightColor="#ffffff"
+                    speed={2}
+                    noiseIntensity={1.75}
+                    scale={0.2}
+                    rotation={0}
+                />
+            </div>
+            <div className="absolute left-8 top-8 z-10 text-2xl font-bold text-white">CONDEV-MONITOR</div>
+            <div className="relative z-10 flex min-h-screen w-full items-center justify-center">
                 <Card className="w-full max-w-md">
                     <CardHeader>
                         <CardTitle className="text-2xl font-bold">Forgot password</CardTitle>

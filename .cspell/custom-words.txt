@@ -15,3 +15,12 @@ BSUs
 jank
 longtask
 rrweb
+drei
+metalness
+frameloop
+fract
+cnoise
+newpos
+curpos
+nextpos
+beginnormal
