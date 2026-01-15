@@ -116,4 +116,6 @@ apps/backend/monitor/prisma/client/
 .devcontainer/.env
 apps/backend/dsn-server/.env
 apps/backend/monitor/.env
+.claude/**/**/env/*.env
+!.claude/**/**/env/*.example.env
 !**/.env.example
