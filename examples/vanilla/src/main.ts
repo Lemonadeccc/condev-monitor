@@ -11,8 +11,8 @@ import typescriptLogo from './typescript.svg'
 init({
     // target ip
     // target ip
-    dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillayNi5wY',
-    // dsn: 'http://localhost:8082/dsn-api/tracking/vanillauLBvtd',
+    dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillaVLiV45',
+    // dsn: 'http://localhost:8082/dsn-api/tracking/vanillaVLiV45',
     whiteScreen: {
         runtimeWatch: true,
     },
