@@ -1,4 +1,4 @@
-import { Agent, AgentOpt } from '@midscene/core'
+import { Agent, AgentOpt, type AiActOptions } from '@midscene/core'
 
 import PCDevice from './pc.device.js'
 
@@ -27,7 +27,7 @@ export class PCAgent extends Agent<PCDevice> {
     }
 
     public async aiOutput(task: string) {
-        return new Promise((res, rej) => {
+        return new Promise<string>((res, rej) => {
             try {
                 const uid = this.random32UUID()
                 this.device.listenOutput(uid, output => {
@@ -42,5 +42,9 @@ export class PCAgent extends Agent<PCDevice> {
                 rej(error)
             }
         })
+    }
+
+    public async ai(taskPrompt: string, opt?: AiActOptions) {
+        return this.aiAct(taskPrompt, opt)
     }
 }
