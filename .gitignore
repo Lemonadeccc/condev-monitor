@@ -108,6 +108,8 @@ next-env.d.ts
 /apps/backend/monitor/data/
 apps/backend/monitor/prisma/client/
 
+apps/frontend/monitor/.env
+!apps/frontend/monitor/.env.example 
 .devcontainer/data
 .devcontainer/postgressql_data
 .devcontainer/postgresql_data
