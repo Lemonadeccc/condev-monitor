@@ -21,7 +21,9 @@
         "**/*.md",
         "eslint.config.js",
         "packages/browser-utils/src/metrics/**/*",
-        "apps/frontend/monitor/cloudflare-env.d.ts"
+        "apps/frontend/monitor/cloudflare-env.d.ts",
+        "apps/frontend/monitor/test/**",
+        "apps/frontend/monitor/midscene_run/**"
     ],
     "useGitignore": true
 }

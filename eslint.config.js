@@ -16,6 +16,8 @@ const ignores = [
     'eslint.config.js',
     'commitlint.config.js',
     'apps/frontend/monitor/src/components/ui/**/*',
+    'apps/frontend/monitor/test/**',
+    'apps/frontend/monitor/midscene_run/**',
     '.next/**',
     'apps/frontend/monitor/.next/**',
     'packages/browser/src/**/*',
