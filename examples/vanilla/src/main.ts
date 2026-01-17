@@ -14,8 +14,9 @@ const dist = (import.meta as { env?: Record<string, string | undefined> }).env?.
 init({
     // target ip
     // target ip
-    // dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillaVLiV45',
-    dsn: 'http://localhost:8082/dsn-api/tracking/vanilla3XGJsf',
+    dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillay1PFXB',
+    // dsn: 'https://monitor.condevtools.com/tracking/vanillay1PFXB',
+    // dsn: 'http://localhost:8082/dsn-api/tracking/vanilla3XGJsf',
     release,
     dist,
     whiteScreen: {
@@ -25,19 +26,7 @@ init({
         lowFpsThreshold: 55,
         lowFpsConsecutive: 1,
     },
-    // replay: true,
-    replay: {
-        maxEvents: 1500,
-        bufferMs: 60_000,
-        record: {
-            inlineImages: false,
-            collectFonts: false,
-            blockSelector: '#immersive-translate-browser-popup',
-        },
-        upload: {
-            retryCount: 2,
-        },
-    },
+    replay: true,
 })
 
 function myFn() {
