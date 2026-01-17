@@ -11,6 +11,9 @@ reverse_proxy condev-monitor-server:8081
 }
 
 handle_path /dsn-api/* {
+	request_body {
+		max_size {$CADDY_DSN_MAX_BODY_SIZE:10MB}
+	}
 	rewrite * /dsn-api{path}
 	reverse_proxy condev-dsn-server:8082
 }
@@ -21,11 +24,17 @@ handle /app-config {
 }
 
 handle /tracking/* {
+	request_body {
+		max_size {$CADDY_DSN_MAX_BODY_SIZE:10MB}
+	}
 	rewrite * /dsn-api{uri}
 	reverse_proxy condev-dsn-server:8082
 }
 
 handle /replay/* {
+	request_body {
+		max_size {$CADDY_DSN_MAX_BODY_SIZE:10MB}
+	}
 	rewrite * /dsn-api{uri}
 	reverse_proxy condev-dsn-server:8082
 }
