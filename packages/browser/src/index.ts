@@ -21,6 +21,14 @@ export const init = (options: {
     dsn: string
     integrations?: Integration[]
     /**
+     * Release identifier for sourcemap mapping, e.g. 1.2.3-20250118-153000.
+     */
+    release?: string
+    /**
+     * Optional distribution identifier, e.g. web or mobile.
+     */
+    dist?: string
+    /**
      * Enable/disable white-screen detection, or configure its options.
      * Defaults to enabled.
      */
@@ -42,7 +50,10 @@ export const init = (options: {
         integrations: options?.integrations,
     })
 
-    const transport = new BrowserTransport(options.dsn)
+    const transport = new BrowserTransport(options.dsn, {
+        release: options.release,
+        dist: options.dist,
+    })
     monitoring.init(transport)
 
     new Errors(transport).init()

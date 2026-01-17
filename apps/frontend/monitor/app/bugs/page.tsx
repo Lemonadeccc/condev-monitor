@@ -8,6 +8,7 @@ import { useAuth } from '@/components/providers'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
 import {
     DropdownMenu,
     DropdownMenuContent,
@@ -42,10 +43,49 @@ type IssuesApiResponse = {
     }
 }
 
+type ResolvedFrame = {
+    functionName?: string
+    file: string
+    line: number
+    column: number
+    original?: {
+        source?: string | null
+        line?: number | null
+        column?: number | null
+        name?: string | null
+        snippet?: {
+            startLine: number
+            highlightLine: number
+            lines: string[]
+        } | null
+    }
+}
+
+type ErrorEventItem = {
+    appId: string
+    message: string
+    createdAt: string | null
+    info: Record<string, unknown>
+    resolvedFrames: ResolvedFrame[]
+}
+
+type ErrorEventsApiResponse = {
+    success: boolean
+    data: {
+        appId: string
+        items: ErrorEventItem[]
+    }
+}
+
 function formatIssueTime(ts: string) {
     const date = new Date(ts)
     if (Number.isNaN(date.getTime())) return '-'
     return formatDateTime(date)
+}
+
+function formatEventTime(ts: string | null) {
+    if (!ts) return '-'
+    return formatIssueTime(ts)
 }
 
 function formatTrendTick(range: '1h' | '3h' | '1d' | '7d' | '1m', value: string) {
@@ -80,6 +120,28 @@ function formatTrendLabel(range: '1h' | '3h' | '1d' | '7d' | '1m', value: string
     return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: '2-digit' })
 }
 
+function formatLocation(file: string | null | undefined, line?: number | null, column?: number | null) {
+    if (!file) return '-'
+    const linePart = typeof line === 'number' && Number.isFinite(line) ? `:${line}` : ''
+    const columnPart = typeof column === 'number' && Number.isFinite(column) ? `:${column}` : ''
+    return `${file}${linePart}${columnPart}`
+}
+
+function getInfoString(info: Record<string, unknown>, key: string) {
+    const value = info[key]
+    return typeof value === 'string' ? value : null
+}
+
+function getInfoNumber(info: Record<string, unknown>, key: string) {
+    const value = info[key]
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+    if (typeof value === 'string') {
+        const parsed = Number(value)
+        return Number.isFinite(parsed) ? parsed : null
+    }
+    return null
+}
+
 export default function BugsPage() {
     const { user, loading } = useAuth()
     const [tab, setTab] = useState<'all' | 'open' | 'resolved'>('all')
@@ -109,6 +171,19 @@ export default function BugsPage() {
     }, [effectiveAppId, enabled, range])
 
     const { data: issuesData, isLoading: issuesLoading, isError: issuesError } = useQuery(issuesQuery)
+
+    const errorEventsQuery = useQuery({
+        queryKey: ['error-events', effectiveAppId],
+        enabled: enabled && Boolean(effectiveAppId),
+        queryFn: async (): Promise<ErrorEventsApiResponse> => {
+            const params = new URLSearchParams({ appId: effectiveAppId, limit: '20' })
+            const res = await fetch(`/dsn-api/error-events?${params.toString()}`)
+            if (!res.ok) {
+                throw new Error('Failed to load error events')
+            }
+            return (await res.json()) as ErrorEventsApiResponse
+        },
+    })
 
     const visibleIssues = useMemo(() => {
         const issues = issuesData?.data?.issues ?? []
@@ -353,6 +428,224 @@ export default function BugsPage() {
                         </div>
                     ) : (
                         <div className="px-6 py-10 text-sm text-muted-foreground">No issues found.</div>
+                    )}
+                </CardContent>
+            </Card>
+
+            <Card className="bg-primary-foreground shadow-none">
+                <CardHeader className="border-b">
+                    <CardTitle className="text-base">Recent error events</CardTitle>
+                    <CardDescription className="text-sm">Latest errors with sourcemap-resolved stack frames.</CardDescription>
+                </CardHeader>
+                <CardContent className="px-0">
+                    {errorEventsQuery.isLoading ? (
+                        <div className="px-6 py-10 text-sm text-muted-foreground">Loading...</div>
+                    ) : errorEventsQuery.isError ? (
+                        <div className="px-6 py-10 text-sm text-destructive">Failed to load. Please try again.</div>
+                    ) : (errorEventsQuery.data?.data?.items?.length ?? 0) ? (
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm">
+                                <thead className="bg-muted/40 text-xs text-muted-foreground">
+                                    <tr className="[&_th]:font-medium">
+                                        <th className="px-6 py-3 text-left w-[360px]">Message</th>
+                                        <th className="px-6 py-3 text-left">Path</th>
+                                        <th className="px-6 py-3 text-left">Captured</th>
+                                        <th className="px-6 py-3 text-right">Stack</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    {(errorEventsQuery.data?.data?.items ?? []).map((row, idx) => {
+                                        const info = row.info ?? {}
+                                        const type = getInfoString(info, 'type') ?? 'Error'
+                                        const path = getInfoString(info, 'path') ?? '-'
+                                        const filename = getInfoString(info, 'filename') ?? getInfoString(info, 'url')
+                                        const release = getInfoString(info, 'release')
+                                        const dist = getInfoString(info, 'dist')
+                                        const stack = getInfoString(info, 'stack')
+                                        const resolvedFrames = row.resolvedFrames ?? []
+                                        const infoLine = getInfoNumber(info, 'lineno')
+                                        const infoColumn = getInfoNumber(info, 'colno')
+                                        const infoPosition = formatLocation(filename, infoLine ?? undefined, infoColumn ?? undefined)
+                                        const infoJson = (() => {
+                                            try {
+                                                return JSON.stringify(info, null, 2)
+                                            } catch {
+                                                return '{}'
+                                            }
+                                        })()
+                                        const hasDetails = resolvedFrames.length > 0 || Boolean(stack) || Object.keys(info).length > 0
+
+                                        return (
+                                            <tr key={`${row.createdAt ?? 'event'}:${idx}`} className="hover:bg-muted/20">
+                                                <td className="px-6 py-4 align-top w-[360px] max-w-[360px]">
+                                                    <div className="font-medium truncate" title={type}>
+                                                        {type}
+                                                    </div>
+                                                    <div className="mt-1 text-xs text-muted-foreground line-clamp-2" title={row.message}>
+                                                        {row.message || '-'}
+                                                    </div>
+                                                    {filename ? (
+                                                        <div
+                                                            className="mt-2 text-xs font-mono text-muted-foreground truncate"
+                                                            title={filename}
+                                                        >
+                                                            {filename}
+                                                        </div>
+                                                    ) : null}
+                                                </td>
+                                                <td className="px-6 py-4 align-top">
+                                                    <div className="font-mono text-xs">{path}</div>
+                                                    {release ? (
+                                                        <div className="mt-1 text-xs text-muted-foreground">Release: {release}</div>
+                                                    ) : null}
+                                                    {dist ? <div className="text-xs text-muted-foreground">Dist: {dist}</div> : null}
+                                                </td>
+                                                <td className="px-6 py-4 align-top text-xs font-mono tabular-nums">
+                                                    {formatEventTime(row.createdAt)}
+                                                </td>
+                                                <td className="px-6 py-4 align-top text-right">
+                                                    <Dialog>
+                                                        <DialogTrigger asChild>
+                                                            <Button variant="secondary" size="sm" disabled={!hasDetails}>
+                                                                {resolvedFrames.length
+                                                                    ? `View ${resolvedFrames.length} frames`
+                                                                    : hasDetails
+                                                                      ? 'View details'
+                                                                      : 'No details'}
+                                                            </Button>
+                                                        </DialogTrigger>
+                                                        <DialogContent className="sm:max-w-3xl max-h-[80vh] overflow-y-auto">
+                                                            <DialogHeader>
+                                                                <DialogTitle>Resolved stack</DialogTitle>
+                                                                <DialogDescription>
+                                                                    {row.message || 'Error'} · {formatEventTime(row.createdAt)}
+                                                                </DialogDescription>
+                                                            </DialogHeader>
+                                                            <div className="grid gap-3">
+                                                                <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                                                                    <span>Type: {type}</span>
+                                                                    <span>Path: {path}</span>
+                                                                    {release ? <span>Release: {release}</span> : null}
+                                                                    {dist ? <span>Dist: {dist}</span> : null}
+                                                                </div>
+                                                                {filename ? (
+                                                                    <div className="text-xs text-muted-foreground">File: {filename}</div>
+                                                                ) : null}
+                                                                {infoPosition !== '-' ? (
+                                                                    <div className="text-xs text-muted-foreground">
+                                                                        Position: {infoPosition}
+                                                                    </div>
+                                                                ) : null}
+                                                                <div className="rounded-md border bg-muted/40 p-3">
+                                                                    {resolvedFrames.length ? (
+                                                                        <div className="space-y-2">
+                                                                            {resolvedFrames.map((frame, frameIdx) => {
+                                                                                const original = frame.original
+                                                                                const hasOriginal =
+                                                                                    Boolean(original?.source) ||
+                                                                                    typeof original?.line === 'number' ||
+                                                                                    typeof original?.column === 'number' ||
+                                                                                    Boolean(original?.name)
+                                                                                const snippet = original?.snippet
+                                                                                const hasSnippet = Boolean(snippet?.lines?.length)
+                                                                                const displayName =
+                                                                                    original?.name || frame.functionName || '(anonymous)'
+                                                                                const primaryLocation = hasOriginal
+                                                                                    ? formatLocation(
+                                                                                          original?.source,
+                                                                                          original?.line,
+                                                                                          original?.column
+                                                                                      )
+                                                                                    : formatLocation(frame.file, frame.line, frame.column)
+                                                                                const secondaryLocation = hasOriginal
+                                                                                    ? formatLocation(frame.file, frame.line, frame.column)
+                                                                                    : null
+
+                                                                                return (
+                                                                                    <div
+                                                                                        key={`${frame.file}:${frame.line}:${frame.column}:${frameIdx}`}
+                                                                                        className="rounded-md border bg-background px-3 py-2"
+                                                                                    >
+                                                                                        <div className="font-mono text-xs text-foreground">
+                                                                                            {displayName}
+                                                                                        </div>
+                                                                                        <div className="font-mono text-xs text-muted-foreground">
+                                                                                            {primaryLocation}
+                                                                                        </div>
+                                                                                        {secondaryLocation ? (
+                                                                                            <div className="font-mono text-[11px] text-muted-foreground">
+                                                                                                minified: {secondaryLocation}
+                                                                                            </div>
+                                                                                        ) : null}
+                                                                                        {hasSnippet && snippet ? (
+                                                                                            <div className="mt-2 rounded-md border bg-muted/40">
+                                                                                                {snippet.lines.map((lineText, lineIdx) => {
+                                                                                                    const lineNumber =
+                                                                                                        snippet.startLine + lineIdx
+                                                                                                    const isHighlight =
+                                                                                                        lineNumber === snippet.highlightLine
+                                                                                                    return (
+                                                                                                        <div
+                                                                                                            key={`${lineNumber}:${frameIdx}`}
+                                                                                                            className={cn(
+                                                                                                                'flex gap-3 px-2 py-0.5 font-mono text-[11px]',
+                                                                                                                isHighlight
+                                                                                                                    ? 'bg-muted text-foreground'
+                                                                                                                    : 'text-muted-foreground'
+                                                                                                            )}
+                                                                                                        >
+                                                                                                            <span
+                                                                                                                className={cn(
+                                                                                                                    'w-10 text-right tabular-nums',
+                                                                                                                    isHighlight
+                                                                                                                        ? 'text-foreground'
+                                                                                                                        : 'text-muted-foreground'
+                                                                                                                )}
+                                                                                                            >
+                                                                                                                {lineNumber}
+                                                                                                            </span>
+                                                                                                            <span className="whitespace-pre-wrap text-foreground">
+                                                                                                                {lineText || ' '}
+                                                                                                            </span>
+                                                                                                        </div>
+                                                                                                    )
+                                                                                                })}
+                                                                                            </div>
+                                                                                        ) : null}
+                                                                                    </div>
+                                                                                )
+                                                                            })}
+                                                                        </div>
+                                                                    ) : stack ? (
+                                                                        <pre className="whitespace-pre-wrap text-xs font-mono text-foreground">
+                                                                            {stack}
+                                                                        </pre>
+                                                                    ) : (
+                                                                        <div className="text-xs text-muted-foreground">
+                                                                            No stack trace captured for this event.
+                                                                        </div>
+                                                                    )}
+                                                                </div>
+                                                                <div className="rounded-md border bg-muted/40 p-3">
+                                                                    <div className="mb-2 text-xs font-medium text-muted-foreground">
+                                                                        Raw info
+                                                                    </div>
+                                                                    <pre className="whitespace-pre-wrap text-xs font-mono text-foreground">
+                                                                        {infoJson}
+                                                                    </pre>
+                                                                </div>
+                                                            </div>
+                                                        </DialogContent>
+                                                    </Dialog>
+                                                </td>
+                                            </tr>
+                                        )
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                    ) : (
+                        <div className="px-6 py-10 text-sm text-muted-foreground">No error events found.</div>
                     )}
                 </CardContent>
             </Card>

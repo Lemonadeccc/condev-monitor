@@ -6,6 +6,7 @@
     "scripts": {
         "dev": "vite",
         "build": "tsc && vite build",
+        "sourcemaps": "bash scripts/build-with-sourcemaps.sh",
         "preview": "vite preview"
     },
     "dependencies": {

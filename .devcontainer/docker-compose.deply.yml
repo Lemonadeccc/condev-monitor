@@ -50,6 +50,9 @@ services:
             - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8888}
             - MAIL_ON=${MAIL_ON:-false}
             - AUTH_REQUIRE_EMAIL_VERIFICATION=${AUTH_REQUIRE_EMAIL_VERIFICATION:-false}
+            - SOURCEMAP_STORAGE_DIR=${SOURCEMAP_STORAGE_DIR:-/data/sourcemaps}
+        volumes:
+            - sourcemap_data:/data/sourcemaps
         depends_on:
             - condev-monitor-postgres
             - condev-monitor-clickhouse
@@ -74,6 +77,11 @@ services:
             - DB_DATABASE=${DB_DATABASE:-postgres}
             - MONITOR_API_URL=${MONITOR_API_URL:-http://condev-monitor-server:8081}
             - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8888}
+            - SOURCEMAP_STORAGE_DIR=${SOURCEMAP_STORAGE_DIR:-/data/sourcemaps}
+            - SOURCEMAP_CACHE_MAX=${SOURCEMAP_CACHE_MAX:-200}
+            - SOURCEMAP_CACHE_TTL_MS=${SOURCEMAP_CACHE_TTL_MS:-600000}
+        volumes:
+            - sourcemap_data:/data/sourcemaps
         depends_on:
             - condev-monitor-clickhouse
             - condev-monitor-postgres
@@ -116,3 +124,4 @@ volumes:
     postgres_data:
     caddy_data:
     caddy_config:
+    sourcemap_data:

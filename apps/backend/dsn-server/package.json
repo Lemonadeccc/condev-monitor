@@ -21,6 +21,7 @@
     },
     "dependencies": {
         "@clickhouse/client": "^1.12.1",
+        "@jridgewell/trace-mapping": "^0.3.28",
         "@nestjs/common": "^11.0.1",
         "@nestjs/config": "^4.0.2",
         "@nestjs/core": "^11.0.1",

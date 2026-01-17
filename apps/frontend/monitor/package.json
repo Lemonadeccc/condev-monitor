@@ -4,7 +4,6 @@
     "private": true,
     "scripts": {
         "dev": "next dev -p 3000",
-        "midscene": "tsx watch test/index.ts",
         "build": "next build",
         "start": "next start",
         "lint": "next lint",
@@ -39,7 +38,6 @@
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "lucide-react": "^0.553.0",
-        "midscene-pc": "^1.1.1",
         "next": "15.4.8",
         "next-themes": "^0.4.6",
         "react": "19.1.0",

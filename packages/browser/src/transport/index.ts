@@ -2,7 +2,13 @@ import { Transport } from '@condev-monitor/monitor-sdk-core'
 import { getBrowserInfo } from '@condev-monitor/monitor-sdk-browser-utils'
 
 export class BrowserTransport implements Transport {
-    constructor(private dsn: string) {}
+    constructor(
+        private dsn: string,
+        private context?: {
+            release?: string
+            dist?: string
+        }
+    ) {}
 
     send(data: Record<string, unknown>) {
         const browserInfo = getBrowserInfo()
@@ -14,6 +20,8 @@ export class BrowserTransport implements Transport {
             ...data,
             message,
             browserInfo,
+            release: this.context?.release,
+            dist: this.context?.dist,
         }
 
         fetch(this.dsn, {

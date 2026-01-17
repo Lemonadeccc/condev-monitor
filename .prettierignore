@@ -1,4 +1,2 @@
 /dist
 *.yaml
-apps/frontend/monitor/test/**
-apps/frontend/monitor/midscene_run/**

@@ -8,11 +8,16 @@ import viteLogo from '/vite.svg'
 import { setupCounter } from './counter.ts'
 import typescriptLogo from './typescript.svg'
 
+const release = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_MONITOR_RELEASE
+const dist = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_MONITOR_DIST
+
 init({
     // target ip
     // target ip
-    dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillaVLiV45',
-    // dsn: 'http://localhost:8082/dsn-api/tracking/vanillaVLiV45',
+    // dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillaVLiV45',
+    dsn: 'http://localhost:8082/dsn-api/tracking/vanilla3XGJsf',
+    release,
+    dist,
     whiteScreen: {
         runtimeWatch: true,
     },
