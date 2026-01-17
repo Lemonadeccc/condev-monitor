@@ -5,12 +5,13 @@ import { Errors } from './tracing/errorsIntegration'
 import { DEFAULT_WHITE_SCREEN_OPTIONS, WhiteScreen, WhiteScreenOptions } from './tracing/whiteScreenIntegration'
 import { DEFAULT_RUNTIME_PERFORMANCE_OPTIONS, RuntimePerformance, RuntimePerformanceOptions } from './tracing/runtimePerformanceIntegration'
 import { Metrics } from '@condev-monitor/monitor-sdk-browser-utils'
-import { Replay } from './replay/replayIntegration'
+import { Replay, ReplayOptions } from './replay/replayIntegration'
 
 let whiteScreen: WhiteScreen | null = null
 
 export type { WhiteScreenOptions }
 export type { RuntimePerformanceOptions }
+export type { ReplayOptions }
 export { DEFAULT_WHITE_SCREEN_OPTIONS, DEFAULT_RUNTIME_PERFORMANCE_OPTIONS }
 
 export const triggerWhiteScreenCheck = (reason?: string) => {
@@ -43,7 +44,7 @@ export const init = (options: {
      * Requires app-level toggle enabled in the monitor UI.
      * Defaults to disabled.
      */
-    replay?: boolean
+    replay?: boolean | ReplayOptions
 }) => {
     const monitoring = new Monitoring({
         dsn: options.dsn,
@@ -60,7 +61,8 @@ export const init = (options: {
     new Metrics(transport).init()
 
     if (options.replay) {
-        new Replay(transport, options.dsn).init()
+        const replayOptions = typeof options.replay === 'object' ? options.replay : undefined
+        new Replay(transport, options.dsn, replayOptions).init()
     }
 
     if (options.performance !== false) {

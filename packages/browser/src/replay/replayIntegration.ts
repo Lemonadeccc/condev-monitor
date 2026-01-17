@@ -2,6 +2,37 @@ import type { Transport } from '@condev-monitor/monitor-sdk-core'
 
 import { EventType, record } from 'rrweb'
 
+type ReplayBlockClass = string | RegExp
+type ReplayBlockSelector = string
+
+type ReplayRecordOptions = {
+    inlineImages?: boolean
+    collectFonts?: boolean
+    recordCanvas?: boolean
+    maskAllInputs?: boolean
+    maskTextClass?: string
+    mousemoveWait?: number
+    blockClass?: ReplayBlockClass
+    blockSelector?: ReplayBlockSelector
+}
+
+type ReplayUploadOptions = {
+    keepalive?: boolean
+    keepaliveMaxBytes?: number
+    retryCount?: number
+    retryDelayMs?: number
+    retryBackoff?: number
+}
+
+export type ReplayOptions = {
+    bufferMs?: number
+    maxEvents?: number
+    beforeErrorMs?: number
+    afterErrorMs?: number
+    record?: ReplayRecordOptions
+    upload?: ReplayUploadOptions
+}
+
 type eventWithTime = {
     type: number
     timestamp: number
@@ -53,6 +84,23 @@ export class Replay {
     private maxEvents: number
     private beforeErrorMs: number
     private afterErrorMs: number
+    private recordOptions: {
+        inlineImages: boolean
+        collectFonts: boolean
+        recordCanvas: boolean
+        maskAllInputs: boolean
+        maskTextClass: string
+        mousemoveWait: number
+        blockClass?: ReplayBlockClass
+        blockSelector?: ReplayBlockSelector
+    }
+    private uploadOptions: {
+        keepalive: boolean
+        keepaliveMaxBytes: number
+        retryCount: number
+        retryDelayMs: number
+        retryBackoff: number
+    }
     private stopRecording: listenerHandler | null = null
     private pendingUpload: null | {
         replayId: string
@@ -66,18 +114,33 @@ export class Replay {
     constructor(
         private transport: Transport,
         private dsn: string,
-        options?: {
-            bufferMs?: number
-            maxEvents?: number
-            beforeErrorMs?: number
-            afterErrorMs?: number
-        }
+        options?: ReplayOptions
     ) {
+        const recordOptions = options?.record ?? {}
+        const uploadOptions = options?.upload ?? {}
+
         this.beforeErrorMs = Math.max(0, options?.beforeErrorMs ?? 15_000)
         this.afterErrorMs = Math.max(0, options?.afterErrorMs ?? 10_000)
         const minBuffer = this.beforeErrorMs + this.afterErrorMs + 10_000
         this.bufferMs = Math.max(minBuffer, options?.bufferMs ?? 90_000)
         this.maxEvents = Math.max(500, options?.maxEvents ?? 3000)
+        this.recordOptions = {
+            inlineImages: recordOptions.inlineImages ?? true,
+            collectFonts: recordOptions.collectFonts ?? true,
+            recordCanvas: recordOptions.recordCanvas ?? false,
+            maskAllInputs: recordOptions.maskAllInputs ?? true,
+            maskTextClass: recordOptions.maskTextClass ?? 'condev-replay-mask',
+            mousemoveWait: recordOptions.mousemoveWait ?? 50,
+            blockClass: recordOptions.blockClass,
+            blockSelector: recordOptions.blockSelector,
+        }
+        this.uploadOptions = {
+            keepalive: uploadOptions.keepalive ?? true,
+            keepaliveMaxBytes: Math.max(1024, uploadOptions.keepaliveMaxBytes ?? 60_000),
+            retryCount: Math.max(0, uploadOptions.retryCount ?? 1),
+            retryDelayMs: Math.max(0, uploadOptions.retryDelayMs ?? 500),
+            retryBackoff: Math.max(1, uploadOptions.retryBackoff ?? 2),
+        }
     }
 
     init() {
@@ -158,14 +221,14 @@ export class Replay {
             record({
                 emit: (event: eventWithTime) => this.push(event),
                 checkoutEveryNms: 10_000,
-                // privacy defaults
-                maskAllInputs: true,
-                maskTextClass: 'condev-replay-mask',
-                // perf defaults
-                recordCanvas: false,
-                inlineImages: true,
-                collectFonts: true,
-                mousemoveWait: 50,
+                maskAllInputs: this.recordOptions.maskAllInputs,
+                maskTextClass: this.recordOptions.maskTextClass,
+                recordCanvas: this.recordOptions.recordCanvas,
+                inlineImages: this.recordOptions.inlineImages,
+                collectFonts: this.recordOptions.collectFonts,
+                mousemoveWait: this.recordOptions.mousemoveWait,
+                blockClass: this.recordOptions.blockClass,
+                blockSelector: this.recordOptions.blockSelector,
             }) ?? null
     }
 
@@ -249,22 +312,51 @@ export class Replay {
         const endedAtMs = Math.min(nowMs(), pending.windowEndMs)
 
         try {
-            await fetch(pending.replayUploadUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    replayId: pending.replayId,
-                    startedAt: new Date(startedAtMs).toISOString(),
-                    endedAt: new Date(endedAtMs).toISOString(),
-                    errorAt: new Date(pending.errorAtMs).toISOString(),
-                    url: location.href,
-                    path: location.pathname,
-                    userAgent: navigator.userAgent,
-                    events,
-                }),
+            await this.postReplay(pending.replayUploadUrl, {
+                replayId: pending.replayId,
+                startedAt: new Date(startedAtMs).toISOString(),
+                endedAt: new Date(endedAtMs).toISOString(),
+                errorAt: new Date(pending.errorAtMs).toISOString(),
+                url: location.href,
+                path: location.pathname,
+                userAgent: navigator.userAgent,
+                events,
             })
         } catch {
             // ignore
+        }
+    }
+
+    private shouldRetry(status: number) {
+        if (status === 408 || status === 429) return true
+        return status >= 500 && status <= 599
+    }
+
+    private async postReplay(url: string, payload: Record<string, unknown>) {
+        const body = JSON.stringify(payload)
+        const keepalive = this.uploadOptions.keepalive && body.length <= this.uploadOptions.keepaliveMaxBytes
+        const retryCount = this.uploadOptions.retryCount
+        let delayMs = this.uploadOptions.retryDelayMs
+        const backoff = this.uploadOptions.retryBackoff
+
+        for (let attempt = 0; attempt <= retryCount; attempt += 1) {
+            try {
+                const res = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body,
+                    keepalive,
+                })
+                if (res.ok) return
+                if (!this.shouldRetry(res.status) || attempt === retryCount) return
+            } catch {
+                if (attempt === retryCount) return
+            }
+
+            if (delayMs > 0) {
+                await new Promise(resolve => window.setTimeout(resolve, delayMs))
+                delayMs *= backoff
+            }
         }
     }
 

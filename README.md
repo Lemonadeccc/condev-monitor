@@ -192,6 +192,10 @@ This repo provides a production-ish compose file that builds and runs:
     - DB + ClickHouse credentials
     - `FRONTEND_URL` (your public dashboard URL)
     - email provider config (optional)
+- If you expect larger Replay payloads:
+    - `DSN_BODY_LIMIT` (dsn-server request size limit)
+    - `CADDY_DSN_MAX_BODY_SIZE` (Caddy proxy limit)
+    - `CLICKHOUSE_MAX_HTTP_BODY_SIZE` (ClickHouse HTTP write limit)
 - Update `./.devcontainer/caddy/Caddyfile` to match your domain.
     - It is currently configured for `monitor.condevtools.com`.
     - For local HTTP testing, you can temporarily use `:80` as the site address.
@@ -219,6 +223,7 @@ The dashboard app includes OpenNext scripts:
 
 - Build + deploy: `pnpm --filter @condev-monitor/monitor-client deploy`
 - Preview: `pnpm --filter @condev-monitor/monitor-client preview`
+- Cloudflare proxy enforces a request body size limit; large Replay uploads may hit 413. Consider setting the upload subdomain to "DNS only" to bypass the proxy, or reduce replay payload size.
 
 ## Development & Quality
 

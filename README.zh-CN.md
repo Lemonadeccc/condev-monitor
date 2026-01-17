@@ -192,6 +192,10 @@ SDK 的 replay 模块会调用 `GET /app-config?appId=...` 判断是否允许回
     - DB + ClickHouse 账号密码
     - `FRONTEND_URL`（控制台公网 URL）
     - 邮件服务配置（可选）
+- 如果需要接收较大的 Replay 数据包：
+    - `DSN_BODY_LIMIT`（dsn-server 单请求上限）
+    - `CADDY_DSN_MAX_BODY_SIZE`（Caddy 反代上限）
+    - `CLICKHOUSE_MAX_HTTP_BODY_SIZE`（ClickHouse HTTP 写入上限）
 - 修改 `./.devcontainer/caddy/Caddyfile` 里的站点域名：
     - 当前写死为 `monitor.condevtools.com`
     - 本地仅 HTTP 测试时，可临时改成 `:80`
@@ -219,6 +223,7 @@ pnpm docker:deploy:stop
 
 - 构建并部署：`pnpm --filter @condev-monitor/monitor-client deploy`
 - 预览：`pnpm --filter @condev-monitor/monitor-client preview`
+- Cloudflare 代理有请求体大小上限，Replay 过大可能 413；可考虑将上传接口子域设置为“DNS only”绕过代理，或继续减小 replay 体积。
 
 ## 开发与质量检查
 

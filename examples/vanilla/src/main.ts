@@ -25,7 +25,19 @@ init({
         lowFpsThreshold: 55,
         lowFpsConsecutive: 1,
     },
-    replay: true,
+    // replay: true,
+    replay: {
+        maxEvents: 1500,
+        bufferMs: 60_000,
+        record: {
+            inlineImages: false,
+            collectFonts: false,
+            blockSelector: '#immersive-translate-browser-popup',
+        },
+        upload: {
+            retryCount: 2,
+        },
+    },
 })
 
 function myFn() {

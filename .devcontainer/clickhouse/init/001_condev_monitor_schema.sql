@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS lemonade.base_monitor_storage (
     info JSON,
     created_at DateTime('Asia/Shanghai') DEFAULT now('Asia/Shanghai')
 ) ENGINE = MergeTree
-ORDER BY tuple ();
+ORDER BY tuple ()
+TTL created_at + INTERVAL 30 DAY DELETE WHERE event_type = 'replay';
 
 -- Application settings used by dsn-server (e.g. replay_enabled).
 -- monitor backend also creates/syncs this table, but having it here avoids startup races.
@@ -30,7 +31,8 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS lemonade.base_monitor_view (
     processes_message String,
     created_at DateTime('Asia/Shanghai')
 ) ENGINE = MergeTree
-ORDER BY tuple () AS
+ORDER BY tuple ()
+TTL created_at + INTERVAL 30 DAY DELETE WHERE event_type = 'replay' AS
 SELECT
     app_id,
     info,
