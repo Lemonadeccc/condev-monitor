@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts'
 
+import { ErrorAiAssistant } from '@/components/bugs/ErrorAiAssistant'
 import { useAuth } from '@/components/providers'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -147,6 +148,7 @@ export default function BugsPage() {
     const [tab, setTab] = useState<'all' | 'open' | 'resolved'>('all')
     const [range, setRange] = useState<'1h' | '3h' | '1d' | '7d' | '1m'>('7d')
     const [selectedAppId, setSelectedAppId] = useState<string>('')
+    const aiEnabled = process.env.NEXT_PUBLIC_AI_ASSIST_ENABLED === 'true'
 
     const enabled = !loading && Boolean(user)
     const { listQuery } = useApplications({ enabled })
@@ -474,6 +476,21 @@ export default function BugsPage() {
                                             }
                                         })()
                                         const hasDetails = resolvedFrames.length > 0 || Boolean(stack) || Object.keys(info).length > 0
+                                        const aiContext = {
+                                            appId: String(row.appId ?? effectiveAppId),
+                                            message: row.message || '',
+                                            type,
+                                            path,
+                                            release,
+                                            dist,
+                                            filename,
+                                            lineno: infoLine,
+                                            colno: infoColumn,
+                                            stack,
+                                            createdAt: row.createdAt,
+                                            resolvedFrames,
+                                            rawInfo: info,
+                                        }
 
                                         return (
                                             <tr key={`${row.createdAt ?? 'event'}:${idx}`} className="hover:bg-muted/20">
@@ -634,6 +651,7 @@ export default function BugsPage() {
                                                                         {infoJson}
                                                                     </pre>
                                                                 </div>
+                                                                {aiEnabled ? <ErrorAiAssistant context={aiContext} /> : null}
                                                             </div>
                                                         </DialogContent>
                                                     </Dialog>

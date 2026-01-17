@@ -25,3 +25,6 @@ curpos
 nextpos
 beginnormal
 jridgewell
+deepseek
+Embla
+cmdk
