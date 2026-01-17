@@ -30,6 +30,14 @@ export class SpanController {
         })
     }
 
+    @Get('/error-events')
+    errorEvents(@Query('appId') appId: string, @Query('limit') limit = '20') {
+        return this.spanService.errorEvents({
+            appId,
+            limit: Number(limit) || 20,
+        })
+    }
+
     @Get('/metric')
     metric(@Query('appId') appId: string, @Query('range') range: '1h' | '3h' | '1d' | '7d' | '1m' = '1h') {
         return this.spanService.metric({ appId, range })

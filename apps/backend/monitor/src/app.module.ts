@@ -12,6 +12,7 @@ import { ClickhouseModule } from './common/clickhouse/clickhouse.module'
 import { ConfigModule } from './common/config/config.module'
 import { LogsModule } from './common/logger/logs.module'
 import { MailModule } from './common/mail/mail.module'
+import { SourcemapModule } from './sourcemap/sourcemap.module'
 
 @Module({
     imports: [
@@ -26,6 +27,7 @@ import { MailModule } from './common/mail/mail.module'
         ApplicationModule,
         AdminModule,
         AuthModule,
+        SourcemapModule,
         ClickhouseModule,
         TypeOrmModule.forRootAsync({
             inject: [ConfigService],

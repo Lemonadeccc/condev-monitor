@@ -33,6 +33,7 @@ const schema = Joi.object({
     CLICKHOUSE_URL: Joi.string().required(),
     CLICKHOUSE_USERNAME: Joi.string().required(),
     CLICKHOUSE_PASSWORD: Joi.string().allow('').required(),
+    SOURCEMAP_STORAGE_DIR: Joi.string().optional(),
 })
 
 @Module({

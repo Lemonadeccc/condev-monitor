@@ -2,6 +2,9 @@ import { defineConfig } from 'vite'
 
 export default defineConfig({
     plugins: [],
+    build: {
+        sourcemap: true,
+    },
     server: {
         proxy: {
             '/dsn-api': {

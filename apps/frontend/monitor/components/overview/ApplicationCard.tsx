@@ -5,6 +5,7 @@ import { Copy, Settings, Video, VideoOff } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts'
 
+import { getAccessToken } from '@/lib/auth-token'
 import { createStableChartData } from '@/lib/chart-seed'
 import { copyToClipboard } from '@/lib/clipboard'
 import { formatDateTime } from '@/lib/datetime'
@@ -35,6 +36,12 @@ export function ApplicationCard(props: {
     const [renameError, setRenameError] = useState<string | null>(null)
     const [replaySubmitting, setReplaySubmitting] = useState(false)
     const [replayError, setReplayError] = useState<string | null>(null)
+    const [tokenOpen, setTokenOpen] = useState(false)
+    const [tokenName, setTokenName] = useState('')
+    const [tokenValue, setTokenValue] = useState<string | null>(null)
+    const [tokenSubmitting, setTokenSubmitting] = useState(false)
+    const [tokenError, setTokenError] = useState<string | null>(null)
+    const [tokenCopied, setTokenCopied] = useState(false)
 
     const { data: overviewData } = useQuery({
         queryKey: ['app-overview', application.appId, range],
@@ -52,6 +59,31 @@ export function ApplicationCard(props: {
                     series: Array<{ ts: string; total: number; errors: number }>
                     intervalSeconds: number
                 }
+            }
+        },
+    })
+
+    const tokensQuery = useQuery({
+        queryKey: ['sourcemap-tokens', application.appId, tokenOpen],
+        enabled: tokenOpen,
+        queryFn: async () => {
+            const token = getAccessToken()
+            const params = new URLSearchParams({ appId: application.appId })
+            const res = await fetch(`/api/sourcemap/token?${params.toString()}`, {
+                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+            })
+            if (!res.ok) {
+                throw new Error('Failed to load sourcemap tokens')
+            }
+            return (await res.json()) as {
+                success: boolean
+                data: Array<{
+                    id: number
+                    name: string
+                    createdAt?: string
+                    lastUsedAt?: string
+                    revokedAt?: string
+                }>
             }
         },
     })
@@ -103,6 +135,54 @@ export function ApplicationCard(props: {
             setRenameError((e as Error)?.message || 'Rename failed. Please try again.')
         } finally {
             setRenameSubmitting(false)
+        }
+    }
+
+    const handleCreateToken = async () => {
+        setTokenError(null)
+        setTokenValue(null)
+        const name = tokenName.trim()
+        setTokenSubmitting(true)
+        try {
+            const auth = getAccessToken()
+            const res = await fetch('/api/sourcemap/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
+                },
+                body: JSON.stringify({ appId: application.appId, name: name || undefined }),
+            })
+            if (!res.ok) {
+                const err = (await res.json().catch(() => ({}))) as { message?: string }
+                throw new Error(err.message || 'Failed to create token')
+            }
+            const json = (await res.json()) as { data: { token: string } }
+            setTokenValue(json?.data?.token ?? null)
+            await tokensQuery.refetch()
+            setTokenName('')
+        } catch (e) {
+            setTokenError((e as Error)?.message || 'Failed to create token')
+        } finally {
+            setTokenSubmitting(false)
+        }
+    }
+
+    const handleRevokeToken = async (id: number) => {
+        setTokenError(null)
+        try {
+            const auth = getAccessToken()
+            const res = await fetch(`/api/sourcemap/token/${id}`, {
+                method: 'DELETE',
+                headers: auth ? { Authorization: `Bearer ${auth}` } : undefined,
+            })
+            if (!res.ok) {
+                const err = (await res.json().catch(() => ({}))) as { message?: string }
+                throw new Error(err.message || 'Failed to revoke token')
+            }
+            await tokensQuery.refetch()
+        } catch (e) {
+            setTokenError((e as Error)?.message || 'Failed to revoke token')
         }
     }
 
@@ -162,6 +242,15 @@ export function ApplicationCard(props: {
                                 }}
                             >
                                 Rename
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                                onClick={() => {
+                                    setTokenOpen(true)
+                                    setTokenValue(null)
+                                    setTokenError(null)
+                                }}
+                            >
+                                Sourcemap token
                             </DropdownMenuItem>
                             <DropdownMenuSeparator />
                             <DropdownMenuItem className="text-destructive focus:text-destructive" onClick={onDelete}>
@@ -313,6 +402,89 @@ export function ApplicationCard(props: {
                             {renameSubmitting ? 'Saving...' : 'Save'}
                         </Button>
                     </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            <Dialog
+                open={tokenOpen}
+                onOpenChange={open => {
+                    setTokenOpen(open)
+                    if (!open) {
+                        setTokenValue(null)
+                        setTokenError(null)
+                    }
+                }}
+            >
+                <DialogContent className="sm:max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle>Sourcemap upload token</DialogTitle>
+                        <DialogDescription>Generate a long-lived token for sourcemap uploads.</DialogDescription>
+                    </DialogHeader>
+
+                    <div className="grid gap-2">
+                        <Input placeholder="Token name (optional)" value={tokenName} onChange={event => setTokenName(event.target.value)} />
+                        <Button onClick={handleCreateToken} disabled={tokenSubmitting}>
+                            {tokenSubmitting ? 'Creating...' : 'Create token'}
+                        </Button>
+                        {tokenValue ? (
+                            <div className="rounded-md border bg-muted/40 p-3 text-xs">
+                                <div className="mb-2 text-muted-foreground">Copy this token now. It will not be shown again.</div>
+                                <div className="flex items-center gap-2">
+                                    <Input value={tokenValue} readOnly />
+                                    <Button
+                                        variant="outline"
+                                        size="icon"
+                                        onClick={async () => {
+                                            await copyToClipboard(tokenValue)
+                                            setTokenCopied(true)
+                                            setTimeout(() => setTokenCopied(false), 1500)
+                                        }}
+                                    >
+                                        {tokenCopied ? <span className="text-[10px]">OK</span> : <Copy className="h-4 w-4" />}
+                                    </Button>
+                                </div>
+                            </div>
+                        ) : null}
+                        {tokenError ? <div className="text-xs text-destructive">{tokenError}</div> : null}
+                    </div>
+
+                    <div className="mt-4 rounded-md border">
+                        <div className="px-4 py-2 text-xs font-medium text-muted-foreground border-b">Existing tokens</div>
+                        <div className="max-h-48 overflow-y-auto">
+                            {tokensQuery.isLoading ? (
+                                <div className="px-4 py-3 text-xs text-muted-foreground">Loading...</div>
+                            ) : tokensQuery.isError ? (
+                                <div className="px-4 py-3 text-xs text-destructive">Failed to load tokens</div>
+                            ) : (tokensQuery.data?.data?.length ?? 0) === 0 ? (
+                                <div className="px-4 py-3 text-xs text-muted-foreground">No tokens yet.</div>
+                            ) : (
+                                tokensQuery.data?.data?.map(token => (
+                                    <div
+                                        key={token.id}
+                                        className="flex items-center justify-between gap-2 px-4 py-2 text-xs border-b last:border-b-0"
+                                    >
+                                        <div>
+                                            <div className="font-medium">{token.name || 'token'}</div>
+                                            <div className="text-muted-foreground">
+                                                Created: {token.createdAt ? formatDateTime(new Date(token.createdAt)) : '-'}
+                                            </div>
+                                            <div className="text-muted-foreground">
+                                                Last used: {token.lastUsedAt ? formatDateTime(new Date(token.lastUsedAt)) : '-'}
+                                            </div>
+                                        </div>
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            disabled={Boolean(token.revokedAt)}
+                                            onClick={() => handleRevokeToken(token.id)}
+                                        >
+                                            {token.revokedAt ? 'Revoked' : 'Revoke'}
+                                        </Button>
+                                    </div>
+                                ))
+                            )}
+                        </div>
+                    </div>
                 </DialogContent>
             </Dialog>
         </Card>

@@ -1,4 +1,7 @@
+import * as fs from 'node:fs'
+
 import { ClickHouseClient } from '@clickhouse/client'
+import { originalPositionFor, TraceMap } from '@jridgewell/trace-mapping'
 import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import type { Pool } from 'pg'
@@ -83,6 +86,29 @@ type ReplayItem = {
     snapshot?: string
 }
 
+type StackFrame = {
+    functionName?: string
+    file: string
+    line: number
+    column: number
+}
+
+type SourceSnippet = {
+    startLine: number
+    highlightLine: number
+    lines: string[]
+}
+
+type ResolvedFrame = StackFrame & {
+    original?: {
+        source?: string | null
+        line?: number | null
+        column?: number | null
+        name?: string | null
+        snippet?: SourceSnippet | null
+    }
+}
+
 function normalizeReplayEvents(rawEvents: unknown, maxEvents: number): unknown[] {
     const list = Array.isArray(rawEvents) ? rawEvents : []
     if (list.length <= maxEvents) return list
@@ -131,6 +157,201 @@ export class SpanService {
 
     private readonly appOwnerEmailCache = new Map<string, { email: string; expiresAt: number }>()
     private appTableColumnsPromise: Promise<Set<string>> | null = null
+    private readonly sourcemapCache = new Map<string, { map: TraceMap; expiresAt: number }>()
+
+    private normalizeUrl(value: string): string {
+        try {
+            const url = new URL(value)
+            url.hash = ''
+            url.search = ''
+            return url.toString()
+        } catch {
+            return value.split('#')[0]?.split('?')[0] ?? value
+        }
+    }
+
+    private parseStackFrames(stack?: string): StackFrame[] {
+        if (!stack) return []
+        const lines = stack.split('\n')
+        const frames: StackFrame[] = []
+
+        for (const line of lines) {
+            const trimmed = line.trim()
+            if (!trimmed) continue
+
+            const withFunc = /^at\s+(.+?)\s+\((.+?):(\d+):(\d+)\)$/.exec(trimmed)
+            if (withFunc) {
+                frames.push({
+                    functionName: withFunc[1],
+                    file: withFunc[2],
+                    line: Number(withFunc[3]),
+                    column: Number(withFunc[4]),
+                })
+                continue
+            }
+
+            const noFunc = /^at\s+(.+?):(\d+):(\d+)$/.exec(trimmed)
+            if (noFunc) {
+                frames.push({
+                    file: noFunc[1],
+                    line: Number(noFunc[2]),
+                    column: Number(noFunc[3]),
+                })
+            }
+        }
+
+        return frames
+    }
+
+    private getSourcemapCacheMax(): number {
+        const raw = Number(this.configService.get<string>('SOURCEMAP_CACHE_MAX') ?? 200)
+        return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 200
+    }
+
+    private getSourcemapCacheTtlMs(): number {
+        const raw = Number(this.configService.get<string>('SOURCEMAP_CACHE_TTL_MS') ?? 10 * 60 * 1000)
+        return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 10 * 60 * 1000
+    }
+
+    private pruneSourcemapCache(now: number): void {
+        for (const [key, entry] of this.sourcemapCache.entries()) {
+            if (entry.expiresAt <= now) {
+                this.sourcemapCache.delete(key)
+            }
+        }
+
+        const max = this.getSourcemapCacheMax()
+        while (this.sourcemapCache.size > max) {
+            const oldestKey = this.sourcemapCache.keys().next().value
+            if (oldestKey === undefined) break
+            this.sourcemapCache.delete(oldestKey)
+        }
+    }
+
+    private async loadTraceMap(mapPath: string): Promise<TraceMap | null> {
+        const cached = this.sourcemapCache.get(mapPath)
+        if (cached) {
+            const now = Date.now()
+            if (cached.expiresAt > now) {
+                this.sourcemapCache.delete(mapPath)
+                this.sourcemapCache.set(mapPath, cached)
+                return cached.map
+            }
+            this.sourcemapCache.delete(mapPath)
+        }
+
+        try {
+            const now = Date.now()
+            const content = await fs.promises.readFile(mapPath, 'utf-8')
+            const map = new TraceMap(JSON.parse(content))
+            this.sourcemapCache.set(mapPath, { map, expiresAt: now + this.getSourcemapCacheTtlMs() })
+            this.pruneSourcemapCache(now)
+            return map
+        } catch {
+            return null
+        }
+    }
+
+    private getSourceContent(traceMap: TraceMap, source: string): string | null {
+        const sources = (traceMap as { sources?: string[] }).sources
+        const contents = (traceMap as { sourcesContent?: Array<string | null> }).sourcesContent
+        if (!sources || !contents) return null
+        const index = sources.indexOf(source)
+        if (index < 0) return null
+        const content = contents[index]
+        return typeof content === 'string' ? content : null
+    }
+
+    private buildSourceSnippet(lines: string[], line: number, contextLines = 3): SourceSnippet | null {
+        if (!Number.isFinite(line) || line < 1 || line > lines.length) return null
+        const lineIndex = line - 1
+        const start = Math.max(0, lineIndex - contextLines)
+        const end = Math.min(lines.length, lineIndex + contextLines + 1)
+        return {
+            startLine: start + 1,
+            highlightLine: line,
+            lines: lines.slice(start, end),
+        }
+    }
+
+    private async findSourcemapPath(params: { appId: string; release: string; dist: string; minifiedUrl: string }): Promise<string | null> {
+        const res = await this.pgPool.query<{ mapPath: string }>(
+            `
+                SELECT "mapPath" AS "mapPath"
+                FROM "sourcemap"
+                WHERE "appId" = $1
+                  AND "release" = $2
+                  AND "dist" = $3
+                  AND "minifiedUrl" = $4
+                ORDER BY "createdAt" DESC
+                LIMIT 1
+            `,
+            [params.appId, params.release, params.dist, params.minifiedUrl]
+        )
+        return res.rows?.[0]?.mapPath ?? null
+    }
+
+    private async resolveFrames(params: {
+        appId: string
+        release?: string
+        dist?: string
+        minifiedUrl?: string
+        stack?: string
+    }): Promise<ResolvedFrame[]> {
+        const frames = this.parseStackFrames(params.stack)
+        if (!params.release) return []
+
+        const inferredUrl = params.minifiedUrl || frames[0]?.file
+        if (!inferredUrl) return []
+
+        const minifiedUrl = this.normalizeUrl(inferredUrl)
+        const dist = params.dist ?? ''
+        const mapPath = await this.findSourcemapPath({
+            appId: params.appId,
+            release: params.release,
+            dist,
+            minifiedUrl,
+        })
+        if (!mapPath) return []
+
+        const traceMap = await this.loadTraceMap(mapPath)
+        if (!traceMap) return []
+
+        const sourceLinesCache = new Map<string, string[] | null>()
+
+        return frames.map(frame => {
+            const original = originalPositionFor(traceMap, {
+                line: frame.line,
+                column: Math.max(0, frame.column - 1),
+            })
+            const source = typeof original.source === 'string' ? original.source : null
+            const line = typeof original.line === 'number' ? original.line : null
+            let snippet: SourceSnippet | null = null
+            if (source && line) {
+                let cachedLines: string[] | null
+                if (sourceLinesCache.has(source)) {
+                    cachedLines = sourceLinesCache.get(source) ?? null
+                } else {
+                    const content = this.getSourceContent(traceMap, source)
+                    cachedLines = content ? content.split(/\r?\n/) : null
+                    sourceLinesCache.set(source, cachedLines)
+                }
+                if (cachedLines) {
+                    snippet = this.buildSourceSnippet(cachedLines, line)
+                }
+            }
+            return {
+                ...frame,
+                original: {
+                    source,
+                    line,
+                    column: original.column ?? null,
+                    name: original.name ?? null,
+                    snippet,
+                },
+            }
+        })
+    }
 
     private async getApplicationTableColumns(): Promise<Set<string>> {
         if (!this.appTableColumnsPromise) {
@@ -291,6 +512,75 @@ export class SpanService {
         })
         const data = await res.json()
         return data.data
+    }
+
+    async errorEvents(params: { appId: string; limit: number }) {
+        const appId = (params.appId ?? '').trim()
+        if (!appId) {
+            throw new BadRequestException({ message: 'appId is required', error: 'APP_ID_REQUIRED' })
+        }
+
+        const limit = Number.isFinite(params.limit) ? Math.max(1, Math.min(200, Math.floor(params.limit))) : 20
+
+        const res = await this.clickhouseClient.query({
+            query: `
+                SELECT
+                    app_id,
+                    message,
+                    toJSONString(info) AS info_json,
+                    created_at
+                FROM lemonade.base_monitor_storage
+                WHERE app_id = {appId:String}
+                  AND event_type = 'error'
+                ORDER BY created_at DESC
+                LIMIT {limit:UInt32}
+            `,
+            query_params: { appId, limit },
+            format: 'JSON',
+        })
+
+        const json = await res.json()
+        const rows = (json.data ?? []) as Array<{ app_id?: string; message?: string; info_json?: string; created_at?: string }>
+
+        const items = await Promise.all(
+            rows.map(async row => {
+                let info: Record<string, unknown> = {}
+                try {
+                    info = row.info_json ? (JSON.parse(row.info_json) as Record<string, unknown>) : {}
+                } catch {
+                    info = {}
+                }
+
+                const release = typeof info.release === 'string' ? info.release : undefined
+                const dist = typeof info.dist === 'string' ? info.dist : undefined
+                const minifiedUrl = typeof info.filename === 'string' ? info.filename : typeof info.url === 'string' ? info.url : undefined
+                const stack = typeof info.stack === 'string' ? info.stack : undefined
+
+                const resolvedFrames = await this.resolveFrames({
+                    appId,
+                    release,
+                    dist,
+                    minifiedUrl,
+                    stack,
+                })
+
+                return {
+                    appId: String(row.app_id ?? appId),
+                    message: String(row.message ?? ''),
+                    createdAt: row.created_at ? new Date(row.created_at).toISOString() : null,
+                    info,
+                    resolvedFrames,
+                }
+            })
+        )
+
+        return {
+            success: true,
+            data: {
+                appId,
+                items,
+            },
+        }
     }
 
     async appConfig(params: { appId: string }) {
