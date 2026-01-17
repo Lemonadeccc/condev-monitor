@@ -25,6 +25,8 @@ COPY --from=deps /corepack /corepack
 COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
+ARG NEXT_PUBLIC_AI_ASSIST_ENABLED
+ENV NEXT_PUBLIC_AI_ASSIST_ENABLED=${NEXT_PUBLIC_AI_ASSIST_ENABLED}
 RUN corepack enable pnpm && pnpm --filter @condev-monitor/monitor-client build
 
 FROM base AS runner

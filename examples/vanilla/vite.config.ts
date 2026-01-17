@@ -6,6 +6,7 @@ export default defineConfig({
         sourcemap: true,
     },
     server: {
+        // cors: true,
         proxy: {
             '/dsn-api': {
                 target: 'http://localhost:8888',

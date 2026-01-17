@@ -90,8 +90,12 @@ services:
         build:
             context: ..
             dockerfile: apps/frontend/monitor/Dockerfile
+            args:
+                - NEXT_PUBLIC_AI_ASSIST_ENABLED=${NEXT_PUBLIC_AI_ASSIST_ENABLED:-false}
         expose:
             - '3000'
+        env_file:
+            - .env
         environment:
             - NODE_ENV=${NODE_ENV:-production}
             - NEXT_TELEMETRY_DISABLED=1

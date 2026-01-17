@@ -108,6 +108,9 @@ next-env.d.ts
 /apps/backend/monitor/data/
 apps/backend/monitor/prisma/client/
 
+apps/frontend/monitor/.env
+!apps/frontend/monitor/.env.example
+
 examples/vanilla/.env
 !examples/vanilla/.env.example
 

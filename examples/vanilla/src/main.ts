@@ -15,6 +15,7 @@ init({
     // target ip
     // target ip
     // dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillaVLiV45',
+    // dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillay1PFXB',
     dsn: 'http://localhost:8082/dsn-api/tracking/vanilla3XGJsf',
     release,
     dist,
