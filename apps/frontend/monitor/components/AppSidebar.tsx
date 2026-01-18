@@ -58,7 +58,7 @@ const AppSidebar = () => {
                 </SidebarMenu>
             </SidebarHeader>
 
-            <SidebarSeparator className="w-auto" />
+            <SidebarSeparator />
 
             <SidebarContent>
                 <SidebarGroup>
