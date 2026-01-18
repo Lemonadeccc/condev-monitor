@@ -318,7 +318,7 @@ function SidebarSeparator({ className, ...props }: React.ComponentProps<typeof S
         <Separator
             data-slot="sidebar-separator"
             data-sidebar="separator"
-            className={cn('bg-sidebar-border mx-2 w-auto', className)}
+            className={cn('bg-sidebar-border mx-2 data-[orientation=horizontal]:w-[calc(100%-1rem)]', className)}
             {...props}
         />
     )
