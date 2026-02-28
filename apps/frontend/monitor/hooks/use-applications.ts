@@ -2,7 +2,6 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { getAccessToken } from '@/lib/auth-token'
 import type { ApplicationListResponse, CreateApplicationResponse } from '@/types/application'
 
 export function useApplications(params: { enabled: boolean }) {
@@ -13,10 +12,8 @@ export function useApplications(params: { enabled: boolean }) {
         queryKey: ['applications'],
         enabled,
         queryFn: async (): Promise<ApplicationListResponse> => {
-            const token = getAccessToken()
             const res = await fetch('/api/application', {
                 method: 'GET',
-                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
             })
             if (!res.ok) {
                 throw new Error('Failed to load applications')
@@ -27,12 +24,10 @@ export function useApplications(params: { enabled: boolean }) {
 
     const createMutation = useMutation({
         mutationFn: async (payload: { type: 'vanilla'; name: string }) => {
-            const token = getAccessToken()
             const res = await fetch('/api/application', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
                 },
                 body: JSON.stringify(payload),
             })
@@ -59,12 +54,10 @@ export function useApplications(params: { enabled: boolean }) {
 
     const deleteMutation = useMutation({
         mutationFn: async (appId: string) => {
-            const token = getAccessToken()
             const res = await fetch('/api/application', {
                 method: 'DELETE',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
                 },
                 body: JSON.stringify({ appId }),
             })
@@ -91,12 +84,10 @@ export function useApplications(params: { enabled: boolean }) {
 
     const updateMutation = useMutation({
         mutationFn: async (payload: { id: number; name?: string; replayEnabled?: boolean }) => {
-            const token = getAccessToken()
             const res = await fetch('/api/application', {
                 method: 'PUT',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(token ? { Authorization: `Bearer ${token}` } : {}),
                 },
                 body: JSON.stringify(payload),
             })
