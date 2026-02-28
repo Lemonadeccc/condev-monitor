@@ -1,4 +1,6 @@
 node_modules
+**/node_modules
+.pnpm-store
 .next
 dist
 build
@@ -10,6 +12,8 @@ coverage
 .devcontainer/postgressql_data
 .devcontainer/postgresql_data
 .devcontainer/clickhouse_data
+apps/backend/monitor/data
+apps/backend/monitor/log
 *.log
 .DS_Store
 .git

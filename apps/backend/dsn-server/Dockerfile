@@ -25,6 +25,19 @@ COPY . .
 
 RUN corepack enable pnpm && pnpm --filter dsn-server build
 
+FROM base AS prod-deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PNPM_CONFIG_PRODUCTION=true
+
+# Install runtime dependencies only.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/backend/dsn-server/package.json ./apps/backend/dsn-server/package.json
+
+RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i --prod --frozen-lockfile
+
 FROM base AS runner
 WORKDIR /app/apps/backend/dsn-server
 
@@ -33,8 +46,8 @@ ENV PORT=8082
 
 COPY --from=builder /app/apps/backend/dsn-server/dist ./dist
 COPY --from=builder /app/apps/backend/dsn-server/package.json ./package.json
-COPY --from=builder /app/node_modules /app/node_modules
-COPY --from=builder /app/apps/backend/dsn-server/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules /app/node_modules
+COPY --from=prod-deps /app/apps/backend/dsn-server/node_modules ./node_modules
 
 EXPOSE 8082
 CMD ["node", "dist/main.js"]
