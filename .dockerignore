@@ -1,0 +1,15 @@
+node_modules
+.next
+dist
+build
+.turbo
+coverage
+.open-next
+.wrangler
+.devcontainer/data
+.devcontainer/postgressql_data
+.devcontainer/postgresql_data
+.devcontainer/clickhouse_data
+*.log
+.DS_Store
+.git
