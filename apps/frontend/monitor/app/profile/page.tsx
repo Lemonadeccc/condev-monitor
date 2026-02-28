@@ -48,14 +48,11 @@ export default function ProfilePage() {
             if (data.email.trim() === currentEmail) {
                 throw new Error('New email must be different from current email')
             }
-            const token = localStorage.getItem('access_token')
-            if (!token) throw new Error('Not authenticated')
 
             const res = await fetch('/api/auth/change-email/request', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    Authorization: `Bearer ${token}`,
                 },
                 body: JSON.stringify({ email: data.email }),
             })

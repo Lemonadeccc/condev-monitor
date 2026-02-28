@@ -35,8 +35,7 @@ export default function ConfirmEmailPage() {
 
                 setStatus('success')
                 setMessage('Email updated successfully.')
-                localStorage.removeItem('access_token')
-                localStorage.removeItem('refresh_token')
+                await fetch('/auth-session/logout', { method: 'POST' }).catch(() => undefined)
                 setTimeout(() => router.push('/login'), 1000)
             } catch (err: unknown) {
                 setStatus('error')

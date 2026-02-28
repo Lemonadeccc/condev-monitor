@@ -2,7 +2,9 @@
 
 /* eslint-disable react-refresh/only-export-components */
 import { usePathname, useRouter } from 'next/navigation'
-import { createContext, useContext, useEffect, useState } from 'react'
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+
+import { isPublicAuthPath } from '@/lib/auth-routes'
 
 interface User {
     id: number
@@ -37,16 +39,59 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined)
 export function AuthProvider({ children }: { children: React.ReactNode }) {
     const [user, setUser] = useState<User | null>(null)
     const [loading, setLoading] = useState(true)
+    const userRef = useRef<User | null>(null)
     const router = useRouter()
     const pathname = usePathname()
 
-    const isPublicPath = ['/login', '/register', '/forgot-password', '/reset-password', '/confirm-email', '/verify-email'].includes(
-        pathname
+    const isPublicPath = isPublicAuthPath(pathname)
+
+    const checkAuth = useCallback(
+        async (options?: { force?: boolean }) => {
+            const force = options?.force ?? false
+            if (isPublicPath && !force) {
+                setLoading(false)
+                return
+            }
+            if (!force && userRef.current) {
+                setLoading(false)
+                return
+            }
+
+            try {
+                const res = await fetch('/api/me', {
+                    cache: 'no-store',
+                })
+
+                if (res.ok) {
+                    const userData = await res.json()
+                    userRef.current = userData as User
+                    setUser(userData as User)
+                } else {
+                    if (res.status === 401 || res.status === 403) {
+                        void fetch('/auth-session/logout', { method: 'POST' }).catch(() => undefined)
+                    }
+                    userRef.current = null
+                    setUser(null)
+                }
+            } catch (error) {
+                // eslint-disable-next-line no-console
+                console.error('Auth check failed', error)
+                userRef.current = null
+                setUser(null)
+            } finally {
+                setLoading(false)
+            }
+        },
+        [isPublicPath]
     )
 
     useEffect(() => {
-        checkAuth()
-    }, [])
+        void checkAuth()
+    }, [checkAuth])
+
+    useEffect(() => {
+        userRef.current = user
+    }, [user])
 
     useEffect(() => {
         if (!loading && !user && !isPublicPath) {
@@ -54,55 +99,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
     }, [user, loading, isPublicPath, router])
 
-    const checkAuth = async () => {
-        try {
-            const token = localStorage.getItem('access_token')
-            if (!token) {
-                setLoading(false)
-                return
-            }
-
-            const res = await fetch('/api/me', {
-                headers: {
-                    Authorization: `Bearer ${token}`,
-                },
-            })
-
-            if (res.ok) {
-                const userData = await res.json()
-                setUser(userData as User)
-            } else {
-                localStorage.removeItem('access_token')
-                setUser(null)
-            }
-        } catch (error) {
-            // eslint-disable-next-line no-console
-            console.error('Auth check failed', error)
-            localStorage.removeItem('access_token')
-            setUser(null)
-        } finally {
-            setLoading(false)
-        }
-    }
-
     const login = async (data: LoginData) => {
-        const res = await fetch('/api/auth/login', {
+        const res = await fetch('/auth-session/login', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
         })
 
         if (!res.ok) {
-            const error = (await res.json()) as { message?: string }
+            const error = (await res.json().catch(() => ({}))) as { message?: string }
             throw new Error(error.message || 'Login failed')
         }
 
-        const result = (await res.json()) as { success: boolean; data: { access_token: string } }
-        if (result.success && result.data.access_token) {
-            localStorage.setItem('access_token', result.data.access_token)
-            await checkAuth()
-            router.push('/')
-        }
+        setLoading(true)
+        await checkAuth({ force: true })
+        router.push('/')
     }
 
     const register = async (data: RegisterData) => {
@@ -113,7 +124,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         })
 
         if (!res.ok) {
-            const error = (await res.json()) as { message?: string }
+            const error = (await res.json().catch(() => ({}))) as { message?: string }
             throw new Error(error.message || 'Registration failed')
         }
 
@@ -122,20 +133,16 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     const updateProfile = async (data: Partial<Pick<User, 'email' | 'phone' | 'role'>>) => {
-        const token = localStorage.getItem('access_token')
-        if (!token) throw new Error('Not authenticated')
-
         const res = await fetch('/api/admin/profile', {
             method: 'PUT',
             headers: {
                 'Content-Type': 'application/json',
-                Authorization: `Bearer ${token}`,
             },
             body: JSON.stringify(data),
         })
 
         if (!res.ok) {
-            const error = (await res.json()) as { message?: string }
+            const error = (await res.json().catch(() => ({}))) as { message?: string }
             throw new Error(error.message || 'Update profile failed')
         }
 
@@ -145,11 +152,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     const logout = async () => {
         try {
-            // Optional: Call backend logout if needed
-            // await fetch('/api/auth/logout', { method: 'POST' })
+            await fetch('/auth-session/logout', { method: 'POST' })
         } finally {
-            localStorage.removeItem('access_token')
-            localStorage.removeItem('refresh_token')
             setUser(null)
             router.push('/login')
         }

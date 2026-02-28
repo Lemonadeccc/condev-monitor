@@ -5,7 +5,6 @@ import { Copy, Settings, Video, VideoOff } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts'
 
-import { getAccessToken } from '@/lib/auth-token'
 import { createStableChartData } from '@/lib/chart-seed'
 import { copyToClipboard } from '@/lib/clipboard'
 import { formatDateTime } from '@/lib/datetime'
@@ -67,11 +66,8 @@ export function ApplicationCard(props: {
         queryKey: ['sourcemap-tokens', application.appId, tokenOpen],
         enabled: tokenOpen,
         queryFn: async () => {
-            const token = getAccessToken()
             const params = new URLSearchParams({ appId: application.appId })
-            const res = await fetch(`/api/sourcemap/token?${params.toString()}`, {
-                headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-            })
+            const res = await fetch(`/api/sourcemap/token?${params.toString()}`)
             if (!res.ok) {
                 throw new Error('Failed to load sourcemap tokens')
             }
@@ -144,12 +140,10 @@ export function ApplicationCard(props: {
         const name = tokenName.trim()
         setTokenSubmitting(true)
         try {
-            const auth = getAccessToken()
             const res = await fetch('/api/sourcemap/token', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
-                    ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
                 },
                 body: JSON.stringify({ appId: application.appId, name: name || undefined }),
             })
@@ -171,10 +165,8 @@ export function ApplicationCard(props: {
     const handleRevokeToken = async (id: number) => {
         setTokenError(null)
         try {
-            const auth = getAccessToken()
             const res = await fetch(`/api/sourcemap/token/${id}`, {
                 method: 'DELETE',
-                headers: auth ? { Authorization: `Bearer ${auth}` } : undefined,
             })
             if (!res.ok) {
                 const err = (await res.json().catch(() => ({}))) as { message?: string }

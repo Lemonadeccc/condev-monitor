@@ -73,7 +73,7 @@ export default function RegisterPage() {
                     speed={2}
                     noiseIntensity={1.75}
                     scale={0.2}
-                    rotation={0}
+                    rotation={-30}
                 />
             </div>
             <div className="absolute left-8 top-8 z-10 text-2xl font-bold text-white">CONDEV-MONITOR</div>
