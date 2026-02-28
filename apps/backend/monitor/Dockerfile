@@ -14,7 +14,7 @@ ENV PNPM_CONFIG_PRODUCTION=false
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/backend/monitor/package.json ./apps/backend/monitor/package.json
 
-RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i
+RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i --frozen-lockfile
 
 FROM base AS builder
 WORKDIR /app
@@ -25,6 +25,19 @@ COPY . .
 
 RUN corepack enable pnpm && pnpm --filter monitor build
 
+FROM base AS prod-deps
+RUN apk add --no-cache libc6-compat python3 make g++
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PNPM_CONFIG_PRODUCTION=true
+
+# Install runtime dependencies only.
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/backend/monitor/package.json ./apps/backend/monitor/package.json
+
+RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i --prod --frozen-lockfile
+
 FROM base AS runner
 WORKDIR /app/apps/backend/monitor
 
@@ -32,8 +45,8 @@ ENV NODE_ENV=production
 
 COPY --from=builder /app/apps/backend/monitor/dist ./dist
 COPY --from=builder /app/apps/backend/monitor/package.json ./package.json
-COPY --from=builder /app/node_modules /app/node_modules
-COPY --from=builder /app/apps/backend/monitor/node_modules ./node_modules
+COPY --from=prod-deps /app/node_modules /app/node_modules
+COPY --from=prod-deps /app/apps/backend/monitor/node_modules ./node_modules
 
 EXPOSE 8081
 CMD ["sh", "-c", "node dist/src/main.js 2>/dev/null || node dist/main.js"]
