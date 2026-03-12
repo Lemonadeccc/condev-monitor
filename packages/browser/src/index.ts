@@ -1,6 +1,7 @@
 import { Integration, Monitoring } from '@condev-monitor/monitor-sdk-core'
 
 import { BrowserTransport } from './transport'
+import type { TransportConfig } from './transport/types'
 import { Errors } from './tracing/errorsIntegration'
 import { DEFAULT_WHITE_SCREEN_OPTIONS, WhiteScreen, WhiteScreenOptions } from './tracing/whiteScreenIntegration'
 import { DEFAULT_RUNTIME_PERFORMANCE_OPTIONS, RuntimePerformance, RuntimePerformanceOptions } from './tracing/runtimePerformanceIntegration'
@@ -8,6 +9,7 @@ import { Metrics } from '@condev-monitor/monitor-sdk-browser-utils'
 import { Replay, ReplayOptions } from './replay/replayIntegration'
 
 let whiteScreen: WhiteScreen | null = null
+let _initialized = false
 
 export type { WhiteScreenOptions }
 export type { RuntimePerformanceOptions }
@@ -17,6 +19,8 @@ export { DEFAULT_WHITE_SCREEN_OPTIONS, DEFAULT_RUNTIME_PERFORMANCE_OPTIONS }
 export const triggerWhiteScreenCheck = (reason?: string) => {
     whiteScreen?.trigger(reason)
 }
+
+export type { TransportConfig }
 
 export const init = (options: {
     dsn: string
@@ -45,16 +49,27 @@ export const init = (options: {
      * Defaults to disabled.
      */
     replay?: boolean | ReplayOptions
+    /**
+     * Transport reliability configuration (queue, retry, offline persistence).
+     */
+    transport?: TransportConfig
 }) => {
+    if (_initialized) return
+    _initialized = true
+
     const monitoring = new Monitoring({
         dsn: options.dsn,
         integrations: options?.integrations,
     })
 
-    const transport = new BrowserTransport(options.dsn, {
-        release: options.release,
-        dist: options.dist,
-    })
+    const transport = new BrowserTransport(
+        options.dsn,
+        {
+            release: options.release,
+            dist: options.dist,
+        },
+        options.transport
+    )
     monitoring.init(transport)
 
     new Errors(transport).init()

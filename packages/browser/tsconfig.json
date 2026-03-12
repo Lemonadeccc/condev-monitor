@@ -3,6 +3,7 @@
     "include": ["src/**/*"],
     "compilerOptions": {
         "types": ["node"],
-        "lib": ["DOM", "ESNext"]
+        "lib": ["DOM", "ESNext"],
+        "module": "ESNext"
     }
 }

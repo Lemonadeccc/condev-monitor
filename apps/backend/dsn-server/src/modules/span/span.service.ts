@@ -463,46 +463,83 @@ export class SpanService {
         return data.data
     }
 
-    async tracking(appId: string, body: Record<string, unknown>) {
-        const { event_type, message, ...info } = body
+    private readonly alertThrottle = new Map<string, number>()
+    private readonly ALERT_INTERVAL_MS = 5 * 60 * 1000
 
-        const normalizedMessage = typeof message === 'string' ? message : ''
-
-        const values = {
-            app_id: appId,
-            event_type,
-            message: normalizedMessage,
-            info,
+    async tracking(appId: string, rawBody: unknown) {
+        // 1. Parse text/plain beacon JSON string
+        let parsed: unknown
+        if (typeof rawBody === 'string') {
+            try {
+                parsed = JSON.parse(rawBody)
+            } catch {
+                return { ok: true } // malformed beacon payload — discard silently
+            }
+        } else {
+            parsed = rawBody
         }
 
+        // 2. Normalize to array and filter out non-object items (null, primitives, nested arrays)
+        const raw: unknown[] = Array.isArray(parsed) ? parsed : [parsed]
+        const items = raw.filter(
+            (item): item is Record<string, unknown> => item !== null && typeof item === 'object' && !Array.isArray(item)
+        )
+
+        if (items.length === 0) {
+            return { ok: true }
+        }
+
+        // 3. Map to ClickHouse rows
+        const values = items.map(item => {
+            const { event_type, message, ...info } = item
+            return {
+                app_id: appId,
+                event_type,
+                message: typeof message === 'string' ? message : '',
+                info,
+            }
+        })
+
+        // 4. Batch insert
         await this.clickhouseClient.insert({
             table: 'lemonade.base_monitor_storage',
             columns: ['app_id', 'event_type', 'message', 'info'],
             format: 'JSONEachRow',
-            values: [values],
+            values,
         })
 
-        if (event_type === 'error') {
-            const fallbackEmail = this.configService.get<string>('ALERT_EMAIL_FALLBACK') ?? 'zwjhb12@163.com'
-            const ownerEmail = await this.resolveOwnerEmailByAppId(appId)
-            const toEmail = ownerEmail ?? fallbackEmail
-
-            void this.emailService
-                .alert({
-                    to: toEmail,
-                    subject: 'Condev Monitor - Error Event',
-                    params: {
-                        ...body,
-                        ...values,
-                        ownerEmail,
-                    },
-                })
-                .catch(err => {
-                    Logger.error('Failed to send alert email', err instanceof Error ? err.stack : String(err))
-                })
+        // 5. Aggregate error alert with throttle (prevent email storm from batch uploads)
+        const errorItems = items.filter(item => item.event_type === 'error')
+        if (errorItems.length > 0) {
+            await this.sendAggregatedErrorAlert(appId, errorItems)
         }
 
         return { ok: true }
+    }
+
+    private async sendAggregatedErrorAlert(appId: string, errors: Record<string, unknown>[]): Promise<void> {
+        const last = this.alertThrottle.get(appId) ?? 0
+        if (Date.now() - last < this.ALERT_INTERVAL_MS) return
+        this.alertThrottle.set(appId, Date.now())
+
+        const fallbackEmail = this.configService.get<string>('ALERT_EMAIL_FALLBACK') ?? 'zwjhb12@163.com'
+        const ownerEmail = await this.resolveOwnerEmailByAppId(appId)
+        const toEmail = ownerEmail ?? fallbackEmail
+        const firstError = errors[0]!
+
+        void this.emailService
+            .alert({
+                to: toEmail,
+                subject: `Condev Monitor - ${errors.length > 1 ? `${errors.length} Error Events` : 'Error Event'}`,
+                params: {
+                    ...firstError,
+                    errorCount: errors.length,
+                    ownerEmail,
+                },
+            })
+            .catch(err => {
+                Logger.error('Failed to send alert email', err instanceof Error ? err.stack : String(err))
+            })
     }
 
     async bugs() {

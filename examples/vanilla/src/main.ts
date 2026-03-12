@@ -1,7 +1,7 @@
 import './style.css'
 
 import { init, triggerWhiteScreenCheck } from '@condev-monitor/monitor-sdk-browser'
-import { captureEvent, captureException, captureMessage } from '@condev-monitor/monitor-sdk-core'
+import { captureEvent, captureException, captureMessage, getTransport } from '@condev-monitor/monitor-sdk-core'
 
 import viteLogo from '/vite.svg'
 
@@ -12,7 +12,9 @@ const release = (import.meta as { env?: Record<string, string | undefined> }).en
 const dist = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_MONITOR_DIST
 
 init({
-    dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillay1PFXB',
+    dsn: 'http://localhost:8082/dsn-api/tracking/vanillapQkYH8',
+    // dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillapQkYH8',
+    // dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillay1PFXB',
     // dsn: 'https://monitor.condevtools.com/tracking/vanillay1PFXB',
     // dsn: 'http://localhost:8082/dsn-api/tracking/vanilla3XGJsf',
     release,
@@ -25,6 +27,7 @@ init({
         lowFpsConsecutive: 1,
     },
     replay: true,
+    transport: { debug: true }, // ← enable Transport debug logging
 })
 
 function myFn() {
@@ -86,6 +89,20 @@ document.querySelector<HTMLDivElement>('#app')!.innerHTML = `
       <button id="jank-btn" type="button" style="margin-left: 10px; background-color: #795548;">Jank (5s)</button>
       <button id="fps-btn" type="button" style="margin-left: 10px; background-color: #00bcd4;">Toggle FPS Stress</button>
     </div>
+
+    <hr style="margin: 16px 0; opacity: 0.3;" />
+    <div class="card" style="padding-top: 0;">
+      <button id="transport-batch-btn" type="button" style="background-color: #3f51b5;">Batch Send ×5 (1 request after 5s)</button>
+      <button id="transport-immediate-btn" type="button" style="margin-left: 10px; background-color: #e91e63;">Error: Immediate Send (no timer wait)</button>
+      <button id="transport-flush-btn" type="button" style="margin-left: 10px; background-color: #009688;">Send 3 → Manual Flush</button>
+    </div>
+    <div class="card" style="padding-top: 0;">
+      <button id="transport-offline-sim-btn" type="button" style="background-color: #ff5722;">Simulate Network Failure → Write to IDB</button>
+      <button id="transport-idb-count-btn" type="button" style="margin-left: 10px; background-color: #607d8b;">Check IDB Retry Count</button>
+      <button id="transport-idb-clear-btn" type="button" style="margin-left: 10px; background-color: #795548;">Clear IDB</button>
+    </div>
+    <div id="transport-status" style="margin: 8px 0; font-size: 13px; font-family: monospace; min-height: 20px; opacity: 0.85;"></div>
+
     <p class="read-the-docs">
       Click on the Vite and TypeScript logos to learn more
     </p>
@@ -202,4 +219,104 @@ document.querySelector<HTMLButtonElement>('#jank-btn')!.addEventListener('click'
 
 document.querySelector<HTMLButtonElement>('#fps-btn')!.addEventListener('click', () => {
     toggleFpsStress()
+})
+
+// ---- Transport Reliability Tests ----
+
+function setStatus(msg: string) {
+    const el = document.querySelector<HTMLDivElement>('#transport-status')
+    if (el) el.textContent = `[Transport] ${msg}`
+}
+
+// 1. Batch ×5 — should see only 1 POST after 5s (batched)
+document.querySelector<HTMLButtonElement>('#transport-batch-btn')!.addEventListener('click', () => {
+    setStatus('Sending 5 custom events; watch Network for a single batched POST after 5s...')
+    for (let i = 1; i <= 5; i++) {
+        captureEvent({ eventType: 'transport_batch_test', data: { seq: i, at: Date.now() } })
+    }
+})
+
+// 2. Immediate error — error priority triggers flush immediately, no timer wait
+document.querySelector<HTMLButtonElement>('#transport-immediate-btn')!.addEventListener('click', () => {
+    setStatus('Sending error event; should see Network request immediately (no 5s wait)...')
+    try {
+        throw new Error('[Transport Test] immediate send test')
+    } catch (e) {
+        captureException(e instanceof Error ? e : new Error(String(e)))
+    }
+})
+
+// 3. Send 3 + manual flush — bypass timer, call flush('manual') directly
+document.querySelector<HTMLButtonElement>('#transport-flush-btn')!.addEventListener('click', async () => {
+    setStatus('Sending 3 events, flushing manually...')
+    for (let i = 1; i <= 3; i++) {
+        captureEvent({ eventType: 'transport_manual_flush_test', data: { seq: i } })
+    }
+    const transport = getTransport() as { flush?: (reason?: string) => Promise<void> } | null
+    if (transport?.flush) {
+        await transport.flush('manual')
+        setStatus('Manual flush complete, check Network')
+    } else {
+        setStatus('transport.flush unavailable')
+    }
+})
+
+// 4. Simulate network failure — hijack fetch temporarily, failed events written to IDB
+document.querySelector<HTMLButtonElement>('#transport-offline-sim-btn')!.addEventListener('click', async () => {
+    const DURATION_MS = 4000
+    const original = window.fetch
+    window.fetch = () => Promise.reject(new Error('Simulated offline'))
+    setStatus(`fetch hijacked for ${DURATION_MS / 1000}s; sending 3 events, they will be written to IDB...`)
+
+    for (let i = 1; i <= 3; i++) {
+        captureEvent({ eventType: 'transport_offline_test', data: { seq: i } })
+    }
+    // Force flush to trigger failure and write to IDB
+    const transport = getTransport() as { flush?: (reason?: string) => Promise<void> } | null
+    if (transport?.flush) await transport.flush('manual')
+
+    window.setTimeout(async () => {
+        window.fetch = original
+        setStatus(`fetch restored; waiting for RetryWorker to retry (check Network and IDB)...`)
+    }, DURATION_MS)
+})
+
+// 5. Check IDB retry-queue count
+document.querySelector<HTMLButtonElement>('#transport-idb-count-btn')!.addEventListener('click', () => {
+    const req = indexedDB.open('condev-monitor-transport', 1)
+    req.onsuccess = () => {
+        const db = req.result
+        if (!db.objectStoreNames.contains('retry-queue')) {
+            setStatus('IDB retry-queue does not exist (no failures yet)')
+            db.close()
+            return
+        }
+        const tx = db.transaction('retry-queue', 'readonly')
+        const countReq = tx.objectStore('retry-queue').count()
+        countReq.onsuccess = () => {
+            setStatus(`IDB retry-queue pending retries: ${countReq.result}`)
+            db.close()
+        }
+    }
+    req.onerror = () => setStatus('Failed to open IDB')
+})
+
+// 6. Clear IDB (reset test state)
+document.querySelector<HTMLButtonElement>('#transport-idb-clear-btn')!.addEventListener('click', () => {
+    const req = indexedDB.open('condev-monitor-transport', 1)
+    req.onsuccess = () => {
+        const db = req.result
+        if (!db.objectStoreNames.contains('retry-queue')) {
+            setStatus('IDB retry-queue does not exist, nothing to clear')
+            db.close()
+            return
+        }
+        const tx = db.transaction('retry-queue', 'readwrite')
+        const clearReq = tx.objectStore('retry-queue').clear()
+        clearReq.onsuccess = () => {
+            setStatus('IDB retry-queue cleared')
+            db.close()
+        }
+    }
+    req.onerror = () => setStatus('Failed to open IDB')
 })

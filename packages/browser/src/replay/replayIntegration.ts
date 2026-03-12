@@ -2,6 +2,9 @@ import type { Transport } from '@condev-monitor/monitor-sdk-core'
 
 import { EventType, record } from 'rrweb'
 
+import { parseDsn } from '../transport/envelope'
+import type { ParsedDsn } from '../transport/envelope'
+
 type ReplayBlockClass = string | RegExp
 type ReplayBlockSelector = string
 
@@ -41,38 +44,6 @@ type eventWithTime = {
 
 type listenerHandler = () => void
 
-type ParsedDsn = {
-    appId: string
-    origin: string
-    basePath: string
-}
-
-function parseDsn(dsn: string): ParsedDsn | null {
-    try {
-        const url = new URL(dsn)
-        const parts = url.pathname.split('/').filter(Boolean)
-        let appId: string | undefined
-        let basePath: string
-
-        const trackingIndex = parts.indexOf('tracking')
-        if (trackingIndex !== -1) {
-            appId = parts[trackingIndex + 1]
-            basePath = '/' + parts.slice(0, trackingIndex).join('/')
-        } else {
-            // Fallback: assume standard structure [ ...base, endpoint, appId ]
-            // where we replace {endpoint} with 'replay' in the constructed URL later.
-            if (parts.length < 2) return null
-            appId = parts[parts.length - 1]
-            basePath = '/' + parts.slice(0, parts.length - 2).join('/')
-        }
-
-        if (!appId) return null
-        return { appId, origin: url.origin, basePath }
-    } catch {
-        return null
-    }
-}
-
 function nowMs() {
     return Date.now()
 }
@@ -102,6 +73,7 @@ export class Replay {
         retryBackoff: number
     }
     private stopRecording: listenerHandler | null = null
+    private handlePageHide: (() => void) | null = null
     private pendingUpload: null | {
         replayId: string
         errorAtMs: number
@@ -172,18 +144,41 @@ export class Replay {
         this.patchTransport(parsed)
         this.startRecording()
 
-        window.addEventListener(
-            'pagehide',
-            () => {
-                void this.flushPending()
-            },
-            { capture: true }
-        )
+        this.handlePageHide = () => {
+            void this.flushPending()
+        }
+        window.addEventListener('pagehide', this.handlePageHide, { capture: true })
     }
 
     private patchTransport(parsed: ParsedDsn) {
-        const originalSend = this.transport.send.bind(this.transport)
         const replayUploadUrl = new URL(`${parsed.origin}${parsed.basePath}/replay/${parsed.appId}`).toString()
+
+        // Prefer the new interceptor API (BrowserTransport v2+) over monkey-patching
+        const transportWithInterceptor = this.transport as unknown as {
+            addBeforeEnqueue?: (fn: (d: Record<string, unknown>) => Record<string, unknown>) => void
+        }
+        if (typeof transportWithInterceptor.addBeforeEnqueue === 'function') {
+            const addBeforeEnqueue = transportWithInterceptor.addBeforeEnqueue.bind(this.transport)
+            addBeforeEnqueue((data: Record<string, unknown>) => {
+                if (!this.enabled || data.event_type !== 'error') return data
+
+                if (this.pendingUpload) {
+                    return { ...data, replayId: this.pendingUpload.replayId }
+                }
+
+                const replayId = `replay_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+                const errorAtMs = nowMs()
+                const windowStartMs = Math.max(0, errorAtMs - this.beforeErrorMs)
+                const windowEndMs = errorAtMs + this.afterErrorMs
+                const timerId = window.setTimeout(() => void this.flushPending(), this.afterErrorMs)
+                this.pendingUpload = { replayId, errorAtMs, windowStartMs, windowEndMs, timerId, replayUploadUrl }
+                return { ...data, replayId }
+            })
+            return
+        }
+
+        // Legacy monkey-patch fallback for non-BrowserTransport implementations
+        const originalSend = this.transport.send.bind(this.transport)
 
         this.transport.send = (data: Record<string, unknown>) => {
             if (!this.enabled) return originalSend(data)
@@ -193,19 +188,17 @@ export class Replay {
                     return originalSend({ ...data, replayId: this.pendingUpload.replayId })
                 }
 
-                if (!this.pendingUpload) {
-                    const replayId = `replay_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
-                    const errorAtMs = nowMs()
-                    const windowStartMs = Math.max(0, errorAtMs - this.beforeErrorMs)
-                    const windowEndMs = errorAtMs + this.afterErrorMs
+                const replayId = `replay_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+                const errorAtMs = nowMs()
+                const windowStartMs = Math.max(0, errorAtMs - this.beforeErrorMs)
+                const windowEndMs = errorAtMs + this.afterErrorMs
 
-                    const timerId = window.setTimeout(() => {
-                        void this.flushPending()
-                    }, this.afterErrorMs)
+                const timerId = window.setTimeout(() => {
+                    void this.flushPending()
+                }, this.afterErrorMs)
 
-                    this.pendingUpload = { replayId, errorAtMs, windowStartMs, windowEndMs, timerId, replayUploadUrl }
-                    return originalSend({ ...data, replayId })
-                }
+                this.pendingUpload = { replayId, errorAtMs, windowStartMs, windowEndMs, timerId, replayUploadUrl }
+                return originalSend({ ...data, replayId })
             }
 
             return originalSend(data)
@@ -365,6 +358,10 @@ export class Replay {
         this.pendingUpload = null
         if (this.stopRecording) this.stopRecording()
         this.stopRecording = null
+        if (this.handlePageHide) {
+            window.removeEventListener('pagehide', this.handlePageHide, { capture: true })
+            this.handlePageHide = null
+        }
         this.events = []
         this.enabled = false
     }

@@ -1,6 +1,6 @@
 import { ConfigService } from '@nestjs/config'
 import { NestFactory } from '@nestjs/core'
-import { json, urlencoded } from 'express'
+import { json, text, urlencoded } from 'express'
 
 import { AppModule } from './app.module'
 
@@ -11,6 +11,8 @@ async function bootstrap() {
 
     app.use(json({ limit: bodyLimit }))
     app.use(urlencoded({ extended: true, limit: bodyLimit }))
+    // Support sendBeacon payloads sent as text/plain;charset=UTF-8 containing JSON
+    app.use(text({ type: 'text/plain', limit: bodyLimit }))
 
     app.setGlobalPrefix('dsn-api')
 

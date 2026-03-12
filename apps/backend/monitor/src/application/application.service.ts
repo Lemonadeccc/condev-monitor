@@ -111,7 +111,7 @@ export class ApplicationService {
         })
 
         if (!application) {
-            throw new Error('Application not found')
+            throw new HttpException({ message: 'Application not found', error: 'NOT_FOUND' }, HttpStatus.NOT_FOUND)
         }
 
         await this.applicationRepository.update(application.id, {

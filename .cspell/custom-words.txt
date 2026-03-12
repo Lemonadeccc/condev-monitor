@@ -25,3 +25,10 @@ curpos
 nextpos
 beginnormal
 jridgewell
+IDB
+healthz
+whitescreen
+retryable
+normalises
+IDBP
+webvital
