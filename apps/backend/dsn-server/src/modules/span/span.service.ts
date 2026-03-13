@@ -72,6 +72,34 @@ type IssueItem = {
 
 type ReplayEvent = Record<string, unknown>
 
+type AIStreamingTrace = {
+    traceId: string
+    url: string
+    method: string
+    status: number
+    sseTtfb: number
+    sseTtlb: number
+    stallCount: number
+    chunkCount: number
+    totalBytes: number
+    aborted: boolean
+    failureStage: string | null
+    completionReason: string | null
+    errorName: string | null
+    errorMessage: string | null
+    responseContentType: string | null
+    path: string
+    networkAt: string
+    model: string | null
+    provider: string | null
+    inputTokens: number | null
+    outputTokens: number | null
+    durationMs: number | null
+    replayId: string | null
+    userId: string | null
+    userEmail: string | null
+}
+
 type ReplayItem = {
     appId: string
     replayId: string
@@ -1305,6 +1333,174 @@ export class SpanService {
                 from: from.toISOString(),
                 to: now.toISOString(),
                 items,
+            },
+        }
+    }
+
+    async aiStreaming(params: { appId: string; range: OverviewRange; limit: number }) {
+        const appId = (params.appId ?? '').trim()
+        if (!appId) {
+            throw new BadRequestException({ message: 'appId is required', error: 'APP_ID_REQUIRED' })
+        }
+
+        const range =
+            params.range === '1h' || params.range === '3h' || params.range === '1d' || params.range === '7d' || params.range === '1m'
+                ? params.range
+                : '1h'
+        const limit = Number.isFinite(params.limit) ? Math.max(1, Math.min(500, Math.floor(params.limit))) : 50
+
+        const now = new Date()
+        const { from } = resolveRange(now, range)
+        const fromSeconds = Math.floor(from.getTime() / 1000)
+        const toSeconds = Math.floor(now.getTime() / 1000)
+
+        // Run all 3 ClickHouse queries in parallel
+        const [networkRes, semanticRes, statsRes] = await Promise.all([
+            // Query 1: network layer traces
+            this.clickhouseClient.query({
+                query: `
+                    SELECT
+                        JSONExtractString(toJSONString(info), 'traceId') AS traceId,
+                        JSONExtractString(toJSONString(info), 'url') AS url,
+                        JSONExtractString(toJSONString(info), 'method') AS method,
+                        JSONExtractInt(toJSONString(info), 'status') AS status,
+                        JSONExtractFloat(toJSONString(info), 'sseTtfb') AS sseTtfb,
+                        JSONExtractFloat(toJSONString(info), 'sseTtlb') AS sseTtlb,
+                        JSONExtractInt(toJSONString(info), 'stallCount') AS stallCount,
+                        JSONExtractInt(toJSONString(info), 'chunkCount') AS chunkCount,
+                        JSONExtractInt(toJSONString(info), 'totalBytes') AS totalBytes,
+                        JSONExtractBool(toJSONString(info), 'aborted') AS aborted,
+                        JSONExtractString(toJSONString(info), 'failureStage') AS failureStage,
+                        JSONExtractString(toJSONString(info), 'completionReason') AS completionReason,
+                        JSONExtractString(toJSONString(info), 'errorName') AS errorName,
+                        JSONExtractString(toJSONString(info), 'errorMessage') AS errorMessage,
+                        JSONExtractString(toJSONString(info), 'responseContentType') AS responseContentType,
+                        JSONExtractString(toJSONString(info), 'path') AS path,
+                        JSONExtractString(toJSONString(info), 'replayId') AS replayId,
+                        JSONExtractString(toJSONString(info), 'userId') AS userId,
+                        JSONExtractString(toJSONString(info), 'userEmail') AS userEmail,
+                        toUnixTimestamp(created_at) AS created_at_ts
+                    FROM lemonade.base_monitor_view
+                    WHERE app_id = {appId:String}
+                      AND event_type = 'ai_streaming'
+                      AND JSONExtractString(toJSONString(info), 'layer') = 'network'
+                      AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
+                      AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
+                    ORDER BY created_at DESC
+                    LIMIT {limit:UInt32}
+                `,
+                query_params: { appId, fromSeconds, toSeconds, limit },
+                format: 'JSON' as const,
+            }),
+            // Query 2: semantic layer traces
+            this.clickhouseClient.query({
+                query: `
+                    SELECT
+                        JSONExtractString(toJSONString(info), 'traceId') AS traceId,
+                        JSONExtractString(toJSONString(info), 'ai', 'model') AS model,
+                        JSONExtractString(toJSONString(info), 'ai', 'provider') AS provider,
+                        JSONExtractInt(toJSONString(info), 'ai', 'usage', 'inputTokens') AS inputTokens,
+                        JSONExtractInt(toJSONString(info), 'ai', 'usage', 'outputTokens') AS outputTokens,
+                        JSONExtractFloat(toJSONString(info), 'durationMs') AS durationMs
+                    FROM lemonade.base_monitor_view
+                    WHERE app_id = {appId:String}
+                      AND event_type = 'ai_streaming'
+                      AND JSONExtractString(toJSONString(info), 'layer') = 'semantic'
+                      AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
+                      AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
+                `,
+                query_params: { appId, fromSeconds, toSeconds },
+                format: 'JSON' as const,
+            }),
+            // Query 3: aggregate stats for network layer (exclude sseTtfb = -1 sentinel and probe_limit)
+            this.clickhouseClient.query({
+                query: `
+                    SELECT
+                        count() AS total,
+                        countIf(empty(JSONExtractString(toJSONString(info), 'failureStage')) AND JSONExtractString(toJSONString(info), 'completionReason') = 'complete') AS successCount,
+                        countIf(NOT (empty(JSONExtractString(toJSONString(info), 'failureStage')) AND JSONExtractString(toJSONString(info), 'completionReason') = 'complete')) AS failedCount,
+                        avgIf(JSONExtractFloat(toJSONString(info), 'sseTtfb'), JSONExtractFloat(toJSONString(info), 'sseTtfb') >= 0 AND empty(JSONExtractString(toJSONString(info), 'failureStage')) AND JSONExtractString(toJSONString(info), 'completionReason') = 'complete') AS avgTtfb,
+                        quantileIf(0.5)(JSONExtractFloat(toJSONString(info), 'sseTtfb'), JSONExtractFloat(toJSONString(info), 'sseTtfb') >= 0 AND empty(JSONExtractString(toJSONString(info), 'failureStage')) AND JSONExtractString(toJSONString(info), 'completionReason') = 'complete') AS p50Ttfb,
+                        quantileIf(0.95)(JSONExtractFloat(toJSONString(info), 'sseTtfb'), JSONExtractFloat(toJSONString(info), 'sseTtfb') >= 0 AND empty(JSONExtractString(toJSONString(info), 'failureStage')) AND JSONExtractString(toJSONString(info), 'completionReason') = 'complete') AS p95Ttfb,
+                        avgIf(JSONExtractFloat(toJSONString(info), 'sseTtlb'), empty(JSONExtractString(toJSONString(info), 'failureStage')) AND JSONExtractString(toJSONString(info), 'completionReason') = 'complete') AS avgTtlb,
+                        sum(JSONExtractInt(toJSONString(info), 'stallCount')) AS stallCount
+                    FROM lemonade.base_monitor_view
+                    WHERE app_id = {appId:String}
+                      AND event_type = 'ai_streaming'
+                      AND JSONExtractString(toJSONString(info), 'layer') = 'network'
+                      AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
+                      AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
+                `,
+                query_params: { appId, fromSeconds, toSeconds },
+                format: 'JSON' as const,
+            }),
+        ])
+
+        const networkJson = await networkRes.json()
+        const semanticJson = await semanticRes.json()
+        const statsJson = await statsRes.json()
+
+        // Build semantic lookup by traceId
+        const semanticMap = new Map<string, any>()
+        for (const row of (semanticJson.data ?? []) as any[]) {
+            const tid = String(row.traceId ?? '')
+            if (tid) semanticMap.set(tid, row)
+        }
+
+        // Join network + semantic by traceId
+        const traces: AIStreamingTrace[] = (networkJson.data ?? []).map((row: any) => {
+            const traceId = String(row.traceId ?? '')
+            const sem = semanticMap.get(traceId)
+            return {
+                traceId,
+                url: String(row.url ?? ''),
+                method: String(row.method ?? ''),
+                status: Number(row.status ?? 0),
+                sseTtfb: Number(row.sseTtfb ?? 0),
+                sseTtlb: Number(row.sseTtlb ?? 0),
+                stallCount: Number(row.stallCount ?? 0),
+                chunkCount: Number(row.chunkCount ?? 0),
+                totalBytes: Number(row.totalBytes ?? 0),
+                aborted: Boolean(row.aborted ?? false),
+                failureStage: String(row.failureStage ?? '') || null,
+                completionReason: String(row.completionReason ?? '') || null,
+                errorName: String(row.errorName ?? '') || null,
+                errorMessage: String(row.errorMessage ?? '') || null,
+                responseContentType: String(row.responseContentType ?? '') || null,
+                path: String(row.path ?? ''),
+                replayId: String(row.replayId ?? '') || null,
+                userId: String(row.userId ?? '') || null,
+                userEmail: String(row.userEmail ?? '') || null,
+                networkAt: new Date(Number(row.created_at_ts ?? 0) * 1000).toISOString(),
+                model: sem ? String(sem.model ?? '') || null : null,
+                provider: sem ? String(sem.provider ?? '') || null : null,
+                inputTokens: sem ? Number(sem.inputTokens ?? 0) : null,
+                outputTokens: sem ? Number(sem.outputTokens ?? 0) : null,
+                durationMs: sem ? Number(sem.durationMs ?? 0) : null,
+            }
+        })
+
+        const statsRow: any = (statsJson.data ?? [])[0] ?? {}
+        const totals = {
+            total: Number(statsRow.total ?? 0),
+            successCount: Number(statsRow.successCount ?? 0),
+            failedCount: Number(statsRow.failedCount ?? 0),
+            avgTtfb: Number(statsRow.avgTtfb ?? 0),
+            p50Ttfb: Number(statsRow.p50Ttfb ?? 0),
+            p95Ttfb: Number(statsRow.p95Ttfb ?? 0),
+            avgTtlb: Number(statsRow.avgTtlb ?? 0),
+            stallCount: Number(statsRow.stallCount ?? 0),
+        }
+
+        return {
+            success: true,
+            data: {
+                appId,
+                range,
+                from: from.toISOString(),
+                to: now.toISOString(),
+                totals,
+                traces,
             },
         }
     }

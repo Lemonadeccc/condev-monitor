@@ -76,4 +76,17 @@ export class SpanController {
             limit: Number(limit) || 50,
         })
     }
+
+    @Get('/ai-streaming')
+    aiStreaming(
+        @Query('appId') appId: string,
+        @Query('range') range: '1h' | '3h' | '1d' | '7d' | '1m' = '1h',
+        @Query('limit') limit = '50'
+    ) {
+        return this.spanService.aiStreaming({
+            appId,
+            range,
+            limit: Number(limit) || 50,
+        })
+    }
 }

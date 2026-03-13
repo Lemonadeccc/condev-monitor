@@ -3,3 +3,7 @@ packages:
   - "apps/frontend/*"
   - "apps/backend/*"
   - "examples/*"
+
+ignoredBuiltDependencies:
+  - sharp
+  - unrs-resolver

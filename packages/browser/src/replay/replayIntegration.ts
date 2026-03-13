@@ -1,4 +1,4 @@
-import type { Transport } from '@condev-monitor/monitor-sdk-core'
+import { getUser, type Transport } from '@condev-monitor/monitor-sdk-core'
 
 import { EventType, record } from 'rrweb'
 
@@ -160,7 +160,9 @@ export class Replay {
         if (typeof transportWithInterceptor.addBeforeEnqueue === 'function') {
             const addBeforeEnqueue = transportWithInterceptor.addBeforeEnqueue.bind(this.transport)
             addBeforeEnqueue((data: Record<string, unknown>) => {
-                if (!this.enabled || data.event_type !== 'error') return data
+                const isError = data.event_type === 'error'
+                const isFailedAiStream = data.event_type === 'ai_streaming' && data.failureStage != null
+                if (!this.enabled || (!isError && !isFailedAiStream)) return data
 
                 if (this.pendingUpload) {
                     return { ...data, replayId: this.pendingUpload.replayId }
@@ -183,7 +185,7 @@ export class Replay {
         this.transport.send = (data: Record<string, unknown>) => {
             if (!this.enabled) return originalSend(data)
 
-            if (data.event_type === 'error') {
+            if (data.event_type === 'error' || (data.event_type === 'ai_streaming' && data.failureStage != null)) {
                 if (this.pendingUpload) {
                     return originalSend({ ...data, replayId: this.pendingUpload.replayId })
                 }
@@ -303,6 +305,7 @@ export class Replay {
 
         const { startedAtMs, events } = this.pickEvents(pending.windowStartMs, pending.windowEndMs)
         const endedAtMs = Math.min(nowMs(), pending.windowEndMs)
+        const user = getUser()
 
         try {
             await this.postReplay(pending.replayUploadUrl, {
@@ -313,6 +316,8 @@ export class Replay {
                 url: location.href,
                 path: location.pathname,
                 userAgent: navigator.userAgent,
+                ...(user?.id ? { userId: user.id } : {}),
+                ...(user?.email ? { userEmail: user.email } : {}),
                 events,
             })
         } catch {

@@ -30,6 +30,9 @@ init({
     transport: { debug: true }, // ← enable Transport debug logging
 })
 
+// import { setUser } from '@condev-monitor/monitor-sdk-browser'
+// setUser({ id: 'test-user-001', email: 'test@example.com' })
+
 function myFn() {
     throw new Error('This is a test error triggered by button click')
 }

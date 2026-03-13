@@ -111,6 +111,9 @@ apps/backend/monitor/prisma/client/
 examples/vanilla/.env
 !examples/vanilla/.env.example
 
+examples/aisdk-rag-chatbox/.env*
+!examples/aisdk-rag-chatbox/.env.example
+
 .devcontainer/data
 .devcontainer/postgressql_data
 .devcontainer/postgresql_data

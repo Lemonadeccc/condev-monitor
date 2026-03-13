@@ -7,7 +7,7 @@
         },
         "build": {
             "dependsOn": ["^build"],
-            "outputs": ["dist/**", "apps/frontend/monitor/.next/**"]
+            "outputs": ["dist/**", "build/**", ".next/**"]
         },
         "dev": {
             "cache": false,

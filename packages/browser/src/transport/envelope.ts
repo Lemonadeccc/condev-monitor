@@ -1,36 +1,10 @@
 import { getBrowserInfo } from '@condev-monitor/monitor-sdk-browser-utils'
+import { getUser, parseDsn } from '@condev-monitor/monitor-sdk-core'
 
 import type { EventCategory, EventPriority, ReportEnvelope } from './types'
 
-// ---- DSN parsing (shared with replay) ----
-
-export type ParsedDsn = {
-    appId: string
-    origin: string
-    basePath: string
-}
-
-export function parseDsn(dsn: string): ParsedDsn | null {
-    try {
-        const url = new URL(dsn)
-        const parts = url.pathname.split('/').filter(Boolean)
-
-        const trackingIndex = parts.indexOf('tracking')
-        if (trackingIndex !== -1) {
-            const appId = parts[trackingIndex + 1]
-            if (!appId) return null
-            const basePath = '/' + parts.slice(0, trackingIndex).join('/')
-            return { appId, origin: url.origin, basePath }
-        }
-
-        if (parts.length < 2) return null
-        const appId = parts[parts.length - 1]!
-        const basePath = '/' + parts.slice(0, parts.length - 2).join('/')
-        return { appId, origin: url.origin, basePath }
-    } catch {
-        return null
-    }
-}
+export { parseDsn }
+export type { ParsedDsn } from '@condev-monitor/monitor-sdk-core'
 
 // ---- Unique ID generation ----
 
@@ -45,15 +19,15 @@ function generateEventId(): string {
 
 function inferCategory(eventType: unknown): EventCategory {
     if (typeof eventType !== 'string') return 'custom'
-    if (eventType === 'error') return 'error'
-    if (eventType === 'whitescreen') return 'whitescreen'
+    if (eventType === 'error' || eventType === 'whitescreen' || eventType === 'white_screen') return 'error'
+    if (eventType === 'ai_streaming') return 'ai_streaming'
     if (eventType.includes('vital') || eventType.includes('metric')) return 'webvital'
     if (eventType === 'longtask' || eventType === 'jank' || eventType === 'fps') return 'performance'
     return 'custom'
 }
 
 function inferPriority(category: EventCategory): EventPriority {
-    return category === 'error' || category === 'whitescreen' ? 'immediate' : 'batch'
+    return category === 'error' ? 'immediate' : 'batch'
 }
 
 // ---- Payload enrichment ----
@@ -62,6 +36,7 @@ export function enrichPayload(data: Record<string, unknown>, context?: { release
     const browserInfo = getBrowserInfo()
     const rawMessage = data['message']
     const message = typeof rawMessage === 'string' ? rawMessage : ''
+    const user = getUser()
 
     return {
         ...data,
@@ -69,6 +44,7 @@ export function enrichPayload(data: Record<string, unknown>, context?: { release
         browserInfo,
         release: context?.release,
         dist: context?.dist,
+        ...(user && { userId: user.id, userEmail: user.email }),
     }
 }
 

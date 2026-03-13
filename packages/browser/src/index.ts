@@ -5,6 +5,8 @@ import type { TransportConfig } from './transport/types'
 import { Errors } from './tracing/errorsIntegration'
 import { DEFAULT_WHITE_SCREEN_OPTIONS, WhiteScreen, WhiteScreenOptions } from './tracing/whiteScreenIntegration'
 import { DEFAULT_RUNTIME_PERFORMANCE_OPTIONS, RuntimePerformance, RuntimePerformanceOptions } from './tracing/runtimePerformanceIntegration'
+import { SSETraceIntegration } from './tracing/sseTraceIntegration'
+import type { SSETraceOptions } from './tracing/sseTraceTypes'
 import { Metrics } from '@condev-monitor/monitor-sdk-browser-utils'
 import { Replay, ReplayOptions } from './replay/replayIntegration'
 
@@ -14,12 +16,15 @@ let _initialized = false
 export type { WhiteScreenOptions }
 export type { RuntimePerformanceOptions }
 export type { ReplayOptions }
+export type { SSETraceOptions }
 export { DEFAULT_WHITE_SCREEN_OPTIONS, DEFAULT_RUNTIME_PERFORMANCE_OPTIONS }
 
 export const triggerWhiteScreenCheck = (reason?: string) => {
     whiteScreen?.trigger(reason)
 }
 
+export { setUser, getUser, clearUser } from '@condev-monitor/monitor-sdk-core'
+export type { UserContext } from '@condev-monitor/monitor-sdk-core'
 export type { TransportConfig }
 
 export const init = (options: {
@@ -53,6 +58,13 @@ export const init = (options: {
      * Transport reliability configuration (queue, retry, offline persistence).
      */
     transport?: TransportConfig
+    /**
+     * Enable SSE/AI streaming fetch interception for TTFB, TTLB, stall
+     * detection and chunk-level timing on streaming responses.
+     * Pass `true` for defaults or an options object for fine-grained control.
+     * Defaults to disabled (opt-in).
+     */
+    aiStreaming?: boolean | SSETraceOptions
 }) => {
     if (_initialized) return
     _initialized = true
@@ -89,6 +101,11 @@ export const init = (options: {
         const whiteScreenOptions = typeof options.whiteScreen === 'object' ? options.whiteScreen : {}
         whiteScreen = new WhiteScreen(transport, { ...DEFAULT_WHITE_SCREEN_OPTIONS, ...whiteScreenOptions })
         whiteScreen.init()
+    }
+
+    if (options.aiStreaming) {
+        const sseOpts = typeof options.aiStreaming === 'object' ? options.aiStreaming : {}
+        new SSETraceIntegration(transport, options.dsn, sseOpts).init()
     }
 
     return monitoring

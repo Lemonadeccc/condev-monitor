@@ -1,6 +1,6 @@
 // ---- Event classification ----
 
-export type EventCategory = 'error' | 'performance' | 'custom' | 'webvital' | 'whitescreen'
+export type EventCategory = 'error' | 'performance' | 'custom' | 'webvital' | 'ai_streaming'
 export type EventPriority = 'immediate' | 'batch'
 
 // ---- Flush trigger reasons ----

@@ -1,6 +1,7 @@
-import { Bug, Home, Play, User2, Zap } from 'lucide-react'
+import { Bot, Bug, Home, Play, User2, Zap } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
+import { usePathname } from 'next/navigation'
 import React from 'react'
 
 import { useAuth } from '@/components/providers'
@@ -39,10 +40,16 @@ const items = [
         url: '/replays',
         icon: Play,
     },
+    {
+        title: 'AI Streaming',
+        url: '/ai-streaming',
+        icon: Bot,
+    },
 ]
 
 const AppSidebar = () => {
     const { user } = useAuth()
+    const pathname = usePathname()
     return (
         <Sidebar collapsible="icon">
             <SidebarHeader className="py-4">
@@ -65,9 +72,10 @@ const AppSidebar = () => {
                     <SidebarGroupContent>
                         <SidebarMenu>
                             {items.map(item => {
+                                const active = item.url === '/' ? pathname === '/' : pathname.startsWith(item.url)
                                 return (
                                     <SidebarMenuItem key={item.title}>
-                                        <SidebarMenuButton asChild>
+                                        <SidebarMenuButton asChild isActive={active}>
                                             <Link href={item.url}>
                                                 <item.icon />
                                                 <span>{item.title}</span>
