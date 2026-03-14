@@ -29,8 +29,18 @@ services:
         volumes:
             - postgres_data:/var/lib/postgresql/
 
+    condev-monitor-kafka-init:
+        image: alpine
+        command: sh -c "chown -R 1000:1000 /tmp/kafka-logs"
+        volumes:
+            - kafka_data:/tmp/kafka-logs
+        restart: 'no'
+
     condev-monitor-kafka:
         image: apache/kafka:3.9.2
+        depends_on:
+            condev-monitor-kafka-init:
+                condition: service_completed_successfully
         expose:
             - '9092'
         environment:

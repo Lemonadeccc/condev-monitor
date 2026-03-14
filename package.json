@@ -13,7 +13,7 @@
         "docker:stop": "docker compose -p condev-monitor -f .devcontainer/docker-compose.yml down",
         "docker:init-clickhouse": "sh ./scripts/init-clickhouse.sh",
         "docker:init-kafka": "sh ./scripts/init-kafka-topics.sh",
-        "docker:deploy": "docker compose -p condev-monitor -f .devcontainer/docker-compose.deply.yml up -d --build && pnpm docker:init-clickhouse && pnpm docker:init-kafka",
+        "docker:deploy": "docker compose -p condev-monitor -f .devcontainer/docker-compose.deply.yml up -d --build && pnpm docker:init-clickhouse && COMPOSE_FILE=.devcontainer/docker-compose.deply.yml pnpm docker:init-kafka",
         "docker:deploy:stop": "docker compose -p condev-monitor -f .devcontainer/docker-compose.deply.yml down",
         "check": "pnpm lint && pnpm format && pnpm spellcheck",
         "lint:ts": "eslint \"{apps,packages}/**/*.{ts,tsx}\"",
