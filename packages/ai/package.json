@@ -4,6 +4,9 @@
     "main": "build/cjs/index.js",
     "module": "build/esm/index.mjs",
     "types": "build/types/index.d.ts",
+    "files": [
+        "build"
+    ],
     "exports": {
         "./package.json": "./package.json",
         ".": {
@@ -21,7 +24,8 @@
         "build:watch": "pnpm build:watch:transpile & pnpm build:watch:types",
         "build:watch:transpile": "tsup --watch",
         "build:watch:types": "tsc -p tsconfig.types.json --watch",
-        "build": "pnpm build:transpile && pnpm build:types",
+        "clean": "rimraf build",
+        "build": "pnpm clean && pnpm build:transpile && pnpm build:types",
         "build:transpile": "tsup",
         "build:types": "tsc -p tsconfig.types.json"
     },

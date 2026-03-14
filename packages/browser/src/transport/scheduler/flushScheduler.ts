@@ -31,6 +31,11 @@ export class FlushScheduler implements IScheduler {
 
     async flush(reason: FlushReason): Promise<void> {
         if (this.flushing) return
+        // Skip flush when offline — data is preserved in queue and will be retried
+        if (typeof navigator !== 'undefined' && !navigator.onLine) {
+            if (this.debug) console.debug('[Transport] Skipping flush: offline')
+            return
+        }
         this.flushing = true
 
         try {

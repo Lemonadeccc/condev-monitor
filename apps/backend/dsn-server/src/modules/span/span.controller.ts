@@ -1,10 +1,15 @@
-import { Body, Controller, Get, Param, Post, Query } from '@nestjs/common'
+import { Body, Controller, Get, Param, Post, Query, Res } from '@nestjs/common'
+import type { Response } from 'express'
 
+import { RateLimiterService } from '../ingest/rate-limiter.service'
 import { SpanService } from './span.service'
 
 @Controller()
 export class SpanController {
-    constructor(private readonly spanService: SpanService) {}
+    constructor(
+        private readonly spanService: SpanService,
+        private readonly rateLimiter: RateLimiterService
+    ) {}
 
     @Get('/span')
     span() {
@@ -12,7 +17,30 @@ export class SpanController {
     }
 
     @Post('/tracking/:app_id')
-    tracking(@Param('app_id') appId: string, @Body() body: unknown) {
+    tracking(@Param('app_id') appId: string, @Body() body: unknown, @Res({ passthrough: true }) res: Response) {
+        // Beacon sends text/plain — parse string first to get an accurate item count for rate limiting
+        let parsedForCost: unknown = body
+        if (typeof body === 'string') {
+            try {
+                parsedForCost = JSON.parse(body)
+            } catch {
+                /* invalid string body — treated as a single item */
+            }
+        }
+        const cost = Array.isArray(parsedForCost) ? Math.max(1, Math.min(parsedForCost.length, 1000)) : 1
+        const limit = this.rateLimiter.check(appId, cost)
+
+        if (limit.exceeded) {
+            res.status(429)
+                .header('Retry-After', String(limit.retryAfterSeconds))
+                .header('X-Rate-Limit-Reset', String(limit.resetTimestamp))
+            return {
+                ok: false,
+                reason: 'rate_limited',
+                retryAfter: limit.retryAfterSeconds,
+            }
+        }
+
         return this.spanService.tracking(appId, body)
     }
 

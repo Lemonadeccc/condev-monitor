@@ -8,7 +8,7 @@ cd "$repo_root"
 PROJECT_NAME="${PROJECT_NAME:-condev-monitor}"
 COMPOSE_FILE="${COMPOSE_FILE:-.devcontainer/docker-compose.deply.yml}"
 CLICKHOUSE_SERVICE="${CLICKHOUSE_SERVICE:-condev-monitor-clickhouse}"
-SCHEMA_FILE="${SCHEMA_FILE:-.devcontainer/clickhouse/init/001_condev_monitor_schema.sql}"
+SCHEMA_DIR="${SCHEMA_DIR:-.devcontainer/clickhouse/init}"
 
 docker_compose() {
   if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
@@ -23,8 +23,8 @@ docker_compose() {
   exit 1
 }
 
-if [ ! -f "$SCHEMA_FILE" ]; then
-  echo "Schema file not found: $SCHEMA_FILE" >&2
+if [ ! -d "$SCHEMA_DIR" ]; then
+  echo "Schema directory not found: $SCHEMA_DIR" >&2
   exit 1
 fi
 
@@ -49,8 +49,17 @@ if [ "$tries" -le 0 ]; then
   exit 1
 fi
 
+schema_files="$(find "$SCHEMA_DIR" -maxdepth 1 -type f -name '*.sql' | sort)"
+if [ -z "$schema_files" ]; then
+  echo "No schema files found in: $SCHEMA_DIR" >&2
+  exit 1
+fi
+
 echo "Initializing ClickHouse schema (idempotent)..."
-docker exec -i "$container_id" clickhouse-client --multiquery < "$SCHEMA_FILE"
+for schema_file in $schema_files; do
+  echo "Applying $(basename "$schema_file")..."
+  docker exec -i "$container_id" clickhouse-client --multiquery < "$schema_file"
+done
 
 echo "Verifying tables..."
 docker exec "$container_id" clickhouse-client --query "SHOW TABLES FROM lemonade" || true

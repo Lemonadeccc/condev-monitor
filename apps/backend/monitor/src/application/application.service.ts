@@ -1,8 +1,10 @@
 import { ClickHouseClient } from '@clickhouse/client'
 import { HttpException, HttpStatus, Inject, Injectable } from '@nestjs/common'
+import { ConfigService } from '@nestjs/config'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 
+import { resolveClickhouseDatabase } from '../shared/clickhouse-utils'
 import { ApplicationEntity } from './entity/application.entity'
 
 @Injectable()
@@ -11,8 +13,13 @@ export class ApplicationService {
         @Inject('CLICKHOUSE_CLIENT')
         private readonly clickhouseClient: ClickHouseClient,
         @InjectRepository(ApplicationEntity)
-        private readonly applicationRepository: Repository<ApplicationEntity>
+        private readonly applicationRepository: Repository<ApplicationEntity>,
+        private readonly config: ConfigService
     ) {}
+
+    private get clickhouseDatabase(): string {
+        return resolveClickhouseDatabase(this.config)
+    }
 
     private normalizeName(name: string | undefined) {
         return (name ?? '').trim()
@@ -148,7 +155,7 @@ export class ApplicationService {
     private async ensureAppSettingsTable() {
         await this.clickhouseClient.command({
             query: `
-                CREATE TABLE IF NOT EXISTS lemonade.app_settings
+                CREATE TABLE IF NOT EXISTS ${this.clickhouseDatabase}.app_settings
                 (
                     app_id String,
                     replay_enabled UInt8,
@@ -166,7 +173,7 @@ export class ApplicationService {
 
         await this.ensureAppSettingsTable()
         await this.clickhouseClient.insert({
-            table: 'lemonade.app_settings',
+            table: `${this.clickhouseDatabase}.app_settings`,
             columns: ['app_id', 'replay_enabled', 'updated_at'],
             format: 'JSONEachRow',
             values: [

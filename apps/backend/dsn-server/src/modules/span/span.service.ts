@@ -2,11 +2,14 @@ import * as fs from 'node:fs'
 
 import { ClickHouseClient } from '@clickhouse/client'
 import { originalPositionFor, TraceMap } from '@jridgewell/trace-mapping'
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common'
+import { BadRequestException, Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import type { Pool } from 'pg'
 
+import { resolveClickhouseDatabase } from '../../shared/clickhouse-utils'
 import { EmailService } from '../email/email.service'
+import { InboundFilterService } from '../ingest/inbound-filter.service'
+import { IngestWriterService } from '../ingest/ingest-writer.service'
 
 type OverviewRange = '1h' | '3h' | '1d' | '7d' | '1m'
 
@@ -180,12 +183,19 @@ export class SpanService {
         @Inject('PG_POOL')
         private readonly pgPool: Pool,
         private readonly emailService: EmailService,
-        private readonly configService: ConfigService
+        private readonly configService: ConfigService,
+        private readonly ingestWriter: IngestWriterService,
+        private readonly inboundFilter: InboundFilterService
     ) {}
 
+    private readonly logger = new Logger(SpanService.name)
     private readonly appOwnerEmailCache = new Map<string, { email: string; expiresAt: number }>()
     private appTableColumnsPromise: Promise<Set<string>> | null = null
     private readonly sourcemapCache = new Map<string, { map: TraceMap; expiresAt: number }>()
+
+    private get clickhouseDatabase(): string {
+        return resolveClickhouseDatabase(this.configService)
+    }
 
     private normalizeUrl(value: string): string {
         try {
@@ -446,7 +456,7 @@ export class SpanService {
             const res = await this.clickhouseClient.query({
                 query: `
                     SELECT replay_enabled
-                    FROM lemonade.app_settings
+                    FROM ${this.clickhouseDatabase}.app_settings
                     WHERE app_id = {appId:String}
                     ORDER BY updated_at DESC
                     LIMIT 1
@@ -461,30 +471,46 @@ export class SpanService {
             if (row) {
                 return Boolean(row.replay_enabled)
             }
-        } catch {
-            // Ignore ClickHouse errors (e.g. table not exists) and proceed to fallback
+        } catch (err) {
+            // ClickHouse unavailable — proceed to Monitor API fallback
+            this.logger.warn(
+                `ClickHouse replay config lookup failed for appId=${appId}: ${err instanceof Error ? err.message : String(err)}`
+            )
         }
 
         // 2. Fallback: Query Monitor API (slow path, for legacy/unsynced apps)
         const monitorApiUrl = (this.configService.get<string>('MONITOR_API_URL') ?? 'http://localhost:8081').replace(/\/+$/, '')
+        const url = new URL(`${monitorApiUrl}/api/application/public/config`)
+        url.searchParams.set('appId', appId)
+
+        let monitorRes: Response
         try {
-            const url = new URL(`${monitorApiUrl}/api/application/public/config`)
-            url.searchParams.set('appId', appId)
-            const res = await fetch(url.toString(), { method: 'GET' })
-            if (res.ok) {
-                const json = (await res.json()) as { data?: { replayEnabled?: boolean } }
-                return Boolean(json?.data?.replayEnabled)
-            }
-        } catch {
-            // ignore
+            monitorRes = await fetch(url.toString(), { method: 'GET' })
+        } catch (err) {
+            // Network-level failure (Monitor API unreachable) — do NOT treat as "disabled".
+            // Return 503 so the SDK keeps data in IndexedDB and retries later.
+            this.logger.warn(`Monitor API unreachable for appId=${appId}: ${err instanceof Error ? err.message : String(err)}`)
+            throw new ServiceUnavailableException({ message: 'Replay config temporarily unavailable', error: 'REPLAY_CONFIG_UNAVAILABLE' })
         }
 
+        if (monitorRes.ok) {
+            const json = (await monitorRes.json()) as { data?: { replayEnabled?: boolean } }
+            return Boolean(json?.data?.replayEnabled)
+        }
+
+        if (monitorRes.status >= 500) {
+            // Monitor API server error — treat as transient, not as "disabled"
+            this.logger.warn(`Monitor API returned ${monitorRes.status} for appId=${appId}`)
+            throw new ServiceUnavailableException({ message: 'Replay config temporarily unavailable', error: 'REPLAY_CONFIG_UNAVAILABLE' })
+        }
+
+        // 4xx (e.g. 404 app not found) — authoritative: replay is not enabled
         return false
     }
 
     async span() {
         const res = await this.clickhouseClient.query({
-            query: `SELECT * FROM lemonade.base_monitor_view;`,
+            query: `SELECT * FROM ${this.clickhouseDatabase}.base_monitor_view;`,
             format: 'JSON',
         })
         const data = await res.json()
@@ -517,32 +543,22 @@ export class SpanService {
             return { ok: true }
         }
 
-        // 3. Map to ClickHouse rows
-        const values = items.map(item => {
-            const { event_type, message, ...info } = item
-            return {
-                app_id: appId,
-                event_type,
-                message: typeof message === 'string' ? message : '',
-                info,
-            }
-        })
+        // 2.5 Inbound data filter (Phase 3)
+        const filtered = this.inboundFilter.filter(items)
+        if (filtered.accepted.length === 0) {
+            return { ok: true, rejected: filtered.rejected }
+        }
 
-        // 4. Batch insert
-        await this.clickhouseClient.insert({
-            table: 'lemonade.base_monitor_storage',
-            columns: ['app_id', 'event_type', 'message', 'info'],
-            format: 'JSONEachRow',
-            values,
-        })
+        // 3. Persist via Kafka or direct ClickHouse (based on INGEST_MODE)
+        const result = await this.ingestWriter.writeTrackingBatch(appId, filtered.accepted)
 
-        // 5. Aggregate error alert with throttle (prevent email storm from batch uploads)
-        const errorItems = items.filter(item => item.event_type === 'error')
+        // 4. Aggregate error alert with throttle (triggered in DSN, not consumer)
+        const errorItems = filtered.accepted.filter(item => item.event_type === 'error')
         if (errorItems.length > 0) {
             await this.sendAggregatedErrorAlert(appId, errorItems)
         }
 
-        return { ok: true }
+        return { ok: true, persistedVia: result.persistedVia }
     }
 
     private async sendAggregatedErrorAlert(appId: string, errors: Record<string, unknown>[]): Promise<void> {
@@ -550,9 +566,10 @@ export class SpanService {
         if (Date.now() - last < this.ALERT_INTERVAL_MS) return
         this.alertThrottle.set(appId, Date.now())
 
-        const fallbackEmail = this.configService.get<string>('ALERT_EMAIL_FALLBACK') ?? 'zwjhb12@163.com'
+        const fallbackEmail = this.configService.get<string>('ALERT_EMAIL_FALLBACK')
         const ownerEmail = await this.resolveOwnerEmailByAppId(appId)
         const toEmail = ownerEmail ?? fallbackEmail
+        if (!toEmail) return // No configured recipient — skip silently
         const firstError = errors[0]!
 
         void this.emailService
@@ -572,7 +589,7 @@ export class SpanService {
 
     async bugs() {
         const res = await this.clickhouseClient.query({
-            query: `SELECT * FROM lemonade.base_monitor_view WHERE event_type='error';`,
+            query: `SELECT * FROM ${this.clickhouseDatabase}.base_monitor_view WHERE event_type='error';`,
             format: 'JSON',
         })
         const data = await res.json()
@@ -594,7 +611,7 @@ export class SpanService {
                     message,
                     toJSONString(info) AS info_json,
                     created_at
-                FROM lemonade.base_monitor_storage
+                FROM ${this.clickhouseDatabase}.base_monitor_storage
                 WHERE app_id = {appId:String}
                   AND event_type = 'error'
                 ORDER BY created_at DESC
@@ -688,7 +705,7 @@ export class SpanService {
                     ) AS bucket_ts,
                     count() AS total,
                     countIf(event_type = 'error') AS errors
-                FROM lemonade.base_monitor_view
+                FROM ${this.clickhouseDatabase}.base_monitor_view
                 WHERE app_id = {appId:String}
                   AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
                   AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
@@ -767,6 +784,7 @@ export class SpanService {
             query: `
                 SELECT
                     app_id,
+                    fingerprint,
                     issue_type,
                     message,
                     path,
@@ -779,37 +797,39 @@ export class SpanService {
                 (
                     SELECT
                         app_id,
-                        issue_type,
-                        message,
-                        path,
+                        fingerprint,
+                        argMax(issue_type, last_seen_inner) AS issue_type,
+                        argMax(message, last_seen_inner) AS message,
+                        argMax(path, last_seen_inner) AS path,
                         sum(cnt) AS events,
-                        min(first_seen_ts) AS first_seen_ts,
-                        max(last_seen_ts) AS last_seen_ts,
+                        min(first_seen_inner) AS first_seen_ts,
+                        max(last_seen_inner) AS last_seen_ts,
                         arraySort(groupArray((bucket_ts, cnt))) AS buckets
                     FROM
                     (
                         SELECT
                             app_id,
+                            if(fingerprint != '', fingerprint, concat('legacy:', hex(MD5(concat(coalesce(JSONExtractString(toJSONString(info), 'type'), ''), ':', message))))) AS fingerprint,
                             coalesce(JSONExtractString(toJSONString(info), 'type'), '') AS issue_type,
                             message,
                             coalesce(JSONExtractString(toJSONString(info), 'path'), '') AS path,
                             toUnixTimestamp(
                                 toStartOfInterval(
-                                    created_at - toIntervalSecond({offsetSeconds:UInt32}),
+                                    received_at - toIntervalSecond({offsetSeconds:UInt32}),
                                     toIntervalSecond({intervalSeconds:UInt32})
                                 ) + toIntervalSecond({offsetSeconds:UInt32})
                             ) AS bucket_ts,
                             count() AS cnt,
-                            min(toUnixTimestamp(created_at)) AS first_seen_ts,
-                            max(toUnixTimestamp(created_at)) AS last_seen_ts
-                        FROM lemonade.base_monitor_view
+                            min(toUnixTimestamp(received_at)) AS first_seen_inner,
+                            max(toUnixTimestamp(received_at)) AS last_seen_inner
+                        FROM ${this.clickhouseDatabase}.events
                         WHERE event_type = 'error'
                           ${appFilter}
-                          AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
-                          AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
-                        GROUP BY app_id, issue_type, message, path, bucket_ts
+                          AND toUnixTimestamp(received_at) >= {fromSeconds:UInt32}
+                          AND toUnixTimestamp(received_at) < {toSeconds:UInt32}
+                        GROUP BY app_id, fingerprint, issue_type, message, path, bucket_ts
                     )
-                    GROUP BY app_id, issue_type, message, path
+                    GROUP BY app_id, fingerprint
                 )
                 ORDER BY last_seen_ts DESC
                 LIMIT {limit:UInt32}
@@ -829,6 +849,7 @@ export class SpanService {
 
         const items: IssueItem[] = (json.data ?? []).map((row: any) => {
             const rowAppId = String(row.app_id ?? '')
+            const fingerprint = String(row.fingerprint ?? '')
             const type = String(row.issue_type ?? '')
             const message = String(row.message ?? '')
             const path = String(row.path ?? '')
@@ -849,7 +870,7 @@ export class SpanService {
             }
 
             return {
-                id: `${rowAppId}:${type}:${path}:${message}`,
+                id: fingerprint || `${rowAppId}:${type}:${path}:${message}`,
                 appId: rowAppId,
                 type,
                 message,
@@ -904,7 +925,7 @@ export class SpanService {
                     countIf(JSONExtractString(toJSONString(info), 'type') = 'longTask') AS long_task,
                     countIf(JSONExtractString(toJSONString(info), 'type') = 'jank') AS jank,
                     countIf(JSONExtractString(toJSONString(info), 'type') = 'lowFps') AS low_fps
-                FROM lemonade.base_monitor_view
+                FROM ${this.clickhouseDatabase}.base_monitor_view
                 WHERE app_id = {appId:String}
                   AND event_type = 'performance'
                   AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
@@ -970,7 +991,7 @@ export class SpanService {
                     quantile(0.5)(JSONExtractFloat(toJSONString(info), 'value')) AS p50,
                     quantile(0.75)(JSONExtractFloat(toJSONString(info), 'value')) AS p75,
                     quantile(0.95)(JSONExtractFloat(toJSONString(info), 'value')) AS p95
-                FROM lemonade.base_monitor_view
+                FROM ${this.clickhouseDatabase}.base_monitor_view
                 WHERE app_id = {appId:String}
                   AND event_type = 'performance'
                   AND JSONExtractString(toJSONString(info), 'type') = 'webVital'
@@ -1009,7 +1030,7 @@ export class SpanService {
                     countIf(metric_type = 'longTask') AS long_task,
                     countIf(metric_type = 'jank') AS jank,
                     countIf(metric_type = 'lowFps') AS low_fps
-                FROM lemonade.base_monitor_view
+                FROM ${this.clickhouseDatabase}.base_monitor_view
                 WHERE app_id = {appId:String}
                   AND event_type = 'performance'
                   AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
@@ -1048,7 +1069,7 @@ export class SpanService {
                     quantile(0.75)(duration) AS p75,
                     quantile(0.95)(duration) AS p95,
                     max(duration) AS max
-                FROM lemonade.base_monitor_view
+                FROM ${this.clickhouseDatabase}.base_monitor_view
                 WHERE app_id = {appId:String}
                   AND event_type = 'performance'
                   AND metric_type = 'longTask'
@@ -1089,7 +1110,7 @@ export class SpanService {
                     quantile(0.75)(duration) AS p75,
                     quantile(0.95)(duration) AS p95,
                     max(duration) AS max
-                FROM lemonade.base_monitor_view
+                FROM ${this.clickhouseDatabase}.base_monitor_view
                 WHERE app_id = {appId:String}
                   AND event_type = 'performance'
                   AND metric_type = 'longTask'
@@ -1167,28 +1188,26 @@ export class SpanService {
         const events = normalizeReplayEvents(rawEvents, 2000) as ReplayEvent[]
         const snapshot = typeof params.body.snapshot === 'string' ? params.body.snapshot.slice(0, 500_000) : undefined
 
-        await this.clickhouseClient.insert({
-            table: 'lemonade.base_monitor_storage',
-            columns: ['app_id', 'event_type', 'message', 'info'],
-            format: 'JSONEachRow',
-            values: [
-                {
-                    app_id: appId,
-                    event_type: 'replay',
-                    message: '',
-                    info: {
-                        replayId,
-                        startedAt,
-                        endedAt,
-                        errorAt,
-                        url,
-                        path,
-                        userAgent,
-                        events,
-                        snapshot,
-                    },
-                },
-            ],
+        await this.ingestWriter.writeReplay(appId, {
+            event_id: '',
+            app_id: appId,
+            event_type: 'replay',
+            fingerprint: '',
+            message: '',
+            sdk_version: typeof params.body.sdk_version === 'string' ? params.body.sdk_version.trim() : '',
+            environment: typeof params.body.environment === 'string' ? params.body.environment.trim() : '',
+            release: typeof params.body.release === 'string' ? params.body.release.trim() : '',
+            info: {
+                replayId,
+                startedAt,
+                endedAt,
+                errorAt,
+                url,
+                path,
+                userAgent,
+                events,
+                snapshot,
+            },
         })
 
         return { ok: true }
@@ -1223,7 +1242,7 @@ export class SpanService {
                     JSONExtractString(toJSONString(info), 'userAgent') AS user_agent,
                     JSONExtractString(toJSONString(info), 'snapshot') AS snapshot,
                     JSONExtractRaw(toJSONString(info), 'events') AS events
-                FROM lemonade.base_monitor_view
+                FROM ${this.clickhouseDatabase}.base_monitor_view
                 WHERE app_id = {appId:String}
                   AND event_type = 'replay'
                   AND JSONExtractString(toJSONString(info), 'replayId') = {replayId:String}
@@ -1304,7 +1323,7 @@ export class SpanService {
                     JSONExtractString(toJSONString(info), 'replayId') AS replay_id,
                     JSONExtractString(toJSONString(info), 'errorAt') AS error_at,
                     JSONExtractString(toJSONString(info), 'path') AS path
-                FROM lemonade.base_monitor_view
+                FROM ${this.clickhouseDatabase}.base_monitor_view
                 WHERE app_id = {appId:String}
                   AND event_type = 'replay'
                   AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
@@ -1380,7 +1399,7 @@ export class SpanService {
                         JSONExtractString(toJSONString(info), 'userId') AS userId,
                         JSONExtractString(toJSONString(info), 'userEmail') AS userEmail,
                         toUnixTimestamp(created_at) AS created_at_ts
-                    FROM lemonade.base_monitor_view
+                    FROM ${this.clickhouseDatabase}.base_monitor_view
                     WHERE app_id = {appId:String}
                       AND event_type = 'ai_streaming'
                       AND JSONExtractString(toJSONString(info), 'layer') = 'network'
@@ -1402,7 +1421,7 @@ export class SpanService {
                         JSONExtractInt(toJSONString(info), 'ai', 'usage', 'inputTokens') AS inputTokens,
                         JSONExtractInt(toJSONString(info), 'ai', 'usage', 'outputTokens') AS outputTokens,
                         JSONExtractFloat(toJSONString(info), 'durationMs') AS durationMs
-                    FROM lemonade.base_monitor_view
+                    FROM ${this.clickhouseDatabase}.base_monitor_view
                     WHERE app_id = {appId:String}
                       AND event_type = 'ai_streaming'
                       AND JSONExtractString(toJSONString(info), 'layer') = 'semantic'
@@ -1424,7 +1443,7 @@ export class SpanService {
                         quantileIf(0.95)(JSONExtractFloat(toJSONString(info), 'sseTtfb'), JSONExtractFloat(toJSONString(info), 'sseTtfb') >= 0 AND empty(JSONExtractString(toJSONString(info), 'failureStage')) AND JSONExtractString(toJSONString(info), 'completionReason') = 'complete') AS p95Ttfb,
                         avgIf(JSONExtractFloat(toJSONString(info), 'sseTtlb'), empty(JSONExtractString(toJSONString(info), 'failureStage')) AND JSONExtractString(toJSONString(info), 'completionReason') = 'complete') AS avgTtlb,
                         sum(JSONExtractInt(toJSONString(info), 'stallCount')) AS stallCount
-                    FROM lemonade.base_monitor_view
+                    FROM ${this.clickhouseDatabase}.base_monitor_view
                     WHERE app_id = {appId:String}
                       AND event_type = 'ai_streaming'
                       AND JSONExtractString(toJSONString(info), 'layer') = 'network'

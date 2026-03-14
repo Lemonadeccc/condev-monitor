@@ -1,18 +1,23 @@
 import { defineConfig } from 'tsup'
 
+const entry = {
+    index: 'src/index.ts',
+}
+
 export default defineConfig([
     {
-        entry: ['src'],
+        entry,
         format: ['cjs'],
         outDir: 'build/cjs',
+        clean: true,
     },
     {
-        entry: ['src'],
+        entry,
         format: ['esm'],
         outDir: 'build/esm',
     },
     {
-        entry: ['src'],
+        entry,
         format: ['iife'],
         outDir: 'build/umd',
         name: 'monitor-sdk-browser',

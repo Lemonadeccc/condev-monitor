@@ -111,7 +111,7 @@ export default function AIStreamingPage() {
     })
 
     const totals = streamingQuery.data?.data?.totals
-    const rawTraces = streamingQuery.data?.data?.traces ?? []
+    const rawTraces = useMemo(() => streamingQuery.data?.data?.traces ?? [], [streamingQuery.data])
 
     const [filterStatus, setFilterStatus] = useState<string>('all')
     const [filterStage, setFilterStage] = useState<string>('all')

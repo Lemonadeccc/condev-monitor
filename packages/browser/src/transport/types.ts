@@ -34,7 +34,7 @@ export interface RetryRecord {
 // ---- Abstract interfaces (upgrade-friendly) ----
 
 export interface Sender {
-    send(payload: string, options?: { keepalive?: boolean }): Promise<boolean>
+    send(payload: string, options?: { keepalive?: boolean }): Promise<SendResult>
 }
 
 export interface Store<T> {
@@ -53,7 +53,7 @@ export interface IScheduler {
 
 // ---- Send result ----
 
-export type SendResult = { ok: true } | { ok: false; retryable: boolean }
+export type SendResult = { ok: true } | { ok: false; retryable: boolean; retryAfterMs?: number }
 
 // ---- Transport configuration ----
 

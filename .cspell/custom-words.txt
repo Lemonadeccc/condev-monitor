@@ -35,3 +35,11 @@ webvital
 Ttfb
 Ttlb
 unrs
+kafkajs
+acks
+ACKS
+Xenova
+huggingface
+tfidf
+TFIDF
+unflushed

@@ -39,26 +39,25 @@ export class TransportGateway {
     private async sendOnClose(body: string): Promise<SendResult> {
         // Try sendBeacon for small payloads
         if (body.length <= this.beaconMaxBytes) {
-            const beaconOk = await this.beaconSender.send(body)
-            if (beaconOk) {
+            const result = await this.beaconSender.send(body)
+            if (result.ok) {
                 if (this.debug) console.debug('[Transport] Sent via sendBeacon')
-                return { ok: true }
+                return result
             }
         }
 
         // Fallback to fetch with keepalive
         try {
-            const fetchOk = await this.fetchSender.send(body, { keepalive: true })
-            if (this.debug) console.debug(`[Transport] Sent via fetch keepalive: ${fetchOk}`)
-            return fetchOk ? { ok: true } : { ok: false, retryable: true }
+            const result = await this.fetchSender.send(body, { keepalive: true })
+            if (this.debug) console.debug(`[Transport] Sent via fetch keepalive: ${result.ok}`)
+            return result
         } catch {
             return { ok: false, retryable: true }
         }
     }
 
     private async sendOnActive(body: string): Promise<SendResult> {
-        const ok = await this.fetchSender.send(body)
-        return ok ? { ok: true } : { ok: false, retryable: true }
+        return this.fetchSender.send(body)
     }
 
     /**

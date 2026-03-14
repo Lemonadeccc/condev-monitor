@@ -26,6 +26,29 @@ services:
         volumes:
             - ./postgresql_data:/var/lib/postgresql
 
+    condev-monitor-kafka:
+        image: apache/kafka:3.9.2
+        container_name: condev-monitor-kafka
+        ports:
+            - '${KAFKA_EXTERNAL_PORT:-9094}:9094'
+        environment:
+            KAFKA_NODE_ID: 1
+            KAFKA_PROCESS_ROLES: broker,controller
+            KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+            KAFKA_LISTENERS: PLAINTEXT://:9092,EXTERNAL://:9094,CONTROLLER://:9093
+            KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://condev-monitor-kafka:9092,EXTERNAL://localhost:${KAFKA_EXTERNAL_PORT:-9094}
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+            KAFKA_CONTROLLER_QUORUM_VOTERS: 1@condev-monitor-kafka:9093
+            KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+            KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+            KAFKA_NUM_PARTITIONS: 6
+            KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+            KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+            KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+        volumes:
+            - ./kafka_data:/tmp/kafka-logs
+
 networks:
     default:
         name: condev-monitor-network

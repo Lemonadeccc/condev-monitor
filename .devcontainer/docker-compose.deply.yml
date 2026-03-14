@@ -29,6 +29,28 @@ services:
         volumes:
             - postgres_data:/var/lib/postgresql/
 
+    condev-monitor-kafka:
+        image: apache/kafka:3.9.2
+        expose:
+            - '9092'
+        environment:
+            KAFKA_NODE_ID: 1
+            KAFKA_PROCESS_ROLES: broker,controller
+            KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+            KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+            KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://condev-monitor-kafka:9092
+            KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
+            KAFKA_CONTROLLER_QUORUM_VOTERS: 1@condev-monitor-kafka:9093
+            KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+            KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'false'
+            KAFKA_NUM_PARTITIONS: 6
+            KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+            KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+            KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+            KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+        volumes:
+            - kafka_data:/tmp/kafka-logs
+
     condev-monitor-server:
         build:
             context: ..
@@ -81,11 +103,25 @@ services:
             - SOURCEMAP_STORAGE_DIR=${SOURCEMAP_STORAGE_DIR:-/data/sourcemaps}
             - SOURCEMAP_CACHE_MAX=${SOURCEMAP_CACHE_MAX:-200}
             - SOURCEMAP_CACHE_TTL_MS=${SOURCEMAP_CACHE_TTL_MS:-600000}
+            - INGEST_MODE=${INGEST_MODE:-kafka}
+            - KAFKA_ENABLED=true
+            - KAFKA_BROKERS=${KAFKA_BROKERS:-condev-monitor-kafka:9092}
+            - KAFKA_CLIENT_ID=condev-monitor-dsn
+            - KAFKA_EVENTS_TOPIC=monitor.sdk.events.v1
+            - KAFKA_REPLAYS_TOPIC=monitor.sdk.replays.v1
+            - KAFKA_FALLBACK_TO_CLICKHOUSE=${KAFKA_FALLBACK_TO_CLICKHOUSE:-true}
+            - INBOUND_MAX_PAYLOAD_BYTES=${INBOUND_MAX_PAYLOAD_BYTES:-524288}
+            - INBOUND_UA_BLACKLIST=${INBOUND_UA_BLACKLIST:-MSIE 9,MSIE 10,Trident/5.0,Trident/6.0}
+            - INBOUND_RELEASE_BLACKLIST=${INBOUND_RELEASE_BLACKLIST:-}
+            - RATE_LIMIT_EVENTS_PER_SEC=${RATE_LIMIT_EVENTS_PER_SEC:-100}
+            - RATE_LIMIT_BURST=${RATE_LIMIT_BURST:-100}
+            - RATE_LIMIT_MAX_APPS=${RATE_LIMIT_MAX_APPS:-5000}
         volumes:
             - sourcemap_data:/data/sourcemaps
         depends_on:
             - condev-monitor-clickhouse
             - condev-monitor-postgres
+            - condev-monitor-kafka
 
     condev-monitor-web:
         build:
@@ -120,9 +156,43 @@ services:
             - condev-monitor-web
             - condev-dsn-server
 
+    condev-monitor-event-worker:
+        build:
+            context: ..
+            dockerfile: apps/backend/event-worker/Dockerfile
+        env_file:
+            - .env
+        environment:
+            - NODE_ENV=${NODE_ENV:-production}
+            - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
+            - CLICKHOUSE_USERNAME=${CLICKHOUSE_USERNAME:-lemonade}
+            - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-condevClickhouse}
+            - KAFKA_BROKERS=${KAFKA_BROKERS:-condev-monitor-kafka:9092}
+            - KAFKA_CLIENT_ID=condev-monitor-worker
+            - KAFKA_CONSUMER_GROUP=${KAFKA_CONSUMER_GROUP:-monitor-clickhouse-writer-v1}
+            - KAFKA_EVENTS_TOPIC=monitor.sdk.events.v1
+            - KAFKA_REPLAYS_TOPIC=monitor.sdk.replays.v1
+            - KAFKA_DLQ_TOPIC=monitor.sdk.dlq.v1
+            - EVENT_BATCH_SIZE=${EVENT_BATCH_SIZE:-500}
+            - EVENT_BATCH_MAX_WAIT_MS=${EVENT_BATCH_MAX_WAIT_MS:-1000}
+            - EMBEDDING_MODEL_ID=${EMBEDDING_MODEL_ID:-Xenova/all-MiniLM-L6-v2}
+            - ISSUE_EMBEDDING_HIGH_THRESHOLD=${ISSUE_EMBEDDING_HIGH_THRESHOLD:-0.92}
+            - ISSUE_EMBEDDING_LOW_THRESHOLD=${ISSUE_EMBEDDING_LOW_THRESHOLD:-0.85}
+            - ISSUE_TFIDF_THRESHOLD=${ISSUE_TFIDF_THRESHOLD:-0.80}
+            - LLM_PROVIDER=${LLM_PROVIDER:-openai-compatible}
+            - LLM_BASE_URL=${LLM_BASE_URL:-}
+            - LLM_API_KEY=${LLM_API_KEY:-}
+            - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
+            - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1024}
+            - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.1}
+        depends_on:
+            - condev-monitor-kafka
+            - condev-monitor-clickhouse
+
 volumes:
     clickhouse_data:
     postgres_data:
     caddy_data:
     caddy_config:
     sourcemap_data:
+    kafka_data:

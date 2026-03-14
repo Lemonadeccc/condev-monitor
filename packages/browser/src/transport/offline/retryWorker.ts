@@ -29,6 +29,7 @@ export class RetryWorker {
 
     async tryOnce(): Promise<void> {
         if (this.running) return
+        if (typeof navigator !== 'undefined' && !navigator.onLine) return
         if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
 
         this.running = true

@@ -118,9 +118,11 @@ examples/aisdk-rag-chatbox/.env*
 .devcontainer/postgressql_data
 .devcontainer/postgresql_data
 .devcontainer/clickhouse_data
+.devcontainer/kafka_data
 
 .devcontainer/.env
 apps/backend/dsn-server/.env
+apps/backend/event-worker/.env
 apps/backend/monitor/.env
 apps/backend/monitor/apps
 
