@@ -27,7 +27,7 @@ export { setUser, getUser, clearUser } from '@condev-monitor/monitor-sdk-core'
 export type { UserContext } from '@condev-monitor/monitor-sdk-core'
 export type { TransportConfig }
 
-export const init = (options: {
+export interface BrowserMonitorOptions {
     dsn: string
     integrations?: Integration[]
     /**
@@ -65,7 +65,9 @@ export const init = (options: {
      * Defaults to disabled (opt-in).
      */
     aiStreaming?: boolean | SSETraceOptions
-}) => {
+}
+
+export const init = (options: BrowserMonitorOptions) => {
     if (_initialized) return
     _initialized = true
 

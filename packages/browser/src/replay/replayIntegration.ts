@@ -1,9 +1,21 @@
 import { getUser, type Transport } from '@condev-monitor/monitor-sdk-core'
 
-import { EventType, record } from 'rrweb'
+// Lazy-loaded rrweb to avoid blocking pre-hydration / instrumentation-client.ts
+let _rrwebRecord: typeof import('rrweb').record | null = null
+let _rrwebEventType: typeof import('rrweb').EventType | null = null
+
+async function loadRrweb() {
+    if (!_rrwebRecord) {
+        const rrweb = await import('rrweb')
+        _rrwebRecord = rrweb.record
+        _rrwebEventType = rrweb.EventType
+    }
+    return { record: _rrwebRecord!, EventType: _rrwebEventType! }
+}
 
 import { parseDsn } from '../transport/envelope'
-import type { ParsedDsn } from '../transport/envelope'
+import type { ReplayRetryWorker } from './replayRetryWorker'
+import type { ReplayStore } from './replayStore'
 
 type ReplayBlockClass = string | RegExp
 type ReplayBlockSelector = string
@@ -48,9 +60,14 @@ function nowMs() {
     return Date.now()
 }
 
+const REPLAY_STORE_MAX_ITEMS = 20
+const REPLAY_STORE_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
 export class Replay {
     private enabled = false
     private events: eventWithTime[] = []
+    private rrwebRecord: typeof import('rrweb').record | null = null
+    private rrwebEventType: typeof import('rrweb').EventType | null = null
     private bufferMs: number
     private maxEvents: number
     private beforeErrorMs: number
@@ -74,6 +91,9 @@ export class Replay {
     }
     private stopRecording: listenerHandler | null = null
     private handlePageHide: (() => void) | null = null
+    private replayStore: ReplayStore | null = null
+    private replayWorker: ReplayRetryWorker | null = null
+    private handleOnlineForRetry: (() => void) | null = null
     private pendingUpload: null | {
         replayId: string
         errorAtMs: number
@@ -123,6 +143,24 @@ export class Replay {
         const parsed = parseDsn(this.dsn)
         if (!parsed) return
 
+        const replayUploadUrl = new URL(`${parsed.origin}${parsed.basePath}/replay/${parsed.appId}`).toString()
+
+        try {
+            const [{ ReplayStore }, { ReplayRetryWorker }] = await Promise.all([import('./replayStore'), import('./replayRetryWorker')])
+            const store = new ReplayStore()
+            const worker = new ReplayRetryWorker(store)
+            this.replayStore = store
+            this.replayWorker = worker
+            this.handleOnlineForRetry = () => {
+                void this.replayWorker?.tryOnce()
+            }
+            window.addEventListener('online', this.handleOnlineForRetry)
+            void worker.tryOnce()
+            worker.start()
+        } catch {
+            // idb unavailable — degrade gracefully
+        }
+
         // Query DSN server first so the browser doesn't need CORS access to the monitor backend.
         const configUrl = new URL(`${parsed.origin}${parsed.basePath}/app-config`)
         configUrl.searchParams.set('appId', parsed.appId)
@@ -140,8 +178,19 @@ export class Replay {
 
         if (!replayEnabled) return
 
+        // Lazy-load rrweb only when replay is actually enabled
+        let rrweb: Awaited<ReturnType<typeof loadRrweb>>
+        try {
+            rrweb = await loadRrweb()
+        } catch (e) {
+            console.warn('[condev-monitor] rrweb failed to load, replay disabled:', e)
+            return
+        }
+        this.rrwebRecord = rrweb.record
+        this.rrwebEventType = rrweb.EventType
+
         this.enabled = true
-        this.patchTransport(parsed)
+        this.patchTransport(replayUploadUrl)
         this.startRecording()
 
         this.handlePageHide = () => {
@@ -150,9 +199,7 @@ export class Replay {
         window.addEventListener('pagehide', this.handlePageHide, { capture: true })
     }
 
-    private patchTransport(parsed: ParsedDsn) {
-        const replayUploadUrl = new URL(`${parsed.origin}${parsed.basePath}/replay/${parsed.appId}`).toString()
-
+    private patchTransport(replayUploadUrl: string) {
         // Prefer the new interceptor API (BrowserTransport v2+) over monkey-patching
         const transportWithInterceptor = this.transport as unknown as {
             addBeforeEnqueue?: (fn: (d: Record<string, unknown>) => Record<string, unknown>) => void
@@ -208,12 +255,12 @@ export class Replay {
     }
 
     private startRecording() {
-        if (!this.enabled) return
+        if (!this.enabled || !this.rrwebRecord) return
         if (this.stopRecording) return
 
         // Ensure frequent full snapshots so a 15s "before error" window always has a baseline.
         this.stopRecording =
-            record({
+            this.rrwebRecord({
                 emit: (event: eventWithTime) => this.push(event),
                 checkoutEveryNms: 10_000,
                 maskAllInputs: this.recordOptions.maskAllInputs,
@@ -236,6 +283,7 @@ export class Replay {
     }
 
     private findMetaEvent(beforeTimestamp: number) {
+        const EventType = this.rrwebEventType!
         for (let i = this.events.length - 1; i >= 0; i -= 1) {
             const e = this.events[i]
             if (!e) continue
@@ -250,6 +298,7 @@ export class Replay {
     }
 
     private withMetaFirst(events: eventWithTime[], headTimestamp: number) {
+        const EventType = this.rrwebEventType!
         if (events.length === 0) return events
         if (events[0]?.type === EventType.Meta) return events
 
@@ -262,6 +311,7 @@ export class Replay {
     }
 
     private pickEvents(windowStartMs: number, windowEndMs: number) {
+        const EventType = this.rrwebEventType!
         const fullSnapshotIndex = (() => {
             for (let i = this.events.length - 1; i >= 0; i -= 1) {
                 const e = this.events[i]
@@ -307,19 +357,31 @@ export class Replay {
         const endedAtMs = Math.min(nowMs(), pending.windowEndMs)
         const user = getUser()
 
+        const payload = {
+            replayId: pending.replayId,
+            startedAt: new Date(startedAtMs).toISOString(),
+            endedAt: new Date(endedAtMs).toISOString(),
+            errorAt: new Date(pending.errorAtMs).toISOString(),
+            url: location.href,
+            path: location.pathname,
+            userAgent: navigator.userAgent,
+            ...(user?.id ? { userId: user.id } : {}),
+            ...(user?.email ? { userEmail: user.email } : {}),
+            events,
+        }
+
         try {
-            await this.postReplay(pending.replayUploadUrl, {
-                replayId: pending.replayId,
-                startedAt: new Date(startedAtMs).toISOString(),
-                endedAt: new Date(endedAtMs).toISOString(),
-                errorAt: new Date(pending.errorAtMs).toISOString(),
-                url: location.href,
-                path: location.pathname,
-                userAgent: navigator.userAgent,
-                ...(user?.id ? { userId: user.id } : {}),
-                ...(user?.email ? { userEmail: user.email } : {}),
-                events,
-            })
+            const body = JSON.stringify(payload)
+
+            if (typeof navigator !== 'undefined' && !navigator.onLine) {
+                await this.saveToStore(pending.replayId, pending.replayUploadUrl, body)
+                return
+            }
+
+            const result = await this.postReplay(pending.replayUploadUrl, body)
+            if (!result.ok && result.retryable) {
+                await this.saveToStore(pending.replayId, pending.replayUploadUrl, body)
+            }
         } catch {
             // ignore
         }
@@ -330,8 +392,18 @@ export class Replay {
         return status >= 500 && status <= 599
     }
 
-    private async postReplay(url: string, payload: Record<string, unknown>) {
-        const body = JSON.stringify(payload)
+    private async saveToStore(id: string, url: string, body: string): Promise<void> {
+        if (!this.replayStore) return
+        const createdAt = nowMs()
+        try {
+            await this.replayStore.prune(REPLAY_STORE_MAX_ITEMS - 1, REPLAY_STORE_MAX_AGE_MS)
+            await this.replayStore.put({ id, url, body, createdAt, nextRetryAt: createdAt, retryCount: 0, leaseUntil: 0 })
+        } catch {
+            // ignore
+        }
+    }
+
+    private async postReplay(url: string, body: string): Promise<{ ok: boolean; retryable: boolean }> {
         const keepalive = this.uploadOptions.keepalive && body.length <= this.uploadOptions.keepaliveMaxBytes
         const retryCount = this.uploadOptions.retryCount
         let delayMs = this.uploadOptions.retryDelayMs
@@ -345,10 +417,11 @@ export class Replay {
                     body,
                     keepalive,
                 })
-                if (res.ok) return
-                if (!this.shouldRetry(res.status) || attempt === retryCount) return
+                if (res.ok) return { ok: true, retryable: false }
+                const retryable = this.shouldRetry(res.status)
+                if (!retryable || attempt === retryCount) return { ok: false, retryable }
             } catch {
-                if (attempt === retryCount) return
+                if (attempt === retryCount) return { ok: false, retryable: true }
             }
 
             if (delayMs > 0) {
@@ -356,6 +429,7 @@ export class Replay {
                 delayMs *= backoff
             }
         }
+        return { ok: false, retryable: true }
     }
 
     stop() {
@@ -367,6 +441,13 @@ export class Replay {
             window.removeEventListener('pagehide', this.handlePageHide, { capture: true })
             this.handlePageHide = null
         }
+        if (this.handleOnlineForRetry) {
+            window.removeEventListener('online', this.handleOnlineForRetry)
+            this.handleOnlineForRetry = null
+        }
+        this.replayWorker?.stop()
+        this.replayWorker = null
+        this.replayStore = null
         this.events = []
         this.enabled = false
     }

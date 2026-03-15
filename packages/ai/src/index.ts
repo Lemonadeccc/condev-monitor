@@ -1,12 +1,12 @@
 export { VercelAIAdapter } from './adapters/vercel'
-export type { AIAdapter, AIReporter, PrivacyOptions } from './adapters/base'
+export type { AIAdapter, AIAdapterContext, AIReporter, OTelSpanProcessorLike, PrivacyOptions } from './adapters/base'
 
 export { NodeReporter } from './reporter'
 export type { ReporterOptions } from './reporter'
 
 import { DEFAULT_TRACE_ID_HEADER } from '@condev-monitor/monitor-sdk-core'
 
-import type { AIAdapter, PrivacyOptions } from './adapters/base'
+import type { AIAdapter, OTelSpanProcessorLike, PrivacyOptions } from './adapters/base'
 import { NodeReporter } from './reporter'
 
 export function initAIMonitor(options: {
@@ -16,7 +16,7 @@ export function initAIMonitor(options: {
     /** Must match the browser SDK's traceIdHeader if customized. Default: 'x-condev-trace-id' */
     traceIdHeader?: string
     debug?: boolean
-}): unknown {
+}): OTelSpanProcessorLike {
     const reporter = new NodeReporter({
         dsn: options.dsn,
         debug: options.debug,

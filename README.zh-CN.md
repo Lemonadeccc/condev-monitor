@@ -55,8 +55,9 @@ Condev Monitor 是一个可自托管的前端监控平台，采用 `pnpm` monore
 
 - 基于嵌入向量的自动错误指纹识别（all-MiniLM-L6-v2）
 - TF-IDF + 余弦相似度混合去重，阈值可配
-- 可选 LLM 生成 Issue 标题和摘要（兼容 OpenAI 接口）
-- Issue 生命周期管理：open、resolved、ignored、merged
+- 可选 LLM 生成 Issue 标题（兼容 OpenAI 接口，每日定时执行）
+- LLM 辅助确认相似 orphan issue 合并（每小时定时执行）
+- Issue 生命周期：open、resolved、ignored、merged（Schema 层定义；worker 写入 open/merged，其余状态预留给未来前端/API）
 
 **运维能力**
 
@@ -234,7 +235,9 @@ condev-monitor/
 │   ├── core/                       # 监控核心能力与 capture API
 │   ├── browser/                    # 浏览器 SDK
 │   ├── browser-utils/              # Metrics / Web Vitals 工具
-│   └── ai/                         # AI 语义监控适配层
+│   ├── ai/                         # AI 语义监控适配层
+│   ├── react/                      # React 集成（ErrorBoundary、useMonitorUser）
+│   └── nextjs/                     # Next.js 集成（registerCondevClient/Server，RSC 安全再导出）
 ├── examples/
 │   ├── vanilla/                    # Vite 示例，包含浏览器 SDK 和 sourcemap 脚本
 │   └── aisdk-rag-chatbox/          # Next.js 示例，包含浏览器端 + AI SDK tracing
@@ -490,6 +493,59 @@ pnpm --filter aisdk-rag-chatbox dev
 
 ## SDK 接入
 
+### Next.js 快速开始
+
+对于 Next.js 项目，推荐使用 `@condev-monitor/nextjs`，它将浏览器 SDK 和 AI 监控统一封装为简洁的接入 API。
+
+**`instrumentation-client.ts`**（客户端，hydration 前执行）：
+
+```ts
+import { registerCondevClient } from '@condev-monitor/nextjs/client'
+
+registerCondevClient({
+    // dsn 默认读取 process.env.NEXT_PUBLIC_CONDEV_DSN
+    replay: true,
+    aiStreaming: { urlPatterns: ['/api/chat'] },
+})
+```
+
+**`instrumentation.ts`**（服务端，Node.js 环境）：
+
+```ts
+export async function register() {
+    if (process.env.NEXT_RUNTIME === 'nodejs') {
+        const { registerCondevServer } = await import('@condev-monitor/nextjs/server')
+        await registerCondevServer({ debug: true })
+        // dsn 默认读取 process.env.CONDEV_DSN ?? process.env.NEXT_PUBLIC_CONDEV_DSN
+    }
+}
+```
+
+`registerCondevServer` 会自动处理 OTel provider 注册——存在 `NodeTracerProvider` 时直接 `addSpanProcessor`，不存在时回退创建并注册 `BasicTracerProvider`。
+
+**React 组件**（从主入口导入）：
+
+```ts
+import { CondevErrorBoundary, useMonitorUser } from '@condev-monitor/nextjs'
+
+// 同步认证状态到监控 SDK
+useMonitorUser(currentUser ?? null)
+
+// 在组件树边界捕获错误
+<CondevErrorBoundary fallback={<ErrorPage />}>
+    <App />
+</CondevErrorBoundary>
+```
+
+### React 集成（非 Next.js 项目）
+
+```ts
+import { init } from '@condev-monitor/react'
+import { CondevErrorBoundary, useMonitorUser } from '@condev-monitor/react'
+
+init({ dsn: 'https://monitor.example.com/tracking/<appId>' })
+```
+
 ### 浏览器 SDK 快速开始
 
 ```ts
@@ -541,7 +597,9 @@ captureException(new Error('manual error'))
 
 ### 服务端 AI 语义监控
 
-仓库里还提供了 `@condev-monitor/monitor-sdk-ai`，`examples/aisdk-rag-chatbox/src/instrumentation.ts` 已经给了实际用法：
+仓库提供了 `@condev-monitor/monitor-sdk-ai`。Next.js 项目推荐通过 `@condev-monitor/nextjs/server` 接入（见上方 [Next.js 快速开始](#nextjs-快速开始)）。
+
+非 Next.js 的 Node.js 环境，可手动配置 OTel span processor：
 
 ```ts
 import { BasicTracerProvider } from '@opentelemetry/sdk-trace-base'
@@ -549,14 +607,13 @@ import { trace } from '@opentelemetry/api'
 import { initAIMonitor, VercelAIAdapter } from '@condev-monitor/monitor-sdk-ai'
 
 const processor = initAIMonitor({
-    dsn: process.env.NEXT_PUBLIC_CONDEV_DSN!,
+    dsn: process.env.CONDEV_DSN!,
     adapter: new VercelAIAdapter(),
     debug: true,
 })
 
 trace.setGlobalTracerProvider(
     new BasicTracerProvider({
-        // 为简洁起见，这里省略了类型断言细节
         spanProcessors: [processor as any],
     })
 )
@@ -668,6 +725,8 @@ POST /api/sourcemap/upload
 - `@condev-monitor/monitor-sdk-browser-utils`
 - `@condev-monitor/monitor-sdk-browser`
 - `@condev-monitor/monitor-sdk-ai`
+- `@condev-monitor/react`
+- `@condev-monitor/nextjs`
 
 建议流程：
 

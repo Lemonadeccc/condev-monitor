@@ -55,8 +55,9 @@ Condev Monitor is a self-hosted frontend observability platform in a `pnpm` mono
 
 - Automatic error fingerprinting with embedding similarity (all-MiniLM-L6-v2)
 - TF-IDF + cosine similarity hybrid deduplication with configurable thresholds
-- Optional LLM-generated issue titles and summaries (OpenAI-compatible API)
-- Issue lifecycle management: open, resolved, ignored, merged
+- Optional LLM-generated issue titles (OpenAI-compatible API, scheduled daily)
+- LLM-assisted merge confirmation for similar orphan issues (scheduled hourly)
+- Issue lifecycle: open, resolved, ignored, merged (schema-level; worker writes open/merged, other states reserved for future UI)
 
 **Operational Features**
 
@@ -234,7 +235,9 @@ condev-monitor/
 │   ├── core/                       # Core monitoring primitives and capture helpers
 │   ├── browser/                    # Browser SDK
 │   ├── browser-utils/              # Metrics helpers / Web Vitals helpers
-│   └── ai/                         # AI semantic monitoring adapters
+│   ├── ai/                         # AI semantic monitoring adapters
+│   ├── react/                      # React integration (ErrorBoundary, useMonitorUser)
+│   └── nextjs/                     # Next.js integration (registerCondevClient/Server, RSC-safe re-exports)
 ├── examples/
 │   ├── vanilla/                    # Vite example with browser SDK and sourcemap scripts
 │   └── aisdk-rag-chatbox/          # Next.js example with browser + AI SDK tracing
@@ -490,6 +493,59 @@ The current code chooses mail mode like this:
 
 ## SDK Integration
 
+### Next.js Quick Start
+
+For Next.js projects, use `@condev-monitor/nextjs` which wraps both the browser SDK and AI monitoring behind a single ergonomic API.
+
+**`instrumentation-client.ts`** (runs before hydration, client-side):
+
+```ts
+import { registerCondevClient } from '@condev-monitor/nextjs/client'
+
+registerCondevClient({
+    // dsn defaults to process.env.NEXT_PUBLIC_CONDEV_DSN
+    replay: true,
+    aiStreaming: { urlPatterns: ['/api/chat'] },
+})
+```
+
+**`instrumentation.ts`** (runs in Node.js, server-side):
+
+```ts
+export async function register() {
+    if (process.env.NEXT_RUNTIME === 'nodejs') {
+        const { registerCondevServer } = await import('@condev-monitor/nextjs/server')
+        await registerCondevServer({ debug: true })
+        // dsn defaults to process.env.CONDEV_DSN ?? process.env.NEXT_PUBLIC_CONDEV_DSN
+    }
+}
+```
+
+`registerCondevServer` automatically handles OTel provider registration — it mutates an existing `NodeTracerProvider` if one is already set, and falls back to creating and registering a `BasicTracerProvider` when none is available.
+
+**React components** (available from the main entry):
+
+```ts
+import { CondevErrorBoundary, useMonitorUser } from '@condev-monitor/nextjs'
+
+// Sync auth state to monitoring
+useMonitorUser(currentUser ?? null)
+
+// Wrap a component tree for boundary-level error capture
+<CondevErrorBoundary fallback={<ErrorPage />}>
+    <App />
+</CondevErrorBoundary>
+```
+
+### React Integration (non-Next.js)
+
+```ts
+import { init } from '@condev-monitor/react'
+import { CondevErrorBoundary, useMonitorUser } from '@condev-monitor/react'
+
+init({ dsn: 'https://monitor.example.com/tracking/<appId>' })
+```
+
 ### Browser SDK Quick Start
 
 ```ts
@@ -541,7 +597,9 @@ captureException(new Error('manual error'))
 
 ### Server-Side AI Semantic Monitoring
 
-The repository also ships `@condev-monitor/monitor-sdk-ai`, used in `examples/aisdk-rag-chatbox/src/instrumentation.ts`:
+The repository ships `@condev-monitor/monitor-sdk-ai`. For Next.js projects the recommended entry point is `@condev-monitor/nextjs/server` (see [Next.js Quick Start](#nextjs-quick-start) above).
+
+For non-Next.js Node.js runtimes, wire the OTel span processor manually:
 
 ```ts
 import { BasicTracerProvider } from '@opentelemetry/sdk-trace-base'
@@ -549,20 +607,19 @@ import { trace } from '@opentelemetry/api'
 import { initAIMonitor, VercelAIAdapter } from '@condev-monitor/monitor-sdk-ai'
 
 const processor = initAIMonitor({
-    dsn: process.env.NEXT_PUBLIC_CONDEV_DSN!,
+    dsn: process.env.CONDEV_DSN!,
     adapter: new VercelAIAdapter(),
     debug: true,
 })
 
 trace.setGlobalTracerProvider(
     new BasicTracerProvider({
-        // cast omitted here for brevity
         spanProcessors: [processor as any],
     })
 )
 ```
 
-This sends semantic `ai_streaming` events that the DSN server later joins with browser-side network traces via `traceId`.
+This sends semantic `ai_streaming` events that the DSN server joins with browser-side network traces via `traceId`.
 
 ### Sourcemap Upload Workflow
 
@@ -668,6 +725,8 @@ The publishable packages live under `packages/`:
 - `@condev-monitor/monitor-sdk-browser-utils`
 - `@condev-monitor/monitor-sdk-browser`
 - `@condev-monitor/monitor-sdk-ai`
+- `@condev-monitor/react`
+- `@condev-monitor/nextjs`
 
 Suggested workflow:
 

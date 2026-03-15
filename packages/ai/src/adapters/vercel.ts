@@ -1,4 +1,4 @@
-import type { AIAdapter, AIReporter, PrivacyOptions } from './base'
+import type { AIAdapter, AIAdapterContext, AIReporter, OTelSpanProcessorLike, PrivacyOptions } from './base'
 
 interface SpanContext {
     traceId: string
@@ -27,7 +27,7 @@ export class VercelAIAdapter implements AIAdapter {
     readonly name = 'vercel-ai'
     private processor: VercelAISpanProcessor | null = null
 
-    install(ctx: { reporter: AIReporter; privacy: PrivacyOptions; traceIdHeader: string }): SpanProcessor {
+    install(ctx: AIAdapterContext): OTelSpanProcessorLike {
         this.processor = new VercelAISpanProcessor(ctx.reporter, ctx.privacy, ctx.traceIdHeader)
         return this.processor
     }

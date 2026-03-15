@@ -11,6 +11,25 @@ export interface PrivacyOptions {
 }
 
 /**
+ * Minimal OTel-compatible SpanProcessor interface.
+ * Allows condev adapters to be used as OTel span processors
+ * without requiring a direct dependency on @opentelemetry/sdk-trace-base.
+ */
+export interface OTelSpanProcessorLike {
+    onStart(span: unknown, parentContext: unknown): void
+    onEnding?(span: unknown): void
+    onEnd(span: unknown): void
+    forceFlush(): Promise<void>
+    shutdown(): Promise<void>
+}
+
+export interface AIAdapterContext {
+    reporter: AIReporter
+    privacy: PrivacyOptions
+    traceIdHeader: string
+}
+
+/**
  * Abstract adapter interface for AI SDK providers.
  *
  * Extension patterns (following Sentry conventions):
@@ -20,8 +39,8 @@ export interface PrivacyOptions {
  * - LangChain: Callback handler pattern
  * - Vercel AI: OTel SpanProcessor
  */
-export interface AIAdapter {
+export interface AIAdapter<P extends OTelSpanProcessorLike = OTelSpanProcessorLike> {
     readonly name: string
-    install(ctx: { reporter: AIReporter; privacy: PrivacyOptions; traceIdHeader: string }): unknown
+    install(ctx: AIAdapterContext): P
     shutdown?(): Promise<void>
 }

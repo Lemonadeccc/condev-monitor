@@ -2,7 +2,7 @@ import type { Metadata } from 'next'
 import './globals.css'
 import { ClerkProvider } from '@clerk/nextjs'
 import { Navigation } from '@/components/navigation'
-import { MonitorInit } from '@/components/monitor-init'
+import { CondevErrorBoundary } from '@condev-monitor/nextjs'
 
 export const metadata: Metadata = {
     title: 'RAG Chatbot',
@@ -19,8 +19,7 @@ export default function RootLayout({
             <html lang="en">
                 <body className="antialiased">
                     <Navigation />
-                    <MonitorInit />
-                    {children}
+                    <CondevErrorBoundary fallback={<div>Something went wrong.</div>}>{children}</CondevErrorBoundary>
                 </body>
             </html>
         </ClerkProvider>
