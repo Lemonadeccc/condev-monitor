@@ -51,10 +51,18 @@ Condev Monitor is a self-hosted frontend observability platform in a `pnpm` mono
 - Replay list and replay player
 - AI streaming trace dashboard with TTFB, TTLB, stalls, token usage, and model/provider info
 
+**AI-Powered Issue Grouping**
+
+- Automatic error fingerprinting with embedding similarity (all-MiniLM-L6-v2)
+- TF-IDF + cosine similarity hybrid deduplication with configurable thresholds
+- Optional LLM-generated issue titles and summaries (OpenAI-compatible API)
+- Issue lifecycle management: open, resolved, ignored, merged
+
 **Operational Features**
 
 - Aggregated error alert emails with a 5-minute per-app throttle
-- Self-hosted Docker Compose deployment with ClickHouse, Postgres, Caddy, both backends, and the frontend
+- Self-hosted Docker Compose deployment with ClickHouse, Postgres, Kafka, Caddy, three backends, and the frontend
+- Per-app rate limiting and inbound payload filtering on the DSN ingestion path
 - Optional frontend-only deployment via OpenNext + Cloudflare
 
 ---
@@ -69,6 +77,7 @@ graph LR
     ROOT --> SDK[packages/<br/>browser SDK + core + AI adapters]
     ROOT --> BE1[apps/backend/monitor<br/>NestJS + TypeORM + Postgres]
     ROOT --> BE2[apps/backend/dsn-server<br/>NestJS + ClickHouse + PG fallback]
+    ROOT --> BE3[apps/backend/event-worker<br/>NestJS + Kafka + ClickHouse]
     ROOT --> FE[apps/frontend/monitor<br/>Next.js dashboard]
     ROOT --> EX[examples/<br/>vanilla + ai-sdk chatbox]
     ROOT --> OPS[.devcontainer/<br/>Compose + Caddy + infra config]
@@ -91,6 +100,11 @@ graph TB
     subgraph Backend Services
         MON[Monitor API<br/>/api/*]
         DSN[DSN Server<br/>/dsn-api/* + /tracking/* + /replay/*]
+        WORKER[Event Worker<br/>Kafka consumer + ClickHouse writer]
+    end
+
+    subgraph Message Queue
+        KAFKA[Apache Kafka]
     end
 
     subgraph Data Stores
@@ -106,11 +120,14 @@ graph TB
     APP --> SDK
     SDK -->|POST tracking/replay| DSN
     AI -->|semantic ai_streaming events| DSN
+    DSN -->|publish events| KAFKA
+    KAFKA -->|consume batches| WORKER
+    WORKER -->|batch insert| CH
     FE -->|/api/* rewrite| MON
     FE -->|/dsn-api/* rewrite| DSN
     MON --> PG
     MON --> CH
-    DSN --> CH
+    DSN -->|query| CH
     DSN --> PG
     DSN --> MAIL
     CADDY --> FE
@@ -124,14 +141,21 @@ graph TB
 sequenceDiagram
     participant B as Browser SDK
     participant D as DSN Server
+    participant K as Kafka
+    participant W as Event Worker
     participant C as ClickHouse
     participant M as Monitor API
     participant P as Postgres
     participant U as Dashboard UI
 
     B->>D: POST /tracking/:appId
-    D->>C: insert base_monitor_storage rows
+    D->>D: rate limit + inbound filter
+    D->>K: publish to monitor.sdk.events.v1
     D-->>B: { ok: true }
+    K->>W: consume event batch
+    W->>W: fingerprint + embedding dedup
+    W->>C: batch insert into events table
+    Note over W,C: Legacy MV mirrors to base_monitor_storage
 
     B->>D: GET /app-config?appId=...
     D->>C: read app_settings
@@ -154,16 +178,24 @@ sequenceDiagram
 
 ### Architecture Notes from the Current Code
 
+- The default deploy ingest path is: SDK -> DSN Server -> Kafka -> Event Worker -> ClickHouse. Setting `INGEST_MODE=direct` in the DSN server bypasses Kafka and writes directly to ClickHouse (useful for local dev or fallback).
 - The dashboard never calls backend services directly from the browser by host/port; it uses Next.js rewrites:
     - `/api/*` -> `API_PROXY_TARGET` -> monitor backend
     - `/dsn-api/*` -> `DSN_API_PROXY_TARGET` -> dsn-server
 - Browser replay enablement is per application. The browser SDK calls `GET /app-config?appId=...` before turning replay on.
 - The monitor backend writes replay settings into ClickHouse `lemonade.app_settings`; the DSN server uses that as the fast path and falls back to the monitor API when needed.
+- The DSN server enforces per-app token-bucket rate limiting. When the limit is exceeded, it responds with `429` and `Retry-After` / `X-Rate-Limit-Reset` headers.
+- Inbound filtering on the DSN server rejects events based on payload size (`INBOUND_MAX_PAYLOAD_BYTES`), user-agent blacklist, and release blacklist.
 - The DSN ClickHouse schema creates:
-    - `lemonade.base_monitor_storage`
+    - `lemonade.base_monitor_storage` (legacy, kept for backward compatibility)
+    - `lemonade.events` (new primary table with ReplacingMergeTree)
+    - `lemonade.events_to_legacy_mv` (compatibility materialized view)
     - `lemonade.base_monitor_view`
     - `lemonade.app_settings`
-- Replay rows have a ClickHouse TTL of 30 days in the shipped schema. Other event retention is not capped by the default schema.
+    - `lemonade.issues` (semantic issue grouping)
+    - `lemonade.issue_embeddings` (embedding vectors for dedup)
+    - `lemonade.cron_locks` (distributed lock for scheduled tasks)
+- Non-replay events have a 90-day TTL. Replay rows have a 30-day TTL. The Event Worker performs embedding-based deduplication before writing, using configurable similarity thresholds.
 - The frontend auth flow stores the monitor backend JWT in an HTTP-only cookie named `session_token` through Next route handlers under `app/auth-session/*`.
 
 ---
@@ -177,8 +209,10 @@ sequenceDiagram
 | Dashboard       | Next.js 15, React 19, React Query, Tailwind CSS 4, Radix UI |
 | Monitor backend | NestJS 11, TypeORM, Passport JWT, Postgres                  |
 | DSN backend     | NestJS 11, ClickHouse, `pg` pool, Handlebars mail templates |
+| Event Worker    | NestJS 11, KafkaJS, ClickHouse, HuggingFace Transformers    |
 | Browser SDK     | TypeScript, `tsup`, `rrweb`, custom transport/offline queue |
 | AI tracing      | OpenTelemetry span processor adapter for Vercel AI SDK      |
+| Message queue   | Apache Kafka 3.9.2 (KRaft mode, no ZooKeeper)               |
 | Infra           | Docker, Docker Compose, Caddy, OpenNext Cloudflare optional |
 
 Note: the active runtime path for `apps/backend/monitor` is TypeORM. A Prisma schema exists in the repository, but it is not used by the current Nest bootstrap path.
@@ -192,7 +226,8 @@ condev-monitor/
 ├── apps/
 │   ├── backend/
 │   │   ├── monitor/                # Auth, users, apps, sourcemaps, replay toggle sync
-│   │   └── dsn-server/             # DSN ingestion, ClickHouse queries, alerts, replay fetch
+│   │   ├── dsn-server/             # DSN ingestion, ClickHouse queries, alerts, replay fetch
+│   │   └── event-worker/           # Kafka consumer, batch ClickHouse writer, issue dedup
 │   └── frontend/
 │       └── monitor/                # Next.js dashboard + rrweb player
 ├── packages/
@@ -204,12 +239,15 @@ condev-monitor/
 │   ├── vanilla/                    # Vite example with browser SDK and sourcemap scripts
 │   └── aisdk-rag-chatbox/          # Next.js example with browser + AI SDK tracing
 ├── .devcontainer/
-│   ├── docker-compose.yml          # Local infra only: ClickHouse + Postgres
+│   ├── docker-compose.yml          # Local infra: ClickHouse + Postgres + Kafka
 │   ├── docker-compose.deply.yml    # Full stack deploy file used by root scripts
 │   ├── caddy/                      # Reverse proxy config
 │   └── clickhouse/                 # ClickHouse init SQL and config overrides
 ├── scripts/
-│   └── init-clickhouse.sh          # Initializes ClickHouse schema inside the deploy compose
+│   ├── init-clickhouse.sh          # Initializes ClickHouse schema inside the deploy compose
+│   └── init-kafka-topics.sh        # Creates Kafka topics inside the deploy compose
+├── CONTRIBUTING.md
+├── DEPLOYMENT.md
 ├── README.md
 └── README.zh-CN.md
 ```
@@ -217,10 +255,10 @@ condev-monitor/
 ### Workspace Notes
 
 - `pnpm-workspace.yaml` includes `packages/*`, `apps/frontend/*`, `apps/backend/*`, and `examples/*`.
-- `pnpm start:dev` runs workspace `start:dev` scripts through Turbo. In this repository that means both backend services.
+- `pnpm start:dev` runs workspace `start:dev` scripts through Turbo. In this repository that means both backend services and the event worker.
 - `pnpm start:fro` starts the dashboard only.
 - The frontend package name is `@condev-monitor/monitor-client`.
-- The backend package names are `monitor` and `dsn-server`.
+- The backend package names are `monitor`, `dsn-server`, and `event-worker`.
 
 ---
 
@@ -255,16 +293,17 @@ cp .devcontainer/.env.example .devcontainer/.env
 
 ```bash
 pnpm docker:start
-pnpm docker:init-clickhouse
 ```
 
-This starts:
+This single command starts and initializes:
 
 - Postgres from `.devcontainer/docker-compose.yml`
-- ClickHouse from `.devcontainer/docker-compose.yml`
-- the ClickHouse schema from `.devcontainer/clickhouse/init/001_condev_monitor_schema.sql`
+- ClickHouse from `.devcontainer/docker-compose.yml` + schema from `.devcontainer/clickhouse/init/`
+- Kafka from `.devcontainer/docker-compose.yml` + topic creation via `scripts/init-kafka-topics.sh`
 
-### 4. Start both backend services in watch mode
+Note: `pnpm docker:start` already runs both `docker:init-kafka` and `docker:init-clickhouse` automatically. You only need to run those scripts individually for recovery or idempotent re-initialization.
+
+### 4. Start all backend services in watch mode
 
 ```bash
 pnpm start:dev
@@ -274,6 +313,7 @@ This launches:
 
 - `apps/backend/monitor` on `http://localhost:8081/api/*`
 - `apps/backend/dsn-server` on `http://localhost:8082/dsn-api/*`
+- `apps/backend/event-worker` (Kafka consumer, writes to ClickHouse)
 
 ### 5. Start the dashboard
 
@@ -298,14 +338,15 @@ pnpm start:fro
 
 ### Local URLs
 
-| Service         | URL                                     |
-| --------------- | --------------------------------------- |
-| Dashboard       | `http://localhost:3000`                 |
-| Monitor API     | `http://localhost:8081/api`             |
-| DSN Server      | `http://localhost:8082/dsn-api`         |
-| DSN health      | `http://localhost:8082/dsn-api/healthz` |
-| ClickHouse HTTP | `http://localhost:8123`                 |
-| Postgres        | `localhost:5432`                        |
+| Service          | URL                                     |
+| ---------------- | --------------------------------------- |
+| Dashboard        | `http://localhost:3000`                 |
+| Monitor API      | `http://localhost:8081/api`             |
+| DSN Server       | `http://localhost:8082/dsn-api`         |
+| DSN health       | `http://localhost:8082/dsn-api/healthz` |
+| ClickHouse HTTP  | `http://localhost:8123`                 |
+| Postgres         | `localhost:5432`                        |
+| Kafka (external) | `localhost:9094`                        |
 
 ### Running example apps
 
@@ -368,6 +409,19 @@ Important note: `apps/backend/monitor/src/main.ts` currently binds the monitor A
 | `RESEND_API_KEY`, `RESEND_FROM`                                   | Resend mode for alert emails                                                                                |
 | `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                           | SMTP mode for alert emails                                                                                  |
 | `EMAIL_PASS`, `EMAIL_PASSWORD`                                    | Legacy aliases that are also accepted by the DSN email module                                               |
+| `INGEST_MODE`                                                     | `kafka` (default in deploy) or `direct` (writes straight to ClickHouse)                                     |
+| `KAFKA_ENABLED`                                                   | Master switch for Kafka producer. Set to `true` when `INGEST_MODE=kafka`                                    |
+| `KAFKA_BROKERS`                                                   | Comma-separated Kafka broker addresses                                                                      |
+| `KAFKA_CLIENT_ID`                                                 | Kafka producer client identifier                                                                            |
+| `KAFKA_EVENTS_TOPIC`                                              | Topic for SDK events. Default: `monitor.sdk.events.v1`                                                      |
+| `KAFKA_REPLAYS_TOPIC`                                             | Topic for replay uploads. Default: `monitor.sdk.replays.v1`                                                 |
+| `KAFKA_FALLBACK_TO_CLICKHOUSE`                                    | When `true`, falls back to direct ClickHouse write if Kafka publish fails                                   |
+| `INBOUND_MAX_PAYLOAD_BYTES`                                       | Maximum accepted payload size per request (pre-deserialization)                                             |
+| `INBOUND_UA_BLACKLIST`                                            | Comma-separated user-agent substrings to reject                                                             |
+| `INBOUND_RELEASE_BLACKLIST`                                       | Comma-separated release identifiers to reject                                                               |
+| `RATE_LIMIT_EVENTS_PER_SEC`                                       | Per-app token bucket refill rate (events/second)                                                            |
+| `RATE_LIMIT_BURST`                                                | Per-app token bucket burst capacity                                                                         |
+| `RATE_LIMIT_MAX_APPS`                                             | Maximum number of tracked apps for rate limiting                                                            |
 
 ### Frontend / Rewrite Env
 
@@ -379,6 +433,32 @@ The dashboard does not ship its own `.env.example` in this repository. The main 
 | `DSN_API_PROXY_TARGET`    | Target origin for `/dsn-api/*` rewrites. Defaults to `http://localhost:8082` |
 | `NEXT_TELEMETRY_DISABLED` | Recommended for container or CI builds                                       |
 
+### Event Worker (`apps/backend/event-worker/.env`)
+
+| Variable                         | Purpose                                                                    |
+| -------------------------------- | -------------------------------------------------------------------------- |
+| `CLICKHOUSE_URL`                 | ClickHouse HTTP endpoint for batch inserts                                 |
+| `CLICKHOUSE_USERNAME`            | ClickHouse auth username                                                   |
+| `CLICKHOUSE_PASSWORD`            | ClickHouse auth password                                                   |
+| `KAFKA_BROKERS`                  | Comma-separated Kafka broker addresses                                     |
+| `KAFKA_CLIENT_ID`                | Kafka consumer client identifier                                           |
+| `KAFKA_CONSUMER_GROUP`           | Consumer group ID. Default: `monitor-clickhouse-writer-v1`                 |
+| `KAFKA_EVENTS_TOPIC`             | Events topic to consume. Default: `monitor.sdk.events.v1`                  |
+| `KAFKA_REPLAYS_TOPIC`            | Replays topic to consume. Default: `monitor.sdk.replays.v1`                |
+| `KAFKA_DLQ_TOPIC`                | Dead letter queue topic. Default: `monitor.sdk.dlq.v1`                     |
+| `EVENT_BATCH_SIZE`               | Maximum events per ClickHouse batch insert                                 |
+| `EVENT_BATCH_MAX_WAIT_MS`        | Maximum wait time before flushing an incomplete batch                      |
+| `EMBEDDING_MODEL_ID`             | HuggingFace model for issue embeddings. Default: `Xenova/all-MiniLM-L6-v2` |
+| `ISSUE_EMBEDDING_HIGH_THRESHOLD` | Cosine similarity above this merges issues automatically. Default: `0.92`  |
+| `ISSUE_EMBEDDING_LOW_THRESHOLD`  | Cosine similarity above this triggers TF-IDF confirmation. Default: `0.85` |
+| `ISSUE_TFIDF_THRESHOLD`          | TF-IDF similarity threshold for confirming a match. Default: `0.80`        |
+| `LLM_PROVIDER`                   | LLM provider type. Default: `openai-compatible`                            |
+| `LLM_BASE_URL`                   | LLM API base URL                                                           |
+| `LLM_API_KEY`                    | LLM API key                                                                |
+| `LLM_MODEL`                      | LLM model identifier. Default: `gpt-4o-mini`                               |
+| `LLM_MAX_TOKENS`                 | Maximum tokens for LLM response. Default: `1024`                           |
+| `LLM_TEMPERATURE`                | LLM sampling temperature. Default: `0.1`                                   |
+
 ### Compose / Infrastructure Env (`.devcontainer/.env`)
 
 | Variable                                                                                                                        | Purpose                                                                   |
@@ -387,9 +467,15 @@ The dashboard does not ship its own `.env.example` in this repository. The main 
 | `CLICKHOUSE_HTTP_PORT`, `CLICKHOUSE_NATIVE_PORT`                                                                                | Host ports for ClickHouse                                                 |
 | `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB`                                                                   | ClickHouse bootstrap credentials and database name                        |
 | `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                                                                                                 | ClickHouse HTTP write limit                                               |
+| `KAFKA_EXTERNAL_PORT`                                                                                                           | Host port for Kafka external listener. Default: `9094`                    |
+| `KAFKA_BROKERS`                                                                                                                 | Broker addresses for DSN server and event worker                          |
+| `KAFKA_CONSUMER_GROUP`                                                                                                          | Consumer group for event worker. Default: `monitor-clickhouse-writer-v1`  |
+| `INGEST_MODE`                                                                                                                   | `kafka` or `direct`. Controls DSN server ingest pipeline                  |
 | `CADDY_HTTP_HOST_PORT`, `CADDY_HTTP_CONTAINER_PORT`, `CADDY_HTTPS_HOST_PORT`                                                    | Public port mapping for Caddy                                             |
 | `CADDY_DSN_MAX_BODY_SIZE`                                                                                                       | Reverse-proxy body limit for `/dsn-api/*`, `/tracking/*`, and `/replay/*` |
 | `MAIL_ON`, `AUTH_REQUIRE_EMAIL_VERIFICATION`, `FRONTEND_URL`, `DSN_BODY_LIMIT`, `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS` | Shared deployment-time app settings passed into the containers            |
+| `EMBEDDING_MODEL_ID`, `ISSUE_EMBEDDING_HIGH_THRESHOLD`, `ISSUE_EMBEDDING_LOW_THRESHOLD`, `ISSUE_TFIDF_THRESHOLD`                | Event worker issue dedup tuning                                           |
+| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_MAX_TOKENS`, `LLM_TEMPERATURE`                                 | Event worker LLM integration                                              |
 
 ### Mail Provider Selection Logic
 
@@ -567,8 +653,10 @@ Authentication is accepted through either:
 
 ## Additional Docs
 
-- Deployment guide: [DEPLOYMENT.md](./DEPLOYMENT.md) | [中文](./DEPLOYMENT.zh-CN.md)
-- Contribution and PR workflow: [CONTRIBUTING.md](./CONTRIBUTING.md) | [中文](./CONTRIBUTING.zh-CN.md)
+| Document                                                                | Description                                                                               |
+| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| [DEPLOYMENT.md](./DEPLOYMENT.md) \| [中文](./DEPLOYMENT.zh-CN.md)       | Full stack deployment, Caddy routing, Cloudflare frontend, volumes, and operational notes |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) \| [中文](./CONTRIBUTING.zh-CN.md) | Local setup, quality checks, commit conventions, and PR checklist                         |
 
 ---
 

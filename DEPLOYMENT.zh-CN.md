@@ -12,7 +12,9 @@
 - [准备环境变量](#准备环境变量)
 - [整栈部署](#整栈部署)
 - [Caddy 路由规则](#caddy-路由规则)
+- [Kafka Topics](#kafka-topics)
 - [数据卷与运行时数据](#数据卷与运行时数据)
+- [摄取管道](#摄取管道)
 - [运维注意事项](#运维注意事项)
 - [Cloudflare 前端部署](#cloudflare-前端部署)
 
@@ -22,7 +24,7 @@
 
 | 模式                  | 启动内容                                        | 文件                                                                                |
 | --------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------- |
-| 本地基础设施          | ClickHouse + Postgres                           | `.devcontainer/docker-compose.yml`                                                  |
+| 本地基础设施          | ClickHouse + Postgres + Kafka                   | `.devcontainer/docker-compose.yml`、`scripts/init-kafka-topics.sh`                  |
 | 自托管整栈            | Caddy + 前端 + 两个后端 + ClickHouse + Postgres | `.devcontainer/docker-compose.deply.yml`                                            |
 | 前端单独上 Cloudflare | 仅 Next.js 控制台                               | `apps/frontend/monitor/open-next.config.ts`、`apps/frontend/monitor/wrangler.jsonc` |
 
@@ -39,7 +41,9 @@ graph LR
     CADDY --> DSN[DSN Server :8082]
     MON --> PG[(Postgres)]
     MON --> CH[(ClickHouse)]
-    DSN --> CH
+    DSN --> KAFKA[Apache Kafka]
+    KAFKA --> WORKER[Event Worker]
+    WORKER --> CH
     DSN --> PG
     DSN --> MAIL[SMTP / Resend]
 ```
@@ -48,8 +52,11 @@ graph LR
 
 - `condev-monitor-clickhouse`
 - `condev-monitor-postgres`
+- `condev-monitor-kafka`
+- `condev-monitor-kafka-init`
 - `condev-monitor-server`
 - `condev-dsn-server`
+- `condev-monitor-event-worker`
 - `condev-monitor-web`
 - `condev-monitor-caddy`
 
@@ -76,19 +83,24 @@ cp .devcontainer/.env.example .devcontainer/.env
 
 ### 一定要检查的变量
 
-| 变量                                                          | 为什么重要                          |
-| ------------------------------------------------------------- | ----------------------------------- |
-| `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                   | Postgres 初始化和后端连接都依赖它   |
-| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB` | ClickHouse 初始化和后端连接都依赖它 |
-| `FRONTEND_URL`                                                | 邮件里的链接和前端公网地址          |
-| `MAIL_ON`                                                     | 控制是否真的发邮件                  |
-| `RESEND_API_KEY`, `RESEND_FROM`                               | Resend 邮件模式                     |
-| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                       | SMTP 邮件模式                       |
-| `AUTH_REQUIRE_EMAIL_VERIFICATION`                             | 控制登录前是否必须验证邮箱          |
-| `DSN_BODY_LIMIT`                                              | dsn-server 请求体上限               |
-| `CADDY_DSN_MAX_BODY_SIZE`                                     | 反向代理层请求体上限                |
-| `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                               | ClickHouse 写入上限                 |
-| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`               | sourcemap 解析缓存控制              |
+| 变量                                                          | 为什么重要                               |
+| ------------------------------------------------------------- | ---------------------------------------- |
+| `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                   | Postgres 初始化和后端连接都依赖它        |
+| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB` | ClickHouse 初始化和后端连接都依赖它      |
+| `FRONTEND_URL`                                                | 邮件里的链接和前端公网地址               |
+| `MAIL_ON`                                                     | 控制是否真的发邮件                       |
+| `RESEND_API_KEY`, `RESEND_FROM`                               | Resend 邮件模式                          |
+| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                       | SMTP 邮件模式                            |
+| `AUTH_REQUIRE_EMAIL_VERIFICATION`                             | 控制登录前是否必须验证邮箱               |
+| `DSN_BODY_LIMIT`                                              | dsn-server 请求体上限                    |
+| `CADDY_DSN_MAX_BODY_SIZE`                                     | 反向代理层请求体上限                     |
+| `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                               | ClickHouse 写入上限                      |
+| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`               | sourcemap 解析缓存控制                   |
+| `INGEST_MODE`                                                 | `kafka` 或 `direct`，控制 DSN 写入管道   |
+| `KAFKA_BROKERS`                                               | DSN 和 event worker 的 Kafka broker 地址 |
+| `KAFKA_CONSUMER_GROUP`                                        | event worker 的消费者组                  |
+| `EMBEDDING_MODEL_ID`                                          | Issue 嵌入向量使用的 HuggingFace 模型    |
+| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`    | Issue 分析 LLM 集成                      |
 
 ### compose 暴露的宿主机端口
 
@@ -99,6 +111,7 @@ cp .devcontainer/.env.example .devcontainer/.env
 | `POSTGRES_PORT`          | `5432` |
 | `CLICKHOUSE_HTTP_PORT`   | `8123` |
 | `CLICKHOUSE_NATIVE_PORT` | `9000` |
+| `KAFKA_EXTERNAL_PORT`    | `9094` |
 
 ### Caddy 域名
 
@@ -126,6 +139,7 @@ pnpm docker:deploy
 
 1. 执行 `docker compose -p condev-monitor -f .devcontainer/docker-compose.deply.yml up -d --build`
 2. 执行 `pnpm docker:init-clickhouse`
+3. 执行 `pnpm docker:init-kafka`
 
 注意：仓库里的文件名就是 `docker-compose.deply.yml`，虽然看起来像拼写错误，但根脚本已经按这个名字写死了。
 
@@ -152,11 +166,10 @@ pnpm docker:deploy:stop
 
 ```bash
 pnpm docker:start
-pnpm docker:init-clickhouse
 pnpm docker:stop
 ```
 
-这条链路会使用 `.devcontainer/docker-compose.yml`，只启动 ClickHouse 和 Postgres。
+`pnpm docker:start` 使用 `.devcontainer/docker-compose.yml`，启动 ClickHouse + Postgres + Kafka 并自动执行初始化脚本。
 
 ---
 
@@ -176,6 +189,18 @@ pnpm docker:stop
 
 ---
 
+## Kafka Topics
+
+`scripts/init-kafka-topics.sh` 脚本会创建以下 topic（幂等操作）：
+
+| Topic                    | 分区数 | 保留时间 | 用途                                        |
+| ------------------------ | ------ | -------- | ------------------------------------------- |
+| `monitor.sdk.events.v1`  | 6      | 3 天     | DSN server 向 event worker 发送 SDK 事件    |
+| `monitor.sdk.replays.v1` | 3      | 1 天     | DSN server 向 event worker 发送 Replay 上传 |
+| `monitor.sdk.dlq.v1`     | 1      | 7 天     | 处理失败的死信队列                          |
+
+---
+
 ## 数据卷与运行时数据
 
 整栈 compose 定义了这些 named volumes：
@@ -185,6 +210,7 @@ pnpm docker:stop
 - `sourcemap_data`
 - `caddy_data`
 - `caddy_config`
+- `kafka_data`
 
 它们分别保存：
 
@@ -192,13 +218,35 @@ pnpm docker:stop
 - `postgres_data` -> 用户、应用、sourcemap 元数据、sourcemap token
 - `sourcemap_data` -> sourcemap 文件本体，供两个后端共享
 - `caddy_data`、`caddy_config` -> Caddy 状态和 TLS 数据
+- `kafka_data` -> Kafka 日志数据
 
 默认 ClickHouse 初始化脚本还会：
 
 - 创建 `lemonade.base_monitor_storage`
 - 创建 `lemonade.base_monitor_view`
 - 创建 `lemonade.app_settings`
-- 对 `replay` 行设置 30 天 TTL
+- 创建 `lemonade.events`
+- 创建 `lemonade.events_to_legacy_mv`
+- 创建 `lemonade.issues`
+- 创建 `lemonade.issue_embeddings`
+- 创建 `lemonade.cron_locks`
+- 非 replay 事件有 90 天 TTL；replay 行有 30 天 TTL
+
+---
+
+## 摄取管道
+
+默认部署模式使用 Kafka 作为摄取缓冲区：
+
+1. 浏览器 SDK 向 DSN server 发送事件
+2. DSN server 执行限流和入站过滤
+3. DSN server 将校验通过的事件发布到 Kafka topic
+4. Event Worker 从 Kafka 批量消费
+5. Event Worker 执行指纹计算和基于嵌入向量的 Issue 去重
+6. Event Worker 批量写入 ClickHouse `events` 表
+7. 物化视图（`events_to_legacy_mv`）将写入镜像到 `base_monitor_storage` 以保持向后兼容
+
+在 DSN server 设置 `INGEST_MODE=direct` 可跳过 Kafka 直接写入 ClickHouse。适用于本地开发或 Kafka 不可用时的回退（`KAFKA_FALLBACK_TO_CLICKHOUSE=true`）。
 
 ---
 
@@ -208,6 +256,7 @@ pnpm docker:stop
 
 - `apps/backend/monitor` 当前固定监听 `8081`
 - `apps/backend/dsn-server` 监听 `PORT`，默认 `8082`
+- `apps/backend/event-worker` 无外部端口（仅 Kafka 消费者）
 - `apps/frontend/monitor` 监听 `3000`
 
 ### Replay 上传体积

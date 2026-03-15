@@ -12,7 +12,9 @@ This guide documents the deployment paths that are actually present in the repos
 - [Prepare Environment Variables](#prepare-environment-variables)
 - [Full Stack Deployment](#full-stack-deployment)
 - [Caddy Route Mapping](#caddy-route-mapping)
+- [Kafka Topics](#kafka-topics)
 - [Runtime Volumes and Data](#runtime-volumes-and-data)
+- [Ingest Pipeline](#ingest-pipeline)
 - [Operational Notes](#operational-notes)
 - [Cloudflare Frontend Deployment](#cloudflare-frontend-deployment)
 
@@ -20,11 +22,11 @@ This guide documents the deployment paths that are actually present in the repos
 
 ## Deployment Modes
 
-| Mode                     | What it runs                                             | Files                                                                               |
-| ------------------------ | -------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| Local infra only         | ClickHouse + Postgres                                    | `.devcontainer/docker-compose.yml`                                                  |
-| Full self-hosted stack   | Caddy + frontend + both backends + ClickHouse + Postgres | `.devcontainer/docker-compose.deply.yml`                                            |
-| Frontend-only Cloudflare | Next.js dashboard only                                   | `apps/frontend/monitor/open-next.config.ts`, `apps/frontend/monitor/wrangler.jsonc` |
+| Mode                     | What it runs                                                                   | Files                                                                               |
+| ------------------------ | ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| Local infra only         | ClickHouse + Postgres + Kafka                                                  | `.devcontainer/docker-compose.yml`, `scripts/init-kafka-topics.sh`                  |
+| Full self-hosted stack   | Caddy + frontend + all backends + event worker + ClickHouse + Postgres + Kafka | `.devcontainer/docker-compose.deply.yml`                                            |
+| Frontend-only Cloudflare | Next.js dashboard only                                                         | `apps/frontend/monitor/open-next.config.ts`, `apps/frontend/monitor/wrangler.jsonc` |
 
 ---
 
@@ -39,17 +41,23 @@ graph LR
     CADDY --> DSN[DSN Server :8082]
     MON --> PG[(Postgres)]
     MON --> CH[(ClickHouse)]
-    DSN --> CH
+    DSN --> KAFKA[Apache Kafka]
     DSN --> PG
+    DSN --> CH
     DSN --> MAIL[SMTP / Resend]
+    KAFKA --> WORKER[Event Worker]
+    WORKER --> CH
 ```
 
 The full stack starts these services:
 
 - `condev-monitor-clickhouse`
 - `condev-monitor-postgres`
+- `condev-monitor-kafka`
+- `condev-monitor-kafka-init`
 - `condev-monitor-server`
 - `condev-dsn-server`
+- `condev-monitor-event-worker`
 - `condev-monitor-web`
 - `condev-monitor-caddy`
 
@@ -76,19 +84,24 @@ The deployment compose injects variables from `.devcontainer/.env` into ClickHou
 
 ### Variables You Should Always Review
 
-| Variable                                                      | Why it matters                                 |
-| ------------------------------------------------------------- | ---------------------------------------------- |
-| `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                   | Postgres bootstrap and backend connection      |
-| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB` | ClickHouse bootstrap and backend connection    |
-| `FRONTEND_URL`                                                | Email links and frontend base URL              |
-| `MAIL_ON`                                                     | Enables or disables actual email flow          |
-| `RESEND_API_KEY`, `RESEND_FROM`                               | Resend mail mode                               |
-| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                       | SMTP mail mode                                 |
-| `AUTH_REQUIRE_EMAIL_VERIFICATION`                             | Controls whether login requires verified email |
-| `DSN_BODY_LIMIT`                                              | dsn-server request size limit                  |
-| `CADDY_DSN_MAX_BODY_SIZE`                                     | reverse-proxy request size limit               |
-| `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                               | ClickHouse write limit                         |
-| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`               | sourcemap resolution cache controls            |
+| Variable                                                      | Why it matters                                    |
+| ------------------------------------------------------------- | ------------------------------------------------- |
+| `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                   | Postgres bootstrap and backend connection         |
+| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB` | ClickHouse bootstrap and backend connection       |
+| `FRONTEND_URL`                                                | Email links and frontend base URL                 |
+| `MAIL_ON`                                                     | Enables or disables actual email flow             |
+| `RESEND_API_KEY`, `RESEND_FROM`                               | Resend mail mode                                  |
+| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                       | SMTP mail mode                                    |
+| `AUTH_REQUIRE_EMAIL_VERIFICATION`                             | Controls whether login requires verified email    |
+| `DSN_BODY_LIMIT`                                              | dsn-server request size limit                     |
+| `CADDY_DSN_MAX_BODY_SIZE`                                     | reverse-proxy request size limit                  |
+| `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                               | ClickHouse write limit                            |
+| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`               | sourcemap resolution cache controls               |
+| `INGEST_MODE`                                                 | `kafka` or `direct`, controls DSN ingest pipeline |
+| `KAFKA_BROKERS`                                               | Broker addresses for DSN and event worker         |
+| `KAFKA_CONSUMER_GROUP`                                        | Consumer group for event worker                   |
+| `EMBEDDING_MODEL_ID`                                          | HuggingFace model for issue embeddings            |
+| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`    | LLM integration for issue analysis                |
 
 ### Ports Exposed by the Compose
 
@@ -99,6 +112,7 @@ The deployment compose injects variables from `.devcontainer/.env` into ClickHou
 | `POSTGRES_PORT`          | `5432`  |
 | `CLICKHOUSE_HTTP_PORT`   | `8123`  |
 | `CLICKHOUSE_NATIVE_PORT` | `9000`  |
+| `KAFKA_EXTERNAL_PORT`    | `9094`  |
 
 ### Caddy Domain
 
@@ -126,6 +140,7 @@ This command:
 
 1. runs `docker compose -p condev-monitor -f .devcontainer/docker-compose.deply.yml up -d --build`
 2. runs `pnpm docker:init-clickhouse`
+3. runs `pnpm docker:init-kafka`
 
 Important note: the file name in the repository is literally `docker-compose.deply.yml`. The root script already uses that exact path.
 
@@ -148,15 +163,14 @@ After the containers are up, verify:
 
 ### 4. Local infra only
 
-If you only want databases locally:
+If you only want databases and Kafka locally:
 
 ```bash
 pnpm docker:start
-pnpm docker:init-clickhouse
 pnpm docker:stop
 ```
 
-That uses `.devcontainer/docker-compose.yml`, which only starts ClickHouse and Postgres.
+`pnpm docker:start` starts ClickHouse, Postgres, and Kafka, then runs init scripts for both ClickHouse and Kafka topics. `pnpm docker:stop` stops all three. This uses `.devcontainer/docker-compose.yml`.
 
 ---
 
@@ -176,6 +190,18 @@ Both `/dsn-api/*` and the direct ingestion routes enforce `CADDY_DSN_MAX_BODY_SI
 
 ---
 
+## Kafka Topics
+
+The `scripts/init-kafka-topics.sh` script creates these topics (idempotent):
+
+| Topic                    | Partitions | Retention | Purpose                                        |
+| ------------------------ | ---------- | --------- | ---------------------------------------------- |
+| `monitor.sdk.events.v1`  | 6          | 3 days    | SDK events from DSN server to event worker     |
+| `monitor.sdk.replays.v1` | 3          | 1 day     | Replay uploads from DSN server to event worker |
+| `monitor.sdk.dlq.v1`     | 1          | 7 days    | Dead letter queue for failed processing        |
+
+---
+
 ## Runtime Volumes and Data
 
 The full stack compose defines these named volumes:
@@ -183,6 +209,7 @@ The full stack compose defines these named volumes:
 - `clickhouse_data`
 - `postgres_data`
 - `sourcemap_data`
+- `kafka_data`
 - `caddy_data`
 - `caddy_config`
 
@@ -191,6 +218,7 @@ What they store:
 - `clickhouse_data` -> ClickHouse event data
 - `postgres_data` -> users, applications, sourcemap metadata, sourcemap tokens
 - `sourcemap_data` -> actual sourcemap files shared by monitor backend and dsn-server
+- `kafka_data` -> Kafka broker data and topic partitions
 - `caddy_data`, `caddy_config` -> Caddy state and TLS data
 
 The shipped ClickHouse schema also:
@@ -198,7 +226,29 @@ The shipped ClickHouse schema also:
 - creates `lemonade.base_monitor_storage`
 - creates `lemonade.base_monitor_view`
 - creates `lemonade.app_settings`
-- applies a 30-day TTL to `replay` rows
+- creates `lemonade.events`
+- creates `lemonade.events_to_legacy_mv`
+- creates `lemonade.issues`
+- creates `lemonade.issue_embeddings`
+- creates `lemonade.cron_locks`
+- non-replay events have a 90-day TTL
+- replay rows have a 30-day TTL
+
+---
+
+## Ingest Pipeline
+
+The default deploy mode uses Kafka as the ingest buffer:
+
+1. Browser SDK posts events to DSN server
+2. DSN server applies rate limiting and inbound filtering
+3. DSN server publishes validated events to Kafka topics
+4. Event Worker consumes batches from Kafka
+5. Event Worker performs fingerprinting and embedding-based issue dedup
+6. Event Worker batch-inserts into ClickHouse `events` table
+7. A materialized view (`events_to_legacy_mv`) mirrors writes to `base_monitor_storage` for backward compatibility
+
+Setting `INGEST_MODE=direct` in the DSN server bypasses Kafka and writes directly to ClickHouse. This is useful for local development or as a fallback when Kafka is unavailable (`KAFKA_FALLBACK_TO_CLICKHOUSE=true`).
 
 ---
 
@@ -209,6 +259,7 @@ The shipped ClickHouse schema also:
 - `apps/backend/monitor` currently listens on fixed port `8081`
 - `apps/backend/dsn-server` listens on `PORT`, default `8082`
 - `apps/frontend/monitor` listens on `3000`
+- `apps/backend/event-worker` listens internally (no exposed port, Kafka consumer only)
 
 ### Replay upload size
 

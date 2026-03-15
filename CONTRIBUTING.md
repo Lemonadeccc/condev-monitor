@@ -44,20 +44,19 @@ If your work touches deployment compose or infra behavior, also prepare:
 cp .devcontainer/.env.example .devcontainer/.env
 ```
 
-### 3. Start local databases
+### 3. Start local infrastructure
 
 ```bash
 pnpm docker:start
-pnpm docker:init-clickhouse
 ```
 
-This starts local ClickHouse and Postgres only.
+This starts local ClickHouse, Postgres, and Kafka, then initializes the ClickHouse schema and Kafka topics automatically.
 
 ---
 
 ## Running the Repository
 
-### Start both backends
+### Start all backends
 
 ```bash
 pnpm start:dev
@@ -67,6 +66,7 @@ This runs workspace `start:dev` scripts through Turbo and starts:
 
 - `apps/backend/monitor`
 - `apps/backend/dsn-server`
+- `apps/backend/event-worker`
 
 ### Start the dashboard
 
@@ -87,6 +87,7 @@ pnpm start:fro
 ```bash
 pnpm --filter monitor start:dev
 pnpm --filter dsn-server start:dev
+pnpm --filter event-worker start:dev
 pnpm --filter @condev-monitor/monitor-client dev
 pnpm --filter vanilla dev
 pnpm --filter aisdk-rag-chatbox dev
@@ -126,6 +127,7 @@ pnpm --filter monitor test
 pnpm --filter monitor test:e2e
 pnpm --filter dsn-server test
 pnpm --filter dsn-server test:e2e
+pnpm --filter event-worker test
 ```
 
 ### Frontend validation
@@ -140,7 +142,7 @@ pnpm --filter @condev-monitor/monitor-client build
 
 At minimum, run the subset relevant to your change:
 
-- backend changes -> lint + affected backend tests
+- backend changes -> lint + affected backend tests (including event-worker if ingest/Kafka logic changed)
 - frontend changes -> lint + frontend build
 - SDK changes -> lint + package build + `examples/vanilla` manual verification when behavior changed
 - docs-only changes -> spellcheck the touched markdown if needed

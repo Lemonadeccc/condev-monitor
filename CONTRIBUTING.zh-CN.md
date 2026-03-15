@@ -44,20 +44,19 @@ cp apps/backend/dsn-server/.env.example apps/backend/dsn-server/.env
 cp .devcontainer/.env.example .devcontainer/.env
 ```
 
-### 3. 启动本地数据库
+### 3. 启动本地基础设施
 
 ```bash
 pnpm docker:start
-pnpm docker:init-clickhouse
 ```
 
-这一步只会启动本地 ClickHouse 和 Postgres。
+这一步会启动本地 ClickHouse、Postgres 和 Kafka，并自动初始化 ClickHouse schema 和 Kafka topics。
 
 ---
 
 ## 如何运行仓库
 
-### 启动两个后端
+### 启动所有后端
 
 ```bash
 pnpm start:dev
@@ -67,6 +66,7 @@ pnpm start:dev
 
 - `apps/backend/monitor`
 - `apps/backend/dsn-server`
+- `apps/backend/event-worker`
 
 ### 启动控制台
 
@@ -87,6 +87,7 @@ pnpm start:fro
 ```bash
 pnpm --filter monitor start:dev
 pnpm --filter dsn-server start:dev
+pnpm --filter event-worker start:dev
 pnpm --filter @condev-monitor/monitor-client dev
 pnpm --filter vanilla dev
 pnpm --filter aisdk-rag-chatbox dev
@@ -126,6 +127,7 @@ pnpm --filter monitor test
 pnpm --filter monitor test:e2e
 pnpm --filter dsn-server test
 pnpm --filter dsn-server test:e2e
+pnpm --filter event-worker test
 ```
 
 ### 前端校验
@@ -140,7 +142,7 @@ pnpm --filter @condev-monitor/monitor-client build
 
 按改动范围至少跑对应的子集：
 
-- 改后端 -> lint + 受影响后端测试
+- 改后端 -> lint + 受影响后端测试（如果涉及摄取/Kafka 逻辑，也要跑 event-worker 的测试）
 - 改前端 -> lint + 前端 build
 - 改 SDK -> lint + package build + `examples/vanilla` 手工验证
 - 纯文档 -> 至少确认 markdown 内容和拼写没有明显问题

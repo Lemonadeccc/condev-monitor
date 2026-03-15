@@ -51,10 +51,18 @@ Condev Monitor 是一个可自托管的前端监控平台，采用 `pnpm` monore
 - Replay 列表与播放页
 - AI Streaming 面板：TTFB、TTLB、stall、token 使用、model/provider 等
 
+**AI 驱动的 Issue 聚合**
+
+- 基于嵌入向量的自动错误指纹识别（all-MiniLM-L6-v2）
+- TF-IDF + 余弦相似度混合去重，阈值可配
+- 可选 LLM 生成 Issue 标题和摘要（兼容 OpenAI 接口）
+- Issue 生命周期管理：open、resolved、ignored、merged
+
 **运维能力**
 
 - 错误告警邮件聚合发送，单应用 5 分钟节流
-- 自托管 Docker Compose 部署：ClickHouse、Postgres、Caddy、两个后端和前端整套启动
+- 自托管 Docker Compose 部署：ClickHouse、Postgres、Kafka、Caddy、三个后端和前端整套启动
+- DSN 摄取路径支持每应用限流和入站过滤
 - 可选的 OpenNext + Cloudflare 前端单独部署
 
 ---
@@ -69,6 +77,7 @@ graph LR
     ROOT --> SDK[packages/<br/>browser SDK + core + AI adapters]
     ROOT --> BE1[apps/backend/monitor<br/>NestJS + TypeORM + Postgres]
     ROOT --> BE2[apps/backend/dsn-server<br/>NestJS + ClickHouse + PG fallback]
+    ROOT --> BE3[apps/backend/event-worker<br/>NestJS + Kafka + ClickHouse]
     ROOT --> FE[apps/frontend/monitor<br/>Next.js dashboard]
     ROOT --> EX[examples/<br/>vanilla + ai-sdk chatbox]
     ROOT --> OPS[.devcontainer/<br/>Compose + Caddy + infra config]
@@ -91,6 +100,11 @@ graph TB
     subgraph Backend Services
         MON[Monitor API<br/>/api/*]
         DSN[DSN Server<br/>/dsn-api/* + /tracking/* + /replay/*]
+        WORKER[Event Worker<br/>Kafka consumer + ClickHouse writer]
+    end
+
+    subgraph Message Queue
+        KAFKA[Apache Kafka]
     end
 
     subgraph Data Stores
@@ -106,11 +120,14 @@ graph TB
     APP --> SDK
     SDK -->|POST tracking/replay| DSN
     AI -->|semantic ai_streaming 事件| DSN
+    DSN -->|publish events| KAFKA
+    KAFKA -->|consume batches| WORKER
+    WORKER -->|batch insert| CH
     FE -->|/api/* rewrite| MON
     FE -->|/dsn-api/* rewrite| DSN
     MON --> PG
     MON --> CH
-    DSN --> CH
+    DSN -->|query| CH
     DSN --> PG
     DSN --> MAIL
     CADDY --> FE
@@ -124,14 +141,21 @@ graph TB
 sequenceDiagram
     participant B as Browser SDK
     participant D as DSN Server
+    participant K as Kafka
+    participant W as Event Worker
     participant C as ClickHouse
     participant M as Monitor API
     participant P as Postgres
     participant U as Dashboard UI
 
     B->>D: POST /tracking/:appId
-    D->>C: 插入 base_monitor_storage
+    D->>D: rate limit + inbound filter
+    D->>K: publish to monitor.sdk.events.v1
     D-->>B: { ok: true }
+    K->>W: consume event batch
+    W->>W: fingerprint + embedding dedup
+    W->>C: batch insert into events table
+    Note over W,C: Legacy MV mirrors to base_monitor_storage
 
     B->>D: GET /app-config?appId=...
     D->>C: 读取 app_settings
@@ -154,16 +178,24 @@ sequenceDiagram
 
 ### 从代码确认出的架构细节
 
+- 默认部署摄取路径：SDK -> DSN Server -> Kafka -> Event Worker -> ClickHouse。在 DSN server 设置 `INGEST_MODE=direct` 可跳过 Kafka 直接写入 ClickHouse（适用于本地开发或兜底场景）。
 - 控制台不会直接把浏览器请求打到后端宿主机端口，而是通过 Next.js rewrites：
     - `/api/*` -> `API_PROXY_TARGET` -> monitor backend
     - `/dsn-api/*` -> `DSN_API_PROXY_TARGET` -> dsn-server
 - 浏览器 Replay 是否开启是按应用控制的。SDK 会先调用 `GET /app-config?appId=...` 再决定是否录制回放。
 - Monitor backend 会把 Replay 开关同步到 ClickHouse 的 `lemonade.app_settings`；DSN server 先查 ClickHouse，查不到再回源 monitor API。
-- 默认 ClickHouse 初始化脚本会创建：
-    - `lemonade.base_monitor_storage`
+- DSN server 对每个应用实施令牌桶限流。超限后返回 `429` 和 `Retry-After` / `X-Rate-Limit-Reset` 响应头。
+- DSN server 的入站过滤会根据 payload 大小（`INBOUND_MAX_PAYLOAD_BYTES`）、user-agent 黑名单和 release 黑名单拒绝事件。
+- DSN ClickHouse schema 会创建：
+    - `lemonade.base_monitor_storage`（旧主表，保留兼容）
+    - `lemonade.events`（新主表，ReplacingMergeTree）
+    - `lemonade.events_to_legacy_mv`（兼容物化视图）
     - `lemonade.base_monitor_view`
     - `lemonade.app_settings`
-- 默认 schema 只对 `replay` 事件配置了 30 天 TTL；其他事件当前没有默认保留期上限。
+    - `lemonade.issues`（语义 Issue 分组）
+    - `lemonade.issue_embeddings`（去重用嵌入向量）
+    - `lemonade.cron_locks`（定时任务分布式锁）
+- 非 Replay 事件默认 90 天 TTL；Replay 事件默认 30 天 TTL。Event Worker 在写入前会做基于嵌入向量的去重，相似度阈值可配。
 - 前端鉴权通过 `app/auth-session/*` 路由把 monitor backend 的 JWT 放进 HTTP-only cookie `session_token`。
 
 ---
@@ -177,8 +209,10 @@ sequenceDiagram
 | 控制台          | Next.js 15、React 19、React Query、Tailwind CSS 4、Radix UI |
 | Monitor backend | NestJS 11、TypeORM、Passport JWT、Postgres                  |
 | DSN backend     | NestJS 11、ClickHouse、`pg` 连接池、Handlebars 邮件模板     |
+| 事件处理        | NestJS 11、KafkaJS、ClickHouse、HuggingFace Transformers    |
 | Browser SDK     | TypeScript、`tsup`、`rrweb`、自定义 transport / 离线队列    |
 | AI tracing      | 面向 Vercel AI SDK 的 OpenTelemetry Span Processor 适配     |
+| 消息队列        | Apache Kafka 3.9.2（KRaft 模式，无 ZooKeeper）              |
 | 基础设施        | Docker、Docker Compose、Caddy、可选 OpenNext Cloudflare     |
 
 说明：`apps/backend/monitor` 当前实际运行路径是 TypeORM，不是 Prisma。仓库中虽然有 Prisma 相关文件，但不是当前 Nest 启动链路的一部分。
@@ -192,7 +226,8 @@ condev-monitor/
 ├── apps/
 │   ├── backend/
 │   │   ├── monitor/                # 认证、用户、应用、sourcemap、Replay 开关同步
-│   │   └── dsn-server/             # DSN 摄取、ClickHouse 查询、告警、回放读取
+│   │   ├── dsn-server/             # DSN 摄取、ClickHouse 查询、告警、回放读取
+│   │   └── event-worker/           # Kafka 消费、ClickHouse 批量写入、Issue 去重
 │   └── frontend/
 │       └── monitor/                # Next.js 控制台 + rrweb player
 ├── packages/
@@ -204,12 +239,15 @@ condev-monitor/
 │   ├── vanilla/                    # Vite 示例，包含浏览器 SDK 和 sourcemap 脚本
 │   └── aisdk-rag-chatbox/          # Next.js 示例，包含浏览器端 + AI SDK tracing
 ├── .devcontainer/
-│   ├── docker-compose.yml          # 仅本地基础设施：ClickHouse + Postgres
+│   ├── docker-compose.yml          # 本地基础设施：ClickHouse + Postgres + Kafka
 │   ├── docker-compose.deply.yml    # 根脚本实际使用的整栈部署文件
 │   ├── caddy/                      # 反向代理配置
 │   └── clickhouse/                 # ClickHouse 初始化 SQL 与配置
 ├── scripts/
-│   └── init-clickhouse.sh          # 在部署 compose 里初始化 ClickHouse schema
+│   ├── init-clickhouse.sh          # 在部署 compose 里初始化 ClickHouse schema
+│   └── init-kafka-topics.sh        # 在部署 compose 里创建 Kafka topic
+├── CONTRIBUTING.md
+├── DEPLOYMENT.md
 ├── README.md
 └── README.zh-CN.md
 ```
@@ -217,10 +255,10 @@ condev-monitor/
 ### 工作区说明
 
 - `pnpm-workspace.yaml` 纳入了 `packages/*`、`apps/frontend/*`、`apps/backend/*`、`examples/*`
-- `pnpm start:dev` 通过 Turbo 跑工作区内所有 `start:dev` 脚本；在本仓库里就是两个后端
+- `pnpm start:dev` 通过 Turbo 跑工作区内所有 `start:dev` 脚本；在本仓库里就是两个后端和事件处理 worker
 - `pnpm start:fro` 只启动控制台
 - 前端包名是 `@condev-monitor/monitor-client`
-- 两个后端包名分别是 `monitor` 和 `dsn-server`
+- 后端包名分别是 `monitor`、`dsn-server` 和 `event-worker`
 
 ---
 
@@ -255,16 +293,17 @@ cp .devcontainer/.env.example .devcontainer/.env
 
 ```bash
 pnpm docker:start
-pnpm docker:init-clickhouse
 ```
 
-这一步会启动：
+这一步会一次性启动并初始化：
 
 - `.devcontainer/docker-compose.yml` 里的 Postgres
-- `.devcontainer/docker-compose.yml` 里的 ClickHouse
-- `.devcontainer/clickhouse/init/001_condev_monitor_schema.sql` 里的初始化 schema
+- `.devcontainer/docker-compose.yml` 里的 ClickHouse + `.devcontainer/clickhouse/init/` 里的初始化 schema
+- `.devcontainer/docker-compose.yml` 里的 Kafka + `scripts/init-kafka-topics.sh` 创建 topic
 
-### 4. 启动两个后端的 watch 模式
+注意：`pnpm docker:start` 会自动执行 `docker:init-kafka` 和 `docker:init-clickhouse`。只有在需要恢复或幂等重新初始化时才需要单独运行这些脚本。
+
+### 4. 启动所有后端的 watch 模式
 
 ```bash
 pnpm start:dev
@@ -274,6 +313,7 @@ pnpm start:dev
 
 - `apps/backend/monitor` -> `http://localhost:8081/api/*`
 - `apps/backend/dsn-server` -> `http://localhost:8082/dsn-api/*`
+- `apps/backend/event-worker`（Kafka 消费者，写入 ClickHouse）
 
 ### 5. 启动控制台
 
@@ -298,14 +338,15 @@ pnpm start:fro
 
 ### 本地常用地址
 
-| 服务            | 地址                                    |
-| --------------- | --------------------------------------- |
-| 控制台          | `http://localhost:3000`                 |
-| Monitor API     | `http://localhost:8081/api`             |
-| DSN Server      | `http://localhost:8082/dsn-api`         |
-| DSN 健康检查    | `http://localhost:8082/dsn-api/healthz` |
-| ClickHouse HTTP | `http://localhost:8123`                 |
-| Postgres        | `localhost:5432`                        |
+| 服务             | 地址                                    |
+| ---------------- | --------------------------------------- |
+| 控制台           | `http://localhost:3000`                 |
+| Monitor API      | `http://localhost:8081/api`             |
+| DSN Server       | `http://localhost:8082/dsn-api`         |
+| DSN 健康检查     | `http://localhost:8082/dsn-api/healthz` |
+| ClickHouse HTTP  | `http://localhost:8123`                 |
+| Postgres         | `localhost:5432`                        |
+| Kafka (external) | `localhost:9094`                        |
 
 ### 运行示例工程
 
@@ -368,6 +409,19 @@ pnpm --filter aisdk-rag-chatbox dev
 | `RESEND_API_KEY`, `RESEND_FROM`                                   | 告警邮件使用 Resend                                                            |
 | `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                           | 告警邮件使用 SMTP                                                              |
 | `EMAIL_PASS`, `EMAIL_PASSWORD`                                    | dsn-server 邮件模块兼容读取的旧变量名                                          |
+| `INGEST_MODE`                                                     | `kafka`（部署默认）或 `direct`（直写 ClickHouse）                              |
+| `KAFKA_ENABLED`                                                   | Kafka 生产者总开关。`INGEST_MODE=kafka` 时设为 `true`                          |
+| `KAFKA_BROKERS`                                                   | Kafka broker 地址，逗号分隔                                                    |
+| `KAFKA_CLIENT_ID`                                                 | Kafka 生产者 client 标识                                                       |
+| `KAFKA_EVENTS_TOPIC`                                              | SDK 事件 topic，默认 `monitor.sdk.events.v1`                                   |
+| `KAFKA_REPLAYS_TOPIC`                                             | Replay 上传 topic，默认 `monitor.sdk.replays.v1`                               |
+| `KAFKA_FALLBACK_TO_CLICKHOUSE`                                    | 为 `true` 时，Kafka 发布失败会兜底直写 ClickHouse                              |
+| `INBOUND_MAX_PAYLOAD_BYTES`                                       | 每个请求允许的最大 payload 大小（反序列化前）                                  |
+| `INBOUND_UA_BLACKLIST`                                            | 需拒绝的 user-agent 子串，逗号分隔                                             |
+| `INBOUND_RELEASE_BLACKLIST`                                       | 需拒绝的 release 标识，逗号分隔                                                |
+| `RATE_LIMIT_EVENTS_PER_SEC`                                       | 每应用令牌桶补充速率（事件/秒）                                                |
+| `RATE_LIMIT_BURST`                                                | 每应用令牌桶突发容量                                                           |
+| `RATE_LIMIT_MAX_APPS`                                             | 限流追踪的最大应用数                                                           |
 
 ### 前端 / Rewrite 相关变量
 
@@ -379,6 +433,32 @@ pnpm --filter aisdk-rag-chatbox dev
 | `DSN_API_PROXY_TARGET`    | `/dsn-api/*` rewrite 的目标地址，默认 `http://localhost:8082` |
 | `NEXT_TELEMETRY_DISABLED` | 容器或 CI 构建时建议开启                                      |
 
+### Event Worker（`apps/backend/event-worker/.env`）
+
+| 变量                             | 作用                                                       |
+| -------------------------------- | ---------------------------------------------------------- |
+| `CLICKHOUSE_URL`                 | ClickHouse HTTP 端点，用于批量写入                         |
+| `CLICKHOUSE_USERNAME`            | ClickHouse 用户名                                          |
+| `CLICKHOUSE_PASSWORD`            | ClickHouse 密码                                            |
+| `KAFKA_BROKERS`                  | Kafka broker 地址，逗号分隔                                |
+| `KAFKA_CLIENT_ID`                | Kafka 消费者 client 标识                                   |
+| `KAFKA_CONSUMER_GROUP`           | 消费组 ID，默认 `monitor-clickhouse-writer-v1`             |
+| `KAFKA_EVENTS_TOPIC`             | 消费的事件 topic，默认 `monitor.sdk.events.v1`             |
+| `KAFKA_REPLAYS_TOPIC`            | 消费的 Replay topic，默认 `monitor.sdk.replays.v1`         |
+| `KAFKA_DLQ_TOPIC`                | 死信队列 topic，默认 `monitor.sdk.dlq.v1`                  |
+| `EVENT_BATCH_SIZE`               | 每次 ClickHouse 批量写入的最大事件数                       |
+| `EVENT_BATCH_MAX_WAIT_MS`        | 批量未满时的最长等待时间                                   |
+| `EMBEDDING_MODEL_ID`             | HuggingFace Issue 嵌入模型，默认 `Xenova/all-MiniLM-L6-v2` |
+| `ISSUE_EMBEDDING_HIGH_THRESHOLD` | 余弦相似度高于此值自动合并 Issue，默认 `0.92`              |
+| `ISSUE_EMBEDDING_LOW_THRESHOLD`  | 余弦相似度高于此值触发 TF-IDF 二次确认，默认 `0.85`        |
+| `ISSUE_TFIDF_THRESHOLD`          | TF-IDF 相似度确认阈值，默认 `0.80`                         |
+| `LLM_PROVIDER`                   | LLM 提供者类型，默认 `openai-compatible`                   |
+| `LLM_BASE_URL`                   | LLM API 基础地址                                           |
+| `LLM_API_KEY`                    | LLM API 密钥                                               |
+| `LLM_MODEL`                      | LLM 模型标识，默认 `gpt-4o-mini`                           |
+| `LLM_MAX_TOKENS`                 | LLM 最大输出 token 数，默认 `1024`                         |
+| `LLM_TEMPERATURE`                | LLM 采样温度，默认 `0.1`                                   |
+
 ### Compose / 基础设施变量（`.devcontainer/.env`）
 
 | 变量                                                                                                                            | 作用                                                          |
@@ -387,9 +467,15 @@ pnpm --filter aisdk-rag-chatbox dev
 | `CLICKHOUSE_HTTP_PORT`, `CLICKHOUSE_NATIVE_PORT`                                                                                | ClickHouse 宿主机端口                                         |
 | `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB`                                                                   | ClickHouse 初始化用户名、密码和库名                           |
 | `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                                                                                                 | ClickHouse HTTP 写入上限                                      |
+| `KAFKA_EXTERNAL_PORT`                                                                                                           | Kafka 外部监听宿主机端口，默认 `9094`                         |
+| `KAFKA_BROKERS`                                                                                                                 | DSN server 和 event worker 使用的 broker 地址                 |
+| `KAFKA_CONSUMER_GROUP`                                                                                                          | Event worker 消费组，默认 `monitor-clickhouse-writer-v1`      |
+| `INGEST_MODE`                                                                                                                   | `kafka` 或 `direct`，控制 DSN server 摄取管道                 |
 | `CADDY_HTTP_HOST_PORT`, `CADDY_HTTP_CONTAINER_PORT`, `CADDY_HTTPS_HOST_PORT`                                                    | Caddy 对外端口映射                                            |
 | `CADDY_DSN_MAX_BODY_SIZE`                                                                                                       | `/dsn-api/*`、`/tracking/*`、`/replay/*` 的反向代理 body 限制 |
 | `MAIL_ON`, `AUTH_REQUIRE_EMAIL_VERIFICATION`, `FRONTEND_URL`, `DSN_BODY_LIMIT`, `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS` | 整栈部署时传入容器的共享业务配置                              |
+| `EMBEDDING_MODEL_ID`, `ISSUE_EMBEDDING_HIGH_THRESHOLD`, `ISSUE_EMBEDDING_LOW_THRESHOLD`, `ISSUE_TFIDF_THRESHOLD`                | Event worker Issue 去重调参                                   |
+| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_MAX_TOKENS`, `LLM_TEMPERATURE`                                 | Event worker LLM 集成                                         |
 
 ### 邮件模式选择逻辑
 
@@ -567,8 +653,10 @@ POST /api/sourcemap/upload
 
 ## 扩展文档
 
-- 部署指南：[DEPLOYMENT.md](./DEPLOYMENT.md) | [中文](./DEPLOYMENT.zh-CN.md)
-- 贡献与 PR 开发流程：[CONTRIBUTING.md](./CONTRIBUTING.md) | [中文](./CONTRIBUTING.zh-CN.md)
+| 文档                                                                    | 说明                                                    |
+| ----------------------------------------------------------------------- | ------------------------------------------------------- |
+| [DEPLOYMENT.md](./DEPLOYMENT.md) \| [中文](./DEPLOYMENT.zh-CN.md)       | 整栈部署、Caddy 路由、Cloudflare 前端、数据卷与运维说明 |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) \| [中文](./CONTRIBUTING.zh-CN.md) | 本地初始化、质量检查、提交规范与 PR 检查清单            |
 
 ---
 
