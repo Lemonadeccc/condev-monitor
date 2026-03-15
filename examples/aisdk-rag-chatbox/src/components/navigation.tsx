@@ -12,7 +12,7 @@ export const Navigation = () => {
     const showChat = isAdmin && pathname === '/upload'
 
     return (
-        <nav className="border-b border-[var(oklch(0.145 0 0))]/10">
+        <nav className="border-b border-foreground/10">
             <div className="flex container h-16 items-center justify-between px-4 mx-auto">
                 <div className="text-xl font-semibold">RAG Chatbot</div>
 

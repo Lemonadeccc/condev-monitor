@@ -1,5 +1,5 @@
 monitor.condevtools.com {
-	
+
 encode zstd gzip
 
 header +Cache-Control "max-age=0, private, must-revalidate"

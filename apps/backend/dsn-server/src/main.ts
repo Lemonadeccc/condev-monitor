@@ -16,7 +16,9 @@ async function bootstrap() {
 
     app.setGlobalPrefix('dsn-api')
 
-    app.enableCors()
+    app.enableCors({
+        exposedHeaders: ['Retry-After', 'X-Rate-Limit-Reset'],
+    })
     await app.listen(configService.get<number>('PORT') ?? 8082)
 }
 bootstrap()
