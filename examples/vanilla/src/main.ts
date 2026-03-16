@@ -12,8 +12,8 @@ const release = (import.meta as { env?: Record<string, string | undefined> }).en
 const dist = (import.meta as { env?: Record<string, string | undefined> }).env?.VITE_MONITOR_DIST
 
 init({
-    dsn: 'http://localhost:8082/dsn-api/tracking/vanillacn005C',
-    // dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillacWTmLV',
+    // dsn: 'http://localhost:8082/dsn-api/tracking/vanillacn005C',
+    dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillaT1DFuv',
     // dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillay1PFXB',
     // dsn: 'https://monitor.condevtools.com/tracking/vanillay1PFXB',
     // dsn: 'http://localhost:8082/dsn-api/tracking/vanilla3XGJsf',

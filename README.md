@@ -90,8 +90,8 @@ graph LR
 graph TB
     subgraph Client Apps
         APP[Web app]
-        SDK[@condev-monitor/monitor-sdk-browser]
-        AI[@condev-monitor/monitor-sdk-ai]
+        SDK["@condev-monitor/monitor-sdk-browser"]
+        AI["@condev-monitor/monitor-sdk-ai"]
     end
 
     subgraph Dashboard
