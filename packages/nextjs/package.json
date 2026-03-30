@@ -30,6 +30,16 @@
                 "default": "./build/cjs/client.js"
             }
         },
+        "./chat": {
+            "import": {
+                "types": "./build/types/chat.d.ts",
+                "default": "./build/esm/chat.mjs"
+            },
+            "require": {
+                "types": "./build/types/chat.d.ts",
+                "default": "./build/cjs/chat.js"
+            }
+        },
         "./server": {
             "import": {
                 "types": "./build/types/server.d.ts",
@@ -48,18 +58,22 @@
         "build:types": "tsc -p tsconfig.types.json"
     },
     "dependencies": {
-        "@condev-monitor/react": "workspace:*",
         "@condev-monitor/monitor-sdk-ai": "workspace:*",
-        "@condev-monitor/monitor-sdk-core": "workspace:*"
+        "@condev-monitor/monitor-sdk-core": "workspace:*",
+        "@condev-monitor/react": "workspace:*"
     },
     "peerDependencies": {
+        "@opentelemetry/api": ">=1.9.0",
+        "@opentelemetry/sdk-trace-base": ">=1.0.0",
+        "ai": ">=6.0.0",
         "next": ">=15.3.0",
         "react": ">=18.0.0",
-        "react-dom": ">=18.0.0",
-        "@opentelemetry/api": ">=1.9.0",
-        "@opentelemetry/sdk-trace-base": ">=1.0.0"
+        "react-dom": ">=18.0.0"
     },
     "peerDependenciesMeta": {
+        "ai": {
+            "optional": true
+        },
         "@opentelemetry/api": {
             "optional": true
         },
@@ -69,6 +83,7 @@
     },
     "devDependencies": {
         "@types/react": "^19.0.0",
-        "@types/react-dom": "^19.0.0"
+        "@types/react-dom": "^19.0.0",
+        "ai": "^6.0.116"
     }
 }

@@ -13,7 +13,6 @@
         "@ai-sdk/deepseek": "^2.0.4",
         "@ai-sdk/openai": "^3.0.7",
         "@ai-sdk/react": "^3.0.29",
-        "@condev-monitor/monitor-sdk-browser": "workspace:*",
         "@condev-monitor/nextjs": "workspace:*",
         "@clerk/nextjs": "^6.36.7",
         "@hookform/resolvers": "^5.2.2",

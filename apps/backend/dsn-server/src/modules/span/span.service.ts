@@ -80,6 +80,7 @@ type AIStreamingTrace = {
     url: string
     method: string
     status: number
+    semanticStatus: string | null
     sseTtfb: number
     sseTtlb: number
     stallCount: number
@@ -1415,20 +1416,52 @@ export class SpanService {
             this.clickhouseClient.query({
                 query: `
                     SELECT
-                        JSONExtractString(toJSONString(info), 'traceId') AS traceId,
-                        JSONExtractString(toJSONString(info), 'ai', 'model') AS model,
-                        JSONExtractString(toJSONString(info), 'ai', 'provider') AS provider,
-                        JSONExtractInt(toJSONString(info), 'ai', 'usage', 'inputTokens') AS inputTokens,
-                        JSONExtractInt(toJSONString(info), 'ai', 'usage', 'outputTokens') AS outputTokens,
-                        JSONExtractFloat(toJSONString(info), 'durationMs') AS durationMs
-                    FROM ${this.clickhouseDatabase}.base_monitor_view
-                    WHERE app_id = {appId:String}
-                      AND event_type = 'ai_streaming'
-                      AND JSONExtractString(toJSONString(info), 'layer') = 'semantic'
-                      AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
-                      AND toUnixTimestamp(created_at) < {toSeconds:UInt32}
+                        t.trace_id AS traceId,
+                        multiIf(
+                            ifNull(spans.status_rank, 0) = 2,
+                            'cancelled',
+                            ifNull(spans.status_rank, 0) = 1,
+                            'error',
+                            t.status
+                        ) AS semanticStatus,
+                        t.model AS model,
+                        t.provider AS provider,
+                        if(
+                            t.input_tokens + t.output_tokens > 0,
+                            t.input_tokens,
+                            ifNull(spans.best_input_tokens, 0)
+                        ) AS inputTokens,
+                        if(
+                            t.input_tokens + t.output_tokens > 0,
+                            t.output_tokens,
+                            ifNull(spans.best_output_tokens, 0)
+                        ) AS outputTokens,
+                        t.duration_ms AS durationMs
+                    FROM ${this.clickhouseDatabase}.ai_traces AS t FINAL
+                    LEFT JOIN (
+                        SELECT
+                            app_id,
+                            trace_id,
+                            argMax(input_tokens, input_tokens + output_tokens) AS best_input_tokens,
+                            argMax(output_tokens, input_tokens + output_tokens) AS best_output_tokens,
+                            max(
+                                multiIf(
+                                    status = 'cancelled',
+                                    2,
+                                    status = 'error',
+                                    1,
+                                    0
+                                )
+                            ) AS status_rank
+                        FROM ${this.clickhouseDatabase}.ai_spans
+                        GROUP BY app_id, trace_id
+                    ) AS spans
+                        ON spans.app_id = t.app_id AND spans.trace_id = t.trace_id
+                    WHERE t.app_id = {appId:String}
+                      AND t.started_at >= parseDateTime64BestEffort({from:String})
+                      AND t.started_at < parseDateTime64BestEffort({to:String})
                 `,
-                query_params: { appId, fromSeconds, toSeconds },
+                query_params: { appId, from: from.toISOString(), to: now.toISOString() },
                 format: 'JSON' as const,
             }),
             // Query 3: aggregate stats for network layer (exclude sseTtfb = -1 sentinel and probe_limit)
@@ -1475,6 +1508,7 @@ export class SpanService {
                 url: String(row.url ?? ''),
                 method: String(row.method ?? ''),
                 status: Number(row.status ?? 0),
+                semanticStatus: sem ? String(sem.semanticStatus ?? '') || null : null,
                 sseTtfb: Number(row.sseTtfb ?? 0),
                 sseTtlb: Number(row.sseTtlb ?? 0),
                 stallCount: Number(row.stallCount ?? 0),

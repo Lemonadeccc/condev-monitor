@@ -516,12 +516,105 @@ export async function register() {
     if (process.env.NEXT_RUNTIME === 'nodejs') {
         const { registerCondevServer } = await import('@condev-monitor/nextjs/server')
         await registerCondevServer({ debug: true })
-        // dsn defaults to process.env.CONDEV_DSN ?? process.env.NEXT_PUBLIC_CONDEV_DSN
+        // dsn defaults to process.env.CONDEV_SERVER_DSN ?? process.env.CONDEV_DSN ?? process.env.NEXT_PUBLIC_CONDEV_DSN
     }
 }
 ```
 
 `registerCondevServer` automatically handles OTel provider registration — it mutates an existing `NodeTracerProvider` if one is already set, and falls back to creating and registering a `BasicTracerProvider` when none is available.
+
+Recommended environment variables for new Next.js projects:
+
+```env
+CONDEV_SERVER_DSN=http://localhost:8082/dsn-api/tracking/<appId>
+NEXT_PUBLIC_CONDEV_DSN=http://localhost:8082/dsn-api/tracking/<appId>
+```
+
+`CONDEV_DSN` is still supported as a backward-compatible alias, but new integrations should prefer `CONDEV_SERVER_DSN`.
+
+**Vercel AI SDK route helper** (minimal AI route wiring):
+
+```ts
+import { auth } from '@clerk/nextjs/server'
+import { streamTextResponseWithCondev } from '@condev-monitor/nextjs/server'
+import { convertToModelMessages } from 'ai'
+import { openai } from '@ai-sdk/openai'
+
+export async function POST(req: Request) {
+    const { userId, sessionId: authSessionId } = await auth()
+    const { messages, chatSessionId } = await req.json()
+    const sessionId = chatSessionId?.trim() || authSessionId || undefined
+
+    return streamTextResponseWithCondev({
+        request: req,
+        sessionId,
+        userId,
+        input: messages,
+        name: 'ai.streamText',
+        model: 'gpt-5-mini',
+        provider: 'openai.responses',
+        stream: {
+            model: openai('gpt-5-mini'),
+            messages: await convertToModelMessages(messages),
+        },
+    })
+}
+```
+
+This helper automatically wires:
+
+- browser `traceId` correlation
+- `sessionId` / `userId` propagation
+- AI SDK telemetry metadata
+- request abort propagation
+- fallback error reporting for provider/runtime failures
+- cancelled stream reporting
+- tool execution failure reporting
+
+The AI route path is not fixed. It can live anywhere, for example:
+
+- `app/api/chat/route.ts`
+- `app/api/ai/chat/route.ts`
+- `app/api/rag/ask/route.ts`
+- `src/app/api/agent/run/route.ts`
+
+**Chat session helper** (minimal client wiring for `AI Sessions`):
+
+```tsx
+'use client'
+
+import { useState } from 'react'
+import { useChat } from '@ai-sdk/react'
+import { createCondevChatTransport } from '@condev-monitor/nextjs/chat'
+
+export default function ChatPage() {
+    const [{ chatSessionId, transport }] = useState(() =>
+        createCondevChatTransport({
+            sessionStorageKey: 'my-rag-chat-session-id',
+            api: '/api/rag/ask',
+        })
+    )
+
+    const { messages, sendMessage } = useChat({
+        id: chatSessionId,
+        transport,
+    })
+
+    // ...
+}
+```
+
+The chat page/component path is also not fixed. It can be:
+
+- `app/chat/page.tsx`
+- `app/(dashboard)/assistant/page.tsx`
+- any client component that uses `useChat(...)`
+
+What must stay aligned is:
+
+- `createCondevChatTransport({ api: '...' })`
+- `registerCondevClient({ aiStreaming: { urlPatterns: ['...'] } })`
+- your actual server AI route path
 
 **React components** (available from the main entry):
 
@@ -710,10 +803,11 @@ Authentication is accepted through either:
 
 ## Additional Docs
 
-| Document                                                                | Description                                                                               |
-| ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| [DEPLOYMENT.md](./DEPLOYMENT.md) \| [中文](./DEPLOYMENT.zh-CN.md)       | Full stack deployment, Caddy routing, Cloudflare frontend, volumes, and operational notes |
-| [CONTRIBUTING.md](./CONTRIBUTING.md) \| [中文](./CONTRIBUTING.zh-CN.md) | Local setup, quality checks, commit conventions, and PR checklist                         |
+| Document                                                                       | Description                                                                               |
+| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| [DEPLOYMENT.md](./DEPLOYMENT.md) \| [中文](./DEPLOYMENT.zh-CN.md)              | Full stack deployment, Caddy routing, Cloudflare frontend, volumes, and operational notes |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) \| [中文](./CONTRIBUTING.zh-CN.md)        | Local setup, quality checks, commit conventions, and PR checklist                         |
+| [docs/ai-observability-integration.md](./docs/ai-observability-integration.md) | Automatic vs manual AI observability coverage, Next.js helper usage, and custom spans     |
 
 ---
 

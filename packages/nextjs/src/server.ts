@@ -1,15 +1,66 @@
 import { createRequire } from 'node:module'
 
 import type { OTelSpanProcessorLike, PrivacyOptions } from '@condev-monitor/monitor-sdk-ai'
-import { createAISink, createVercelAITelemetryIntegration, initAIMonitor, VercelAIAdapter } from '@condev-monitor/monitor-sdk-ai'
+import {
+    createAISink,
+    createVercelAITelemetryIntegration,
+    initAIMonitor,
+    NodeReporter,
+    VercelAIAdapter,
+} from '@condev-monitor/monitor-sdk-ai'
+import { DEFAULT_TRACE_ID_HEADER } from '@condev-monitor/monitor-sdk-core'
 
 export interface CondevServerOptions {
-    /** DSN defaults to CONDEV_DSN or NEXT_PUBLIC_CONDEV_DSN */
+    /** DSN defaults to CONDEV_SERVER_DSN, then CONDEV_DSN, then NEXT_PUBLIC_CONDEV_DSN */
     dsn?: string
     privacy?: PrivacyOptions
     traceIdHeader?: string
     debug?: boolean
     additionalSpanProcessors?: OTelSpanProcessorLike[]
+}
+
+export interface CondevAIRequestContextOptions {
+    request: Request
+    sessionId?: string | null
+    userId?: string | null
+    input?: unknown
+    name?: string
+    model?: string
+    provider?: string
+    startedAt?: number
+    dsn?: string
+    traceIdHeader?: string
+    debug?: boolean
+}
+
+export interface CondevAIRequestLifecycleEvent {
+    input?: unknown
+    name?: string
+    model?: string
+    provider?: string
+    error?: unknown
+    startedAt?: number
+    failureMode?: string
+}
+
+export interface CondevAIRequestContext {
+    traceId: string
+    sessionId?: string
+    userId?: string
+    abortSignal: AbortSignal
+    telemetry: {
+        isEnabled: true
+        metadata: Record<string, string>
+    }
+    stream<T extends StreamTextOptionsLike>(options: T): T
+    emitError(event?: CondevAIRequestLifecycleEvent): Promise<void>
+    emitCancelled(event?: Omit<CondevAIRequestLifecycleEvent, 'failureMode'>): Promise<void>
+    emitToolError(event: CondevAIRequestLifecycleEvent & { toolName: string }): Promise<void>
+}
+
+export interface CondevStreamTextResponseOptions<T extends AIStreamTextOptions = AIStreamTextOptions>
+    extends CondevAIRequestContextOptions {
+    stream: T
 }
 
 let _serverRegistered = false
@@ -23,6 +74,319 @@ type MutableTracerProvider = {
     }
 }
 
+type AIStreamTextFn = (typeof import('ai'))['streamText']
+type AIStreamTextOptions = Parameters<AIStreamTextFn>[0] & StreamTextOptionsLike
+type AIStreamTextResult = ReturnType<AIStreamTextFn>
+type AIObservationReporter = Pick<NodeReporter, 'send'>
+type StreamToolLike = { execute?: (...args: unknown[]) => unknown }
+type StreamTextOptionsLike = {
+    abortSignal?: AbortSignal
+    experimental_telemetry?: {
+        isEnabled?: boolean
+        metadata?: Record<string, unknown>
+    }
+    onError?: ((event: { error: unknown }) => unknown | Promise<unknown>) | undefined
+    onAbort?: ((...args: unknown[]) => unknown | Promise<unknown>) | undefined
+    tools?: Record<string, StreamToolLike>
+}
+
+function resolveCondevDsn(dsn?: string): string | undefined {
+    return dsn ?? process.env.CONDEV_SERVER_DSN ?? process.env.CONDEV_DSN ?? process.env.NEXT_PUBLIC_CONDEV_DSN
+}
+
+function normalizeValue(value?: string | null): string | undefined {
+    const trimmed = value?.trim()
+    return trimmed ? trimmed : undefined
+}
+
+function toErrorMessage(error?: unknown): string {
+    if (error instanceof Error) return error.message
+    if (error == null) return ''
+    return String(error)
+}
+
+function toIso(timestampMs: number): string {
+    return new Date(timestampMs).toISOString()
+}
+
+async function emitObservation(reporter: AIObservationReporter | null, event: Record<string, unknown>): Promise<void> {
+    if (!reporter) return
+    reporter.send(event)
+}
+
+function resolveAIModule(): { streamText: AIStreamTextFn } {
+    const runtimeRequire = createRequire(`${process.cwd()}/package.json`)
+    return runtimeRequire('ai') as { streamText: AIStreamTextFn }
+}
+
+function createStreamInitErrorResponse(error: unknown): Response {
+    const status =
+        typeof error === 'object' &&
+        error !== null &&
+        'status' in error &&
+        typeof (error as { status?: unknown }).status === 'number' &&
+        Number.isFinite((error as { status: number }).status)
+            ? (error as { status: number }).status
+            : 500
+
+    const code = status === 429 ? 'RATE_LIMIT' : status === 401 ? 'UNAUTHORIZED' : status === 403 ? 'FORBIDDEN' : 'STREAM_INIT_FAILED'
+
+    const publicMessage =
+        status === 429
+            ? 'Rate limit exceeded'
+            : status === 401
+              ? 'Unauthorized'
+              : status === 403
+                ? 'Forbidden'
+                : 'Failed to start streaming chat completion'
+
+    return Response.json(
+        {
+            error: {
+                code,
+                message: publicMessage,
+                retryable: status === 429 || status >= 500,
+            },
+        },
+        { status: status >= 400 ? status : 500 }
+    )
+}
+
+function createObservationBase(options: CondevAIRequestContextOptions, traceId: string, event?: CondevAIRequestLifecycleEvent) {
+    return {
+        source: 'node-sdk',
+        framework: 'manual-fallback',
+        traceId,
+        sessionId: normalizeValue(options.sessionId) ?? '',
+        userId: normalizeValue(options.userId) ?? '',
+        model: normalizeValue(event?.model) ?? normalizeValue(options.model) ?? '',
+        provider: normalizeValue(event?.provider) ?? normalizeValue(options.provider) ?? '',
+    }
+}
+
+export function createCondevAIRequestContext(options: CondevAIRequestContextOptions): CondevAIRequestContext {
+    const traceIdHeader = options.traceIdHeader ?? DEFAULT_TRACE_ID_HEADER
+    const traceId = normalizeValue(options.request.headers.get(traceIdHeader)) ?? crypto.randomUUID()
+    const sessionId = normalizeValue(options.sessionId)
+    const userId = normalizeValue(options.userId)
+    const dsn = resolveCondevDsn(options.dsn)
+    const reporter = dsn ? new NodeReporter({ dsn, debug: options.debug }) : null
+    const requestStartedAt = options.startedAt ?? Date.now()
+    let toolErrorReported = false
+
+    const emitError = async (event?: CondevAIRequestLifecycleEvent) => {
+        const startedAtMs = event?.startedAt ?? requestStartedAt
+        const endedAtMs = Date.now()
+
+        await emitObservation(reporter, {
+            event_type: 'ai_span',
+            ...createObservationBase(options, traceId, event),
+            spanId: traceId,
+            parentSpanId: '',
+            spanKind: 'entrypoint',
+            name: event?.name ?? options.name ?? 'ai.streamText',
+            status: 'error',
+            startedAt: toIso(startedAtMs),
+            endedAt: toIso(endedAtMs),
+            durationMs: endedAtMs - startedAtMs,
+            input: event?.input ?? options.input,
+            errorMessage: toErrorMessage(event?.error),
+            metadata: {
+                finishReason: 'error',
+                failureMode: event?.failureMode ?? 'runtime',
+                fallback: true,
+            },
+        })
+    }
+
+    const emitCancelled = async (event?: Omit<CondevAIRequestLifecycleEvent, 'failureMode'>) => {
+        const startedAtMs = event?.startedAt ?? requestStartedAt
+        const endedAtMs = Date.now()
+
+        await emitObservation(reporter, {
+            event_type: 'ai_span',
+            ...createObservationBase(options, traceId, event),
+            spanId: `${traceId}:cancelled`,
+            parentSpanId: traceId,
+            spanKind: 'event',
+            name: event?.name ?? 'stream.cancelled',
+            status: 'cancelled',
+            startedAt: toIso(startedAtMs),
+            endedAt: toIso(endedAtMs),
+            durationMs: endedAtMs - startedAtMs,
+            input: event?.input ?? options.input,
+            errorMessage: toErrorMessage(event?.error),
+            metadata: {
+                finishReason: 'cancelled',
+                fallback: true,
+            },
+        })
+    }
+
+    const emitToolError = async (event: CondevAIRequestLifecycleEvent & { toolName: string }) => {
+        toolErrorReported = true
+        const startedAtMs = event.startedAt ?? requestStartedAt
+        const endedAtMs = Date.now()
+        const errorMessage = toErrorMessage(event.error)
+
+        await emitObservation(reporter, {
+            event_type: 'ai_span',
+            ...createObservationBase(options, traceId, event),
+            spanId: `${traceId}:tool:${event.toolName}`,
+            parentSpanId: traceId,
+            spanKind: 'tool',
+            name: event.toolName,
+            status: 'error',
+            startedAt: toIso(startedAtMs),
+            endedAt: toIso(endedAtMs),
+            durationMs: endedAtMs - startedAtMs,
+            input: event.input ?? options.input,
+            errorMessage,
+            metadata: {
+                failureMode: event.failureMode ?? 'tool',
+                fallback: true,
+            },
+        })
+
+        await emitError({
+            ...event,
+            startedAt: startedAtMs,
+            error: errorMessage,
+            failureMode: event.failureMode ?? 'tool',
+        })
+    }
+
+    const stream = <T extends StreamTextOptionsLike>(streamOptions: T): T => {
+        const wrappedTools = streamOptions.tools
+            ? Object.fromEntries(
+                  Object.entries(streamOptions.tools).map(([toolName, definition]) => {
+                      if (!definition || typeof definition !== 'object' || typeof definition.execute !== 'function') {
+                          return [toolName, definition]
+                      }
+
+                      const execute = definition.execute
+                      return [
+                          toolName,
+                          {
+                              ...definition,
+                              execute: async (...args: unknown[]) => {
+                                  try {
+                                      return await execute(...args)
+                                  } catch (error) {
+                                      await emitToolError({
+                                          toolName,
+                                          error,
+                                          startedAt: requestStartedAt,
+                                          input: args[0],
+                                          failureMode: 'tool',
+                                      })
+                                      throw error
+                                  }
+                              },
+                          },
+                      ]
+                  })
+              )
+            : undefined
+
+        return {
+            ...streamOptions,
+            abortSignal: streamOptions.abortSignal ?? options.request.signal,
+            tools: wrappedTools as T['tools'],
+            experimental_telemetry: {
+                ...(streamOptions.experimental_telemetry ?? {}),
+                isEnabled: true,
+                metadata: {
+                    ...(streamOptions.experimental_telemetry?.metadata ?? {}),
+                    condevTraceId: traceId,
+                    ...(sessionId && { condevSessionId: sessionId }),
+                    ...(userId && { condevUserId: userId }),
+                },
+            },
+            onError: async event => {
+                if (!toolErrorReported) {
+                    await emitError({
+                        error: event.error,
+                        startedAt: requestStartedAt,
+                    })
+                }
+                await streamOptions.onError?.(event)
+            },
+            onAbort: async (...args: unknown[]) => {
+                await emitCancelled({
+                    name: 'stream.cancelled',
+                    error: 'Stream aborted by client',
+                    startedAt: requestStartedAt,
+                })
+                await streamOptions.onAbort?.(...args)
+            },
+        }
+    }
+
+    return {
+        traceId,
+        sessionId,
+        userId,
+        abortSignal: options.request.signal,
+        telemetry: {
+            isEnabled: true,
+            metadata: {
+                condevTraceId: traceId,
+                ...(sessionId && { condevSessionId: sessionId }),
+                ...(userId && { condevUserId: userId }),
+            },
+        },
+        stream,
+        emitError,
+        emitCancelled,
+        emitToolError,
+    }
+}
+
+export function streamTextWithCondev<T extends AIStreamTextOptions>(options: CondevStreamTextResponseOptions<T>): AIStreamTextResult {
+    const { stream, ...contextOptions } = options
+    const condev = createCondevAIRequestContext(contextOptions)
+    const { streamText } = resolveAIModule()
+
+    try {
+        return streamText(condev.stream(stream))
+    } catch (error) {
+        void condev.emitError({
+            error,
+            startedAt: contextOptions.startedAt,
+            model: contextOptions.model,
+            provider: contextOptions.provider,
+        })
+        throw error
+    }
+}
+
+export async function streamTextResponseWithCondev<T extends AIStreamTextOptions>(
+    options: CondevStreamTextResponseOptions<T>
+): Promise<Response> {
+    const { stream, ...contextOptions } = options
+    const condev = createCondevAIRequestContext(contextOptions)
+    const { streamText } = resolveAIModule()
+
+    try {
+        const result = streamText(condev.stream(stream))
+        return result.toUIMessageStreamResponse()
+    } catch (error) {
+        try {
+            await condev.emitError({
+                error,
+                startedAt: contextOptions.startedAt,
+                model: contextOptions.model,
+                provider: contextOptions.provider,
+            })
+        } catch {
+            // Ignore fallback-reporting errors and return the original request failure response.
+        }
+
+        return createStreamInitErrorResponse(error)
+    }
+}
+
 /**
  * Call in `instrumentation.ts` register() function.
  * Sets up AI telemetry span processor and registers it with OTel.
@@ -32,9 +396,9 @@ export async function registerCondevServer(options?: CondevServerOptions): Promi
     if (_serverRegistered) return
     _serverRegistered = true
 
-    const dsn = options?.dsn ?? process.env.CONDEV_DSN ?? process.env.NEXT_PUBLIC_CONDEV_DSN
+    const dsn = options?.dsn ?? process.env.CONDEV_SERVER_DSN ?? process.env.CONDEV_DSN ?? process.env.NEXT_PUBLIC_CONDEV_DSN
     if (!dsn) {
-        console.warn('[condev-monitor] No DSN provided. Set CONDEV_DSN or pass dsn option.')
+        console.warn('[condev-monitor] No DSN provided. Set CONDEV_SERVER_DSN or pass dsn option.')
         return
     }
 
