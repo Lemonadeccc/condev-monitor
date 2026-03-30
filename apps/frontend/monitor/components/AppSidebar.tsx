@@ -1,4 +1,20 @@
-import { Bot, Bug, Home, Play, User2, Zap } from 'lucide-react'
+import {
+    BookText,
+    Bot,
+    BrainCircuit,
+    Bug,
+    ClipboardCheck,
+    Database,
+    DollarSign,
+    FlaskConical,
+    Home,
+    MessagesSquare,
+    Play,
+    SquareTerminal,
+    User2,
+    Users,
+    Zap,
+} from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
@@ -44,6 +60,51 @@ const items = [
         title: 'AI Streaming',
         url: '/ai-streaming',
         icon: Bot,
+    },
+    {
+        title: 'AI Traces',
+        url: '/ai-traces',
+        icon: BrainCircuit,
+    },
+    {
+        title: 'AI Sessions',
+        url: '/ai-sessions',
+        icon: MessagesSquare,
+    },
+    {
+        title: 'AI Users',
+        url: '/ai-users',
+        icon: Users,
+    },
+    {
+        title: 'Evaluations',
+        url: '/evaluation',
+        icon: ClipboardCheck,
+    },
+    {
+        title: 'AI Cost',
+        url: '/ai-cost',
+        icon: DollarSign,
+    },
+    {
+        title: 'AI Prompts',
+        url: '/ai-prompts',
+        icon: BookText,
+    },
+    {
+        title: 'AI Datasets',
+        url: '/ai-datasets',
+        icon: Database,
+    },
+    {
+        title: 'AI Experiments',
+        url: '/ai-experiments',
+        icon: FlaskConical,
+    },
+    {
+        title: 'AI Playground',
+        url: '/ai-playground',
+        icon: SquareTerminal,
     },
 ]
 

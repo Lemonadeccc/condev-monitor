@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config'
 
 import { resolveClickhouseDatabase } from '../../shared/clickhouse-utils'
 import { EventRow } from '../../shared/ingest-types'
+import { formatDateTimeForCH } from '../../utils/datetime'
 
 export type IssueRow = {
     issue_id: string
@@ -116,7 +117,7 @@ export class ClickhouseWriterService implements OnModuleDestroy {
             return true
         }
 
-        const leaseStartAt = new Date(Date.now() + ClickhouseWriterService.CRON_LOCK_GUARD_MS).toISOString()
+        const leaseStartAt = formatDateTimeForCH(new Date(Date.now() + ClickhouseWriterService.CRON_LOCK_GUARD_MS))
         await this.client.insert({
             table: `${this.database}.cron_locks`,
             columns: ['lock_name', 'holder_id', 'ttl_seconds', 'acquired_at', 'updated_at'],
@@ -157,8 +158,8 @@ export class ClickhouseWriterService implements OnModuleDestroy {
                     lock_name: lockName,
                     holder_id: holderId,
                     ttl_seconds: 0,
-                    acquired_at: new Date().toISOString(),
-                    updated_at: new Date().toISOString(),
+                    acquired_at: formatDateTimeForCH(new Date()),
+                    updated_at: formatDateTimeForCH(new Date()),
                 },
             ],
         })

@@ -27,6 +27,7 @@ export interface AIAdapterContext {
     reporter: AIReporter
     privacy: PrivacyOptions
     traceIdHeader: string
+    debug?: boolean
 }
 
 /**

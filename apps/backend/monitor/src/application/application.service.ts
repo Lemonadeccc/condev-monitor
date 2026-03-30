@@ -108,6 +108,15 @@ export class ApplicationService {
         return application
     }
 
+    async assertOwned(appId: string, userId: number): Promise<void> {
+        const app = await this.applicationRepository.findOne({
+            where: { appId, user: { id: userId }, isDelete: false },
+        })
+        if (!app) {
+            throw new HttpException({ message: 'Application not found', error: 'NOT_FOUND' }, HttpStatus.FORBIDDEN)
+        }
+    }
+
     async delete(payload: { appId: string; userId: number }) {
         const application = await this.applicationRepository.findOne({
             where: {

@@ -398,6 +398,9 @@ export default function AIStreamingPage() {
                                             Time
                                         </th>
                                         <th scope="col" className="px-6 py-3 text-center">
+                                            Trace
+                                        </th>
+                                        <th scope="col" className="px-6 py-3 text-center">
                                             Replay
                                         </th>
                                     </tr>
@@ -492,6 +495,17 @@ export default function AIStreamingPage() {
                                                     </TooltipTrigger>
                                                     <TooltipContent>{t.networkAt}</TooltipContent>
                                                 </Tooltip>
+                                            </td>
+                                            <td className="px-6 py-4 text-center">
+                                                {t.traceId ? (
+                                                    <Link
+                                                        href={`/ai-traces/${encodeURIComponent(t.traceId)}?appId=${encodeURIComponent(effectiveAppId)}`}
+                                                    >
+                                                        <Button variant="ghost" size="sm" className="h-7 px-2">
+                                                            View
+                                                        </Button>
+                                                    </Link>
+                                                ) : null}
                                             </td>
                                             <td className="px-6 py-4 text-center">
                                                 {t.replayId ? (

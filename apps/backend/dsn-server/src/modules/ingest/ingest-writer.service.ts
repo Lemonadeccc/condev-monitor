@@ -4,6 +4,7 @@ import { Injectable, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 
 import { EventRow, KafkaEventEnvelope } from '../../shared/ingest-types'
+import { AIClickhouseFallbackService } from './ai-clickhouse-fallback.service'
 import { ClickhouseFallbackService } from './clickhouse-fallback.service'
 import { KafkaProducerService } from './kafka-producer.service'
 
@@ -18,20 +19,53 @@ export class IngestWriterService {
     private readonly kafkaFallback: boolean
     private readonly eventsTopic: string
     private readonly replaysTopic: string
+    private readonly aiEventsTopic: string
+    private static readonly AI_EVENT_TYPES = new Set(['ai_span', 'ai_observation', 'ai_feedback', 'ai_ingestion_run', 'ai_evaluation'])
 
     constructor(
         private readonly kafkaProducer: KafkaProducerService,
         private readonly clickhouseFallback: ClickhouseFallbackService,
+        private readonly aiClickhouseFallback: AIClickhouseFallbackService,
         private readonly config: ConfigService
     ) {
         this.ingestMode = this.config.get<string>('INGEST_MODE') ?? 'direct'
         this.kafkaFallback = this.config.get<string>('KAFKA_FALLBACK_TO_CLICKHOUSE') !== 'false'
         this.eventsTopic = this.config.get<string>('KAFKA_EVENTS_TOPIC') ?? 'monitor.sdk.events.v1'
         this.replaysTopic = this.config.get<string>('KAFKA_REPLAYS_TOPIC') ?? 'monitor.sdk.replays.v1'
+        this.aiEventsTopic = this.config.get<string>('KAFKA_AI_TOPIC') ?? 'condev.ai.events'
+    }
+
+    private classifyDomain(item: Record<string, unknown>): 'ai' | 'frontend' {
+        return IngestWriterService.AI_EVENT_TYPES.has(item['event_type'] as string) ? 'ai' : 'frontend'
+    }
+
+    private async publishAiBatch(appId: string, items: Record<string, unknown>[]): Promise<void> {
+        await this.kafkaProducer.publishBatch({
+            topic: this.aiEventsTopic,
+            messages: items.map(item => ({
+                key: appId,
+                value: JSON.stringify({ appId, ...item }),
+            })),
+        })
     }
 
     async writeTrackingBatch(appId: string, items: Record<string, unknown>[]): Promise<PersistResult> {
-        const rows: EventRow[] = items.map(item => {
+        const aiItems = items.filter(item => this.classifyDomain(item) === 'ai')
+        const frontendItems = items.filter(item => this.classifyDomain(item) === 'frontend')
+
+        if (aiItems.length > 0) {
+            if (this.ingestMode === 'direct') {
+                await this.aiClickhouseFallback.insertBatch(appId, aiItems)
+            } else {
+                await this.publishAiBatch(appId, aiItems)
+            }
+        }
+
+        if (frontendItems.length === 0) {
+            return { persistedVia: this.ingestMode === 'direct' ? 'clickhouse' : 'kafka' }
+        }
+
+        const rows: EventRow[] = frontendItems.map(item => {
             const info = { ...item }
             delete info.event_type
             delete info.message

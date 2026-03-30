@@ -1,7 +1,9 @@
+import type { AIEventSink, CondevObservationEvent } from '../sink'
 import type { AIAdapter, AIAdapterContext, AIReporter, OTelSpanProcessorLike, PrivacyOptions } from './base'
 
 interface SpanContext {
     traceId: string
+    spanId: string
 }
 
 interface ReadableSpan {
@@ -27,8 +29,15 @@ export class VercelAIAdapter implements AIAdapter {
     readonly name = 'vercel-ai'
     private processor: VercelAISpanProcessor | null = null
 
+    /**
+     * @param sink Optional AIEventSink for dual-write to ai_spans table.
+     *   When provided, each Vercel AI span is emitted as both `ai_streaming`
+     *   (existing /ai-streaming UI) and `ai_span` (new AI observability tables).
+     */
+    constructor(private readonly sink?: AIEventSink) {}
+
     install(ctx: AIAdapterContext): OTelSpanProcessorLike {
-        this.processor = new VercelAISpanProcessor(ctx.reporter, ctx.privacy, ctx.traceIdHeader)
+        this.processor = new VercelAISpanProcessor(ctx.reporter, ctx.privacy, ctx.traceIdHeader, this.sink, ctx.debug ?? false)
         return this.processor
     }
 
@@ -41,7 +50,9 @@ class VercelAISpanProcessor implements SpanProcessor {
     constructor(
         private reporter: AIReporter,
         private privacy: PrivacyOptions,
-        private traceIdHeader: string
+        private traceIdHeader: string,
+        private sink?: AIEventSink,
+        private debug: boolean = false
     ) {}
 
     // eslint-disable-next-line @typescript-eslint/no-unused-vars
@@ -55,8 +66,21 @@ class VercelAISpanProcessor implements SpanProcessor {
         const a = span.attributes
         const traceId = str(a['ai.telemetry.metadata.condevTraceId']) ?? str(a[`ai.request.headers.${this.traceIdHeader}`])
 
+        if (this.debug) {
+            console.info('[condev-ai] span end', span.name, {
+                operationId: str(a['ai.operationId']),
+                metadataTraceId: str(a['ai.telemetry.metadata.condevTraceId']),
+                headerTraceId: str(a[`ai.request.headers.${this.traceIdHeader}`]),
+            })
+        }
+
         // Drop spans without a condev traceId — no way to correlate with network layer
-        if (!traceId) return
+        if (!traceId) {
+            if (this.debug) {
+                console.warn('[condev-ai] drop ai span without traceId', span.name)
+            }
+            return
+        }
 
         const startMs = span.startTime[0] * 1000 + span.startTime[1] / 1e6
         const endMs = span.endTime[0] * 1000 + span.endTime[1] / 1e6
@@ -87,6 +111,33 @@ class VercelAISpanProcessor implements SpanProcessor {
             endedAt: endMs,
             durationMs: endMs - startMs,
         })
+
+        if (this.sink) {
+            this.sink.emit(this.toObservationEvent(span, traceId, startMs, endMs))
+        }
+    }
+
+    private toObservationEvent(span: ReadableSpan, traceId: string, startMs: number, endMs: number): CondevObservationEvent {
+        const a = span.attributes
+        return {
+            event_type: 'ai_span',
+            source: 'node-sdk',
+            framework: 'vercel-ai',
+            traceId,
+            spanId: span.spanContext().spanId,
+            spanKind: 'llm',
+            name: span.name,
+            model: str(a['ai.model.id'] ?? a['gen_ai.request.model']),
+            provider: str(a['ai.model.provider'] ?? a['gen_ai.system']),
+            inputTokens: toNum(a['ai.usage.inputTokens'] ?? a['gen_ai.usage.input_tokens']),
+            outputTokens: toNum(a['ai.usage.outputTokens'] ?? a['gen_ai.usage.output_tokens']),
+            sessionId: str(a['ai.telemetry.metadata.condevSessionId']),
+            userId: str(a['ai.telemetry.metadata.condevUserId']),
+            startedAt: new Date(startMs).toISOString(),
+            endedAt: new Date(endMs).toISOString(),
+            durationMs: endMs - startMs,
+            status: 'ok',
+        }
     }
 
     forceFlush(): Promise<void> {

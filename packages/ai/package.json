@@ -18,6 +18,16 @@
                 "types": "./build/types/index.d.ts",
                 "default": "./build/cjs/index.js"
             }
+        },
+        "./langchain": {
+            "import": {
+                "types": "./build/types/callbacks/langchain.d.ts",
+                "default": "./build/esm/callbacks/langchain.mjs"
+            },
+            "require": {
+                "types": "./build/types/callbacks/langchain.d.ts",
+                "default": "./build/cjs/callbacks/langchain.js"
+            }
         }
     },
     "scripts": {
@@ -37,15 +47,22 @@
         "@condev-monitor/monitor-sdk-core": "workspace:*"
     },
     "peerDependencies": {
+        "@langchain/core": ">=0.2.0",
         "@opentelemetry/api": ">=1.0.0",
         "@opentelemetry/sdk-trace-base": ">=1.0.0"
     },
     "peerDependenciesMeta": {
+        "@langchain/core": {
+            "optional": true
+        },
         "@opentelemetry/api": {
             "optional": true
         },
         "@opentelemetry/sdk-trace-base": {
             "optional": true
         }
+    },
+    "devDependencies": {
+        "@langchain/core": "^1.1.36"
     }
 }
