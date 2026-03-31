@@ -8,8 +8,9 @@ export function middleware(request: NextRequest) {
     const { pathname } = request.nextUrl
     const sessionToken = request.cookies.get(SESSION_COOKIE_NAME)?.value
     const isPublicPath = isPublicAuthPath(pathname)
+    const isHealthcheckPath = pathname === '/healthz'
 
-    if (!sessionToken && !isPublicPath) {
+    if (!sessionToken && !isPublicPath && !isHealthcheckPath) {
         const loginUrl = new URL('/login', request.url)
         loginUrl.searchParams.set('from', pathname)
         return NextResponse.redirect(loginUrl)
