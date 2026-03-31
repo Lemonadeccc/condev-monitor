@@ -570,9 +570,6 @@ importers:
       '@clerk/nextjs':
         specifier: ^6.36.7
         version: 6.39.0(next@16.1.1(@babel/core@7.28.5)(@opentelemetry/api@1.9.0)(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
-      '@condev-monitor/monitor-sdk-browser':
-        specifier: workspace:*
-        version: link:../../packages/browser
       '@condev-monitor/nextjs':
         specifier: workspace:*
         version: link:../../packages/nextjs
@@ -917,6 +914,9 @@ importers:
       '@types/react-dom':
         specifier: ^19.0.0
         version: 19.2.3(@types/react@19.2.5)
+      ai:
+        specifier: ^6.0.116
+        version: 6.0.116(zod@4.3.6)
 
   packages/react:
     dependencies:
@@ -6861,7 +6861,6 @@ packages:
 
   clickhouse@2.6.0:
     resolution: {integrity: sha512-HC5OV99GJOup4qZsTuWWPpXlj+847Z0OeygDU2x22rNYost0V/vWapzFWYZdV/5iRbGMrhFQPOyQEzmGvoaWRQ==}
-    bundledDependencies: []
 
   client-only@0.0.1:
     resolution: {integrity: sha512-IV3Ou0jSMzZrd3pZ48nLkT9DA7Ag1pnPzaiQhpW7c3RbcqqzvzzVu+L8gfqMp/8IM2MQtSiqaCxrrcfu8I8rMA==}
@@ -10770,6 +10769,7 @@ packages:
   rclone.js@0.6.6:
     resolution: {integrity: sha512-Dxh34cab/fNjFq5SSm0fYLNkGzG2cQSBy782UW9WwxJCEiVO4cGXkvaXcNlgv817dK8K8PuQ+NHUqSAMMhWujQ==}
     engines: {node: '>=12'}
+    cpu: [arm, arm64, mips, mipsel, x32, x64]
     os: [darwin, freebsd, linux, openbsd, sunos, win32]
     hasBin: true
 

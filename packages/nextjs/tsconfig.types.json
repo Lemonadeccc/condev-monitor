@@ -4,8 +4,10 @@
         "declaration": true,
         "declarationMap": true,
         "emitDeclarationOnly": true,
-        "outDir": "build/types"
+        "outDir": "build/types",
+        "allowSyntheticDefaultImports": true,
+        "skipLibCheck": true
     },
-    "include": ["src/index.ts", "src/client.ts", "src/server.ts"],
+    "include": ["src/index.ts", "src/client.ts", "src/chat.ts", "src/server.ts"],
     "exclude": ["src/**/*.spec.ts"]
 }

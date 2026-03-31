@@ -1,22 +1,21 @@
 'use client'
-import { Fragment, useState } from 'react'
+
 import { useChat } from '@ai-sdk/react'
-import { DefaultChatTransport } from 'ai'
+import { createCondevChatTransport } from '@condev-monitor/nextjs/chat'
+import { Loader } from 'lucide-react'
+import { Fragment, useState } from 'react'
+
+import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
+import { Message, MessageContent } from '@/components/ai-elements/message'
 import {
     PromptInput,
     PromptInputBody,
+    PromptInputFooter,
     type PromptInputMessage,
     PromptInputSubmit,
     PromptInputTextarea,
-    PromptInputFooter,
     PromptInputTools,
 } from '@/components/ai-elements/prompt-input'
-import { GlobeIcon, Loader } from 'lucide-react'
-
-import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
-import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
-
-const CHAT_SESSION_STORAGE_KEY = 'condev-rag-chat-session-id'
 
 function getErrorMessage(error: Error): string {
     const msg = error.message?.toLowerCase() ?? ''
@@ -28,29 +27,16 @@ function getErrorMessage(error: Error): string {
     return 'AI service temporarily unavailable. Please try again.'
 }
 
-function getOrCreateChatSessionId(): string {
-    if (typeof window === 'undefined') {
-        return crypto.randomUUID()
-    }
-
-    const existing = window.sessionStorage.getItem(CHAT_SESSION_STORAGE_KEY)
-    if (existing) return existing
-
-    const nextId = crypto.randomUUID()
-    window.sessionStorage.setItem(CHAT_SESSION_STORAGE_KEY, nextId)
-    return nextId
-}
-
 export default function RAGChatBot() {
     const [input, setInput] = useState('')
-    const [chatSessionId] = useState(getOrCreateChatSessionId)
+    const [{ chatSessionId, transport }] = useState(() =>
+        createCondevChatTransport({
+            sessionStorageKey: 'condev-rag-chat-session-id',
+        })
+    )
     const { messages, sendMessage, status, error, regenerate, stop } = useChat({
         id: chatSessionId,
-        transport: new DefaultChatTransport({
-            body: {
-                chatSessionId,
-            },
-        }),
+        transport,
     })
     const handleSubmit = (message: PromptInputMessage) => {
         if (!message.text) return

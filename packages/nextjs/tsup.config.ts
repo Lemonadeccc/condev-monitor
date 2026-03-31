@@ -1,7 +1,7 @@
 import { defineConfig } from 'tsup'
 
 const shared = {
-    external: ['react', 'react-dom', 'next', '@opentelemetry/api', '@opentelemetry/sdk-trace-base', /^@condev-monitor\//],
+    external: ['ai', 'react', 'react-dom', 'next', '@opentelemetry/api', '@opentelemetry/sdk-trace-base', /^@condev-monitor\//],
 }
 
 const clientBanner = { js: '"use client";' }
@@ -12,6 +12,7 @@ export default defineConfig([
         entry: {
             index: 'src/index.ts',
             client: 'src/client.ts',
+            chat: 'src/chat.ts',
         },
         format: ['cjs'],
         outDir: 'build/cjs',
@@ -23,6 +24,7 @@ export default defineConfig([
         entry: {
             index: 'src/index.ts',
             client: 'src/client.ts',
+            chat: 'src/chat.ts',
         },
         format: ['esm'],
         outDir: 'build/esm',
