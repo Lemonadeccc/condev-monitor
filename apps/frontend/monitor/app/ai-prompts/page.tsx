@@ -4,21 +4,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { BookText } from 'lucide-react'
 import { useState } from 'react'
 
-import { AIMonitorHeader, AIMonitorPage, AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
+import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions, AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { useApplications } from '@/hooks/use-applications'
+import { resolveMonitorAppId, useMonitorScope } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
 
 type Prompt = {
@@ -71,12 +64,12 @@ export default function AiPromptsPage() {
     const { listQuery } = useApplications({ enabled: !!user })
     const queryClient = useQueryClient()
     const applications = listQuery.data?.data?.applications ?? []
-    const [selectedAppId, setSelectedAppId] = useState<string | null>(null)
+    const { selectedAppId, setSelectedAppId } = useMonitorScope('30m')
     const [selectedPromptId, setSelectedPromptId] = useState<number | null>(null)
     const [promptForm, setPromptForm] = useState({ name: '', description: '', labels: '', template: '' })
     const [versionForm, setVersionForm] = useState({ version: '', template: '' })
 
-    const appId = selectedAppId ?? applications[0]?.appId ?? null
+    const appId = resolveMonitorAppId(applications, selectedAppId) || null
 
     const promptsQuery = useQuery<PromptsResponse>({
         queryKey: ['ai-prompts', appId],
@@ -89,7 +82,7 @@ export default function AiPromptsPage() {
     })
 
     const prompts = promptsQuery.data?.data?.prompts ?? []
-    const activePromptId = selectedPromptId ?? prompts[0]?.id ?? null
+    const activePromptId = prompts.some(prompt => prompt.id === selectedPromptId) ? selectedPromptId : (prompts[0]?.id ?? null)
 
     const versionsQuery = useQuery<VersionsResponse>({
         queryKey: ['ai-prompt-versions', appId, activePromptId],
@@ -165,24 +158,7 @@ export default function AiPromptsPage() {
                 icon={BookText}
                 title="AI Prompts"
                 description="Manage reusable prompt templates and version them without leaving the monitor."
-                actions={
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="default" size="sm">
-                                {applications.find(app => app.appId === appId)?.name ?? 'Select App'}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Application</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {applications.map(app => (
-                                <DropdownMenuItem key={app.appId} onClick={() => setSelectedAppId(app.appId)}>
-                                    {app.name}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-                }
+                actions={<AIMonitorScopeActions applications={applications} appId={appId} onAppChange={setSelectedAppId} />}
             />
 
             <div className="grid gap-6 xl:grid-cols-[1.1fr_0.9fr] xl:items-stretch">

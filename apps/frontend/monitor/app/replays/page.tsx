@@ -2,27 +2,21 @@
 
 import { useQuery } from '@tanstack/react-query'
 import Link from 'next/link'
-import { useMemo, useState } from 'react'
+import { useSearchParams } from 'next/navigation'
+import { useMemo } from 'react'
 
+import { AIMonitorScopeActions } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { useApplications } from '@/hooks/use-applications'
+import { buildMonitorScopeHref, resolveMonitorAppId, resolveMonitorTimeWindow, useMonitorScope } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
 
 type ReplayListResponse = {
     success: boolean
     data: {
         appId: string
-        range: '1h' | '3h' | '1d' | '7d' | '1m'
+        range: '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y'
         from: string
         to: string
         items: Array<{
@@ -45,24 +39,25 @@ function formatTime(ts: string | null) {
 export default function ReplaysPage() {
     const { user, loading } = useAuth()
     const enabled = !loading && Boolean(user)
+    const searchParams = useSearchParams()
 
-    const [range, setRange] = useState<'1h' | '3h' | '1d' | '7d' | '1m'>('7d')
-    const [selectedAppId, setSelectedAppId] = useState<string>('')
+    const { selectedAppId, setSelectedAppId, range, setRange, from, setFrom, to, setTo, clearCustomRange } = useMonitorScope('30m')
 
     const { listQuery } = useApplications({ enabled })
     const applications = useMemo(() => {
         const list = listQuery.data?.data?.applications ?? []
         return list.filter(app => app.replayEnabled)
     }, [listQuery.data?.data?.applications])
-    const effectiveAppId = selectedAppId || applications[0]?.appId || ''
-
-    const appById = useMemo(() => new Map(applications.map(app => [app.appId, app])), [applications])
+    const effectiveAppId = resolveMonitorAppId(applications, selectedAppId)
+    const timeWindow = useMemo(() => resolveMonitorTimeWindow(range, from, to), [from, range, to])
 
     const replaysQuery = useQuery({
-        queryKey: ['replays', effectiveAppId, range],
+        queryKey: ['replays', effectiveAppId, range, timeWindow.from, timeWindow.to],
         enabled: enabled && Boolean(effectiveAppId),
         queryFn: async (): Promise<ReplayListResponse> => {
             const params = new URLSearchParams({ appId: effectiveAppId, range })
+            params.set('from', timeWindow.from)
+            params.set('to', timeWindow.to)
             const res = await fetch(`/dsn-api/replays?${params.toString()}`)
             if (!res.ok) {
                 throw new Error('Failed to load replays')
@@ -89,41 +84,18 @@ export default function ReplaysPage() {
             </header>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-                <div className="flex items-center gap-2">
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="default" size="sm">
-                                {appById.get(effectiveAppId)?.name || 'Select app'}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Application</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {applications.map(app => (
-                                <DropdownMenuItem key={app.appId} onSelect={() => setSelectedAppId(app.appId)}>
-                                    {app.name}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="default" size="sm">
-                                {range.toUpperCase()}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Range</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {(['1h', '3h', '1d', '7d', '1m'] as const).map(r => (
-                                <DropdownMenuItem key={r} onSelect={() => setRange(r)}>
-                                    {r.toUpperCase()}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-                </div>
+                <AIMonitorScopeActions
+                    applications={applications}
+                    appId={effectiveAppId}
+                    onAppChange={setSelectedAppId}
+                    range={range}
+                    onRangeChange={setRange}
+                    from={from}
+                    to={to}
+                    onFromChange={setFrom}
+                    onToChange={setTo}
+                    onClearCustomRange={clearCustomRange}
+                />
             </div>
 
             <Card className="bg-primary-foreground shadow-none">
@@ -157,7 +129,10 @@ export default function ReplaysPage() {
                                             <td className="px-6 py-4 font-mono">
                                                 <Link
                                                     className="text-primary hover:underline"
-                                                    href={`/replay?appId=${encodeURIComponent(effectiveAppId)}&replayId=${encodeURIComponent(row.replayId)}`}
+                                                    href={buildMonitorScopeHref(
+                                                        `/replay?appId=${encodeURIComponent(effectiveAppId)}&replayId=${encodeURIComponent(row.replayId)}`,
+                                                        searchParams
+                                                    )}
                                                 >
                                                     {row.replayId}
                                                 </Link>

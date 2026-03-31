@@ -1,29 +1,22 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { useMemo } from 'react'
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts'
 
+import { AIMonitorScopeActions } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
-import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { type ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { useApplications } from '@/hooks/use-applications'
+import { resolveMonitorAppId, resolveMonitorTimeWindow, useMonitorScope } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
 
 type MetricApiResponse = {
     success: boolean
     data: {
         appId: string
-        range: '1h' | '3h' | '1d' | '7d' | '1m'
+        range: '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y'
         from: string
         to: string
         intervalSeconds: number
@@ -51,20 +44,20 @@ export default function MetricPage() {
     const { user, loading } = useAuth()
     const enabled = !loading && Boolean(user)
 
-    const [range, setRange] = useState<'1h' | '3h' | '1d' | '7d' | '1m'>('1h')
-    const [selectedAppId, setSelectedAppId] = useState<string>('')
+    const { selectedAppId, setSelectedAppId, range, setRange, from, setFrom, to, setTo, clearCustomRange } = useMonitorScope('30m')
 
     const { listQuery } = useApplications({ enabled })
     const applications = useMemo(() => listQuery.data?.data?.applications ?? [], [listQuery.data?.data?.applications])
-    const effectiveAppId = selectedAppId || applications[0]?.appId || ''
-
-    const appById = useMemo(() => new Map(applications.map(app => [app.appId, app])), [applications])
+    const effectiveAppId = resolveMonitorAppId(applications, selectedAppId)
+    const timeWindow = useMemo(() => resolveMonitorTimeWindow(range, from, to), [from, range, to])
 
     const metricQuery = useQuery({
-        queryKey: ['metric', effectiveAppId, range],
+        queryKey: ['metric', effectiveAppId, range, timeWindow.from, timeWindow.to],
         enabled: enabled && Boolean(effectiveAppId),
         queryFn: async (): Promise<MetricApiResponse> => {
             const params = new URLSearchParams({ appId: effectiveAppId, range })
+            params.set('from', timeWindow.from)
+            params.set('to', timeWindow.to)
             const res = await fetch(`/dsn-api/metric?${params.toString()}`)
             if (!res.ok) {
                 throw new Error('Failed to load metric')
@@ -105,41 +98,18 @@ export default function MetricPage() {
             </header>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-                <div className="flex items-center gap-2">
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="default" size="sm">
-                                {appById.get(effectiveAppId)?.name || 'Select app'}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Application</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {applications.map(app => (
-                                <DropdownMenuItem key={app.appId} onSelect={() => setSelectedAppId(app.appId)}>
-                                    {app.name}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="default" size="sm">
-                                {range.toUpperCase()}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Range</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {(['1h', '3h', '1d', '7d', '1m'] as const).map(r => (
-                                <DropdownMenuItem key={r} onSelect={() => setRange(r)}>
-                                    {r.toUpperCase()}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-                </div>
+                <AIMonitorScopeActions
+                    applications={applications}
+                    appId={effectiveAppId}
+                    onAppChange={setSelectedAppId}
+                    range={range}
+                    onRangeChange={setRange}
+                    from={from}
+                    to={to}
+                    onFromChange={setFrom}
+                    onToChange={setTo}
+                    onClearCustomRange={clearCustomRange}
+                />
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-5">
@@ -209,10 +179,13 @@ export default function MetricPage() {
                                     tickMargin={8}
                                     tickFormatter={value => {
                                         const d = new Date(value)
-                                        if (range === '1h' || range === '3h') {
+                                        if (range === '30m' || range === '1h' || range === '3h') {
                                             return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
                                         }
                                         if (range === '1d') return d.toLocaleTimeString('en-US', { hour: '2-digit' })
+                                        if (range === '1y') {
+                                            return d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
+                                        }
                                         return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' })
                                     }}
                                 />
@@ -223,8 +196,7 @@ export default function MetricPage() {
                                 <ChartTooltip
                                     content={
                                         <ChartTooltipContent
-                                            labelKey="ts"
-                                            labelFormatter={value => formatTime(String(value))}
+                                            labelFormatter={(_value, payload) => formatTime(String(payload?.[0]?.payload?.ts ?? ''))}
                                             formatter={(value, name) => (
                                                 <div className="flex flex-1 justify-between leading-none">
                                                     <span className="text-muted-foreground">

@@ -9,6 +9,7 @@ import { useAuth } from '@/components/providers'
 import { ReplayPlayer } from '@/components/replay/ReplayPlayer'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { buildMonitorScopeHref } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
 
 type ReplayGetResponse = {
@@ -78,7 +79,7 @@ export default function ReplayPage() {
                     <p className="text-sm text-muted-foreground font-mono break-all">{replayId || '-'}</p>
                 </div>
                 <Button asChild variant="outline" size="sm">
-                    <Link href="/replays">Back</Link>
+                    <Link href={buildMonitorScopeHref('/replays', searchParams)}>Back</Link>
                 </Button>
             </header>
 

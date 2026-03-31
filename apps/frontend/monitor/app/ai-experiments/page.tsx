@@ -3,23 +3,24 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { FlaskConical } from 'lucide-react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { useState } from 'react'
 
-import { AI_NATIVE_SELECT_CLASS, AIMonitorHeader, AIMonitorPage, AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
+import {
+    AI_NATIVE_SELECT_CLASS,
+    AIMonitorHeader,
+    AIMonitorPage,
+    AIMonitorScopeActions,
+    AIPanelCard,
+    AIStateMessage,
+} from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { useApplications } from '@/hooks/use-applications'
+import { buildMonitorScopeHref, resolveMonitorAppId, useMonitorScope } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
 
 type PromptOption = { id: number; name: string }
@@ -72,10 +73,11 @@ function parseSummary(raw: string) {
 
 export default function AiExperimentsPage() {
     const { user } = useAuth()
+    const searchParams = useSearchParams()
     const { listQuery } = useApplications({ enabled: !!user })
     const queryClient = useQueryClient()
     const applications = listQuery.data?.data?.applications ?? []
-    const [selectedAppId, setSelectedAppId] = useState<string | null>(null)
+    const { selectedAppId, setSelectedAppId } = useMonitorScope('30m')
     const [selectedExperimentId, setSelectedExperimentId] = useState<number | null>(null)
     const [experimentForm, setExperimentForm] = useState({
         name: '',
@@ -90,7 +92,7 @@ export default function AiExperimentsPage() {
         summary: '{"note":"initial run"}',
     })
 
-    const appId = selectedAppId ?? applications[0]?.appId ?? null
+    const appId = resolveMonitorAppId(applications, selectedAppId) || null
 
     const experimentsQuery = useQuery<ExperimentsResponse>({
         queryKey: ['ai-experiments', appId],
@@ -123,7 +125,9 @@ export default function AiExperimentsPage() {
     })
 
     const experiments = experimentsQuery.data?.data?.experiments ?? []
-    const activeExperimentId = selectedExperimentId ?? experiments[0]?.id ?? null
+    const activeExperimentId = experiments.some(experiment => experiment.id === selectedExperimentId)
+        ? selectedExperimentId
+        : (experiments[0]?.id ?? null)
 
     const runsQuery = useQuery<ExperimentRunsResponse>({
         queryKey: ['ai-experiment-runs', appId, activeExperimentId],
@@ -187,24 +191,7 @@ export default function AiExperimentsPage() {
                 icon={FlaskConical}
                 title="AI Experiments"
                 description="Track prompt and dataset combinations, then attach runs back to traces for evaluation."
-                actions={
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="default" size="sm">
-                                {applications.find(app => app.appId === appId)?.name ?? 'Select App'}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Application</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {applications.map(app => (
-                                <DropdownMenuItem key={app.appId} onClick={() => setSelectedAppId(app.appId)}>
-                                    {app.name}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-                }
+                actions={<AIMonitorScopeActions applications={applications} appId={appId} onAppChange={setSelectedAppId} />}
             />
 
             <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">
@@ -366,7 +353,10 @@ export default function AiExperimentsPage() {
                                     </div>
                                     {run.traceId ? (
                                         <Link
-                                            href={`/ai-traces/${run.traceId}?appId=${encodeURIComponent(appId ?? '')}`}
+                                            href={buildMonitorScopeHref(
+                                                `/ai-traces/${run.traceId}?appId=${encodeURIComponent(appId ?? '')}`,
+                                                searchParams
+                                            )}
                                             className="text-sm text-primary hover:underline"
                                         >
                                             Open trace

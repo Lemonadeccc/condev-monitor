@@ -2,21 +2,13 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { ClipboardCheck } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo } from 'react'
 
-import { AIMonitorHeader, AIMonitorPage, AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
+import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions, AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
-import { Button } from '@/components/ui/button'
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useApplications } from '@/hooks/use-applications'
+import { resolveMonitorAppId, resolveMonitorTimeWindow, useMonitorScope } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
 
 type Evaluation = {
@@ -57,15 +49,19 @@ export default function EvaluationPage() {
     const { user } = useAuth()
     const { listQuery } = useApplications({ enabled: !!user })
     const applications = listQuery.data?.data?.applications ?? []
-    const [selectedAppId, setSelectedAppId] = useState<string | null>(null)
+    const { selectedAppId, setSelectedAppId, range, setRange, from, setFrom, to, setTo, clearCustomRange } = useMonitorScope('30m')
 
-    const appId = selectedAppId ?? applications[0]?.appId ?? null
+    const appId = resolveMonitorAppId(applications, selectedAppId) || null
+    const timeWindow = useMemo(() => resolveMonitorTimeWindow(range, from, to), [from, range, to])
 
     const evalsQuery = useQuery<EvaluationsApiResponse>({
-        queryKey: ['ai-evaluations', appId],
+        queryKey: ['ai-evaluations', appId, range, timeWindow.from, timeWindow.to],
         enabled: !!appId,
         queryFn: async () => {
-            const res = await fetch(`/api/ai/evaluations?appId=${appId}`)
+            const params = new URLSearchParams({ appId: appId! })
+            params.set('from', timeWindow.from)
+            params.set('to', timeWindow.to)
+            const res = await fetch(`/api/ai/evaluations?${params.toString()}`)
             if (!res.ok) throw new Error('Failed to load evaluations')
             return res.json()
         },
@@ -80,22 +76,18 @@ export default function EvaluationPage() {
                 title="Evaluations"
                 description="Review scores and labels attached to traces from the UI or SDK."
                 actions={
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="default" size="sm">
-                                {applications.find(a => a.appId === appId)?.name ?? 'Select App'}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Application</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {applications.map(app => (
-                                <DropdownMenuItem key={app.appId} onClick={() => setSelectedAppId(app.appId)}>
-                                    {app.name}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
+                    <AIMonitorScopeActions
+                        applications={applications}
+                        appId={appId}
+                        onAppChange={setSelectedAppId}
+                        range={range}
+                        onRangeChange={setRange}
+                        from={from}
+                        to={to}
+                        onFromChange={setFrom}
+                        onToChange={setTo}
+                        onClearCustomRange={clearCustomRange}
+                    />
                 }
             />
 

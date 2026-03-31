@@ -9,6 +9,7 @@ import { useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { buildMonitorScopeHref } from '@/hooks/use-monitor-scope'
 import { formatDateTime, parseDateTimeValue } from '@/lib/datetime'
 
 type Span = {
@@ -259,7 +260,7 @@ export default function TraceDetailPage() {
     return (
         <div className="py-6 space-y-6">
             <div className="flex flex-wrap items-center gap-2">
-                <Link href={`/ai-traces?appId=${appId}`}>
+                <Link href={buildMonitorScopeHref(`/ai-traces?appId=${appId}`, searchParams)}>
                     <Button variant="ghost" size="sm" className="gap-1">
                         <ArrowLeft className="h-4 w-4" /> Back
                     </Button>
@@ -358,7 +359,7 @@ export default function TraceDetailPage() {
                                         <div>Failure: {streaming.failureStage || streaming.completionReason || '—'}</div>
                                         {streaming.errorMessage && <div className="text-destructive">{streaming.errorMessage}</div>}
                                         <div className="pt-1">
-                                            <Link href={`/ai-streaming?appId=${appId}`}>
+                                            <Link href={buildMonitorScopeHref(`/ai-streaming?appId=${appId}`, searchParams)}>
                                                 <Button variant="outline" size="sm" className="gap-1">
                                                     Open Streaming <ExternalLink className="h-3.5 w-3.5" />
                                                 </Button>
@@ -380,7 +381,10 @@ export default function TraceDetailPage() {
                                 </div>
                                 {replay?.replayId && (
                                     <Link
-                                        href={`/replay?appId=${encodeURIComponent(appId)}&replayId=${encodeURIComponent(replay.replayId)}`}
+                                        href={buildMonitorScopeHref(
+                                            `/replay?appId=${encodeURIComponent(appId)}&replayId=${encodeURIComponent(replay.replayId)}`,
+                                            searchParams
+                                        )}
                                     >
                                         <Button variant="outline" size="sm" className="gap-1">
                                             Open Replay <ExternalLink className="h-3.5 w-3.5" />

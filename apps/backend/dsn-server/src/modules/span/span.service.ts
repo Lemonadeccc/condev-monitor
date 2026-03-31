@@ -12,7 +12,7 @@ import { EmailService } from '../email/email.service'
 import { InboundFilterService } from '../ingest/inbound-filter.service'
 import { IngestWriterService } from '../ingest/ingest-writer.service'
 
-type OverviewRange = '1h' | '3h' | '1d' | '7d' | '1m'
+type OverviewRange = '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y'
 
 type OverviewBucket = {
     ts: string
@@ -607,13 +607,19 @@ export class SpanService {
         return data.data
     }
 
-    async errorEvents(params: { appId: string; limit: number }) {
+    async errorEvents(params: { appId: string; limit: number; from?: string; to?: string }) {
         const appId = (params.appId ?? '').trim()
         if (!appId) {
             throw new BadRequestException({ message: 'appId is required', error: 'APP_ID_REQUIRED' })
         }
 
         const limit = Number.isFinite(params.limit) ? Math.max(1, Math.min(200, Math.floor(params.limit))) : 20
+        const timeWindow = resolveTimeWindow({
+            range: '7d',
+            from: params.from,
+            to: params.to,
+            fallbackRange: '7d',
+        })
 
         const res = await this.clickhouseClient.query({
             query: `
@@ -625,10 +631,17 @@ export class SpanService {
                 FROM ${this.clickhouseDatabase}.base_monitor_storage
                 WHERE app_id = {appId:String}
                   AND event_type = 'error'
+                  AND created_at >= {from:DateTime64(3, 'UTC')}
+                  AND created_at <= {to:DateTime64(3, 'UTC')}
                 ORDER BY created_at DESC
                 LIMIT {limit:UInt32}
             `,
-            query_params: { appId, limit },
+            query_params: {
+                appId,
+                limit,
+                from: timeWindow.from,
+                to: timeWindow.to,
+            },
             format: 'JSON',
         })
 
@@ -696,7 +709,13 @@ export class SpanService {
         }
 
         const range =
-            params.range === '1h' || params.range === '3h' || params.range === '1d' || params.range === '7d' || params.range === '1m'
+            params.range === '30m' ||
+            params.range === '1h' ||
+            params.range === '3h' ||
+            params.range === '1d' ||
+            params.range === '7d' ||
+            params.range === '1m' ||
+            params.range === '1y'
                 ? params.range
                 : '7d'
         const now = new Date()
@@ -775,18 +794,23 @@ export class SpanService {
         }
     }
 
-    async issues(params: { appId?: string; range: OverviewRange; limit: number }) {
+    async issues(params: { appId?: string; range: OverviewRange; from?: string; to?: string; limit: number }) {
         const range =
-            params.range === '1h' || params.range === '3h' || params.range === '1d' || params.range === '7d' || params.range === '1m'
+            params.range === '30m' ||
+            params.range === '1h' ||
+            params.range === '3h' ||
+            params.range === '1d' ||
+            params.range === '7d' ||
+            params.range === '1m' ||
+            params.range === '1y'
                 ? params.range
                 : '7d'
         const limit = Number.isFinite(params.limit) ? Math.max(1, Math.min(500, Math.floor(params.limit))) : 200
 
-        const now = new Date()
-        const { from, interval } = resolveRange(now, range)
+        const { from, to, interval } = resolveTimeWindow({ range, from: params.from, to: params.to, fallbackRange: '7d' })
         const fromSeconds = Math.floor(from.getTime() / 1000)
         const offsetSeconds = interval > 0 ? fromSeconds % interval : 0
-        const toSeconds = Math.floor(now.getTime() / 1000)
+        const toSeconds = Math.floor(to.getTime() / 1000)
 
         const appId = (params.appId ?? '').trim()
         const appFilter = appId ? 'AND app_id = {appId:String}' : ''
@@ -899,29 +923,34 @@ export class SpanService {
                 appId: appId || null,
                 range,
                 from: from.toISOString(),
-                to: now.toISOString(),
+                to: to.toISOString(),
                 intervalSeconds: interval,
                 issues: items,
             },
         }
     }
 
-    async metric(params: { appId: string; range: OverviewRange }) {
+    async metric(params: { appId: string; range: OverviewRange; from?: string; to?: string }) {
         const appId = (params.appId ?? '').trim()
         if (!appId) {
             throw new BadRequestException({ message: 'appId is required', error: 'APP_ID_REQUIRED' })
         }
 
         const range =
-            params.range === '1h' || params.range === '3h' || params.range === '1d' || params.range === '7d' || params.range === '1m'
+            params.range === '30m' ||
+            params.range === '1h' ||
+            params.range === '3h' ||
+            params.range === '1d' ||
+            params.range === '7d' ||
+            params.range === '1m' ||
+            params.range === '1y'
                 ? params.range
                 : '7d'
 
-        const now = new Date()
-        const { from, interval } = resolveRange(now, range)
+        const { from, to, interval } = resolveTimeWindow({ range, from: params.from, to: params.to, fallbackRange: '1h' })
         const fromSeconds = Math.floor(from.getTime() / 1000)
         const offsetSeconds = interval > 0 ? fromSeconds % interval : 0
-        const toSeconds = Math.floor(now.getTime() / 1000)
+        const toSeconds = Math.floor(to.getTime() / 1000)
 
         const seriesRes = await this.clickhouseClient.query({
             query: `
@@ -1157,7 +1186,7 @@ export class SpanService {
                 appId,
                 range,
                 from: from.toISOString(),
-                to: now.toISOString(),
+                to: to.toISOString(),
                 intervalSeconds: interval,
                 totals: {
                     total: totals.webVitals + totals.longTask + totals.jank + totals.lowFps,
@@ -1295,7 +1324,7 @@ export class SpanService {
         return { success: true, data: item }
     }
 
-    async replays(params: { appId: string; range: OverviewRange; limit: number }) {
+    async replays(params: { appId: string; range: OverviewRange; from?: string; to?: string; limit: number }) {
         const appId = (params.appId ?? '').trim()
         if (!appId) {
             throw new BadRequestException({ message: 'appId is required', error: 'APP_ID_REQUIRED' })
@@ -1316,15 +1345,20 @@ export class SpanService {
         }
 
         const range =
-            params.range === '1h' || params.range === '3h' || params.range === '1d' || params.range === '7d' || params.range === '1m'
+            params.range === '30m' ||
+            params.range === '1h' ||
+            params.range === '3h' ||
+            params.range === '1d' ||
+            params.range === '7d' ||
+            params.range === '1m' ||
+            params.range === '1y'
                 ? params.range
                 : '7d'
         const limit = Number.isFinite(params.limit) ? Math.max(1, Math.min(200, Math.floor(params.limit))) : 50
 
-        const now = new Date()
-        const { from } = resolveRange(now, range)
+        const { from, to } = resolveTimeWindow({ range, from: params.from, to: params.to, fallbackRange: '7d' })
         const fromSeconds = Math.floor(from.getTime() / 1000)
-        const toSeconds = Math.floor(now.getTime() / 1000)
+        const toSeconds = Math.floor(to.getTime() / 1000)
 
         const res = await this.clickhouseClient.query({
             query: `
@@ -1361,28 +1395,33 @@ export class SpanService {
                 appId,
                 range,
                 from: from.toISOString(),
-                to: now.toISOString(),
+                to: to.toISOString(),
                 items,
             },
         }
     }
 
-    async aiStreaming(params: { appId: string; range: OverviewRange; limit: number }) {
+    async aiStreaming(params: { appId: string; range: OverviewRange; from?: string; to?: string; limit: number }) {
         const appId = (params.appId ?? '').trim()
         if (!appId) {
             throw new BadRequestException({ message: 'appId is required', error: 'APP_ID_REQUIRED' })
         }
 
         const range =
-            params.range === '1h' || params.range === '3h' || params.range === '1d' || params.range === '7d' || params.range === '1m'
+            params.range === '30m' ||
+            params.range === '1h' ||
+            params.range === '3h' ||
+            params.range === '1d' ||
+            params.range === '7d' ||
+            params.range === '1m' ||
+            params.range === '1y'
                 ? params.range
                 : '1h'
         const limit = Number.isFinite(params.limit) ? Math.max(1, Math.min(500, Math.floor(params.limit))) : 50
 
-        const now = new Date()
-        const { from } = resolveRange(now, range)
+        const { from, to } = resolveTimeWindow({ range, from: params.from, to: params.to, fallbackRange: '1h' })
         const fromSeconds = Math.floor(from.getTime() / 1000)
-        const toSeconds = Math.floor(now.getTime() / 1000)
+        const toSeconds = Math.floor(to.getTime() / 1000)
         const importanceSql = buildImportanceSql('attributes', 'name')
         const failureImpactSql = buildFailureImpactSql('attributes', 'name')
 
@@ -1491,7 +1530,7 @@ export class SpanService {
                       AND t.started_at >= parseDateTime64BestEffort({from:String})
                       AND t.started_at < parseDateTime64BestEffort({to:String})
                 `,
-                query_params: { appId, from: from.toISOString(), to: now.toISOString() },
+                query_params: { appId, from: from.toISOString(), to: to.toISOString() },
                 format: 'JSON' as const,
             }),
             // Query 3: aggregate stats for network layer (exclude sseTtfb = -1 sentinel and probe_limit)
@@ -1590,7 +1629,7 @@ export class SpanService {
                 appId,
                 range,
                 from: from.toISOString(),
-                to: now.toISOString(),
+                to: to.toISOString(),
                 totals,
                 traces,
             },
@@ -1598,8 +1637,66 @@ export class SpanService {
     }
 }
 
+function resolveTimeWindow(params: { range: OverviewRange; from?: string; to?: string; fallbackRange: OverviewRange }): {
+    from: Date
+    to: Date
+    interval: number
+} {
+    const fallbackRange =
+        params.range === '30m' ||
+        params.range === '1h' ||
+        params.range === '3h' ||
+        params.range === '1d' ||
+        params.range === '7d' ||
+        params.range === '1m' ||
+        params.range === '1y'
+            ? params.range
+            : params.fallbackRange
+
+    const now = new Date()
+    const parsedTo = parseOptionalDate(params.to)
+    let effectiveTo = parsedTo ?? now
+    const parsedFrom = parseOptionalDate(params.from)
+    const fallbackFrom = resolveRange(effectiveTo, fallbackRange).from
+    let effectiveFrom = parsedFrom ?? fallbackFrom
+
+    if (effectiveFrom.getTime() > effectiveTo.getTime()) {
+        ;[effectiveFrom, effectiveTo] = [effectiveTo, effectiveFrom]
+    }
+
+    return {
+        from: effectiveFrom,
+        to: effectiveTo,
+        interval: resolveIntervalSeconds(effectiveTo.getTime() - effectiveFrom.getTime()),
+    }
+}
+
+function parseOptionalDate(value?: string): Date | null {
+    if (!value) return null
+    const date = new Date(value)
+    return Number.isNaN(date.getTime()) ? null : date
+}
+
+function resolveIntervalSeconds(durationMs: number): number {
+    const halfHour = 30 * 60 * 1000
+    const hour = 60 * 60 * 1000
+    const day = 24 * hour
+
+    if (durationMs <= halfHour) return 60
+    if (durationMs <= hour) return 5 * 60
+    if (durationMs <= 3 * hour) return 15 * 60
+    if (durationMs <= day) return 60 * 60
+    if (durationMs <= 7 * day) return 6 * 60 * 60
+    if (durationMs <= 30 * day) return 24 * 60 * 60
+    return 7 * 24 * 60 * 60
+}
+
 function resolveRange(now: Date, range: OverviewRange): { from: Date; interval: number } {
     const from = new Date(now)
+    if (range === '30m') {
+        from.setMinutes(from.getMinutes() - 30)
+        return { from, interval: 60 } // 1 minute
+    }
     if (range === '1h') {
         from.setHours(from.getHours() - 1)
         return { from, interval: 5 * 60 } // 5 minutes
@@ -1615,6 +1712,10 @@ function resolveRange(now: Date, range: OverviewRange): { from: Date; interval: 
     if (range === '1m') {
         from.setDate(from.getDate() - 30)
         return { from, interval: 24 * 60 * 60 } // 1 day
+    }
+    if (range === '1y') {
+        from.setFullYear(from.getFullYear() - 1)
+        return { from, interval: 7 * 24 * 60 * 60 } // 1 week
     }
 
     // default 7d

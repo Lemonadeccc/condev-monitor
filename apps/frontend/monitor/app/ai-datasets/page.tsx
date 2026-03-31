@@ -4,21 +4,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Database } from 'lucide-react'
 import { useState } from 'react'
 
-import { AIMonitorHeader, AIMonitorPage, AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
+import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions, AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { useApplications } from '@/hooks/use-applications'
+import { resolveMonitorAppId, useMonitorScope } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
 
 type Dataset = {
@@ -58,12 +51,12 @@ export default function AiDatasetsPage() {
     const { listQuery } = useApplications({ enabled: !!user })
     const queryClient = useQueryClient()
     const applications = listQuery.data?.data?.applications ?? []
-    const [selectedAppId, setSelectedAppId] = useState<string | null>(null)
+    const { selectedAppId, setSelectedAppId } = useMonitorScope('30m')
     const [selectedDatasetId, setSelectedDatasetId] = useState<number | null>(null)
     const [datasetForm, setDatasetForm] = useState({ name: '', description: '' })
     const [itemForm, setItemForm] = useState({ name: '', input: '', expectedOutput: '', metadata: '{}' })
 
-    const appId = selectedAppId ?? applications[0]?.appId ?? null
+    const appId = resolveMonitorAppId(applications, selectedAppId) || null
 
     const datasetsQuery = useQuery<DatasetsResponse>({
         queryKey: ['ai-datasets', appId],
@@ -76,7 +69,7 @@ export default function AiDatasetsPage() {
     })
 
     const datasets = datasetsQuery.data?.data?.datasets ?? []
-    const activeDatasetId = selectedDatasetId ?? datasets[0]?.id ?? null
+    const activeDatasetId = datasets.some(dataset => dataset.id === selectedDatasetId) ? selectedDatasetId : (datasets[0]?.id ?? null)
 
     const itemsQuery = useQuery<DatasetItemsResponse>({
         queryKey: ['ai-dataset-items', appId, activeDatasetId],
@@ -137,24 +130,7 @@ export default function AiDatasetsPage() {
                 icon={Database}
                 title="AI Datasets"
                 description="Store reusable evaluation cases and expected outputs for experiments and regression checks."
-                actions={
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="default" size="sm">
-                                {applications.find(app => app.appId === appId)?.name ?? 'Select App'}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Application</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {applications.map(app => (
-                                <DropdownMenuItem key={app.appId} onClick={() => setSelectedAppId(app.appId)}>
-                                    {app.name}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-                }
+                actions={<AIMonitorScopeActions applications={applications} appId={appId} onAppChange={setSelectedAppId} />}
             />
 
             <div className="grid gap-6 xl:grid-cols-[1fr_1fr]">

@@ -4,19 +4,18 @@ import { useQuery } from '@tanstack/react-query'
 import { SquareTerminal } from 'lucide-react'
 import { useState } from 'react'
 
-import { AI_NATIVE_SELECT_CLASS, AIMonitorHeader, AIMonitorPage, AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
-import { useAuth } from '@/components/providers'
-import { Button } from '@/components/ui/button'
 import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
+    AI_NATIVE_SELECT_CLASS,
+    AIMonitorHeader,
+    AIMonitorPage,
+    AIMonitorScopeActions,
+    AIPanelCard,
+    AIStateMessage,
+} from '@/components/ai/page-shell'
+import { useAuth } from '@/components/providers'
 import { Textarea } from '@/components/ui/textarea'
 import { useApplications } from '@/hooks/use-applications'
+import { resolveMonitorAppId, useMonitorScope } from '@/hooks/use-monitor-scope'
 
 type Prompt = {
     id: number
@@ -55,12 +54,12 @@ export default function AiPlaygroundPage() {
     const { user } = useAuth()
     const { listQuery } = useApplications({ enabled: !!user })
     const applications = listQuery.data?.data?.applications ?? []
-    const [selectedAppId, setSelectedAppId] = useState<string | null>(null)
+    const { selectedAppId, setSelectedAppId } = useMonitorScope('30m')
     const [selectedPromptId, setSelectedPromptId] = useState<number | null>(null)
     const [selectedVersionId, setSelectedVersionId] = useState<number | null>(null)
     const [variablesText, setVariablesText] = useState('{"topic":"hybrid observability","language":"zh-CN"}')
 
-    const appId = selectedAppId ?? applications[0]?.appId ?? null
+    const appId = resolveMonitorAppId(applications, selectedAppId) || null
 
     const promptsQuery = useQuery<PromptsResponse>({
         queryKey: ['ai-playground-prompts', appId],
@@ -73,7 +72,7 @@ export default function AiPlaygroundPage() {
     })
 
     const prompts = promptsQuery.data?.data?.prompts ?? []
-    const activePromptId = selectedPromptId ?? prompts[0]?.id ?? null
+    const activePromptId = prompts.some(prompt => prompt.id === selectedPromptId) ? selectedPromptId : (prompts[0]?.id ?? null)
 
     const versionsQuery = useQuery<VersionsResponse>({
         queryKey: ['ai-playground-versions', appId, activePromptId],
@@ -103,24 +102,7 @@ export default function AiPlaygroundPage() {
                 icon={SquareTerminal}
                 title="AI Playground"
                 description="Preview prompt rendering locally and debug variables without sending a live model request."
-                actions={
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="default" size="sm">
-                                {applications.find(app => app.appId === appId)?.name ?? 'Select App'}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Application</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {applications.map(app => (
-                                <DropdownMenuItem key={app.appId} onClick={() => setSelectedAppId(app.appId)}>
-                                    {app.name}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-                }
+                actions={<AIMonitorScopeActions applications={applications} appId={appId} onAppChange={setSelectedAppId} />}
             />
 
             <div className="grid gap-6 xl:grid-cols-[0.8fr_1.2fr]">

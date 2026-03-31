@@ -4,20 +4,14 @@ import { useQuery } from '@tanstack/react-query'
 import { useMemo, useState } from 'react'
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts'
 
+import { AIMonitorScopeActions, getMonitorRangeLabel } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog'
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { useApplications } from '@/hooks/use-applications'
+import { resolveMonitorAppId, resolveMonitorTimeWindow, useMonitorScope } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
 import { cn } from '@/lib/utils'
 
@@ -25,7 +19,7 @@ type IssuesApiResponse = {
     success: boolean
     data: {
         appId: string | null
-        range: '1h' | '3h' | '1d' | '7d' | '1m'
+        range: '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y'
         from: string
         to: string
         intervalSeconds: number
@@ -88,11 +82,11 @@ function formatEventTime(ts: string | null) {
     return formatIssueTime(ts)
 }
 
-function formatTrendTick(range: '1h' | '3h' | '1d' | '7d' | '1m', value: string) {
+function formatTrendTick(range: '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y', value: string) {
     const d = new Date(value)
     if (Number.isNaN(d.getTime())) return ''
 
-    if (range === '1h' || range === '3h') {
+    if (range === '30m' || range === '1h' || range === '3h') {
         return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
     }
     if (range === '1d') {
@@ -101,14 +95,17 @@ function formatTrendTick(range: '1h' | '3h' | '1d' | '7d' | '1m', value: string)
     if (range === '1m') {
         return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' })
     }
+    if (range === '1y') {
+        return d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
+    }
     return d.toLocaleDateString('en-US', { weekday: 'short' })
 }
 
-function formatTrendLabel(range: '1h' | '3h' | '1d' | '7d' | '1m', value: string) {
+function formatTrendLabel(range: '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y', value: string) {
     const d = new Date(value)
     if (Number.isNaN(d.getTime())) return '-'
 
-    if (range === '1h' || range === '3h') {
+    if (range === '30m' || range === '1h' || range === '3h') {
         return d.toLocaleString('en-US', { hour: '2-digit', minute: '2-digit' })
     }
     if (range === '1d') {
@@ -116,6 +113,9 @@ function formatTrendLabel(range: '1h' | '3h' | '1d' | '7d' | '1m', value: string
     }
     if (range === '1m') {
         return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit' })
+    }
+    if (range === '1y') {
+        return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short' })
     }
     return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: '2-digit' })
 }
@@ -145,22 +145,24 @@ function getInfoNumber(info: Record<string, unknown>, key: string) {
 export default function BugsPage() {
     const { user, loading } = useAuth()
     const [tab, setTab] = useState<'all' | 'open' | 'resolved'>('all')
-    const [range, setRange] = useState<'1h' | '3h' | '1d' | '7d' | '1m'>('7d')
-    const [selectedAppId, setSelectedAppId] = useState<string>('')
+    const { selectedAppId, setSelectedAppId, range, setRange, from, setFrom, to, setTo, clearCustomRange } = useMonitorScope('30m')
 
     const enabled = !loading && Boolean(user)
     const { listQuery } = useApplications({ enabled })
     const applications = useMemo(() => listQuery.data?.data?.applications ?? [], [listQuery.data?.data?.applications])
-    const effectiveAppId = selectedAppId || applications[0]?.appId || ''
+    const effectiveAppId = resolveMonitorAppId(applications, selectedAppId)
+    const timeWindow = useMemo(() => resolveMonitorTimeWindow(range, from, to), [from, range, to])
 
     const appById = useMemo(() => new Map(applications.map(app => [app.appId, app])), [applications])
 
     const issuesQuery = useMemo(() => {
         return {
             enabled: enabled && Boolean(effectiveAppId),
-            queryKey: ['issues', effectiveAppId, range],
+            queryKey: ['issues', effectiveAppId, range, timeWindow.from, timeWindow.to],
             queryFn: async (): Promise<IssuesApiResponse> => {
                 const params = new URLSearchParams({ appId: effectiveAppId, range })
+                params.set('from', timeWindow.from)
+                params.set('to', timeWindow.to)
                 const res = await fetch(`/dsn-api/issues?${params.toString()}`)
                 if (!res.ok) {
                     throw new Error('Failed to load issues')
@@ -168,15 +170,17 @@ export default function BugsPage() {
                 return (await res.json()) as IssuesApiResponse
             },
         }
-    }, [effectiveAppId, enabled, range])
+    }, [effectiveAppId, enabled, range, timeWindow.from, timeWindow.to])
 
     const { data: issuesData, isLoading: issuesLoading, isError: issuesError } = useQuery(issuesQuery)
 
     const errorEventsQuery = useQuery({
-        queryKey: ['error-events', effectiveAppId],
+        queryKey: ['error-events', effectiveAppId, timeWindow.from, timeWindow.to],
         enabled: enabled && Boolean(effectiveAppId),
         queryFn: async (): Promise<ErrorEventsApiResponse> => {
             const params = new URLSearchParams({ appId: effectiveAppId, limit: '20' })
+            params.set('from', timeWindow.from)
+            params.set('to', timeWindow.to)
             const res = await fetch(`/dsn-api/error-events?${params.toString()}`)
             if (!res.ok) {
                 throw new Error('Failed to load error events')
@@ -234,40 +238,18 @@ export default function BugsPage() {
                     })}
                 </div>
 
-                <div className="flex items-center gap-2">
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button size="sm" className="h-8">
-                                {appById.get(effectiveAppId)?.name || 'Select app'}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Application</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {applications.map(app => (
-                                <DropdownMenuItem key={app.appId} onSelect={() => setSelectedAppId(app.appId)}>
-                                    {app.name}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button size="sm" className="h-8">
-                                {range.toUpperCase()}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Range</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {(['1h', '3h', '1d', '7d', '1m'] as const).map(r => (
-                                <DropdownMenuItem key={r} onSelect={() => setRange(r)}>
-                                    {r.toUpperCase()}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-                </div>
+                <AIMonitorScopeActions
+                    applications={applications}
+                    appId={effectiveAppId}
+                    onAppChange={setSelectedAppId}
+                    range={range}
+                    onRangeChange={setRange}
+                    from={from}
+                    to={to}
+                    onFromChange={setFrom}
+                    onToChange={setTo}
+                    onClearCustomRange={clearCustomRange}
+                />
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
@@ -290,7 +272,7 @@ export default function BugsPage() {
                 <Card className="bg-primary-foreground shadow-none">
                     <CardHeader className="gap-1">
                         <CardTitle className="text-sm font-medium text-muted-foreground">Range</CardTitle>
-                        <CardDescription className="text-2xl font-semibold text-foreground">{range.toUpperCase()}</CardDescription>
+                        <CardDescription className="text-2xl font-semibold text-foreground">{getMonitorRangeLabel(range)}</CardDescription>
                     </CardHeader>
                 </Card>
             </div>

@@ -17,10 +17,11 @@ import {
 } from 'lucide-react'
 import Image from 'next/image'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useSearchParams } from 'next/navigation'
 import React from 'react'
 
 import { useAuth } from '@/components/providers'
+import { buildMonitorScopeHref } from '@/hooks/use-monitor-scope'
 
 import {
     Sidebar,
@@ -111,6 +112,7 @@ const items = [
 const AppSidebar = () => {
     const { user } = useAuth()
     const pathname = usePathname()
+    const searchParams = useSearchParams()
     return (
         <Sidebar collapsible="icon">
             <SidebarHeader className="py-4">
@@ -134,10 +136,11 @@ const AppSidebar = () => {
                         <SidebarMenu>
                             {items.map(item => {
                                 const active = item.url === '/' ? pathname === '/' : pathname.startsWith(item.url)
+                                const href = item.url === '/' ? item.url : buildMonitorScopeHref(item.url, searchParams)
                                 return (
                                     <SidebarMenuItem key={item.title}>
                                         <SidebarMenuButton asChild isActive={active}>
-                                            <Link href={item.url}>
+                                            <Link href={href}>
                                                 <item.icon />
                                                 <span>{item.title}</span>
                                             </Link>
