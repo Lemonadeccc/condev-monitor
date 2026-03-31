@@ -18,6 +18,7 @@ type OverviewBucket = {
     ts: string
     total: number
     errors: number
+    ai: number
 }
 
 type MetricBucket = {
@@ -734,7 +735,8 @@ export class SpanService {
                         ) + toIntervalSecond({offsetSeconds:UInt32})
                     ) AS bucket_ts,
                     count() AS total,
-                    countIf(event_type = 'error') AS errors
+                    countIf(event_type = 'error') AS errors,
+                    countIf(event_type = 'ai_streaming') AS ai
                 FROM ${this.clickhouseDatabase}.base_monitor_view
                 WHERE app_id = {appId:String}
                   AND toUnixTimestamp(created_at) >= {fromSeconds:UInt32}
@@ -753,10 +755,11 @@ export class SpanService {
         })
 
         const json = await res.json()
-        const rows: Array<{ tsSeconds: number; total: number; errors: number }> = (json.data ?? []).map((row: any) => ({
+        const rows: Array<{ tsSeconds: number; total: number; errors: number; ai: number }> = (json.data ?? []).map((row: any) => ({
             tsSeconds: Number(row.bucket_ts ?? 0),
             total: Number(row.total ?? 0),
             errors: Number(row.errors ?? 0),
+            ai: Number(row.ai ?? 0),
         }))
 
         // Fill missing buckets with 0 so the chart always spans the full range.
@@ -768,6 +771,7 @@ export class SpanService {
                 ts: new Date(t * 1000).toISOString(),
                 total: row?.total ?? 0,
                 errors: row?.errors ?? 0,
+                ai: row?.ai ?? 0,
             })
         }
 
@@ -775,9 +779,10 @@ export class SpanService {
             (acc, b) => {
                 acc.total += b.total
                 acc.errors += b.errors
+                acc.ai += b.ai
                 return acc
             },
-            { total: 0, errors: 0 }
+            { total: 0, errors: 0, ai: 0 }
         )
 
         return {

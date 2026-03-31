@@ -12,6 +12,7 @@ import { type ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, Char
 import { useApplications } from '@/hooks/use-applications'
 import { resolveMonitorAppId, resolveMonitorTimeWindow, useMonitorScope } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
+import { MONITOR_CHART_COLORS } from '@/lib/monitor-chart-colors'
 
 type MetricApiResponse = {
     success: boolean
@@ -75,10 +76,10 @@ export default function MetricPage() {
     const longTaskDurationByPath = metricQuery.data?.data?.longTaskDurationByPath ?? []
 
     const chartConfig: ChartConfig = {
-        webVitals: { label: 'Web Vitals', color: '#2ecc71' },
-        longTask: { label: 'Long Task', color: '#3498db' },
-        jank: { label: 'Jank', color: '#e67e22' },
-        lowFps: { label: 'Low FPS', color: '#e74c3c' },
+        webVitals: { label: 'Web Vitals', color: MONITOR_CHART_COLORS.webVitals },
+        longTask: { label: 'Long Task', color: MONITOR_CHART_COLORS.longTask },
+        jank: { label: 'Jank', color: MONITOR_CHART_COLORS.jank },
+        lowFps: { label: 'Low FPS', color: MONITOR_CHART_COLORS.lowFps },
     }
 
     if (loading) {

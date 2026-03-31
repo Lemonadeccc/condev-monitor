@@ -8,6 +8,7 @@ import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts'
 import { createStableChartData } from '@/lib/chart-seed'
 import { copyToClipboard } from '@/lib/clipboard'
 import { formatDateTime } from '@/lib/datetime'
+import { MONITOR_CHART_COLORS } from '@/lib/monitor-chart-colors'
 import { cn } from '@/lib/utils'
 import type { Application } from '@/types/application'
 
@@ -56,8 +57,8 @@ export function ApplicationCard(props: {
                 success: boolean
                 data: {
                     range: '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y'
-                    totals: { total: number; errors: number }
-                    series: Array<{ ts: string; total: number; errors: number }>
+                    totals: { total: number; errors: number; ai: number }
+                    series: Array<{ ts: string; total: number; errors: number; ai: number }>
                     intervalSeconds: number
                 }
             }
@@ -88,19 +89,27 @@ export function ApplicationCard(props: {
 
     const chartData = useMemo(() => {
         const series = overviewData?.data?.series
-        if (!series?.length) return createStableChartData(application.appId)
-        return series.map(p => ({ date: p.ts, value: p.total }))
+        if (!series?.length) {
+            return createStableChartData(application.appId).map(point => ({
+                date: point.date,
+                issues: Math.round(point.value * 0.35),
+                ai: Math.round(point.value * 0.2),
+            }))
+        }
+        return series.map(p => ({ date: p.ts, issues: p.errors, ai: p.ai }))
     }, [overviewData?.data?.series, application.appId])
 
     const effectiveIssues = overviewData?.data?.totals?.errors ?? issuesCount
+    const effectiveAi = overviewData?.data?.totals?.ai ?? 0
 
     const chartConfig = {
-        value: {
-            label: 'Count',
-            theme: {
-                light: '#000000',
-                dark: '#ffffff',
-            },
+        issues: {
+            label: 'Issues',
+            color: MONITOR_CHART_COLORS.issue,
+        },
+        ai: {
+            label: 'AI',
+            color: MONITOR_CHART_COLORS.ai,
         },
     } satisfies ChartConfig
 
@@ -185,7 +194,14 @@ export function ApplicationCard(props: {
             <CardHeader className="flex flex-row items-start justify-between">
                 <div className="flex flex-col gap-1">
                     <CardTitle className="text-base">{application.name}</CardTitle>
-                    <CardDescription className="text-xs">Issues: {effectiveIssues}</CardDescription>
+                    <CardDescription className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                        <span className="font-medium" style={{ color: MONITOR_CHART_COLORS.issue }}>
+                            Issues: {effectiveIssues.toLocaleString()}
+                        </span>
+                        <span className="font-medium" style={{ color: MONITOR_CHART_COLORS.ai }}>
+                            AI: {effectiveAi.toLocaleString()}
+                        </span>
+                    </CardDescription>
                 </div>
                 <div className="flex items-center gap-2">
                     <TooltipProvider delayDuration={150}>
@@ -303,16 +319,29 @@ export function ApplicationCard(props: {
                             }}
                         />
                         <Line
-                            dataKey="value"
+                            dataKey="issues"
                             type="natural"
-                            fill="var(--color-value)"
-                            stroke="var(--color-value)"
+                            fill="var(--color-issues)"
+                            stroke="var(--color-issues)"
                             strokeWidth={2}
                             dot={false}
                             activeDot={{
                                 r: 4,
-                                fill: 'var(--color-value)',
-                                stroke: 'var(--color-value)',
+                                fill: 'var(--color-issues)',
+                                stroke: 'var(--color-issues)',
+                            }}
+                        />
+                        <Line
+                            dataKey="ai"
+                            type="natural"
+                            fill="var(--color-ai)"
+                            stroke="var(--color-ai)"
+                            strokeWidth={2}
+                            dot={false}
+                            activeDot={{
+                                r: 4,
+                                fill: 'var(--color-ai)',
+                                stroke: 'var(--color-ai)',
                             }}
                         />
                         <ChartTooltip
@@ -342,14 +371,18 @@ export function ApplicationCard(props: {
                                         }
                                         return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: '2-digit' })
                                     }}
-                                    formatter={value => (
-                                        <div className="flex flex-1 justify-between leading-none">
-                                            <span className="text-muted-foreground">Count</span>
-                                            <span className="text-foreground font-mono font-medium tabular-nums">
-                                                {Number(value).toLocaleString()} times
-                                            </span>
-                                        </div>
-                                    )}
+                                    formatter={(value, name) => {
+                                        const seriesName = name === 'issues' || name === 'ai' ? chartConfig[name].label : String(name)
+
+                                        return (
+                                            <div className="flex flex-1 justify-between leading-none">
+                                                <span className="text-muted-foreground">{seriesName}</span>
+                                                <span className="text-foreground font-mono font-medium tabular-nums">
+                                                    {Number(value).toLocaleString()} times
+                                                </span>
+                                            </div>
+                                        )
+                                    }}
                                 />
                             }
                         />
