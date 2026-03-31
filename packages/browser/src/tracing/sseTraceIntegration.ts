@@ -44,7 +44,7 @@ export class SSETraceIntegration {
             // In auto-detect mode (urlPatterns=[]), never inject — avoids polluting
             // unrelated same-origin requests with cache-busting / auth-breaking headers.
             let tracedInit = init
-            if (hasPatterns && self.cfg.injectTraceId && self.isSameOrigin(url)) {
+            if (hasPatterns && self.cfg.injectTraceId && self.canInjectTraceHeader(url)) {
                 const baseHeaders = input instanceof Request && init?.headers === undefined ? input.headers : init?.headers
                 const headers = new Headers(baseHeaders ?? {})
                 headers.set(self.cfg.traceIdHeader, traceId)
@@ -284,6 +284,23 @@ export class SSETraceIntegration {
     private isSameOrigin(url: string): boolean {
         try {
             return new URL(url, window.location.origin).origin === window.location.origin
+        } catch {
+            return false
+        }
+    }
+
+    private canInjectTraceHeader(url: string): boolean {
+        if (this.isSameOrigin(url)) return true
+
+        try {
+            const targetOrigin = new URL(url, window.location.origin).origin
+            return this.cfg.traceHeaderOrigins.some(origin => {
+                try {
+                    return new URL(origin, window.location.origin).origin === targetOrigin
+                } catch {
+                    return false
+                }
+            })
         } catch {
             return false
         }
