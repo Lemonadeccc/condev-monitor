@@ -6,6 +6,7 @@ import { BadRequestException, Inject, Injectable, Logger, ServiceUnavailableExce
 import { ConfigService } from '@nestjs/config'
 import type { Pool } from 'pg'
 
+import { buildFailureImpactSql, buildImportanceSql, deriveTransportStatus } from '../../shared/ai-status'
 import { resolveClickhouseDatabase } from '../../shared/clickhouse-utils'
 import { EmailService } from '../email/email.service'
 import { InboundFilterService } from '../ingest/inbound-filter.service'
@@ -80,7 +81,9 @@ type AIStreamingTrace = {
     url: string
     method: string
     status: number
-    semanticStatus: string | null
+    transportStatus: string
+    runStatus: string | null
+    healthStatus: string | null
     sseTtfb: number
     sseTtlb: number
     stallCount: number
@@ -99,6 +102,8 @@ type AIStreamingTrace = {
     inputTokens: number | null
     outputTokens: number | null
     durationMs: number | null
+    warningCount: number
+    criticalErrorCount: number
     replayId: string | null
     userId: string | null
     userEmail: string | null
@@ -1373,6 +1378,8 @@ export class SpanService {
         const { from } = resolveRange(now, range)
         const fromSeconds = Math.floor(from.getTime() / 1000)
         const toSeconds = Math.floor(now.getTime() / 1000)
+        const importanceSql = buildImportanceSql('attributes', 'name')
+        const failureImpactSql = buildFailureImpactSql('attributes', 'name')
 
         // Run all 3 ClickHouse queries in parallel
         const [networkRes, semanticRes, statsRes] = await Promise.all([
@@ -1418,12 +1425,21 @@ export class SpanService {
                     SELECT
                         t.trace_id AS traceId,
                         multiIf(
-                            ifNull(spans.status_rank, 0) = 2,
+                            ifNull(spans.has_run_cancelled, 0) = 1,
                             'cancelled',
-                            ifNull(spans.status_rank, 0) = 1,
+                            ifNull(spans.has_run_error, 0) = 1,
                             'error',
                             t.status
-                        ) AS semanticStatus,
+                        ) AS runStatus,
+                        multiIf(
+                            ifNull(spans.has_run_cancelled, 0) = 1,
+                            'cancelled',
+                            ifNull(spans.has_run_error, 0) = 1,
+                            'error',
+                            ifNull(spans.warning_count, 0) > 0,
+                            'degraded',
+                            t.status
+                        ) AS healthStatus,
                         t.model AS model,
                         t.provider AS provider,
                         if(
@@ -1436,7 +1452,9 @@ export class SpanService {
                             t.output_tokens,
                             ifNull(spans.best_output_tokens, 0)
                         ) AS outputTokens,
-                        t.duration_ms AS durationMs
+                        t.duration_ms AS durationMs,
+                        ifNull(spans.warning_count, 0) AS warningCount,
+                        ifNull(spans.critical_error_count, 0) AS criticalErrorCount
                     FROM ${this.clickhouseDatabase}.ai_traces AS t FINAL
                     LEFT JOIN (
                         SELECT
@@ -1444,16 +1462,23 @@ export class SpanService {
                             trace_id,
                             argMax(input_tokens, input_tokens + output_tokens) AS best_input_tokens,
                             argMax(output_tokens, input_tokens + output_tokens) AS best_output_tokens,
-                            max(
-                                multiIf(
-                                    status = 'cancelled',
-                                    2,
-                                    status = 'error',
-                                    1,
-                                    0
-                                )
-                            ) AS status_rank
-                        FROM ${this.clickhouseDatabase}.ai_spans
+                            countIf(status = 'error' AND (failure_impact = 'fatal' OR importance = 'primary' OR span_kind = 'entrypoint')) AS critical_error_count,
+                            countIf(status = 'error' AND failure_impact IN ('degraded', 'warning')) AS warning_count,
+                            max(if(status = 'cancelled' AND (failure_impact = 'fatal' OR importance = 'primary' OR span_kind = 'entrypoint'), 1, 0)) AS has_run_cancelled,
+                            max(if(status = 'error' AND (failure_impact = 'fatal' OR importance = 'primary' OR span_kind = 'entrypoint'), 1, 0)) AS has_run_error
+                        FROM (
+                            SELECT
+                                app_id,
+                                trace_id,
+                                span_kind,
+                                status,
+                                input_tokens,
+                                output_tokens,
+                                name,
+                                ${failureImpactSql} AS failure_impact,
+                                ${importanceSql} AS importance
+                            FROM ${this.clickhouseDatabase}.ai_spans
+                        )
                         GROUP BY app_id, trace_id
                     ) AS spans
                         ON spans.app_id = t.app_id AND spans.trace_id = t.trace_id
@@ -1508,7 +1533,14 @@ export class SpanService {
                 url: String(row.url ?? ''),
                 method: String(row.method ?? ''),
                 status: Number(row.status ?? 0),
-                semanticStatus: sem ? String(sem.semanticStatus ?? '') || null : null,
+                transportStatus: deriveTransportStatus({
+                    status: row.status,
+                    failureStage: row.failureStage,
+                    completionReason: row.completionReason,
+                    aborted: row.aborted,
+                }),
+                runStatus: sem ? String(sem.runStatus ?? '') || null : null,
+                healthStatus: sem ? String(sem.healthStatus ?? '') || null : null,
                 sseTtfb: Number(row.sseTtfb ?? 0),
                 sseTtlb: Number(row.sseTtlb ?? 0),
                 stallCount: Number(row.stallCount ?? 0),
@@ -1530,6 +1562,8 @@ export class SpanService {
                 inputTokens: sem ? Number(sem.inputTokens ?? 0) : null,
                 outputTokens: sem ? Number(sem.outputTokens ?? 0) : null,
                 durationMs: sem ? Number(sem.durationMs ?? 0) : null,
+                warningCount: sem ? Number(sem.warningCount ?? 0) : 0,
+                criticalErrorCount: sem ? Number(sem.criticalErrorCount ?? 0) : 0,
             }
         })
 

@@ -196,7 +196,7 @@ export default function EvaluationPage() {
                                             )}
                                         </td>
                                         <td className="px-6 py-3 text-xs text-muted-foreground align-middle">
-                                            {formatDateTime(new Date(e.created_at))}
+                                            {formatDateTime(e.created_at)}
                                         </td>
                                     </tr>
                                 ))}

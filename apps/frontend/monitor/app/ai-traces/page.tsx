@@ -25,6 +25,8 @@ type Trace = {
     session_id: string
     user_id: string
     status: string
+    run_status: string
+    health_status: string
     model: string
     provider: string
     environment: string
@@ -36,6 +38,9 @@ type Trace = {
     duration_ms: number
     started_at: string
     span_count: number
+    warning_count: number
+    critical_error_count: number
+    ignored_issue_count: number
 }
 
 type TracesApiResponse = {
@@ -43,10 +48,12 @@ type TracesApiResponse = {
     data: { traces: Trace[] }
 }
 
-const STATUS_FILTERS = ['all', 'ok', 'error', 'cancelled']
+const RUN_STATUS_FILTERS = ['all', 'ok', 'error', 'cancelled']
+const HEALTH_STATUS_FILTERS = ['all', 'ok', 'degraded', 'error', 'cancelled']
 
 const statusTextClass = (status: string) => {
     if (status === 'error') return 'text-destructive'
+    if (status === 'degraded') return 'text-amber-600'
     if (status === 'ok') return 'text-green-600'
     return 'text-muted-foreground'
 }
@@ -64,16 +71,18 @@ export default function AiTracesPage() {
     const applications = listQuery.data?.data?.applications ?? []
 
     const [selectedAppId, setSelectedAppId] = useState<string | null>(null)
-    const [statusFilter, setStatusFilter] = useState('all')
+    const [runStatusFilter, setRunStatusFilter] = useState('all')
+    const [healthStatusFilter, setHealthStatusFilter] = useState('all')
 
     const appId = selectedAppId ?? applications[0]?.appId ?? null
 
     const tracesQuery = useQuery<TracesApiResponse>({
-        queryKey: ['ai-traces', appId, statusFilter],
+        queryKey: ['ai-traces', appId, runStatusFilter, healthStatusFilter],
         enabled: !!appId,
         queryFn: async () => {
             const params = new URLSearchParams({ appId: appId! })
-            if (statusFilter !== 'all') params.set('status', statusFilter)
+            if (runStatusFilter !== 'all') params.set('runStatus', runStatusFilter)
+            if (healthStatusFilter !== 'all') params.set('healthStatus', healthStatusFilter)
             const res = await fetch(`/api/ai/traces?${params.toString()}`)
             if (!res.ok) throw new Error('Failed to load traces')
             return res.json()
@@ -87,7 +96,7 @@ export default function AiTracesPage() {
             <AIMonitorHeader
                 icon={BrainCircuit}
                 title="AI Traces"
-                description="Trace, inspect, and correlate semantic LLM spans captured by the SDK."
+                description="Trace, inspect, and correlate semantic LLM spans with layered run and health statuses."
                 actions={
                     <div className="flex items-center gap-2">
                         {/* App selector */}
@@ -111,14 +120,30 @@ export default function AiTracesPage() {
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                                 <Button variant="default" size="sm">
-                                    Status: {statusFilter}
+                                    Run: {runStatusFilter}
                                 </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end">
-                                <DropdownMenuLabel>Status</DropdownMenuLabel>
+                                <DropdownMenuLabel>Run Status</DropdownMenuLabel>
                                 <DropdownMenuSeparator />
-                                {STATUS_FILTERS.map(s => (
-                                    <DropdownMenuItem key={s} onClick={() => setStatusFilter(s)}>
+                                {RUN_STATUS_FILTERS.map(s => (
+                                    <DropdownMenuItem key={s} onClick={() => setRunStatusFilter(s)}>
+                                        {s}
+                                    </DropdownMenuItem>
+                                ))}
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <Button variant="default" size="sm">
+                                    Health: {healthStatusFilter}
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end">
+                                <DropdownMenuLabel>Health Status</DropdownMenuLabel>
+                                <DropdownMenuSeparator />
+                                {HEALTH_STATUS_FILTERS.map(s => (
+                                    <DropdownMenuItem key={s} onClick={() => setHealthStatusFilter(s)}>
                                         {s}
                                     </DropdownMenuItem>
                                 ))}
@@ -139,7 +164,9 @@ export default function AiTracesPage() {
                             <thead className="bg-muted/40 text-xs text-muted-foreground">
                                 <tr className="[&_th]:font-medium">
                                     <th className="text-left px-6 py-3 font-medium">Name</th>
-                                    <th className="text-right px-6 py-3 font-medium">Status</th>
+                                    <th className="text-right px-6 py-3 font-medium">Run</th>
+                                    <th className="text-right px-6 py-3 font-medium">Health</th>
+                                    <th className="text-right px-6 py-3 font-medium">Warnings</th>
                                     <th className="text-left px-6 py-3 font-medium">Model</th>
                                     <th className="text-right px-6 py-3 font-medium">Tokens</th>
                                     <th className="text-right px-6 py-3 font-medium">Cost</th>
@@ -169,15 +196,17 @@ export default function AiTracesPage() {
                                                 <div className="text-xs text-muted-foreground">session: {t.session_id.slice(0, 12)}</div>
                                             )}
                                         </td>
-                                        <td
-                                            className={
-                                                t.status
-                                                    ? `px-6 py-3 text-right font-medium ${statusTextClass(t.status)}`
-                                                    : 'px-6 py-3 text-center text-muted-foreground'
-                                            }
-                                        >
-                                            {t.status || '-'}
+                                        <td className={`px-6 py-3 text-right font-medium ${statusTextClass(t.run_status || 'ok')}`}>
+                                            {t.run_status || '-'}
                                         </td>
+                                        <td
+                                            className={`px-6 py-3 text-right font-medium ${statusTextClass(
+                                                t.health_status || t.status || 'ok'
+                                            )}`}
+                                        >
+                                            {t.health_status || t.status || '-'}
+                                        </td>
+                                        <td className="px-6 py-3 text-right">{t.warning_count ?? 0}</td>
                                         <td
                                             className={
                                                 t.model ? 'px-6 py-3 text-muted-foreground' : 'px-6 py-3 text-center text-muted-foreground'
@@ -201,9 +230,7 @@ export default function AiTracesPage() {
                                             {t.duration_ms > 0 ? `${t.duration_ms}ms` : '-'}
                                         </td>
                                         <td className="px-6 py-3 text-right">{t.span_count}</td>
-                                        <td className="px-6 py-3 text-muted-foreground text-xs">
-                                            {formatDateTime(new Date(t.started_at))}
-                                        </td>
+                                        <td className="px-6 py-3 text-muted-foreground text-xs">{formatDateTime(t.started_at)}</td>
                                     </tr>
                                 ))}
                             </tbody>
