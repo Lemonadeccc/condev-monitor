@@ -6,7 +6,7 @@
     "scripts": {
         "start:dev": "turbo start:dev",
         "start:fro": "pnpm --filter @condev-monitor/monitor-client dev",
-        "build": "turbo build --filter=!aisdk-rag-chatbox --filter=!vanilla",
+        "build": "turbo build --filter=!aisdk-rag-chatbox --filter=!ragzbxy --filter=!vanilla",
         "build:sdk": "turbo build --filter=@condev-monitor/monitor-sdk-core --filter=@condev-monitor/monitor-sdk-browser-utils --filter=@condev-monitor/monitor-sdk-ai --filter=@condev-monitor/monitor-sdk-browser",
         "build:watch": "turbo build:watch",
         "docker:start": "docker compose -p condev-monitor -f .devcontainer/docker-compose.yml up -d && pnpm docker:init-kafka && COMPOSE_FILE=.devcontainer/docker-compose.yml pnpm docker:init-clickhouse",
