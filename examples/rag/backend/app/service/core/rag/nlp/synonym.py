@@ -29,6 +29,7 @@ class Dealer:
         self.lookup_num = 100000000
         self.load_tm = time.time() - 1000000
         self.dictionary = None
+        self._wordnet_unavailable_logged = False
         path = os.path.join(get_project_base_directory(), "rag/res", "synonym.json")
         try:
             self.dictionary = json.load(open(path, 'r'))
@@ -68,7 +69,13 @@ class Dealer:
 
     def lookup(self, tk):
         if re.match(r"[a-z]+$", tk):
-            res = list(set([re.sub("_", " ", syn.name().split(".")[0]) for syn in wordnet.synsets(tk)]) - set([tk]))
+            try:
+                res = list(set([re.sub("_", " ", syn.name().split(".")[0]) for syn in wordnet.synsets(tk)]) - set([tk]))
+            except LookupError as exc:
+                if not self._wordnet_unavailable_logged:
+                    logging.warning("Missing NLTK resource wordnet, skipping English synonym expansion. %s", exc)
+                    self._wordnet_unavailable_logged = True
+                return []
             return [t for t in res if t]
 
         self.lookup_num += 1

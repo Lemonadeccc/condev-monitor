@@ -48,3 +48,21 @@ export default tseslint.config({
   },
 })
 ```
+
+## Condev 集成
+
+前端现在支持通过 `VITE_CONDEV_DSN` 上报：
+
+- 前端错误
+- 前端性能
+- Replay
+- AI streaming
+
+示例环境变量：
+
+```bash
+VITE_API_BASE=http://localhost:8000
+VITE_CONDEV_DSN=http://localhost:8082/dsn-api/tracking/<appId>
+```
+
+`chat_on_docs` 的流式请求会自动采集 streaming 指标，并向后端注入 trace header。正在回答时，发送按钮会切换为“停止”，可用于测试 cancelled。

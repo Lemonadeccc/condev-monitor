@@ -59,9 +59,9 @@ export HF_ENDPOINT=https://hf-mirror.com
 
     输入可以是图像或PDF的目录，或者单个图像、PDF文件。您可以查看文件夹 `path_to_store_result` ，其中有演示结果位置的图像，以及包含OCR文本的txt文件。
 
-          <div align="center" style="margin-top:20px;margin-bottom:20px;">
-          <img src="https://github.com/infiniflow/ragflow/assets/12318111/f25bee3d-aaf7-4102-baf5-d5208361d110" width="900"/>
-          </div>
+              <div align="center" style="margin-top:20px;margin-bottom:20px;">
+              <img src="https://github.com/infiniflow/ragflow/assets/12318111/f25bee3d-aaf7-4102-baf5-d5208361d110" width="900"/>
+              </div>
 
 - 布局识别（Layout recognition）。来自不同领域的文件可能有不同的布局，如报纸、杂志、书籍和简历在布局方面是不同的。只有当机器有准确的布局分析时，它才能决定这些文本部分是连续的还是不连续的，或者这个部分需要表结构识别（Table Structure Recognition，TSR）来处理，或者这个部件是一个图形并用这个标题来描述。我们有10个基本布局组件，涵盖了大多数情况：
     - 文本
@@ -101,9 +101,9 @@ export HF_ENDPOINT=https://hf-mirror.com
 
     输入可以是图像或PDF的目录，或者单个图像、PDF文件。您可以查看文件夹 `path_to_store_result` ，其中包含图像和html页面，这些页面展示了以下检测结果：
 
-          <div align="center" style="margin-top:20px;margin-bottom:20px;">
-          <img src="https://github.com/infiniflow/ragflow/assets/12318111/cb24e81b-f2ba-49f3-ac09-883d75606f4c" width="1000"/>
-          </div>
+              <div align="center" style="margin-top:20px;margin-bottom:20px;">
+              <img src="https://github.com/infiniflow/ragflow/assets/12318111/cb24e81b-f2ba-49f3-ac09-883d75606f4c" width="1000"/>
+              </div>
 
 <a name="3"></a>
 

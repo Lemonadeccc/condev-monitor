@@ -114,6 +114,9 @@ examples/vanilla/.env
 examples/aisdk-rag-chatbox/.env*
 !examples/aisdk-rag-chatbox/.env.example
 
+examples/rag/backend/.env
+examples/rag/frontend/.env
+
 .devcontainer/data
 .devcontainer/postgressql_data
 .devcontainer/postgresql_data

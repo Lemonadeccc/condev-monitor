@@ -11,7 +11,16 @@
   "compilerOptions": {
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@condev-monitor/monitor-sdk-browser": [
+        "../../../packages/browser/build/types/index.d.ts"
+      ],
+      "@condev-monitor/monitor-sdk-core": [
+        "../../../packages/core/build/types/index.d.ts"
+      ],
+      "@condev-monitor/monitor-sdk-browser-utils": [
+        "../../../packages/browser-utils/build/types/index.d.ts"
+      ]
     }
   }
 }

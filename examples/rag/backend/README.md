@@ -22,6 +22,7 @@ cd swxy-p1
 
 ```bash
 DASHSCOPE_API_KEY="your-api-key"
+CONDEV_SERVER_DSN="http://localhost:8082/dsn-api/tracking/<appId>"
 ```
 
 3. **修改docker-compose.yml中的nltk本地路径**
@@ -121,3 +122,15 @@ docker compose up -d swxy_api
 ## 🎯 访问地址
 
 - API文档: http://localhost:8000/docs
+
+## 📡 Condev 监控
+
+后端现在支持通过 `CONDEV_SERVER_DSN` 上报：
+
+- AI traces
+- AI sessions
+- AI users
+- AI cost
+- retrieval / llm / error / cancelled spans
+
+如果没有配置 `CONDEV_SERVER_DSN`，业务逻辑仍可正常运行，只是不会上报 AI observability 数据。

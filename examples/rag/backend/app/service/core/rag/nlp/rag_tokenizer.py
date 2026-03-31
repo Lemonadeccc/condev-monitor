@@ -62,6 +62,7 @@ class RagTokenizer:
         self.DEBUG = debug
         self.DENOMINATOR = 1000000
         self.DIR_ = os.path.join(get_project_base_directory(), "rag/res", "huqie")
+        self._missing_nltk_resources_warned = set()
 
         self.stemmer = PorterStemmer()
         self.lemmatizer = WordNetLemmatizer()
@@ -86,6 +87,25 @@ class RagTokenizer:
 
         # load data from dict file and save to trie file
         self.loadDict_(self.DIR_ + ".txt")
+
+    def _warn_missing_nltk_resource(self, resource, error):
+        if resource in self._missing_nltk_resources_warned:
+            return
+        self._missing_nltk_resources_warned.add(resource)
+        logging.warning("[HUQIE]: Missing NLTK resource %s, falling back to a simplified tokenizer. %s", resource, error)
+
+    def _safe_lemmatize(self, token):
+        try:
+            return self.lemmatizer.lemmatize(token)
+        except LookupError as exc:
+            self._warn_missing_nltk_resource("wordnet", exc)
+            return token
+
+    def _normalize_english_token(self, token):
+        return self.stemmer.stem(self._safe_lemmatize(token))
+
+    def _fallback_word_tokenize(self, line):
+        return re.findall(r"[a-z0-9]+(?:[._+-][a-z0-9]+)*", line)
 
     def loadUserDict(self, fnm):
         try:
@@ -261,7 +281,7 @@ class RagTokenizer:
         return self.score_(res[::-1])
 
     def english_normalize_(self, tks):
-        return [self.stemmer.stem(self.lemmatizer.lemmatize(t)) if re.match(r"[a-zA-Z_-]+$", t) else t for t in tks]
+        return [self._normalize_english_token(t) if re.match(r"[a-zA-Z_-]+$", t) else t for t in tks]
 
     def tokenize(self, line):
         line = re.sub(r"\W+", " ", line)
@@ -269,7 +289,12 @@ class RagTokenizer:
         line = self._tradi2simp(line)
         zh_num = len([1 for c in line if is_chinese(c)])
         if zh_num == 0:
-            return " ".join([self.stemmer.stem(self.lemmatizer.lemmatize(t)) for t in word_tokenize(line)])
+            try:
+                tokens = word_tokenize(line)
+            except LookupError as exc:
+                self._warn_missing_nltk_resource("punkt_tab", exc)
+                tokens = self._fallback_word_tokenize(line)
+            return " ".join([self._normalize_english_token(t) for t in tokens])
 
         arr = re.split(self.SPLIT_CHAR, line)
         res = []
