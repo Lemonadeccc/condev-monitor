@@ -1,11 +1,12 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
+import { Play } from 'lucide-react'
 import { useRouter } from 'next/navigation'
 import { useSearchParams } from 'next/navigation'
 import { useMemo } from 'react'
 
-import { AIMonitorScopeActions } from '@/components/ai/page-shell'
+import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { useApplications } from '@/hooks/use-applications'
@@ -78,26 +79,26 @@ export default function ReplaysPage() {
     }
 
     return (
-        <div className="flex flex-col gap-4 pb-10">
-            <header className="flex flex-col gap-1">
-                <h1 className="text-xl font-semibold">Replays</h1>
-                <p className="text-sm text-muted-foreground">Minimal session replays captured on errors (snapshot + event trail).</p>
-            </header>
-
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-                <AIMonitorScopeActions
-                    applications={applications}
-                    appId={effectiveAppId}
-                    onAppChange={setSelectedAppId}
-                    range={range}
-                    onRangeChange={setRange}
-                    from={from}
-                    to={to}
-                    onFromChange={setFrom}
-                    onToChange={setTo}
-                    onClearCustomRange={clearCustomRange}
-                />
-            </div>
+        <AIMonitorPage>
+            <AIMonitorHeader
+                icon={Play}
+                title="Replays"
+                description="Minimal session replays captured on errors (snapshot + event trail)."
+                actions={
+                    <AIMonitorScopeActions
+                        applications={applications}
+                        appId={effectiveAppId}
+                        onAppChange={setSelectedAppId}
+                        range={range}
+                        onRangeChange={setRange}
+                        from={from}
+                        to={to}
+                        onFromChange={setFrom}
+                        onToChange={setTo}
+                        onClearCustomRange={clearCustomRange}
+                    />
+                }
+            />
 
             <Card className="bg-primary-foreground shadow-none">
                 <CardHeader className="border-b">
@@ -168,6 +169,6 @@ export default function ReplaysPage() {
                     )}
                 </CardContent>
             </Card>
-        </div>
+        </AIMonitorPage>
     )
 }

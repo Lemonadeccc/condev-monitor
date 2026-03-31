@@ -1,12 +1,12 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { ExternalLink, Play } from 'lucide-react'
+import { Bot, ExternalLink, Play } from 'lucide-react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { useMemo, useState } from 'react'
 
-import { AIMonitorScopeActions } from '@/components/ai/page-shell'
+import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -234,28 +234,26 @@ export default function AIStreamingPage() {
     }
 
     return (
-        <div className="flex flex-col gap-4 pb-10">
-            <header className="flex flex-col gap-1">
-                <h1 className="text-xl font-semibold">AI Streaming</h1>
-                <p className="text-sm text-muted-foreground">
-                    Monitor SSE streaming requests to AI models — TTFB, throughput, token usage, and stall detection.
-                </p>
-            </header>
-
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-                <AIMonitorScopeActions
-                    applications={applications}
-                    appId={effectiveAppId}
-                    onAppChange={setSelectedAppId}
-                    range={range}
-                    onRangeChange={setRange}
-                    from={from}
-                    to={to}
-                    onFromChange={setFrom}
-                    onToChange={setTo}
-                    onClearCustomRange={clearCustomRange}
-                />
-            </div>
+        <AIMonitorPage>
+            <AIMonitorHeader
+                icon={Bot}
+                title="AI Streaming"
+                description="Monitor SSE streaming requests to AI models — TTFB, throughput, token usage, and stall detection."
+                actions={
+                    <AIMonitorScopeActions
+                        applications={applications}
+                        appId={effectiveAppId}
+                        onAppChange={setSelectedAppId}
+                        range={range}
+                        onRangeChange={setRange}
+                        from={from}
+                        to={to}
+                        onFromChange={setFrom}
+                        onToChange={setTo}
+                        onClearCustomRange={clearCustomRange}
+                    />
+                }
+            />
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-6">
                 <Card className="bg-primary-foreground shadow-none">
@@ -666,6 +664,6 @@ export default function AIStreamingPage() {
                     )}
                 </CardContent>
             </Card>
-        </div>
+        </AIMonitorPage>
     )
 }

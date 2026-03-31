@@ -1,10 +1,11 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
+import { Zap } from 'lucide-react'
 import { useMemo } from 'react'
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts'
 
-import { AIMonitorScopeActions } from '@/components/ai/page-shell'
+import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { type ChartConfig, ChartContainer, ChartLegend, ChartLegendContent, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
@@ -89,28 +90,26 @@ export default function MetricPage() {
     }
 
     return (
-        <div className="flex flex-col gap-4 pb-10">
-            <header className="flex flex-col gap-1">
-                <h1 className="text-xl font-semibold">Metric</h1>
-                <p className="text-sm text-muted-foreground">
-                    Counts `event_type=performance`, summarizes Web Vitals (incl. LOAD), and breaks down by path.
-                </p>
-            </header>
-
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-                <AIMonitorScopeActions
-                    applications={applications}
-                    appId={effectiveAppId}
-                    onAppChange={setSelectedAppId}
-                    range={range}
-                    onRangeChange={setRange}
-                    from={from}
-                    to={to}
-                    onFromChange={setFrom}
-                    onToChange={setTo}
-                    onClearCustomRange={clearCustomRange}
-                />
-            </div>
+        <AIMonitorPage>
+            <AIMonitorHeader
+                icon={Zap}
+                title="Metric"
+                description="Counts `event_type=performance`, summarizes Web Vitals (incl. LOAD), and breaks down by path."
+                actions={
+                    <AIMonitorScopeActions
+                        applications={applications}
+                        appId={effectiveAppId}
+                        onAppChange={setSelectedAppId}
+                        range={range}
+                        onRangeChange={setRange}
+                        from={from}
+                        to={to}
+                        onFromChange={setFrom}
+                        onToChange={setTo}
+                        onClearCustomRange={clearCustomRange}
+                    />
+                }
+            />
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-5">
                 <Card className="bg-primary-foreground shadow-none">
@@ -406,6 +405,6 @@ export default function MetricPage() {
                     )}
                 </CardContent>
             </Card>
-        </div>
+        </AIMonitorPage>
     )
 }

@@ -1,10 +1,11 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { useMemo, useState } from 'react'
+import { Bug } from 'lucide-react'
+import { useMemo } from 'react'
 import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts'
 
-import { AIMonitorScopeActions, getMonitorRangeLabel } from '@/components/ai/page-shell'
+import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions, getMonitorRangeLabel } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -144,7 +145,6 @@ function getInfoNumber(info: Record<string, unknown>, key: string) {
 
 export default function BugsPage() {
     const { user, loading } = useAuth()
-    const [tab, setTab] = useState<'all' | 'open' | 'resolved'>('all')
     const { selectedAppId, setSelectedAppId, range, setRange, from, setFrom, to, setTo, clearCustomRange } = useMonitorScope('30m')
 
     const enabled = !loading && Boolean(user)
@@ -189,11 +189,7 @@ export default function BugsPage() {
         },
     })
 
-    const visibleIssues = useMemo(() => {
-        const issues = issuesData?.data?.issues ?? []
-        if (tab !== 'all') return []
-        return issues
-    }, [issuesData?.data?.issues, tab])
+    const visibleIssues = useMemo(() => issuesData?.data?.issues ?? [], [issuesData?.data?.issues])
 
     const summary = useMemo(() => {
         const totalEvents = visibleIssues.reduce((sum, issue) => sum + issue.events, 0)
@@ -210,47 +206,26 @@ export default function BugsPage() {
     }
 
     return (
-        <div className="flex flex-col gap-4 pb-10">
-            <header className="flex flex-col gap-1">
-                <h1 className="text-xl font-semibold">Bugs</h1>
-                <p className="text-sm text-muted-foreground">Counts `event_type=error` aggregated by (type + message + path).</p>
-            </header>
-
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                <div className="inline-flex items-center gap-1 rounded-md bg-muted p-1">
-                    {(['all', 'open', 'resolved'] as const).map(key => {
-                        const disabled = key !== 'all'
-                        const active = tab === key
-                        return (
-                            <button
-                                key={key}
-                                type="button"
-                                disabled={disabled}
-                                onClick={() => setTab(key)}
-                                className={cn(
-                                    'h-8 px-3 text-sm rounded-md transition-colors disabled:opacity-50 disabled:pointer-events-none',
-                                    active ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'
-                                )}
-                            >
-                                {key === 'all' ? 'All' : key === 'open' ? 'Open' : 'Resolved'}
-                            </button>
-                        )
-                    })}
-                </div>
-
-                <AIMonitorScopeActions
-                    applications={applications}
-                    appId={effectiveAppId}
-                    onAppChange={setSelectedAppId}
-                    range={range}
-                    onRangeChange={setRange}
-                    from={from}
-                    to={to}
-                    onFromChange={setFrom}
-                    onToChange={setTo}
-                    onClearCustomRange={clearCustomRange}
-                />
-            </div>
+        <AIMonitorPage>
+            <AIMonitorHeader
+                icon={Bug}
+                title="Bugs"
+                description="Counts `event_type=error` aggregated by (type + message + path)."
+                actions={
+                    <AIMonitorScopeActions
+                        applications={applications}
+                        appId={effectiveAppId}
+                        onAppChange={setSelectedAppId}
+                        range={range}
+                        onRangeChange={setRange}
+                        from={from}
+                        to={to}
+                        onFromChange={setFrom}
+                        onToChange={setTo}
+                        onClearCustomRange={clearCustomRange}
+                    />
+                }
+            />
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
                 <Card className="bg-primary-foreground shadow-none">
@@ -326,9 +301,6 @@ export default function BugsPage() {
                                                 </td>
                                                 <td className="px-6 py-4 align-top">
                                                     <div className="font-medium">{appName}</div>
-                                                    <div className="mt-1 text-xs text-muted-foreground">
-                                                        {tab === 'all' ? 'All' : tab === 'open' ? 'Open' : 'Resolved'}
-                                                    </div>
                                                 </td>
                                                 <td className="px-6 py-4 text-right align-top font-mono tabular-nums">
                                                     {issue.events.toLocaleString()}
@@ -631,6 +603,6 @@ export default function BugsPage() {
                     )}
                 </CardContent>
             </Card>
-        </div>
+        </AIMonitorPage>
     )
 }

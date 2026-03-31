@@ -1,5 +1,6 @@
 'use client'
 
+import { Home as HomeIcon } from 'lucide-react'
 import { useState } from 'react'
 
 import { ApplicationCard } from '@/components/overview/ApplicationCard'
@@ -30,7 +31,10 @@ export default function Home() {
     return (
         <div className="flex flex-col gap-4 pb-10">
             <header className="flex items-center justify-between">
-                <h1 className="text-xl font-semibold">Overview</h1>
+                <div className="flex items-center gap-2">
+                    <HomeIcon className="h-5 w-5" />
+                    <h1 className="text-xl font-semibold">Overview</h1>
+                </div>
                 <Button onClick={() => setCreateOpen(true)}>Create app</Button>
             </header>
 

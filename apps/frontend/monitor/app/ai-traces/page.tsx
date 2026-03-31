@@ -104,18 +104,20 @@ export default function AiTracesPage() {
                 description="Trace, inspect, and correlate semantic LLM spans with layered run and health statuses."
                 actions={
                     <div className="flex items-center gap-2">
-                        <AIMonitorScopeActions
-                            applications={applications}
-                            appId={appId}
-                            onAppChange={setSelectedAppId}
-                            range={range}
-                            onRangeChange={setRange}
-                            from={from}
-                            to={to}
-                            onFromChange={setFrom}
-                            onToChange={setTo}
-                            onClearCustomRange={clearCustomRange}
-                        />
+                        <div className="flex flex-wrap items-center gap-2">
+                            <AIMonitorScopeActions
+                                applications={applications}
+                                appId={appId}
+                                onAppChange={setSelectedAppId}
+                                range={range}
+                                onRangeChange={setRange}
+                                from={from}
+                                to={to}
+                                onFromChange={setFrom}
+                                onToChange={setTo}
+                                onClearCustomRange={clearCustomRange}
+                            />
+                        </div>
                         {/* Status filter */}
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
