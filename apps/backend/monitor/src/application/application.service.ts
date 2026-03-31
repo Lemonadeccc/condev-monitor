@@ -25,6 +25,58 @@ export class ApplicationService {
         return (name ?? '').trim()
     }
 
+    private async readLatestAppSettingsMap() {
+        await this.ensureAppSettingsTable()
+
+        const res = await this.clickhouseClient.query({
+            query: `
+                SELECT
+                    app_id,
+                    argMax(replay_enabled, updated_at) AS replay_enabled
+                FROM ${this.clickhouseDatabase}.app_settings
+                GROUP BY app_id
+            `,
+            format: 'JSON',
+        })
+
+        const json = (await res.json()) as {
+            data?: Array<{
+                app_id?: string
+                replay_enabled?: number
+            }>
+        }
+
+        const settings = new Map<string, { replayEnabled: boolean }>()
+        for (const row of json.data ?? []) {
+            const appId = String(row.app_id ?? '').trim()
+            if (!appId) continue
+            settings.set(appId, {
+                replayEnabled: Boolean(row.replay_enabled),
+            })
+        }
+        return settings
+    }
+
+    private async readAppSettings(appId: string, replayEnabledFallback: boolean) {
+        const settings = await this.readLatestAppSettingsMap()
+        const current = settings.get(appId)
+        return {
+            replayEnabled: current?.replayEnabled ?? replayEnabledFallback,
+        }
+    }
+
+    private attachSettings<T extends { appId: string; replayEnabled?: boolean; replayMaskTextEnabled?: boolean }>(
+        application: T,
+        settings?: { replayEnabled: boolean }
+    ) {
+        const base = { ...(application as T & { replayMaskTextEnabled?: boolean }) }
+        delete base.replayMaskTextEnabled
+        return {
+            ...base,
+            replayEnabled: settings?.replayEnabled ?? Boolean(application.replayEnabled),
+        }
+    }
+
     async create(application: ApplicationEntity) {
         application.name = this.normalizeName(application.name)
 
@@ -37,13 +89,18 @@ export class ApplicationService {
 
         await this.applicationRepository.save(application)
         try {
-            await this.syncReplaySetting({ appId: application.appId, replayEnabled: Boolean(application.replayEnabled) })
+            await this.syncReplaySetting({
+                appId: application.appId,
+                replayEnabled: Boolean(application.replayEnabled),
+            })
         } catch (err) {
             // ClickHouse is best-effort for app settings sync; do not block API writes.
             // eslint-disable-next-line no-console
             console.error('Failed to sync replay setting to ClickHouse', err)
         }
-        return application
+        return this.attachSettings(application, {
+            replayEnabled: Boolean(application.replayEnabled),
+        })
     }
 
     async update(payload: { id: number; userId: number; type?: string; name?: string; description?: string; replayEnabled?: boolean }) {
@@ -77,12 +134,24 @@ export class ApplicationService {
 
         await this.applicationRepository.save(application)
         try {
-            await this.syncReplaySetting({ appId: application.appId, replayEnabled: Boolean(application.replayEnabled) })
+            const currentSettings = await this.readAppSettings(application.appId, Boolean(application.replayEnabled))
+            const nextSettings = {
+                replayEnabled: payload.replayEnabled !== undefined ? Boolean(payload.replayEnabled) : currentSettings.replayEnabled,
+            }
+
+            await this.syncReplaySetting({
+                appId: application.appId,
+                replayEnabled: nextSettings.replayEnabled,
+            })
+            return this.attachSettings(application, nextSettings)
         } catch (err) {
             // eslint-disable-next-line no-console
             console.error('Failed to sync replay setting to ClickHouse', err)
         }
-        return application
+
+        return this.attachSettings(application, {
+            replayEnabled: Boolean(application.replayEnabled),
+        })
     }
 
     async list(params: { userId: number }) {
@@ -90,8 +159,16 @@ export class ApplicationService {
             where: { user: { id: params.userId }, isDelete: false },
         })
 
+        let settings = new Map<string, { replayEnabled: boolean }>()
+        try {
+            settings = await this.readLatestAppSettingsMap()
+        } catch (err) {
+            // eslint-disable-next-line no-console
+            console.error('Failed to read replay settings from ClickHouse', err)
+        }
+
         return {
-            applications: data,
+            applications: data.map(application => this.attachSettings(application, settings.get(application.appId))),
             count,
         }
     }
@@ -156,7 +233,7 @@ export class ApplicationService {
             success: true,
             data: {
                 appId: application.appId,
-                replayEnabled: Boolean(application.replayEnabled),
+                ...(await this.readAppSettings(application.appId, Boolean(application.replayEnabled))),
             },
         }
     }
@@ -168,12 +245,44 @@ export class ApplicationService {
                 (
                     app_id String,
                     replay_enabled UInt8,
+                    replay_mask_text_enabled UInt8 DEFAULT 1,
                     updated_at DateTime
                 )
                 ENGINE = ReplacingMergeTree(updated_at)
                 ORDER BY app_id
             `,
         })
+
+        await this.clickhouseClient.command({
+            query: `
+                ALTER TABLE ${this.clickhouseDatabase}.app_settings
+                ADD COLUMN IF NOT EXISTS replay_mask_text_enabled UInt8 DEFAULT 1
+            `,
+        })
+    }
+
+    private async nextAppSettingsUpdatedAt(appId: string) {
+        await this.ensureAppSettingsTable()
+
+        const res = await this.clickhouseClient.query({
+            query: `
+                SELECT max(updated_at) AS latest_updated_at
+                FROM ${this.clickhouseDatabase}.app_settings
+                WHERE app_id = {appId:String}
+            `,
+            query_params: { appId },
+            format: 'JSON',
+        })
+
+        const json = (await res.json()) as {
+            data?: Array<{ latest_updated_at?: string | null }>
+        }
+
+        const latest = json.data?.[0]?.latest_updated_at
+        const latestSeconds = latest ? Math.floor(new Date(latest).getTime() / 1000) : 0
+        const nowSeconds = Math.floor(Date.now() / 1000)
+        const nextSeconds = latestSeconds >= nowSeconds ? latestSeconds + 1 : nowSeconds
+        return new Date(nextSeconds * 1000).toISOString()
     }
 
     private async syncReplaySetting(params: { appId: string; replayEnabled: boolean }) {
@@ -181,6 +290,7 @@ export class ApplicationService {
         if (!appId) return
 
         await this.ensureAppSettingsTable()
+        const updatedAt = await this.nextAppSettingsUpdatedAt(appId)
         await this.clickhouseClient.insert({
             table: `${this.clickhouseDatabase}.app_settings`,
             columns: ['app_id', 'replay_enabled', 'updated_at'],
@@ -189,7 +299,7 @@ export class ApplicationService {
                 {
                     app_id: appId,
                     replay_enabled: params.replayEnabled ? 1 : 0,
-                    updated_at: new Date().toISOString(),
+                    updated_at: updatedAt,
                 },
             ],
         })

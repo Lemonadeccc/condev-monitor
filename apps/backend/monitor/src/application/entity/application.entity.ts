@@ -66,6 +66,12 @@ export class ApplicationEntity {
     replayEnabled: boolean
 
     /**
+     * replay text masking enabled
+     */
+    @Column({ default: true })
+    replayMaskTextEnabled: boolean
+
+    /**
      * create time
      */
     @Column({ nullable: true, default: () => 'CURRENT_TIMESTAMP' })

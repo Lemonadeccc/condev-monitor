@@ -95,7 +95,10 @@ export function useApplications(params: { enabled: boolean }) {
                 const err = (await res.json().catch(() => ({}))) as { message?: string }
                 throw new Error(err.message || 'Update application failed')
             }
-            return (await res.json()) as { success: boolean; data: { id: number; name: string; replayEnabled?: boolean } }
+            return (await res.json()) as {
+                success: boolean
+                data: { id: number; name: string; replayEnabled?: boolean }
+            }
         },
         onSuccess: (res, payload) => {
             queryClient.setQueryData<ApplicationListResponse>(['applications'], old => {
