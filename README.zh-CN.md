@@ -493,6 +493,42 @@ pnpm --filter aisdk-rag-chatbox dev
 
 ## SDK 接入
 
+这个仓库现在支持两种接入方式：
+
+- 按下方文档手动插入 SDK
+- 通过仓库内置的 Codex skill 自动化接入：[`.codex/skills/condev-sdk-integration/SKILL.md`](.codex/skills/condev-sdk-integration/SKILL.md)
+
+### Skill 接入
+
+如果你使用 Codex 给现有 AI 应用接入 Condev，可以直接让它遵循仓库里的 skill，而不是手动逐个文件插入 SDK。
+
+Skill 入口：
+
+- [`.codex/skills/condev-sdk-integration/SKILL.md`](.codex/skills/condev-sdk-integration/SKILL.md)
+
+当前支持的项目形态：
+
+- Next.js App Router + Vercel AI SDK
+- React/Vite 前端 + 独立 FastAPI 风格 RAG 后端
+
+这个 skill 沉淀的是和示例项目一致的接入流程，同时尽量不改动业务逻辑。它会指导 Codex：
+
+- 先补 DSN env 变量
+- 接入浏览器端 SDK bootstrap
+- 加上 session 和 user 透传
+- 如果应用有独立 AI 后端，再补后端语义 trace
+- 验证 `AI Streaming`、`AI Traces`、`AI Sessions`、`AI Users`、`AI Cost`
+
+skill 使用的规范示例：
+
+- [`examples/aisdk-rag-chatbox`](examples/aisdk-rag-chatbox)
+- [`examples/rag`](examples/rag)
+
+示例提示词：
+
+- `Use the condev-sdk-integration skill to instrument this Next.js + Vercel AI SDK app.`
+- `Use the condev-sdk-integration skill to add Condev monitoring to this React/Vite frontend and FastAPI RAG backend.`
+
 ### Next.js 快速开始
 
 对于 Next.js 项目，推荐使用 `@condev-monitor/nextjs`，它将浏览器 SDK 和 AI 监控统一封装为简洁的接入 API。

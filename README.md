@@ -493,6 +493,42 @@ The current code chooses mail mode like this:
 
 ## SDK Integration
 
+There are now two supported integration paths in this repo:
+
+- manual SDK wiring using the snippets below
+- skill-assisted integration through the local Codex skill at [`.codex/skills/condev-sdk-integration/SKILL.md`](.codex/skills/condev-sdk-integration/SKILL.md)
+
+### Skill-Based Integration
+
+If you use Codex to instrument an existing AI app, you can ask it to follow the repository skill instead of wiring the SDK by hand.
+
+Skill entry:
+
+- [`.codex/skills/condev-sdk-integration/SKILL.md`](.codex/skills/condev-sdk-integration/SKILL.md)
+
+Supported project shapes:
+
+- Next.js App Router + Vercel AI SDK
+- React/Vite frontend + separate FastAPI-style RAG backend
+
+The skill codifies the same integration path used by the example apps and keeps the business logic intact. In practice it guides Codex to:
+
+- add DSN env vars first
+- wire the browser SDK bootstrap
+- add session and user propagation
+- add backend semantic traces when the app has a backend AI service
+- validate `AI Streaming`, `AI Traces`, `AI Sessions`, `AI Users`, and `AI Cost`
+
+Canonical example references used by the skill:
+
+- [`examples/aisdk-rag-chatbox`](examples/aisdk-rag-chatbox)
+- [`examples/rag`](examples/rag)
+
+Example prompts:
+
+- `Use the condev-sdk-integration skill to instrument this Next.js + Vercel AI SDK app.`
+- `Use the condev-sdk-integration skill to add Condev monitoring to this React/Vite frontend and FastAPI RAG backend.`
+
 ### Next.js Quick Start
 
 For Next.js projects, use `@condev-monitor/nextjs` which wraps both the browser SDK and AI monitoring behind a single ergonomic API.
