@@ -17,6 +17,7 @@ import { type ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } f
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '../ui/dialog'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../ui/dropdown-menu'
 import { Input } from '../ui/input'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '../ui/tooltip'
 
 export function ApplicationCard(props: {
     application: Application
@@ -186,26 +187,36 @@ export function ApplicationCard(props: {
                     <CardDescription className="text-xs">Issues: {effectiveIssues}</CardDescription>
                 </div>
                 <div className="flex items-center gap-2">
-                    <Button
-                        variant={replayEnabled ? 'default' : 'outline'}
-                        size="icon-sm"
-                        disabled={replaySubmitting}
-                        aria-label={replayEnabled ? 'Disable replay recording' : 'Enable replay recording'}
-                        title={replayEnabled ? 'Replay: ON' : 'Replay: OFF'}
-                        onClick={async () => {
-                            setReplayError(null)
-                            setReplaySubmitting(true)
-                            try {
-                                await onSetReplayEnabled(!replayEnabled)
-                            } catch (e) {
-                                setReplayError((e as Error)?.message || 'Failed to update replay setting')
-                            } finally {
-                                setReplaySubmitting(false)
-                            }
-                        }}
-                    >
-                        {replayEnabled ? <Video className="h-4 w-4" /> : <VideoOff className="h-4 w-4" />}
-                    </Button>
+                    <TooltipProvider delayDuration={150}>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    variant={replayEnabled ? 'default' : 'outline'}
+                                    size="icon-sm"
+                                    disabled={replaySubmitting}
+                                    aria-label={replayEnabled ? 'Disable replay recording' : 'Enable replay recording'}
+                                    onClick={async () => {
+                                        setReplayError(null)
+                                        setReplaySubmitting(true)
+                                        try {
+                                            await onSetReplayEnabled(!replayEnabled)
+                                        } catch (e) {
+                                            setReplayError((e as Error)?.message || 'Failed to update replay setting')
+                                        } finally {
+                                            setReplaySubmitting(false)
+                                        }
+                                    }}
+                                >
+                                    {replayEnabled ? <Video className="h-4 w-4" /> : <VideoOff className="h-4 w-4" />}
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                                {replayEnabled
+                                    ? 'Replay recording is ON. Browser replays are captured for errors and failed AI streams.'
+                                    : 'Replay recording is OFF. Browser replays will not be captured.'}
+                            </TooltipContent>
+                        </Tooltip>
+                    </TooltipProvider>
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                             <Button variant="outline" size="sm" className="h-8 px-2 text-xs">

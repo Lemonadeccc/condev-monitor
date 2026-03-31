@@ -18,7 +18,14 @@ function UserMessage(props: { item: API.ChatItem }) {
         styles['chat-message-item--user'],
       )}
     >
-      <div className={styles['chat-message-item__content']}>{item.content}</div>
+      <div
+        className={classNames(
+          styles['chat-message-item__content'],
+          'condev-replay-mask',
+        )}
+      >
+        {item.content}
+      </div>
     </div>
   )
 }
@@ -52,7 +59,12 @@ function AssistantMessage(props: {
         <div className={styles['name']}>Doc Copilet</div>
       </div>
 
-      <div className={styles['chat-message-item__content']}>
+      <div
+        className={classNames(
+          styles['chat-message-item__content'],
+          'condev-replay-mask',
+        )}
+      >
         {(() => {
           switch (item.type) {
             case ChatType.Document:

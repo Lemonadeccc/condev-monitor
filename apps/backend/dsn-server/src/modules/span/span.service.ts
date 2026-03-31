@@ -199,6 +199,64 @@ export class SpanService {
     private appTableColumnsPromise: Promise<Set<string>> | null = null
     private readonly sourcemapCache = new Map<string, { map: TraceMap; expiresAt: number }>()
 
+    private async getAppConfigFlags(appId: string) {
+        // 1. Try ClickHouse (fast path)
+        try {
+            const res = await this.clickhouseClient.query({
+                query: `
+                    SELECT replay_enabled
+                    FROM ${this.clickhouseDatabase}.app_settings
+                    WHERE app_id = {appId:String}
+                    ORDER BY updated_at DESC
+                    LIMIT 1
+                `,
+                query_params: { appId },
+                format: 'JSON',
+            })
+            const json = await res.json()
+            const row = (json.data ?? [])[0] as { replay_enabled?: number } | undefined
+
+            if (row) {
+                return {
+                    replayEnabled: Boolean(row.replay_enabled),
+                }
+            }
+        } catch (err) {
+            this.logger.warn(
+                `ClickHouse replay config lookup failed for appId=${appId}: ${err instanceof Error ? err.message : String(err)}`
+            )
+        }
+
+        // 2. Fallback: Query Monitor API (slow path, for legacy/unsynced apps)
+        const monitorApiUrl = (this.configService.get<string>('MONITOR_API_URL') ?? 'http://localhost:8081').replace(/\/+$/, '')
+        const url = new URL(`${monitorApiUrl}/api/application/public/config`)
+        url.searchParams.set('appId', appId)
+
+        let monitorRes: Response
+        try {
+            monitorRes = await fetch(url.toString(), { method: 'GET' })
+        } catch (err) {
+            this.logger.warn(`Monitor API unreachable for appId=${appId}: ${err instanceof Error ? err.message : String(err)}`)
+            throw new ServiceUnavailableException({ message: 'Replay config temporarily unavailable', error: 'REPLAY_CONFIG_UNAVAILABLE' })
+        }
+
+        if (monitorRes.ok) {
+            const json = (await monitorRes.json()) as {
+                data?: { replayEnabled?: boolean }
+            }
+            return {
+                replayEnabled: Boolean(json?.data?.replayEnabled),
+            }
+        }
+
+        if (monitorRes.status >= 500) {
+            this.logger.warn(`Monitor API returned ${monitorRes.status} for appId=${appId}`)
+            throw new ServiceUnavailableException({ message: 'Replay config temporarily unavailable', error: 'REPLAY_CONFIG_UNAVAILABLE' })
+        }
+
+        return { replayEnabled: false }
+    }
+
     private get clickhouseDatabase(): string {
         return resolveClickhouseDatabase(this.configService)
     }
@@ -457,61 +515,8 @@ export class SpanService {
     }
 
     private async getReplayEnabled(appId: string): Promise<boolean> {
-        // 1. Try ClickHouse (fast path)
-        try {
-            const res = await this.clickhouseClient.query({
-                query: `
-                    SELECT replay_enabled
-                    FROM ${this.clickhouseDatabase}.app_settings
-                    WHERE app_id = {appId:String}
-                    ORDER BY updated_at DESC
-                    LIMIT 1
-                `,
-                query_params: { appId },
-                format: 'JSON',
-            })
-            const json = await res.json()
-            const row = (json.data ?? [])[0] as { replay_enabled?: number } | undefined
-
-            // If row exists, trust it (even if 0/false)
-            if (row) {
-                return Boolean(row.replay_enabled)
-            }
-        } catch (err) {
-            // ClickHouse unavailable — proceed to Monitor API fallback
-            this.logger.warn(
-                `ClickHouse replay config lookup failed for appId=${appId}: ${err instanceof Error ? err.message : String(err)}`
-            )
-        }
-
-        // 2. Fallback: Query Monitor API (slow path, for legacy/unsynced apps)
-        const monitorApiUrl = (this.configService.get<string>('MONITOR_API_URL') ?? 'http://localhost:8081').replace(/\/+$/, '')
-        const url = new URL(`${monitorApiUrl}/api/application/public/config`)
-        url.searchParams.set('appId', appId)
-
-        let monitorRes: Response
-        try {
-            monitorRes = await fetch(url.toString(), { method: 'GET' })
-        } catch (err) {
-            // Network-level failure (Monitor API unreachable) — do NOT treat as "disabled".
-            // Return 503 so the SDK keeps data in IndexedDB and retries later.
-            this.logger.warn(`Monitor API unreachable for appId=${appId}: ${err instanceof Error ? err.message : String(err)}`)
-            throw new ServiceUnavailableException({ message: 'Replay config temporarily unavailable', error: 'REPLAY_CONFIG_UNAVAILABLE' })
-        }
-
-        if (monitorRes.ok) {
-            const json = (await monitorRes.json()) as { data?: { replayEnabled?: boolean } }
-            return Boolean(json?.data?.replayEnabled)
-        }
-
-        if (monitorRes.status >= 500) {
-            // Monitor API server error — treat as transient, not as "disabled"
-            this.logger.warn(`Monitor API returned ${monitorRes.status} for appId=${appId}`)
-            throw new ServiceUnavailableException({ message: 'Replay config temporarily unavailable', error: 'REPLAY_CONFIG_UNAVAILABLE' })
-        }
-
-        // 4xx (e.g. 404 app not found) — authoritative: replay is not enabled
-        return false
+        const config = await this.getAppConfigFlags(appId)
+        return config.replayEnabled
     }
 
     async span() {
@@ -677,7 +682,7 @@ export class SpanService {
             throw new BadRequestException({ message: 'appId is required', error: 'APP_ID_REQUIRED' })
         }
 
-        const replayEnabled = await this.getReplayEnabled(appId)
+        const { replayEnabled } = await this.getAppConfigFlags(appId)
         return {
             success: true,
             data: { appId, replayEnabled },

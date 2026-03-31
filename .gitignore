@@ -132,3 +132,7 @@ apps/backend/monitor/apps
 .claude/**/**/env/*.env
 !.claude/**/**/env/*.example.env
 !**/.env.example
+
+# Python bytecode
+packages/python/**/__pycache__/
+packages/python/**/*.pyc
