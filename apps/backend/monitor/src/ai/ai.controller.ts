@@ -87,12 +87,21 @@ export class AiController {
     }
 
     @Get('/evaluations')
-    async listEvaluations(@Query('appId') appId: string, @Request() req, @Query('limit') limit?: string, @Query('offset') offset?: string) {
+    async listEvaluations(
+        @Query('appId') appId: string,
+        @Request() req,
+        @Query('limit') limit?: string,
+        @Query('offset') offset?: string,
+        @Query('from') from?: string,
+        @Query('to') to?: string
+    ) {
         await this.applicationService.assertOwned(appId, req.user.id)
         const evaluations = await this.aiService.listEvaluations(
             appId,
             limit ? Number(limit) : undefined,
-            offset ? Number(offset) : undefined
+            offset ? Number(offset) : undefined,
+            from,
+            to
         )
         return { success: true, data: { evaluations } }
     }

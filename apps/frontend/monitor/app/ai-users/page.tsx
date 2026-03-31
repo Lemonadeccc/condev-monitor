@@ -4,8 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Users } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
-import { DateTimeFilter } from '@/components/ai/date-time-filter'
-import { AIMonitorHeader, AIMonitorPage, AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
+import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions, AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
 import { Button } from '@/components/ui/button'
 import {
@@ -18,6 +17,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { useApplications } from '@/hooks/use-applications'
+import { resolveMonitorAppId, resolveMonitorTimeWindow, useMonitorScope } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
 
 type UserRow = {
@@ -43,33 +43,24 @@ function formatAccountIdentity(accountId?: string, accountEmail?: string, fallba
     return fallbackUserId?.trim() || '-'
 }
 
-function toIsoFilterValue(value: string) {
-    if (!value) return ''
-    const date = new Date(value)
-    return Number.isNaN(date.getTime()) ? '' : date.toISOString()
-}
-
 export default function AiUsersPage() {
     const { user } = useAuth()
     const { listQuery } = useApplications({ enabled: !!user })
     const applications = listQuery.data?.data?.applications ?? []
-    const [selectedAppId, setSelectedAppId] = useState<string | null>(null)
-    const [from, setFrom] = useState('')
-    const [to, setTo] = useState('')
+    const { selectedAppId, setSelectedAppId, range, setRange, from, setFrom, to, setTo, clearCustomRange } = useMonitorScope('30m')
     const [search, setSearch] = useState('')
     const [replayFilter, setReplayFilter] = useState<'all' | 'with_replay' | 'without_replay'>('all')
 
-    const appId = selectedAppId ?? applications[0]?.appId ?? null
-    const fromFilter = toIsoFilterValue(from)
-    const toFilter = toIsoFilterValue(to)
+    const appId = resolveMonitorAppId(applications, selectedAppId) || null
+    const timeWindow = useMemo(() => resolveMonitorTimeWindow(range, from, to), [from, range, to])
 
     const usersQuery = useQuery<UsersApiResponse>({
-        queryKey: ['ai-users', appId, fromFilter, toFilter, replayFilter],
+        queryKey: ['ai-users', appId, range, timeWindow.from, timeWindow.to, replayFilter],
         enabled: !!appId,
         queryFn: async () => {
             const params = new URLSearchParams({ appId: appId! })
-            if (fromFilter) params.set('from', fromFilter)
-            if (toFilter) params.set('to', toFilter)
+            params.set('from', timeWindow.from)
+            params.set('to', timeWindow.to)
             if (replayFilter !== 'all') params.set('replayFilter', replayFilter)
             const res = await fetch(`/api/ai/users?${params.toString()}`)
             if (!res.ok) throw new Error('Failed to load users')
@@ -97,22 +88,18 @@ export default function AiUsersPage() {
                 title="AI Users"
                 description="Understand which users are generating traces, sessions, and token volume."
                 actions={
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="default" size="sm">
-                                {applications.find(app => app.appId === appId)?.name ?? 'Select App'}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Application</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {applications.map(app => (
-                                <DropdownMenuItem key={app.appId} onClick={() => setSelectedAppId(app.appId)}>
-                                    {app.name}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
+                    <AIMonitorScopeActions
+                        applications={applications}
+                        appId={appId}
+                        onAppChange={setSelectedAppId}
+                        range={range}
+                        onRangeChange={setRange}
+                        from={from}
+                        to={to}
+                        onFromChange={setFrom}
+                        onToChange={setTo}
+                        onClearCustomRange={clearCustomRange}
+                    />
                 }
             />
 
@@ -123,8 +110,6 @@ export default function AiUsersPage() {
                 contentClassName="px-0"
                 headerActions={
                     <>
-                        <DateTimeFilter value={from} onChange={setFrom} placeholder="From" />
-                        <DateTimeFilter value={to} onChange={setTo} placeholder="To" />
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
                                 <Button variant="default" size="sm">

@@ -11,6 +11,7 @@ import { formatDateTime } from '@/lib/datetime'
 import { cn } from '@/lib/utils'
 import type { Application } from '@/types/application'
 
+import { getMonitorRangeLabel } from '../ai/page-shell'
 import { Button } from '../ui/button'
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '../ui/card'
 import { type ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } from '../ui/chart'
@@ -29,7 +30,7 @@ export function ApplicationCard(props: {
 }) {
     const { application, issuesCount, replayEnabled, onSetReplayEnabled, onDelete, onRename } = props
     const [copied, setCopied] = useState(false)
-    const [range, setRange] = useState<'1h' | '3h' | '1d' | '7d' | '1m'>('1h')
+    const [range, setRange] = useState<'30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y'>('1h')
     const [renameOpen, setRenameOpen] = useState(false)
     const [renameValue, setRenameValue] = useState(application.name)
     const [renameSubmitting, setRenameSubmitting] = useState(false)
@@ -54,7 +55,7 @@ export function ApplicationCard(props: {
             return (await res.json()) as {
                 success: boolean
                 data: {
-                    range: '1h' | '3h' | '1d' | '7d' | '1m'
+                    range: '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y'
                     totals: { total: number; errors: number }
                     series: Array<{ ts: string; total: number; errors: number }>
                     intervalSeconds: number
@@ -220,15 +221,17 @@ export function ApplicationCard(props: {
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                             <Button variant="outline" size="sm" className="h-8 px-2 text-xs">
-                                {range.toUpperCase()}
+                                {getMonitorRangeLabel(range)}
                             </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => setRange('30m')}>30MIN</DropdownMenuItem>
                             <DropdownMenuItem onClick={() => setRange('1h')}>1H</DropdownMenuItem>
                             <DropdownMenuItem onClick={() => setRange('3h')}>3H</DropdownMenuItem>
                             <DropdownMenuItem onClick={() => setRange('1d')}>1D</DropdownMenuItem>
                             <DropdownMenuItem onClick={() => setRange('7d')}>7D</DropdownMenuItem>
                             <DropdownMenuItem onClick={() => setRange('1m')}>1M</DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => setRange('1y')}>1Y</DropdownMenuItem>
                         </DropdownMenuContent>
                     </DropdownMenu>
                     <DropdownMenu>
@@ -284,10 +287,7 @@ export function ApplicationCard(props: {
                             tickMargin={8}
                             tickFormatter={value => {
                                 const d = new Date(value)
-                                if (range === '1h') {
-                                    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-                                }
-                                if (range === '3h') {
+                                if (range === '30m' || range === '1h' || range === '3h') {
                                     return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
                                 }
                                 if (range === '1d') {
@@ -295,6 +295,9 @@ export function ApplicationCard(props: {
                                 }
                                 if (range === '1m') {
                                     return d.toLocaleDateString('en-US', { month: 'short', day: '2-digit' })
+                                }
+                                if (range === '1y') {
+                                    return d.toLocaleDateString('en-US', { month: 'short', year: '2-digit' })
                                 }
                                 return d.toLocaleDateString('en-US', { weekday: 'short' })
                             }}
@@ -320,10 +323,7 @@ export function ApplicationCard(props: {
                                         const dateValue = payload?.[0]?.payload?.date as string | undefined
                                         if (!dateValue) return '-'
                                         const date = new Date(dateValue)
-                                        if (range === '1h') {
-                                            return date.toLocaleString('en-US', { hour: '2-digit', minute: '2-digit' })
-                                        }
-                                        if (range === '3h') {
+                                        if (range === '30m' || range === '1h' || range === '3h') {
                                             return date.toLocaleString('en-US', { hour: '2-digit', minute: '2-digit' })
                                         }
                                         if (range === '1d') {
@@ -336,6 +336,9 @@ export function ApplicationCard(props: {
                                         }
                                         if (range === '1m') {
                                             return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: '2-digit' })
+                                        }
+                                        if (range === '1y') {
+                                            return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short' })
                                         }
                                         return date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: '2-digit' })
                                     }}

@@ -2,22 +2,14 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { DollarSign } from 'lucide-react'
-import { useState } from 'react'
+import { useMemo } from 'react'
 import { Bar, BarChart, CartesianGrid, Cell, XAxis, YAxis } from 'recharts'
 
-import { AIMonitorHeader, AIMonitorPage, AIPanelCard, AIStatCard, AIStateMessage } from '@/components/ai/page-shell'
+import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions, AIPanelCard, AIStatCard, AIStateMessage } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
-import { Button } from '@/components/ui/button'
 import { ChartContainer, ChartTooltip, ChartTooltipContent } from '@/components/ui/chart'
-import {
-    DropdownMenu,
-    DropdownMenuContent,
-    DropdownMenuItem,
-    DropdownMenuLabel,
-    DropdownMenuSeparator,
-    DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { useApplications } from '@/hooks/use-applications'
+import { resolveMonitorAppId, resolveMonitorTimeWindow, useMonitorScope } from '@/hooks/use-monitor-scope'
 
 type CostRow = {
     model: string
@@ -35,18 +27,7 @@ type CostApiResponse = {
     data: CostRow[]
 }
 
-const RANGE_OPTIONS = [
-    { label: 'Last 24h', value: '1d' },
-    { label: 'Last 7d', value: '7d' },
-    { label: 'Last 30d', value: '30d' },
-]
-
 const COLORS = ['hsl(var(--chart-1))', 'hsl(var(--chart-2))', 'hsl(var(--chart-3))', 'hsl(var(--chart-4))', 'hsl(var(--chart-5))']
-
-function rangeToFrom(range: string): string {
-    const ms = { '1d': 86400000, '7d': 7 * 86400000, '30d': 30 * 86400000 }[range] ?? 86400000
-    return new Date(Date.now() - ms).toISOString()
-}
 
 function getCurrencySymbol(currency?: string | null) {
     switch (currency) {
@@ -69,16 +50,18 @@ export default function AiCostPage() {
     const { user } = useAuth()
     const { listQuery } = useApplications({ enabled: !!user })
     const applications = listQuery.data?.data?.applications ?? []
-    const [selectedAppId, setSelectedAppId] = useState<string | null>(null)
-    const [range, setRange] = useState('7d')
+    const { selectedAppId, setSelectedAppId, range, setRange, from, setFrom, to, setTo, clearCustomRange } = useMonitorScope('30m')
 
-    const appId = selectedAppId ?? applications[0]?.appId ?? null
+    const appId = resolveMonitorAppId(applications, selectedAppId) || null
+    const timeWindow = useMemo(() => resolveMonitorTimeWindow(range, from, to), [from, range, to])
 
     const costQuery = useQuery<CostApiResponse>({
-        queryKey: ['ai-cost', appId, range],
+        queryKey: ['ai-cost', appId, range, timeWindow.from, timeWindow.to],
         enabled: !!appId,
         queryFn: async () => {
-            const params = new URLSearchParams({ appId: appId!, from: rangeToFrom(range) })
+            const params = new URLSearchParams({ appId: appId! })
+            params.set('from', timeWindow.from)
+            params.set('to', timeWindow.to)
             const res = await fetch(`/api/ai/cost?${params.toString()}`)
             if (!res.ok) throw new Error('Failed to load cost data')
             return res.json()
@@ -107,40 +90,18 @@ export default function AiCostPage() {
                 title="AI Cost"
                 description="Track token volume and cost visibility across providers and models."
                 actions={
-                    <div className="flex items-center gap-2">
-                        <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                                <Button variant="default" size="sm">
-                                    {RANGE_OPTIONS.find(r => r.value === range)?.label ?? range}
-                                </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                                <DropdownMenuLabel>Time Range</DropdownMenuLabel>
-                                <DropdownMenuSeparator />
-                                {RANGE_OPTIONS.map(opt => (
-                                    <DropdownMenuItem key={opt.value} onClick={() => setRange(opt.value)}>
-                                        {opt.label}
-                                    </DropdownMenuItem>
-                                ))}
-                            </DropdownMenuContent>
-                        </DropdownMenu>
-                        <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                                <Button variant="default" size="sm">
-                                    {applications.find(a => a.appId === appId)?.name ?? 'Select App'}
-                                </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                                <DropdownMenuLabel>Application</DropdownMenuLabel>
-                                <DropdownMenuSeparator />
-                                {applications.map(app => (
-                                    <DropdownMenuItem key={app.appId} onClick={() => setSelectedAppId(app.appId)}>
-                                        {app.name}
-                                    </DropdownMenuItem>
-                                ))}
-                            </DropdownMenuContent>
-                        </DropdownMenu>
-                    </div>
+                    <AIMonitorScopeActions
+                        applications={applications}
+                        appId={appId}
+                        onAppChange={setSelectedAppId}
+                        range={range}
+                        onRangeChange={setRange}
+                        from={from}
+                        to={to}
+                        onFromChange={setFrom}
+                        onToChange={setTo}
+                        onClearCustomRange={clearCustomRange}
+                    />
                 }
             />
 

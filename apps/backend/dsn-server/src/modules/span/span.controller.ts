@@ -55,29 +55,44 @@ export class SpanController {
     }
 
     @Get('/issues')
-    issues(@Query('appId') appId?: string, @Query('range') range: '1h' | '3h' | '1d' | '7d' | '1m' = '7d', @Query('limit') limit = '200') {
+    issues(
+        @Query('appId') appId?: string,
+        @Query('range') range: '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y' = '7d',
+        @Query('limit') limit = '200',
+        @Query('from') from?: string,
+        @Query('to') to?: string
+    ) {
         return this.spanService.issues({
             appId,
             range,
+            from,
+            to,
             limit: Number(limit) || 200,
         })
     }
 
     @Get('/error-events')
-    errorEvents(@Query('appId') appId: string, @Query('limit') limit = '20') {
+    errorEvents(@Query('appId') appId: string, @Query('limit') limit = '20', @Query('from') from?: string, @Query('to') to?: string) {
         return this.spanService.errorEvents({
             appId,
             limit: Number(limit) || 20,
+            from,
+            to,
         })
     }
 
     @Get('/metric')
-    metric(@Query('appId') appId: string, @Query('range') range: '1h' | '3h' | '1d' | '7d' | '1m' = '1h') {
-        return this.spanService.metric({ appId, range })
+    metric(
+        @Query('appId') appId: string,
+        @Query('range') range: '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y' = '1h',
+        @Query('from') from?: string,
+        @Query('to') to?: string
+    ) {
+        return this.spanService.metric({ appId, range, from, to })
     }
 
     @Get('/overview')
-    overview(@Query('appId') appId: string, @Query('range') range: '1h' | '3h' | '1d' | '7d' | '1m' = '1h') {
+    overview(@Query('appId') appId: string, @Query('range') range: '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y' = '1h') {
         return this.spanService.overview({ appId, range })
     }
 
@@ -97,10 +112,18 @@ export class SpanController {
     }
 
     @Get('/replays')
-    replays(@Query('appId') appId: string, @Query('range') range: '1h' | '3h' | '1d' | '7d' | '1m' = '7d', @Query('limit') limit = '50') {
+    replays(
+        @Query('appId') appId: string,
+        @Query('range') range: '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y' = '7d',
+        @Query('limit') limit = '50',
+        @Query('from') from?: string,
+        @Query('to') to?: string
+    ) {
         return this.spanService.replays({
             appId,
             range,
+            from,
+            to,
             limit: Number(limit) || 50,
         })
     }
@@ -108,12 +131,16 @@ export class SpanController {
     @Get('/ai-streaming')
     aiStreaming(
         @Query('appId') appId: string,
-        @Query('range') range: '1h' | '3h' | '1d' | '7d' | '1m' = '1h',
-        @Query('limit') limit = '50'
+        @Query('range') range: '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y' = '1h',
+        @Query('limit') limit = '50',
+        @Query('from') from?: string,
+        @Query('to') to?: string
     ) {
         return this.spanService.aiStreaming({
             appId,
             range,
+            from,
+            to,
             limit: Number(limit) || 50,
         })
     }

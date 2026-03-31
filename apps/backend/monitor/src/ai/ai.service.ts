@@ -657,7 +657,9 @@ export class AiService {
             : []
     }
 
-    async listEvaluations(appId: string, limit = 50, offset = 0) {
+    async listEvaluations(appId: string, limit = 50, offset = 0, from?: string, to?: string) {
+        const fromDt = from ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
+        const toDt = to ?? new Date().toISOString()
         const [feedbackResult, evaluationsResult] = await Promise.all([
             this.ch.query({
                 query: `
@@ -672,10 +674,12 @@ export class AiService {
                         created_at
                     FROM ${this.database}.ai_feedback
                     WHERE app_id = {appId:String}
+                      AND created_at >= parseDateTime64BestEffort({from:String})
+                      AND created_at <= parseDateTime64BestEffort({to:String})
                     ORDER BY created_at DESC
                     LIMIT {limit:UInt32} OFFSET {offset:UInt32}
                 `,
-                query_params: { appId, limit, offset },
+                query_params: { appId, limit, offset, from: fromDt, to: toDt },
                 format: 'JSONEachRow',
             }),
             this.ch.query({
@@ -691,10 +695,12 @@ export class AiService {
                         created_at
                     FROM ${this.database}.ai_evaluations
                     WHERE app_id = {appId:String}
+                      AND created_at >= parseDateTime64BestEffort({from:String})
+                      AND created_at <= parseDateTime64BestEffort({to:String})
                     ORDER BY created_at DESC
                     LIMIT {limit:UInt32} OFFSET {offset:UInt32}
                 `,
-                query_params: { appId, limit, offset },
+                query_params: { appId, limit, offset, from: fromDt, to: toDt },
                 format: 'JSONEachRow',
             }),
         ])

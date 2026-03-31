@@ -3,8 +3,10 @@
 import { useQuery } from '@tanstack/react-query'
 import { ExternalLink, Play } from 'lucide-react'
 import Link from 'next/link'
+import { useSearchParams } from 'next/navigation'
 import { useMemo, useState } from 'react'
 
+import { AIMonitorScopeActions } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
@@ -12,13 +14,13 @@ import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
-    DropdownMenuLabel,
     DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { useApplications } from '@/hooks/use-applications'
+import { buildMonitorScopeHref, resolveMonitorAppId, resolveMonitorTimeWindow, useMonitorScope } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
 
 type AIStreamingTrace = {
@@ -56,7 +58,7 @@ type AIStreamingApiResponse = {
     success: boolean
     data: {
         appId: string
-        range: '1h' | '3h' | '1d' | '7d' | '1m'
+        range: '30m' | '1h' | '3h' | '1d' | '7d' | '1m' | '1y'
         from: string
         to: string
         totals: {
@@ -124,20 +126,22 @@ function formatUserIdentity(userId?: string | null, userEmail?: string | null) {
 export default function AIStreamingPage() {
     const { user, loading } = useAuth()
     const enabled = !loading && Boolean(user)
+    const searchParams = useSearchParams()
 
-    const [range, setRange] = useState<'1h' | '3h' | '1d' | '7d' | '1m'>('1h')
-    const [selectedAppId, setSelectedAppId] = useState<string>('')
+    const { selectedAppId, setSelectedAppId, range, setRange, from, setFrom, to, setTo, clearCustomRange } = useMonitorScope('30m')
 
     const { listQuery } = useApplications({ enabled })
     const applications = useMemo(() => listQuery.data?.data?.applications ?? [], [listQuery.data?.data?.applications])
-    const effectiveAppId = selectedAppId || applications[0]?.appId || ''
-    const appById = useMemo(() => new Map(applications.map(app => [app.appId, app])), [applications])
+    const effectiveAppId = resolveMonitorAppId(applications, selectedAppId)
+    const timeWindow = useMemo(() => resolveMonitorTimeWindow(range, from, to), [from, range, to])
 
     const streamingQuery = useQuery({
-        queryKey: ['ai-streaming', effectiveAppId, range],
+        queryKey: ['ai-streaming', effectiveAppId, range, timeWindow.from, timeWindow.to],
         enabled: enabled && Boolean(effectiveAppId),
         queryFn: async (): Promise<AIStreamingApiResponse> => {
             const params = new URLSearchParams({ appId: effectiveAppId, range })
+            params.set('from', timeWindow.from)
+            params.set('to', timeWindow.to)
             const res = await fetch(`/dsn-api/ai-streaming?${params.toString()}`)
             if (!res.ok) {
                 throw new Error('Failed to load AI streaming data')
@@ -239,41 +243,18 @@ export default function AIStreamingPage() {
             </header>
 
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-                <div className="flex items-center gap-2">
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="default" size="sm">
-                                {appById.get(effectiveAppId)?.name || 'Select app'}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Application</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {applications.map(app => (
-                                <DropdownMenuItem key={app.appId} onSelect={() => setSelectedAppId(app.appId)}>
-                                    {app.name}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-
-                    <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                            <Button variant="default" size="sm">
-                                {range.toUpperCase()}
-                            </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                            <DropdownMenuLabel>Range</DropdownMenuLabel>
-                            <DropdownMenuSeparator />
-                            {(['1h', '3h', '1d', '7d', '1m'] as const).map(r => (
-                                <DropdownMenuItem key={r} onSelect={() => setRange(r)}>
-                                    {r.toUpperCase()}
-                                </DropdownMenuItem>
-                            ))}
-                        </DropdownMenuContent>
-                    </DropdownMenu>
-                </div>
+                <AIMonitorScopeActions
+                    applications={applications}
+                    appId={effectiveAppId}
+                    onAppChange={setSelectedAppId}
+                    range={range}
+                    onRangeChange={setRange}
+                    from={from}
+                    to={to}
+                    onFromChange={setFrom}
+                    onToChange={setTo}
+                    onClearCustomRange={clearCustomRange}
+                />
             </div>
 
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 lg:grid-cols-6">
@@ -637,7 +618,10 @@ export default function AIStreamingPage() {
                                                 <td className="px-3 py-3 text-center">
                                                     {t.traceId && hasSemanticTrace ? (
                                                         <Link
-                                                            href={`/ai-traces/${encodeURIComponent(t.traceId)}?appId=${encodeURIComponent(effectiveAppId)}`}
+                                                            href={buildMonitorScopeHref(
+                                                                `/ai-traces/${encodeURIComponent(t.traceId)}?appId=${encodeURIComponent(effectiveAppId)}`,
+                                                                searchParams
+                                                            )}
                                                         >
                                                             <Tooltip>
                                                                 <TooltipTrigger asChild>
@@ -653,7 +637,10 @@ export default function AIStreamingPage() {
                                                 <td className="px-3 py-3 text-center">
                                                     {t.replayId ? (
                                                         <Link
-                                                            href={`/replay?appId=${encodeURIComponent(effectiveAppId)}&replayId=${encodeURIComponent(t.replayId)}`}
+                                                            href={buildMonitorScopeHref(
+                                                                `/replay?appId=${encodeURIComponent(effectiveAppId)}&replayId=${encodeURIComponent(t.replayId)}`,
+                                                                searchParams
+                                                            )}
                                                         >
                                                             <Tooltip>
                                                                 <TooltipTrigger asChild>

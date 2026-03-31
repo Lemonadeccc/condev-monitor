@@ -2,10 +2,10 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { BrainCircuit } from 'lucide-react'
-import { useRouter } from 'next/navigation'
-import { useState } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
+import { useMemo, useState } from 'react'
 
-import { AIMonitorHeader, AIMonitorPage, AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
+import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions, AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
 import { useAuth } from '@/components/providers'
 import { Button } from '@/components/ui/button'
 import {
@@ -17,6 +17,7 @@ import {
     DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useApplications } from '@/hooks/use-applications'
+import { buildMonitorScopeHref, resolveMonitorAppId, resolveMonitorTimeWindow, useMonitorScope } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
 
 type Trace = {
@@ -66,21 +67,25 @@ function formatTraceCost(amount: number, currency?: string | null) {
 
 export default function AiTracesPage() {
     const router = useRouter()
+    const searchParams = useSearchParams()
     const { user } = useAuth()
     const { listQuery } = useApplications({ enabled: !!user })
     const applications = listQuery.data?.data?.applications ?? []
 
-    const [selectedAppId, setSelectedAppId] = useState<string | null>(null)
+    const { selectedAppId, setSelectedAppId, range, setRange, from, setFrom, to, setTo, clearCustomRange } = useMonitorScope('30m')
     const [runStatusFilter, setRunStatusFilter] = useState('all')
     const [healthStatusFilter, setHealthStatusFilter] = useState('all')
 
-    const appId = selectedAppId ?? applications[0]?.appId ?? null
+    const appId = resolveMonitorAppId(applications, selectedAppId) || null
+    const timeWindow = useMemo(() => resolveMonitorTimeWindow(range, from, to), [from, range, to])
 
     const tracesQuery = useQuery<TracesApiResponse>({
-        queryKey: ['ai-traces', appId, runStatusFilter, healthStatusFilter],
+        queryKey: ['ai-traces', appId, range, timeWindow.from, timeWindow.to, runStatusFilter, healthStatusFilter],
         enabled: !!appId,
         queryFn: async () => {
             const params = new URLSearchParams({ appId: appId! })
+            params.set('from', timeWindow.from)
+            params.set('to', timeWindow.to)
             if (runStatusFilter !== 'all') params.set('runStatus', runStatusFilter)
             if (healthStatusFilter !== 'all') params.set('healthStatus', healthStatusFilter)
             const res = await fetch(`/api/ai/traces?${params.toString()}`)
@@ -99,23 +104,18 @@ export default function AiTracesPage() {
                 description="Trace, inspect, and correlate semantic LLM spans with layered run and health statuses."
                 actions={
                     <div className="flex items-center gap-2">
-                        {/* App selector */}
-                        <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                                <Button variant="default" size="sm">
-                                    {applications.find(a => a.appId === appId)?.name ?? 'Select App'}
-                                </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                                <DropdownMenuLabel>Application</DropdownMenuLabel>
-                                <DropdownMenuSeparator />
-                                {applications.map(app => (
-                                    <DropdownMenuItem key={app.appId} onClick={() => setSelectedAppId(app.appId)}>
-                                        {app.name}
-                                    </DropdownMenuItem>
-                                ))}
-                            </DropdownMenuContent>
-                        </DropdownMenu>
+                        <AIMonitorScopeActions
+                            applications={applications}
+                            appId={appId}
+                            onAppChange={setSelectedAppId}
+                            range={range}
+                            onRangeChange={setRange}
+                            from={from}
+                            to={to}
+                            onFromChange={setFrom}
+                            onToChange={setTo}
+                            onClearCustomRange={clearCustomRange}
+                        />
                         {/* Status filter */}
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
@@ -182,11 +182,23 @@ export default function AiTracesPage() {
                                         role="link"
                                         tabIndex={0}
                                         className="cursor-pointer transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none"
-                                        onClick={() => router.push(`/ai-traces/${t.trace_id}?appId=${appId}`)}
+                                        onClick={() =>
+                                            router.push(
+                                                buildMonitorScopeHref(
+                                                    `/ai-traces/${t.trace_id}?appId=${encodeURIComponent(appId ?? '')}`,
+                                                    searchParams
+                                                )
+                                            )
+                                        }
                                         onKeyDown={event => {
                                             if (event.key === 'Enter' || event.key === ' ') {
                                                 event.preventDefault()
-                                                router.push(`/ai-traces/${t.trace_id}?appId=${appId}`)
+                                                router.push(
+                                                    buildMonitorScopeHref(
+                                                        `/ai-traces/${t.trace_id}?appId=${encodeURIComponent(appId ?? '')}`,
+                                                        searchParams
+                                                    )
+                                                )
                                             }
                                         }}
                                     >
