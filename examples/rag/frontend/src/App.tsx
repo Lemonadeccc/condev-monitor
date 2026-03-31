@@ -1,8 +1,32 @@
+import { clearUser, setUser } from '@condev-monitor/monitor-sdk-browser'
 import { Router } from '@/router'
 import { App as AntdApp, ConfigProvider, Spin } from 'antd'
 import zhCN from 'antd/es/locale/zh_CN'
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { useSnapshot } from 'valtio'
+import { userState } from './store/user'
+
+function toMonitorUser(username?: string | null) {
+  const normalized = username?.trim()
+  if (!normalized) return null
+
+  return normalized.includes('@')
+    ? { id: normalized, email: normalized }
+    : { id: normalized }
+}
+
 function App() {
+  const { username } = useSnapshot(userState)
+
+  useEffect(() => {
+    const monitorUser = toMonitorUser(username)
+    if (monitorUser) {
+      setUser(monitorUser)
+      return
+    }
+    clearUser()
+  }, [username])
+
   return (
     <ConfigProvider
       locale={zhCN}

@@ -18,6 +18,7 @@ type AIPanelCardProps = {
     className?: string
     contentClassName?: string
     headerClassName?: string
+    headerActions?: ReactNode
     headerBorder?: boolean
 }
 
@@ -57,14 +58,27 @@ export function AIPanelCard({
     className,
     contentClassName,
     headerClassName,
+    headerActions,
     headerBorder = false,
 }: AIPanelCardProps) {
     return (
         <Card className={cn('bg-primary-foreground shadow-none', className)}>
             {title || description ? (
                 <CardHeader className={cn(headerBorder && 'border-b', headerClassName)}>
-                    {title ? <CardTitle className="text-base">{title}</CardTitle> : null}
-                    {description ? <CardDescription className="text-sm">{description}</CardDescription> : null}
+                    {headerActions ? (
+                        <div className="flex items-center justify-between gap-3">
+                            <div>
+                                {title ? <CardTitle className="text-base">{title}</CardTitle> : null}
+                                {description ? <CardDescription className="mt-1 text-sm">{description}</CardDescription> : null}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2">{headerActions}</div>
+                        </div>
+                    ) : (
+                        <>
+                            {title ? <CardTitle className="text-base">{title}</CardTitle> : null}
+                            {description ? <CardDescription className="text-sm">{description}</CardDescription> : null}
+                        </>
+                    )}
                 </CardHeader>
             ) : null}
             <CardContent className={contentClassName}>{children}</CardContent>

@@ -2,12 +2,13 @@ from openai import OpenAI
 import os
 import json
 import redis
+from fastapi import HTTPException, Request
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from utils.database import get_db
-from fastapi import HTTPException
 from utils import logger
 from dotenv import load_dotenv
+from service.observability import estimate_token_count, infer_provider_name, span_policy_attributes
 
 load_dotenv()
 
@@ -34,7 +35,7 @@ def get_quick_parse_content(session_id: str) -> str:
         logger.error(f"从 Redis 获取快速解析内容失败: {str(e)}")
         return None
 
-def generate_recommended_questions(user_question, retrieved_content=None, session_id=None):
+def generate_recommended_questions(user_question, retrieved_content=None, session_id=None, trace=None):
     """
     根据用户提问生成相关推荐问题。
 
@@ -82,6 +83,22 @@ def generate_recommended_questions(user_question, retrieved_content=None, sessio
 请直接返回JSON，不要包含其他文字。
     """
     
+    generation = (
+        trace.generation(
+            "rag.recommended_questions",
+            model="qwen2.5-7b-instruct",
+            provider=infer_provider_name(),
+            input={
+                "userQuestion": user_question,
+                "sessionId": session_id,
+                "documentTopics": document_topics,
+            },
+            attributes=span_policy_attributes("rag.recommended_questions"),
+        )
+        if trace
+        else None
+    )
+
     try:
         # 调用大模型生成推荐问题
         client = OpenAI(
@@ -123,25 +140,64 @@ def generate_recommended_questions(user_question, retrieved_content=None, sessio
                 
                 # 验证推荐问题格式
                 if isinstance(recommended_questions, list) and len(recommended_questions) > 0:
+                    if generation:
+                        generation.end(
+                            output=recommended_questions,
+                            input_tokens=estimate_token_count(prompt, model="qwen2.5-7b-instruct"),
+                            output_tokens=estimate_token_count(response, model="qwen2.5-7b-instruct"),
+                            metadata={"finishReason": "stop"},
+                        )
                     return recommended_questions
                 else:
                     logger.warning("推荐问题格式不正确或为空")
+                    if generation:
+                        generation.end(
+                            status="error",
+                            output=response,
+                            input_tokens=estimate_token_count(prompt, model="qwen2.5-7b-instruct"),
+                            output_tokens=estimate_token_count(response, model="qwen2.5-7b-instruct"),
+                            error_message="recommended_questions_empty",
+                            metadata={"finishReason": "error"},
+                        )
                     return []
                     
             except json.JSONDecodeError as e:
                 logger.error(f"解析推荐问题JSON失败: {str(e)}")
                 logger.error(f"原始响应内容: {response}")
                 logger.error(f"清理后内容: {cleaned_response if 'cleaned_response' in locals() else '未处理'}")
+                if generation:
+                    generation.end(
+                        status="error",
+                        output=response,
+                        input_tokens=estimate_token_count(prompt, model="qwen2.5-7b-instruct"),
+                        output_tokens=estimate_token_count(response, model="qwen2.5-7b-instruct"),
+                        error_message=str(e),
+                        metadata={"finishReason": "error"},
+                    )
                 return []
         else:
             logger.warning("大模型没有返回任何选择")
+            if generation:
+                generation.end(
+                    status="error",
+                    input_tokens=estimate_token_count(prompt, model="qwen2.5-7b-instruct"),
+                    error_message="no_choices",
+                    metadata={"finishReason": "error"},
+                )
             return []
             
     except Exception as e:
         logger.error(f"调用大模型生成推荐问题时发生错误: {str(e)}")
+        if generation:
+            generation.end(
+                status="error",
+                input_tokens=estimate_token_count(prompt, model="qwen2.5-7b-instruct"),
+                error_message=str(e),
+                metadata={"finishReason": "error"},
+            )
         return []
 
-def generate_session_name(user_question):
+def generate_session_name(user_question, trace=None):
     prompt = f"""
     请根据以下用户提问，生成一个简洁且具有代表性的会话名称：
     用户提问：{user_question}
@@ -159,6 +215,18 @@ def generate_session_name(user_question):
     """
     
     # 调用大模型生成会话名称
+    generation = (
+        trace.generation(
+            "rag.session_name",
+            model="qwen2.5-72b-instruct",
+            provider=infer_provider_name(),
+            input={"userQuestion": user_question},
+            attributes=span_policy_attributes("rag.session_name"),
+        )
+        if trace
+        else None
+    )
+
     try:
         client = OpenAI(
                 api_key=os.getenv("DASHSCOPE_API_KEY"),
@@ -180,12 +248,35 @@ def generate_session_name(user_question):
                 session_name = response_json.get("session_name")
                 print("生成的会话名称：\n")
                 print(session_name)
+                if generation:
+                    generation.end(
+                        output=session_name,
+                        input_tokens=estimate_token_count(prompt, model="qwen2.5-72b-instruct"),
+                        output_tokens=estimate_token_count(response, model="qwen2.5-72b-instruct"),
+                        metadata={"finishReason": "stop"},
+                    )
                 return session_name
             except json.JSONDecodeError:
                 print("Failed to parse JSON response.")
+                if generation:
+                    generation.end(
+                        status="error",
+                        output=response,
+                        input_tokens=estimate_token_count(prompt, model="qwen2.5-72b-instruct"),
+                        output_tokens=estimate_token_count(response, model="qwen2.5-72b-instruct"),
+                        error_message="invalid_json",
+                        metadata={"finishReason": "error"},
+                    )
                 return user_question
     except Exception as e:
         print(f"An error occurred: {e}")
+        if generation:
+            generation.end(
+                status="error",
+                input_tokens=estimate_token_count(prompt, model="qwen2.5-72b-instruct"),
+                error_message=str(e),
+                metadata={"finishReason": "error"},
+            )
         return user_question
 
 
@@ -229,7 +320,7 @@ def write_chat_to_db(session_id: str, user_question: str, model_answer: str, ret
     finally:
         db.close()
 
-def update_session_name(session_id: str, question: str, user_id: str):
+def update_session_name(session_id: str, question: str, user_id: str, trace=None):
     """
     根据 session_id 查数据库的表 sessions，有的话直接跳过，没有的话先生成 session_name，再插入。
 
@@ -249,7 +340,7 @@ def update_session_name(session_id: str, question: str, user_id: str):
             logger.info(f"Session {session_id} already exists, skipping.")
         else:
             if question:
-                session_name = generate_session_name(question)
+                session_name = generate_session_name(question, trace=trace)
                 db.execute(
                     text(
                         """
@@ -277,7 +368,7 @@ def update_session_name(session_id: str, question: str, user_id: str):
     finally:
         db.close()
 
-def get_chat_completion(session_id, question, retrieved_content, user_id):
+async def get_chat_completion(request: Request, session_id, question, retrieved_content, user_id, trace=None):
     """
     获取流式聊天完成结果，并按照指定格式输出。
 
@@ -344,6 +435,32 @@ def get_chat_completion(session_id, question, retrieved_content, user_id):
 
     print(prompt)
 
+    model_name = "deepseek-r1"
+    provider_name = infer_provider_name()
+    generation = (
+        trace.generation(
+            "rag.chat.completion",
+            model=model_name,
+            provider=provider_name,
+            input={
+                "question": question,
+                "sessionId": session_id,
+                "retrievalCount": len(retrieved_content or []),
+                "hasQuickParse": bool(quick_parse_content),
+            },
+            attributes=span_policy_attributes("rag.chat.completion"),
+        )
+        if trace
+        else None
+    )
+
+    # Keep these initialized before the first provider call so the error path
+    # can always close semantic spans, even if streaming never starts.
+    model_answer = ""
+    think = ""
+    recommended_questions = []
+    all_documents = retrieved_content.copy() if retrieved_content else []
+
     try:
         # 初始化 OpenAI 客户端
         client = OpenAI(
@@ -353,16 +470,13 @@ def get_chat_completion(session_id, question, retrieved_content, user_id):
         )
         # 创建聊天完成请求
         completion = client.chat.completions.create(
-            model="deepseek-r1",  # 可按需更换模型名称
+            model=model_name,  # 可按需更换模型名称
             messages=[
                 {"role": "user", "content": prompt}
             ],
             stream=True,
         )
 
-        # 返回检索内容和快速解析内容
-        all_documents = retrieved_content.copy() if retrieved_content else []
-        
         # 如果有快速解析内容，将其格式化后添加到文档列表中
         if quick_parse_content:
             # 将快速解析内容分段，避免单个文档过长
@@ -407,16 +521,48 @@ def get_chat_completion(session_id, question, retrieved_content, user_id):
         yield f"event: message\ndata: {json_message}\n\n"
 
         # 处理流式响应
-        model_answer = ""  # 用于存储大模型的回答
-        think = "" # 用于存储思考过程
-        recommended_questions = []  # 初始化推荐问题列表
-        
         for chunk in completion:
+            if await request.is_disconnected():
+                if trace:
+                    cancelled_event = trace.span(
+                        "stream.cancelled",
+                        span_kind="event",
+                        input={"reason": "client_disconnected"},
+                        attributes=span_policy_attributes("stream.cancelled"),
+                    )
+                    cancelled_event.end(status="cancelled")
+                if generation:
+                    generation.end(
+                        status="cancelled",
+                        output=model_answer or None,
+                        input_tokens=estimate_token_count(prompt, model=model_name),
+                        output_tokens=estimate_token_count(f"{think}\n{model_answer}", model=model_name),
+                        metadata={"finishReason": "cancelled", "fallback": True},
+                    )
+                if trace:
+                    trace.end(
+                        output=model_answer or "",
+                        status="cancelled",
+                        metadata={"finishReason": "cancelled", "fallback": True},
+                    )
+                close_stream = getattr(completion, "close", None)
+                if callable(close_stream):
+                    try:
+                        close_stream()
+                    except Exception:
+                        pass
+                return
+
             if chunk.choices[0].finish_reason == "stop":
                 # 生成推荐问题
                 try:
                     logger.info("开始生成推荐问题...")
-                    recommended_questions = generate_recommended_questions(question, retrieved_content, session_id)
+                    recommended_questions = generate_recommended_questions(
+                        question,
+                        retrieved_content,
+                        session_id,
+                        trace=trace,
+                    )
                     logger.info(f"推荐问题生成结果: {recommended_questions}")
                     
                     if recommended_questions:
@@ -441,7 +587,16 @@ def get_chat_completion(session_id, question, retrieved_content, user_id):
                 write_chat_to_db(session_id, question, model_answer, all_documents, recommended_questions, think)
 
                 # 生成会话名称
-                update_session_name(session_id, question, user_id)
+                update_session_name(session_id, question, user_id, trace=trace)
+                if generation:
+                    generation.end(
+                        output=model_answer,
+                        input_tokens=estimate_token_count(prompt, model=model_name),
+                        output_tokens=estimate_token_count(f"{think}\n{model_answer}", model=model_name),
+                        metadata={"finishReason": "stop"},
+                    )
+                if trace:
+                    trace.end(output=model_answer, metadata={"finishReason": "stop"})
                 break
             else:
                 # 实时输出消息
@@ -466,6 +621,22 @@ def get_chat_completion(session_id, question, retrieved_content, user_id):
                     yield f"event: message\ndata: {json_message}\n\n"
 
     except Exception as e:
+        if generation:
+            generation.end(
+                status="error",
+                output=model_answer or None,
+                input_tokens=estimate_token_count(prompt, model=model_name),
+                output_tokens=estimate_token_count(f"{think}\n{model_answer}", model=model_name),
+                error_message=str(e),
+                metadata={"finishReason": "error"},
+            )
+        if trace:
+            trace.end(
+                output=model_answer or "",
+                status="error",
+                error_message=str(e),
+                metadata={"finishReason": "error"},
+            )
         # 发生错误时返回错误信息
         error_message = {
             "role": "error",
@@ -473,4 +644,3 @@ def get_chat_completion(session_id, question, retrieved_content, user_id):
         }
         json_error_message = json.dumps(error_message)
         yield f"event: error\ndata: {json_error_message}\n\n"
-

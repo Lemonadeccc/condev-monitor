@@ -9,27 +9,38 @@ import { searchDocuments } from '@/lib/search'
 
 type FailureMode = 'none' | 'provider' | 'tool'
 
-const tools = {
-    searchKnowledgeBase: tool({
+const searchKnowledgeBaseInputSchema = z.object({
+    query: z.string().describe('The search query to find relevant documents'),
+})
+
+type SearchKnowledgeBaseInput = z.infer<typeof searchKnowledgeBaseInputSchema>
+
+function createSearchKnowledgeBaseTool(options?: { fail?: boolean }) {
+    return tool({
         description: 'Search the knowledge base for information',
-        inputSchema: z.object({
-            query: z.string().describe('The search query to find relevant documents'),
-        }),
-        execute: async ({ query }) => {
+        inputSchema: searchKnowledgeBaseInputSchema,
+        execute: async ({ query }: SearchKnowledgeBaseInput): Promise<string> => {
+            if (options?.fail) {
+                throw new Error('Intentional tool failure for observability smoke testing.')
+            }
+
             try {
                 const results = await searchDocuments(query, 3, 0.5)
                 if (results.length === 0) {
                     return 'No relevant information found in the knowledge base'
                 }
-                const formattedResults = results.map((r, i) => `[${i + 1}] ${r.content}`).join('\n\n')
 
-                return formattedResults
+                return results.map((r, i) => `[${i + 1}] ${r.content}`).join('\n\n')
             } catch (error) {
                 console.error('Search error', error)
                 return 'Error searching the knowledge base'
             }
         },
-    }),
+    })
+}
+
+const tools = {
+    searchKnowledgeBase: createSearchKnowledgeBaseTool(),
 }
 
 function extractLatestUserText(messages: ChatMessage[]) {
@@ -59,15 +70,7 @@ export async function POST(req: Request) {
     const requestTools =
         failureMode === 'tool'
             ? {
-                  searchKnowledgeBase: tool({
-                      description: 'Search the knowledge base for information',
-                      inputSchema: z.object({
-                          query: z.string().describe('The search query to find relevant documents'),
-                      }),
-                      execute: async () => {
-                          throw new Error('Intentional tool failure for observability smoke testing.')
-                      },
-                  }),
+                  searchKnowledgeBase: createSearchKnowledgeBaseTool({ fail: true }),
               }
             : tools
 

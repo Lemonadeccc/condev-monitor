@@ -14,11 +14,12 @@ export default function ComSender(
     className?: string
     loading?: boolean
     onSend?: (value: string) => void | Promise<void>
+    onStop?: () => void
     onContract?: () => void
     sessionId?: string
   }>,
 ) {
-  const { className, onSend, onContract, loading, sessionId, ...rest } = props
+  const { className, onSend, onStop, loading, sessionId, ...rest } = props
   const [value, setValue] = useState('')
 
   async function send() {
@@ -82,22 +83,26 @@ export default function ComSender(
               <Uploader
                 sessionId={sessionId}
                 onSuccess={(file) => {
-                  uploaded.mutate({
-                    document_name: file.name,
-                  } as any)
+                  uploaded.mutate((current) =>
+                    current
+                      ? {
+                          ...current,
+                          document_name: file.name,
+                        }
+                      : undefined,
+                  )
                 }}
               />
             )
           ) : null}
           <Button
             className="com-sender__action--send"
-            variant="solid"
-            color="primary"
+            variant={loading ? 'outlined' : 'solid'}
+            color={loading ? 'default' : 'primary'}
             shape="round"
-            onClick={send}
-            loading={loading}
+            onClick={loading ? onStop : send}
           >
-            发送
+            {loading ? '停止' : '发送'}
             <img src={IconSendThunder} />
           </Button>
         </Space>

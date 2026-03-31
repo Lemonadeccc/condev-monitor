@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Body, UploadFile, File, HTTPException, Query, Security, status, Depends
+from fastapi import APIRouter, Body, UploadFile, File, HTTPException, Query, Security, status, Depends, Request
 import uuid
 from schemas.chat import SessionResponse, ChatRequest
 from fastapi.responses import StreamingResponse
@@ -10,6 +10,7 @@ from service.core.api.utils.file_utils import get_project_base_directory
 from fastapi_jwt import JwtAuthorizationCredentials
 from service.core.retrieval import retrieve_content
 from service.core.chat import get_chat_completion
+from service.observability import start_chat_trace, span_policy_attributes
 from service.auth import access_security
 from utils import logger
 from database.knowledgebase_operations import insert_knowledgebase, verify_user_knowledgebase
@@ -159,10 +160,12 @@ async def get_parsed_content(
 
 @router.post("/chat_on_docs")
 async def chat_on_docs(
+    http_request: Request,
     session_id: str = Query(...),
     request: ChatRequest = Body(..., description="User message"),
     credentials: JwtAuthorizationCredentials = Security(access_security),
 ):
+    trace = None
     try:
         user_id = str(credentials.subject.get("user_id"))
         if not user_id:
@@ -172,29 +175,80 @@ async def chat_on_docs(
         logger.info(f"问题内容: {request.message}")
         
         question = request.message
+        trace = start_chat_trace(
+            trace_id=http_request.headers.get("x-condev-trace-id"),
+            session_id=session_id,
+            user_id=user_id,
+            question=question,
+        )
         
         # 尝试从知识库检索内容，如果没有知识库也不报错
         references = []
+        retrieval_span = trace.span(
+            "rag.retrieve_content",
+            span_kind="retrieval",
+            input={"question": question, "userId": user_id},
+            attributes=span_policy_attributes("rag.retrieve_content"),
+        ) if trace else None
         try:
+            verify_user_knowledgebase(user_id)
             logger.info("开始检索相关内容...")
             references = retrieve_content(user_id, question)
             logger.info(f"检索到 {len(references)} 条相关内容")
+            if retrieval_span:
+                retrieval_span.end(
+                    output={
+                        "count": len(references),
+                        "documents": [ref.get("document_name") for ref in references if ref.get("document_name")],
+                    }
+                )
+        except HTTPException as e:
+            if e.status_code == 461:
+                logger.info(f"用户 {user_id} 暂无知识库，跳过检索")
+                references = []
+                if retrieval_span:
+                    retrieval_span.end(
+                        output={
+                            "count": 0,
+                            "documents": [],
+                            "skipped": "no_knowledge_base",
+                        }
+                    )
+            else:
+                raise
         except Exception as e:
             logger.info(f"用户 {user_id} 没有知识库或检索失败: {str(e)}，将不使用知识库内容")
             references = []
+            if retrieval_span:
+                retrieval_span.end(
+                    status="error",
+                    error_message=str(e),
+                    output={"count": 0},
+                )
 
         logger.info("开始生成回答...")
         # 返回流式响应
         return StreamingResponse(
-            get_chat_completion(session_id, question, references, user_id),
+            get_chat_completion(
+                http_request,
+                session_id,
+                question,
+                references,
+                user_id,
+                trace=trace,
+            ),
             media_type="text/event-stream"
         )
     
     except HTTPException as e:
         logger.error(f"HTTP错误: {str(e)}")
+        if trace:
+            trace.end(status="error", error_message=str(e.detail))
         raise e
     except Exception as e:
         logger.exception(f"发生未知错误: {str(e)}")
+        if trace:
+            trace.end(status="error", error_message=str(e))
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)

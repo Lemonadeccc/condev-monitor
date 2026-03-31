@@ -3,6 +3,7 @@ packages:
   - "apps/frontend/*"
   - "apps/backend/*"
   - "examples/*"
+  - "examples/rag/frontend"
 
 ignoredBuiltDependencies:
   - sharp

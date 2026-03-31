@@ -4,6 +4,13 @@ import { ConfigService } from '@nestjs/config'
 import { InjectRepository } from '@nestjs/typeorm'
 import { Repository } from 'typeorm'
 
+import {
+    buildFailureImpactSql,
+    buildImportanceSql,
+    deriveTransportStatus,
+    resolveSpanPolicy,
+    summarizeTraceStatuses,
+} from '../shared/ai-status'
 import { AIDatasetEntity } from './entity/ai-dataset.entity'
 import { AIDatasetItemEntity } from './entity/ai-dataset-item.entity'
 import { AIExperimentEntity } from './entity/ai-experiment.entity'
@@ -17,9 +24,13 @@ export interface TraceListQuery {
     from?: string
     to?: string
     status?: string
+    runStatus?: string
+    healthStatus?: string
     limit?: number
     offset?: number
 }
+
+type ReplayFilter = 'all' | 'with_replay' | 'without_replay'
 
 type JsonMap = Record<string, unknown>
 
@@ -29,6 +40,28 @@ function formatDateTimeForCH(date: Date): string {
         `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())} ` +
         `${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}:${pad(date.getUTCSeconds())}.${pad(date.getUTCMilliseconds(), 3)}`
     )
+}
+
+function parseDateTimeFromCH(value: unknown): Date {
+    const raw = String(value ?? '').trim()
+    const match = raw.match(/^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?$/)
+
+    if (match) {
+        const [, year, month, day, hour, minute, second, millisecond = '0'] = match
+        return new Date(
+            Date.UTC(
+                Number(year),
+                Number(month) - 1,
+                Number(day),
+                Number(hour),
+                Number(minute),
+                Number(second),
+                Number(millisecond.padEnd(3, '0'))
+            )
+        )
+    }
+
+    return new Date(raw)
 }
 
 function statusRank(status: unknown) {
@@ -161,83 +194,162 @@ export class AiService {
         }
     }
 
+    private buildStreamingIdentitySubquery() {
+        return `
+            SELECT
+                JSONExtractString(toJSONString(info), 'traceId') AS trace_id,
+                anyIf(JSONExtractString(toJSONString(info), 'userId'), JSONExtractString(toJSONString(info), 'userId') != '') AS account_id,
+                anyIf(JSONExtractString(toJSONString(info), 'userEmail'), JSONExtractString(toJSONString(info), 'userEmail') != '') AS account_email
+            FROM ${this.database}.base_monitor_view
+            WHERE app_id = {appId:String}
+              AND event_type = 'ai_streaming'
+              AND JSONExtractString(toJSONString(info), 'layer') = 'network'
+              AND JSONExtractString(toJSONString(info), 'traceId') != ''
+            GROUP BY trace_id
+        `
+    }
+
+    private buildTraceTokenSubquery() {
+        return `
+            SELECT
+                app_id,
+                trace_id,
+                argMax(model, input_tokens + output_tokens) AS best_model,
+                argMax(provider, input_tokens + output_tokens) AS best_provider,
+                argMax(input_tokens, input_tokens + output_tokens) AS best_input_tokens,
+                argMax(output_tokens, input_tokens + output_tokens) AS best_output_tokens
+            FROM ${this.database}.ai_spans
+            GROUP BY app_id, trace_id
+        `
+    }
+
+    private buildTraceReplaySubquery() {
+        return `
+            SELECT
+                JSONExtractString(toJSONString(info), 'traceId') AS trace_id,
+                uniqExactIf(
+                    JSONExtractString(toJSONString(info), 'replayId'),
+                    JSONExtractString(toJSONString(info), 'replayId') != ''
+                ) AS replay_count
+            FROM ${this.database}.base_monitor_view
+            WHERE app_id = {appId:String}
+              AND event_type = 'ai_streaming'
+              AND JSONExtractString(toJSONString(info), 'layer') = 'network'
+              AND JSONExtractString(toJSONString(info), 'traceId') != ''
+            GROUP BY trace_id
+        `
+    }
+
+    private normalizeReplayFilter(value?: string): ReplayFilter {
+        if (value === 'with_replay' || value === 'without_replay') return value
+        return 'all'
+    }
+
     async listTraces(query: TraceListQuery) {
         const { appId, from, to, limit = 50, offset = 0 } = query
-        const status = this.normalizeTraceStatus(query.status)
+        const runStatus = this.normalizeRunStatus(query.runStatus)
+        const healthStatus = this.normalizeHealthStatus(query.healthStatus ?? query.status)
         const fromDt = from ?? new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
         const toDt = to ?? new Date().toISOString()
+        const importanceSql = buildImportanceSql('attributes', 'name')
+        const failureImpactSql = buildFailureImpactSql('attributes', 'name')
 
         const result = await this.ch.query({
             query: `
-                SELECT
-                    t.trace_id,
-                    t.name,
-                    t.session_id,
-                    t.user_id,
-                    multiIf(
-                        ifNull(spans.status_rank, 0) = 2,
-                        'cancelled',
-                        ifNull(spans.status_rank, 0) = 1,
-                        'error',
-                        t.status
-                    ) AS status,
-                    t.model,
-                    t.provider,
-                    t.environment,
-                    t.release,
-                    if(
-                        t.input_tokens + t.output_tokens > 0,
-                        t.input_tokens,
-                        ifNull(spans.best_input_tokens, 0)
-                    ) AS input_tokens,
-                    if(
-                        t.input_tokens + t.output_tokens > 0,
-                        t.output_tokens,
-                        ifNull(spans.best_output_tokens, 0)
-                    ) AS output_tokens,
-                    t.total_cost,
-                    JSONExtractString(t.metadata, 'costCurrency') AS cost_currency,
-                    t.duration_ms,
-                    t.started_at,
-                    ifNull(spans.span_count, 0) AS span_count
-                FROM ${this.database}.ai_traces AS t FINAL
-                LEFT JOIN (
+                SELECT *
+                FROM (
                     SELECT
-                        app_id,
-                        trace_id,
-                        count(DISTINCT span_id) AS span_count,
-                        argMax(input_tokens, input_tokens + output_tokens) AS best_input_tokens,
-                        argMax(output_tokens, input_tokens + output_tokens) AS best_output_tokens,
-                        max(
-                            multiIf(
-                                status = 'cancelled',
-                                2,
-                                status = 'error',
-                                1,
-                                0
-                            )
-                        ) AS status_rank
-                    FROM ${this.database}.ai_spans
-                    GROUP BY app_id, trace_id
-                ) AS spans
-                    ON spans.app_id = t.app_id AND spans.trace_id = t.trace_id
-                WHERE t.app_id = {appId:String}
-                  AND t.started_at >= parseDateTime64BestEffort({from:String})
-                  AND t.started_at <= parseDateTime64BestEffort({to:String})
-                  AND (
-                        {status:String} = 'all'
-                        OR multiIf(
-                            ifNull(spans.status_rank, 0) = 2,
+                        t.trace_id,
+                        t.name,
+                        t.session_id,
+                        t.user_id,
+                        multiIf(
+                            ifNull(spans.has_run_cancelled, 0) = 1,
                             'cancelled',
-                            ifNull(spans.status_rank, 0) = 1,
+                            ifNull(spans.has_run_error, 0) = 1,
                             'error',
                             t.status
-                        ) = {status:String}
-                  )
-                ORDER BY t.started_at DESC
+                        ) AS run_status,
+                        multiIf(
+                            ifNull(spans.has_run_cancelled, 0) = 1,
+                            'cancelled',
+                            ifNull(spans.has_run_error, 0) = 1,
+                            'error',
+                            ifNull(spans.warning_count, 0) > 0,
+                            'degraded',
+                            t.status
+                        ) AS health_status,
+                        multiIf(
+                            ifNull(spans.has_run_cancelled, 0) = 1,
+                            'cancelled',
+                            ifNull(spans.has_run_error, 0) = 1,
+                            'error',
+                            ifNull(spans.warning_count, 0) > 0,
+                            'degraded',
+                            t.status
+                        ) AS status,
+                        t.model,
+                        t.provider,
+                        t.environment,
+                        t.release,
+                        if(
+                            t.input_tokens + t.output_tokens > 0,
+                            t.input_tokens,
+                            ifNull(spans.best_input_tokens, 0)
+                        ) AS input_tokens,
+                        if(
+                            t.input_tokens + t.output_tokens > 0,
+                            t.output_tokens,
+                            ifNull(spans.best_output_tokens, 0)
+                        ) AS output_tokens,
+                        t.total_cost,
+                        JSONExtractString(t.metadata, 'costCurrency') AS cost_currency,
+                        t.duration_ms,
+                        t.started_at,
+                        ifNull(spans.span_count, 0) AS span_count,
+                        ifNull(spans.warning_count, 0) AS warning_count,
+                        ifNull(spans.critical_error_count, 0) AS critical_error_count,
+                        ifNull(spans.ignored_issue_count, 0) AS ignored_issue_count
+                    FROM ${this.database}.ai_traces AS t FINAL
+                    LEFT JOIN (
+                        SELECT
+                            app_id,
+                            trace_id,
+                            count(DISTINCT span_id) AS span_count,
+                            argMax(input_tokens, input_tokens + output_tokens) AS best_input_tokens,
+                            argMax(output_tokens, input_tokens + output_tokens) AS best_output_tokens,
+                            countIf(status = 'error' AND (failure_impact = 'fatal' OR importance = 'primary' OR span_kind = 'entrypoint')) AS critical_error_count,
+                            countIf(status = 'error' AND failure_impact IN ('degraded', 'warning')) AS warning_count,
+                            countIf(status = 'error' AND failure_impact = 'ignore') AS ignored_issue_count,
+                            max(if(status = 'cancelled' AND (failure_impact = 'fatal' OR importance = 'primary' OR span_kind = 'entrypoint'), 1, 0)) AS has_run_cancelled,
+                            max(if(status = 'error' AND (failure_impact = 'fatal' OR importance = 'primary' OR span_kind = 'entrypoint'), 1, 0)) AS has_run_error
+                        FROM (
+                            SELECT
+                                app_id,
+                                trace_id,
+                                span_id,
+                                span_kind,
+                                status,
+                                input_tokens,
+                                output_tokens,
+                                name,
+                                ${failureImpactSql} AS failure_impact,
+                                ${importanceSql} AS importance
+                            FROM ${this.database}.ai_spans
+                        )
+                        GROUP BY app_id, trace_id
+                    ) AS spans
+                        ON spans.app_id = t.app_id AND spans.trace_id = t.trace_id
+                    WHERE t.app_id = {appId:String}
+                      AND t.started_at >= parseDateTime64BestEffort({from:String})
+                      AND t.started_at <= parseDateTime64BestEffort({to:String})
+                ) AS traces
+                WHERE ({runStatus:String} = 'all' OR traces.run_status = {runStatus:String})
+                  AND ({healthStatus:String} = 'all' OR traces.health_status = {healthStatus:String})
+                ORDER BY traces.started_at DESC
                 LIMIT {limit:UInt32} OFFSET {offset:UInt32}
             `,
-            query_params: { appId, from: fromDt, to: toDt, status, limit, offset },
+            query_params: { appId, from: fromDt, to: toDt, runStatus, healthStatus, limit, offset },
             format: 'JSONEachRow',
         })
         const rows = (await result.json()) as Record<string, unknown>[]
@@ -299,19 +411,54 @@ export class AiService {
             evaluationsResult.json(),
         ])
         const trace = Array.isArray(traces) ? ((traces[0] as Record<string, unknown> | undefined) ?? null) : null
-        const spanRows = dedupeSpans(Array.isArray(spans) ? (spans as Record<string, unknown>[]) : [])
+        type EnrichedSpanRow = Record<string, unknown> & {
+            attributes: string
+            importance: string
+            failure_impact: string
+            display_group: string
+            description: string
+        }
+        const spanRows: EnrichedSpanRow[] = dedupeSpans(Array.isArray(spans) ? (spans as Record<string, unknown>[]) : []).map(row => {
+            const attributes = parseJsonObject(row.attributes)
+            const policy = resolveSpanPolicy(row.name, attributes)
+            return {
+                ...row,
+                attributes: stringifyJsonObject(attributes),
+                importance: policy.importance,
+                failure_impact: policy.failureImpact,
+                display_group: policy.displayGroup,
+                description: policy.description,
+            }
+        })
         const rootSpan =
             spanRows.find(row => String(row.parent_span_id ?? '') === '' || String(row.span_kind ?? '') === 'entrypoint') ??
             spanRows[0] ??
             null
-        const effectiveStatus = spanRows.some(row => String(row.status ?? '') === 'cancelled')
-            ? 'cancelled'
-            : spanRows.some(row => String(row.status ?? '') === 'error')
-              ? 'error'
-              : String(trace?.status ?? 'ok')
+        const statusSummary = summarizeTraceStatuses({
+            rootStatus: trace?.status,
+            spans: spanRows.map(row => ({
+                name: row.name,
+                spanKind: row.span_kind,
+                status: row.status,
+                attributes: parseJsonObject(row.attributes),
+            })),
+        })
+        const effectiveStatus = statusSummary.healthStatus
         const lifecycleSpan =
-            spanRows.find(row => String(row.status ?? '') === 'cancelled') ??
-            spanRows.find(row => String(row.status ?? '') === 'error') ??
+            spanRows.find(
+                row =>
+                    String(row.status ?? '') === 'cancelled' &&
+                    (String(row.failure_impact ?? '') === 'fatal' ||
+                        String(row.importance ?? '') === 'primary' ||
+                        String(row.span_kind ?? '') === 'entrypoint')
+            ) ??
+            spanRows.find(
+                row =>
+                    String(row.status ?? '') === 'error' &&
+                    (String(row.failure_impact ?? '') === 'fatal' ||
+                        String(row.importance ?? '') === 'primary' ||
+                        String(row.span_kind ?? '') === 'entrypoint')
+            ) ??
             rootSpan
         const bestTokenSpan =
             spanRows.reduce<Record<string, unknown> | null>((best, row) => {
@@ -359,6 +506,12 @@ export class AiService {
                 ? {
                       ...trace,
                       status: effectiveStatus,
+                      run_status: statusSummary.runStatus,
+                      health_status: statusSummary.healthStatus,
+                      warning_count: statusSummary.warningCount,
+                      critical_error_count: statusSummary.criticalErrorCount,
+                      ignored_issue_count: statusSummary.ignoredIssueCount,
+                      issues: statusSummary.issues,
                       model: String(trace.model ?? '') || String(bestTokenSpan?.model ?? '') || String(lifecycleSpan?.model ?? ''),
                       provider:
                           String(trace.provider ?? '') || String(bestTokenSpan?.provider ?? '') || String(lifecycleSpan?.provider ?? ''),
@@ -383,47 +536,100 @@ export class AiService {
         }
     }
 
-    async listSessions(appId: string, limit = 50, offset = 0) {
+    async listSessions(appId: string, limit = 50, offset = 0, from?: string, to?: string, replayFilter?: string) {
+        const streamingIdentitySql = this.buildStreamingIdentitySubquery()
+        const traceTokenSql = this.buildTraceTokenSubquery()
+        const traceReplaySql = this.buildTraceReplaySubquery()
+        const fromDt = from ?? new Date(0).toISOString()
+        const toDt = to ?? new Date().toISOString()
+        const normalizedReplayFilter = this.normalizeReplayFilter(replayFilter)
         const result = await this.ch.query({
             query: `
-                SELECT
-                    session_id,
-                    count() AS trace_count,
-                    sum(input_tokens + output_tokens) AS total_tokens,
-                    min(started_at) AS first_seen,
-                    max(started_at) AS last_seen
-                FROM ${this.database}.ai_traces FINAL
-                WHERE app_id = {appId:String} AND session_id != ''
-                GROUP BY session_id
-                ORDER BY last_seen DESC
+                SELECT *
+                FROM (
+                    SELECT
+                        t.session_id,
+                        anyIf(t.user_id, t.user_id != '') AS user_id,
+                        anyIf(identity.account_id, identity.account_id != '') AS account_id,
+                        anyIf(identity.account_email, identity.account_email != '') AS account_email,
+                        count() AS trace_count,
+                        sum(ifNull(replays.replay_count, 0)) AS replay_count,
+                        sum(
+                            if(
+                                t.input_tokens + t.output_tokens > 0,
+                                t.input_tokens + t.output_tokens,
+                                ifNull(tokens.best_input_tokens, 0) + ifNull(tokens.best_output_tokens, 0)
+                            )
+                        ) AS total_tokens,
+                        min(t.started_at) AS first_seen,
+                        max(t.started_at) AS last_seen
+                    FROM ${this.database}.ai_traces AS t FINAL
+                    LEFT JOIN (${streamingIdentitySql}) AS identity
+                      ON t.trace_id = identity.trace_id
+                    LEFT JOIN (${traceTokenSql}) AS tokens
+                      ON t.app_id = tokens.app_id AND t.trace_id = tokens.trace_id
+                    LEFT JOIN (${traceReplaySql}) AS replays
+                      ON t.trace_id = replays.trace_id
+                    WHERE t.app_id = {appId:String}
+                      AND t.session_id != ''
+                      AND t.started_at >= parseDateTime64BestEffort({from:String})
+                      AND t.started_at <= parseDateTime64BestEffort({to:String})
+                    GROUP BY t.session_id
+                ) AS sessions
+                WHERE (
+                    {replayFilter:String} = 'all'
+                    OR ({replayFilter:String} = 'with_replay' AND sessions.replay_count > 0)
+                    OR ({replayFilter:String} = 'without_replay' AND sessions.replay_count = 0)
+                )
+                ORDER BY sessions.last_seen DESC
                 LIMIT {limit:UInt32} OFFSET {offset:UInt32}
             `,
-            query_params: { appId, limit, offset },
+            query_params: { appId, limit, offset, from: fromDt, to: toDt, replayFilter: normalizedReplayFilter },
             format: 'JSONEachRow',
         })
         return result.json()
     }
 
     async getCostAggregation(appId: string, from?: string, to?: string) {
+        const traceTokenSql = this.buildTraceTokenSubquery()
         const fromDt = from ?? new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()
         const toDt = to ?? new Date().toISOString()
 
         const result = await this.ch.query({
             query: `
                 SELECT
-                    model,
-                    provider,
-                    JSONExtractString(metadata, 'costCurrency') AS cost_currency,
+                    rows.model,
+                    rows.provider,
+                    rows.cost_currency,
                     count() AS trace_count,
-                    sum(input_tokens) AS total_input_tokens,
-                    sum(output_tokens) AS total_output_tokens,
-                    sum(total_cost) AS total_cost
-                FROM ${this.database}.ai_traces FINAL
-                WHERE app_id = {appId:String}
-                  AND started_at >= parseDateTime64BestEffort({from:String})
-                  AND started_at <= parseDateTime64BestEffort({to:String})
-                GROUP BY model, provider, cost_currency
-                ORDER BY cost_currency ASC, total_cost DESC
+                    sum(rows.input_tokens) AS total_input_tokens,
+                    sum(rows.output_tokens) AS total_output_tokens,
+                    sum(rows.total_cost) AS total_cost
+                FROM (
+                    SELECT
+                        if(t.model != '', t.model, ifNull(tokens.best_model, '')) AS model,
+                        if(t.provider != '', t.provider, ifNull(tokens.best_provider, '')) AS provider,
+                        JSONExtractString(t.metadata, 'costCurrency') AS cost_currency,
+                        if(
+                            t.input_tokens + t.output_tokens > 0,
+                            t.input_tokens,
+                            ifNull(tokens.best_input_tokens, 0)
+                        ) AS input_tokens,
+                        if(
+                            t.input_tokens + t.output_tokens > 0,
+                            t.output_tokens,
+                            ifNull(tokens.best_output_tokens, 0)
+                        ) AS output_tokens,
+                        t.total_cost AS total_cost
+                    FROM ${this.database}.ai_traces AS t FINAL
+                    LEFT JOIN (${traceTokenSql}) AS tokens
+                      ON t.app_id = tokens.app_id AND t.trace_id = tokens.trace_id
+                    WHERE t.app_id = {appId:String}
+                      AND t.started_at >= parseDateTime64BestEffort({from:String})
+                      AND t.started_at <= parseDateTime64BestEffort({to:String})
+                ) AS rows
+                GROUP BY rows.model, rows.provider, rows.cost_currency
+                ORDER BY rows.cost_currency ASC, total_cost DESC
             `,
             query_params: { appId, from: fromDt, to: toDt },
             format: 'JSONEachRow',
@@ -537,23 +743,55 @@ export class AiService {
         return { success: true }
     }
 
-    async listUsers(appId: string, limit = 50, offset = 0) {
+    async listUsers(appId: string, limit = 50, offset = 0, from?: string, to?: string, replayFilter?: string) {
+        const streamingIdentitySql = this.buildStreamingIdentitySubquery()
+        const traceTokenSql = this.buildTraceTokenSubquery()
+        const traceReplaySql = this.buildTraceReplaySubquery()
+        const fromDt = from ?? new Date(0).toISOString()
+        const toDt = to ?? new Date().toISOString()
+        const normalizedReplayFilter = this.normalizeReplayFilter(replayFilter)
         const result = await this.ch.query({
             query: `
-                SELECT
-                    user_id,
-                    count() AS trace_count,
-                    uniqExact(session_id) AS session_count,
-                    sum(input_tokens + output_tokens) AS total_tokens,
-                    min(started_at) AS first_seen,
-                    max(started_at) AS last_seen
-                FROM ${this.database}.ai_traces FINAL
-                WHERE app_id = {appId:String} AND user_id != ''
-                GROUP BY user_id
-                ORDER BY last_seen DESC
+                SELECT *
+                FROM (
+                    SELECT
+                        t.user_id,
+                        anyIf(identity.account_id, identity.account_id != '') AS account_id,
+                        anyIf(identity.account_email, identity.account_email != '') AS account_email,
+                        count() AS trace_count,
+                        uniqExact(t.session_id) AS session_count,
+                        sum(ifNull(replays.replay_count, 0)) AS replay_count,
+                        sum(
+                            if(
+                                t.input_tokens + t.output_tokens > 0,
+                                t.input_tokens + t.output_tokens,
+                                ifNull(tokens.best_input_tokens, 0) + ifNull(tokens.best_output_tokens, 0)
+                            )
+                        ) AS total_tokens,
+                        min(t.started_at) AS first_seen,
+                        max(t.started_at) AS last_seen
+                    FROM ${this.database}.ai_traces AS t FINAL
+                    LEFT JOIN (${streamingIdentitySql}) AS identity
+                      ON t.trace_id = identity.trace_id
+                    LEFT JOIN (${traceTokenSql}) AS tokens
+                      ON t.app_id = tokens.app_id AND t.trace_id = tokens.trace_id
+                    LEFT JOIN (${traceReplaySql}) AS replays
+                      ON t.trace_id = replays.trace_id
+                    WHERE t.app_id = {appId:String}
+                      AND t.user_id != ''
+                      AND t.started_at >= parseDateTime64BestEffort({from:String})
+                      AND t.started_at <= parseDateTime64BestEffort({to:String})
+                    GROUP BY t.user_id
+                ) AS users
+                WHERE (
+                    {replayFilter:String} = 'all'
+                    OR ({replayFilter:String} = 'with_replay' AND users.replay_count > 0)
+                    OR ({replayFilter:String} = 'without_replay' AND users.replay_count = 0)
+                )
+                ORDER BY users.last_seen DESC
                 LIMIT {limit:UInt32} OFFSET {offset:UInt32}
             `,
-            query_params: { appId, limit, offset },
+            query_params: { appId, limit, offset, from: fromDt, to: toDt, replayFilter: normalizedReplayFilter },
             format: 'JSONEachRow',
         })
         return result.json()
@@ -562,7 +800,7 @@ export class AiService {
     async getDiagnostics(traceId: string, appId: string) {
         const detail = await this.getTraceDetail(traceId, appId)
         const trace = detail.trace as Record<string, unknown> | null
-        const traceStartedAt = trace?.started_at ? new Date(String(trace.started_at)) : new Date()
+        const traceStartedAt = trace?.started_at ? parseDateTimeFromCH(trace.started_at) : new Date()
         const from = new Date(traceStartedAt.getTime() - 5 * 60 * 1000).toISOString()
         const to = new Date(traceStartedAt.getTime() + 15 * 60 * 1000).toISOString()
 
@@ -703,6 +941,12 @@ export class AiService {
                       aborted: Boolean(streamingNetwork.aborted ?? false),
                       failureStage: String(streamingNetwork.failure_stage ?? '') || null,
                       completionReason: String(streamingNetwork.completion_reason ?? '') || null,
+                      transportStatus: deriveTransportStatus({
+                          status: streamingNetwork.status,
+                          failureStage: streamingNetwork.failure_stage,
+                          completionReason: streamingNetwork.completion_reason,
+                          aborted: streamingNetwork.aborted,
+                      }),
                       errorMessage: String(streamingNetwork.error_message ?? '') || null,
                       path,
                       replayId: replayId || null,
@@ -1012,7 +1256,12 @@ export class AiService {
         }
     }
 
-    private normalizeTraceStatus(status?: string) {
+    private normalizeRunStatus(status?: string) {
+        if (!status || status === 'all') return 'all'
+        return status === 'success' ? 'ok' : status
+    }
+
+    private normalizeHealthStatus(status?: string) {
         if (!status || status === 'all') return 'all'
         return status === 'success' ? 'ok' : status
     }

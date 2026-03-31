@@ -26,7 +26,9 @@ type AIStreamingTrace = {
     url: string
     method: string
     status: number
-    semanticStatus: string | null
+    transportStatus: string | null
+    runStatus: string | null
+    healthStatus: string | null
     sseTtfb: number
     sseTtlb: number
     stallCount: number
@@ -46,6 +48,8 @@ type AIStreamingTrace = {
     replayId: string | null
     userId: string | null
     userEmail: string | null
+    warningCount: number
+    criticalErrorCount: number
 }
 
 type AIStreamingApiResponse = {
@@ -97,6 +101,26 @@ function formatBytes(bytes: number) {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
+function statusTextClass(status?: string | null) {
+    if (!status) return 'text-muted-foreground'
+    if (status === 'error' || status === 'http_error' || status === 'network_error' || status === 'stream_error') {
+        return 'text-destructive'
+    }
+    if (status === 'degraded' || status === 'cancelled') return 'text-amber-600 dark:text-amber-400'
+    if (status === 'ok') return 'text-green-600'
+    return 'text-muted-foreground'
+}
+
+function formatStatus(status?: string | null) {
+    if (!status) return '-'
+    return status.toUpperCase()
+}
+
+function formatUserIdentity(userId?: string | null, userEmail?: string | null) {
+    const parts = [...new Set([userId, userEmail].filter((value): value is string => Boolean(value && value.trim())))]
+    return parts.length ? parts.join(' / ') : '-'
+}
+
 export default function AIStreamingPage() {
     const { user, loading } = useAuth()
     const enabled = !loading && Boolean(user)
@@ -126,14 +150,18 @@ export default function AIStreamingPage() {
     const rawTraces = useMemo(() => streamingQuery.data?.data?.traces ?? [], [streamingQuery.data])
 
     const [filterStatus, setFilterStatus] = useState<string>('all')
-    const [filterOutcome, setFilterOutcome] = useState<string>('all')
+    const [filterTransport, setFilterTransport] = useState<string>('all')
+    const [filterRun, setFilterRun] = useState<string>('all')
+    const [filterHealth, setFilterHealth] = useState<string>('all')
     const [filterStage, setFilterStage] = useState<string>('all')
     const [filterModel, setFilterModel] = useState<string>('all')
     const [filterUrl, setFilterUrl] = useState<string>('all')
     const [filterSearch, setFilterSearch] = useState('')
 
     const uniqueStatuses = useMemo(() => [...new Set(rawTraces.map(t => (t.status ? String(t.status) : '-')))].sort(), [rawTraces])
-    const uniqueOutcomes = useMemo(() => [...new Set(rawTraces.map(t => t.semanticStatus ?? '-'))].sort(), [rawTraces])
+    const uniqueTransportStatuses = useMemo(() => [...new Set(rawTraces.map(t => t.transportStatus ?? '-'))].sort(), [rawTraces])
+    const uniqueRunStatuses = useMemo(() => [...new Set(rawTraces.map(t => t.runStatus ?? '-'))].sort(), [rawTraces])
+    const uniqueHealthStatuses = useMemo(() => [...new Set(rawTraces.map(t => t.healthStatus ?? '-'))].sort(), [rawTraces])
     const uniqueStages = useMemo(() => [...new Set(rawTraces.map(t => t.failureStage ?? 'success'))].sort(), [rawTraces])
     const uniqueModels = useMemo(() => [...new Set(rawTraces.map(t => t.model ?? '-').filter(Boolean))].sort(), [rawTraces])
     const uniqueUrls = useMemo(() => [...new Set(rawTraces.map(t => t.url || '-'))].sort(), [rawTraces])
@@ -145,9 +173,17 @@ export default function AIStreamingPage() {
                 const s = t.status ? String(t.status) : '-'
                 if (s !== filterStatus) return false
             }
-            if (filterOutcome !== 'all') {
-                const outcome = t.semanticStatus ?? '-'
-                if (outcome !== filterOutcome) return false
+            if (filterTransport !== 'all') {
+                const transport = t.transportStatus ?? '-'
+                if (transport !== filterTransport) return false
+            }
+            if (filterRun !== 'all') {
+                const run = t.runStatus ?? '-'
+                if (run !== filterRun) return false
+            }
+            if (filterHealth !== 'all') {
+                const health = t.healthStatus ?? '-'
+                if (health !== filterHealth) return false
             }
             if (filterStage !== 'all') {
                 const stage = t.failureStage ?? 'success'
@@ -170,7 +206,9 @@ export default function AIStreamingPage() {
                     t.completionReason,
                     t.path,
                     String(t.status),
-                    t.semanticStatus,
+                    t.transportStatus,
+                    t.runStatus,
+                    t.healthStatus,
                     t.userId,
                     t.userEmail,
                 ]
@@ -181,7 +219,7 @@ export default function AIStreamingPage() {
             }
             return true
         })
-    }, [rawTraces, filterStatus, filterOutcome, filterStage, filterModel, filterUrl, filterSearch])
+    }, [rawTraces, filterStatus, filterTransport, filterRun, filterHealth, filterStage, filterModel, filterUrl, filterSearch])
 
     if (loading) {
         return <div className="text-sm text-muted-foreground">Loading...</div>
@@ -335,15 +373,47 @@ export default function AIStreamingPage() {
                             <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                     <Button variant="default" size="sm">
-                                        Outcome: {filterOutcome === 'all' ? 'All' : filterOutcome.toUpperCase()}
+                                        Transport: {filterTransport === 'all' ? 'All' : filterTransport.toUpperCase()}
                                     </Button>
                                 </DropdownMenuTrigger>
                                 <DropdownMenuContent align="end">
-                                    <DropdownMenuItem onSelect={() => setFilterOutcome('all')}>All</DropdownMenuItem>
+                                    <DropdownMenuItem onSelect={() => setFilterTransport('all')}>All</DropdownMenuItem>
                                     <DropdownMenuSeparator />
-                                    {uniqueOutcomes.map(outcome => (
-                                        <DropdownMenuItem key={outcome} onSelect={() => setFilterOutcome(outcome)}>
-                                            {outcome === '-' ? '-' : outcome.toUpperCase()}
+                                    {uniqueTransportStatuses.map(transport => (
+                                        <DropdownMenuItem key={transport} onSelect={() => setFilterTransport(transport)}>
+                                            {transport === '-' ? '-' : transport.toUpperCase()}
+                                        </DropdownMenuItem>
+                                    ))}
+                                </DropdownMenuContent>
+                            </DropdownMenu>
+                            <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                    <Button variant="default" size="sm">
+                                        Run: {filterRun === 'all' ? 'All' : filterRun.toUpperCase()}
+                                    </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                    <DropdownMenuItem onSelect={() => setFilterRun('all')}>All</DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    {uniqueRunStatuses.map(run => (
+                                        <DropdownMenuItem key={run} onSelect={() => setFilterRun(run)}>
+                                            {run === '-' ? '-' : run.toUpperCase()}
+                                        </DropdownMenuItem>
+                                    ))}
+                                </DropdownMenuContent>
+                            </DropdownMenu>
+                            <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                    <Button variant="default" size="sm">
+                                        Health: {filterHealth === 'all' ? 'All' : filterHealth.toUpperCase()}
+                                    </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                    <DropdownMenuItem onSelect={() => setFilterHealth('all')}>All</DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    {uniqueHealthStatuses.map(health => (
+                                        <DropdownMenuItem key={health} onSelect={() => setFilterHealth(health)}>
+                                            {health === '-' ? '-' : health.toUpperCase()}
                                         </DropdownMenuItem>
                                     ))}
                                 </DropdownMenuContent>
@@ -399,86 +469,95 @@ export default function AIStreamingPage() {
                             <table className="w-full table-fixed text-[13px]">
                                 <thead className="bg-muted/40 text-xs text-muted-foreground">
                                     <tr className="[&_th]:font-medium">
-                                        <th scope="col" className="w-[18%] px-3 py-3 text-left">
+                                        <th scope="col" className="w-[10%] px-3 py-3 text-left">
                                             URL
                                         </th>
-                                        <th scope="col" className="w-[12%] px-3 py-3 text-left">
+                                        <th scope="col" className="w-[7%] px-3 py-3 text-left">
                                             User
                                         </th>
-                                        <th scope="col" className="w-[6%] px-3 py-3 text-right">
+                                        <th scope="col" className="w-[5%] px-3 py-3 text-right">
                                             HTTP
                                         </th>
-                                        <th scope="col" className="w-[8%] px-3 py-3 text-left">
-                                            Outcome
+                                        <th scope="col" className="w-[6%] px-3 py-3 text-left">
+                                            Transport
                                         </th>
-                                        <th scope="col" className="w-[7%] px-3 py-3 text-left">
+                                        <th scope="col" className="w-[5%] px-3 py-3 text-left">
+                                            Run
+                                        </th>
+                                        <th scope="col" className="w-[6%] px-3 py-3 text-left">
+                                            Health
+                                        </th>
+                                        <th scope="col" className="w-[5%] px-3 py-3 text-left">
                                             Stage
                                         </th>
-                                        <th scope="col" className="w-[7%] px-3 py-3 text-right">
+                                        <th scope="col" className="w-[6%] px-3 py-3 text-right">
                                             TTFB (ms)
                                         </th>
-                                        <th scope="col" className="w-[7%] px-3 py-3 text-right">
+                                        <th scope="col" className="w-[6%] px-3 py-3 text-right">
                                             TTLB (ms)
                                         </th>
-                                        <th scope="col" className="w-[6%] px-3 py-3 text-right">
+                                        <th scope="col" className="w-[4%] px-3 py-3 text-right">
                                             Chunks
                                         </th>
-                                        <th scope="col" className="w-[7%] px-3 py-3 text-right">
+                                        <th scope="col" className="w-[5%] px-3 py-3 text-right">
                                             Bytes
                                         </th>
-                                        <th scope="col" className="w-[9%] px-3 py-3 text-left">
+                                        <th scope="col" className="w-[7%] px-3 py-3 text-left">
                                             Model
                                         </th>
-                                        <th scope="col" className="w-[9%] px-3 py-3 text-right">
+                                        <th scope="col" className="w-[8%] px-3 py-3 text-right">
                                             Tokens
                                         </th>
-                                        <th scope="col" className="w-[8%] px-3 py-3 text-left">
+                                        <th scope="col" className="w-[6%] px-3 py-3 text-left">
                                             Time
                                         </th>
-                                        <th scope="col" className="w-[4%] px-3 py-3 text-center">
+                                        <th scope="col" className="w-[4%] px-3 py-3 text-right">
+                                            Warnings
+                                        </th>
+                                        <th scope="col" className="w-[3%] px-3 py-3 text-center">
                                             Trace
                                         </th>
-                                        <th scope="col" className="w-[4%] px-3 py-3 text-center">
+                                        <th scope="col" className="w-[3%] px-3 py-3 text-center">
                                             Replay
                                         </th>
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y">
                                     {traces.map((t, idx) => {
-                                        const outcome = t.semanticStatus ?? ''
-                                        const hasHttpFailure = t.status >= 400 || t.failureStage === 'http' || t.failureStage === 'network'
-                                        const hasCancelled = outcome === 'cancelled'
-                                        const hasSemanticError = outcome === 'error'
+                                        const transport = t.transportStatus ?? ''
+                                        const run = t.runStatus ?? ''
+                                        const health = t.healthStatus ?? ''
+                                        const userLabel = formatUserIdentity(t.userId, t.userEmail)
+                                        const hasSemanticTrace = Boolean(t.runStatus || t.healthStatus)
+                                        const hasHttpFailure =
+                                            t.status >= 400 || transport === 'http_error' || transport === 'network_error'
+                                        const hasCancelled = run === 'cancelled' || transport === 'cancelled'
+                                        const hasRunError = run === 'error'
+                                        const hasDegraded = health === 'degraded' || transport === 'stream_error'
                                         const rowClass =
-                                            hasSemanticError || hasHttpFailure
+                                            hasRunError || hasHttpFailure
                                                 ? 'bg-red-100 hover:bg-red-200 dark:bg-red-950/20 dark:hover:bg-red-950/30'
-                                                : hasCancelled || t.failureStage === 'stream'
+                                                : hasCancelled || hasDegraded
                                                   ? 'bg-yellow-100 hover:bg-yellow-200 dark:bg-yellow-950/20 dark:hover:bg-yellow-950/30'
                                                   : 'hover:bg-muted/20'
 
                                         return (
                                             <tr key={`${t.traceId}:${idx}`} className={rowClass}>
-                                                <td className="max-w-[220px] truncate px-3 py-3 font-medium">
+                                                <td className="max-w-[160px] px-3 py-3 font-medium">
                                                     <Tooltip>
                                                         <TooltipTrigger asChild>
-                                                            <span className="cursor-default truncate">{t.url || '-'}</span>
+                                                            <span className="block cursor-default truncate">{t.url || '-'}</span>
                                                         </TooltipTrigger>
                                                         <TooltipContent>{t.url}</TooltipContent>
                                                     </Tooltip>
                                                 </td>
-                                                <td className="max-w-[150px] truncate px-3 py-3 text-xs text-muted-foreground">
+                                                <td className="max-w-[110px] px-3 py-3 text-xs text-muted-foreground">
                                                     {t.userId || t.userEmail ? (
                                                         <Tooltip>
                                                             <TooltipTrigger asChild>
-                                                                <span className="cursor-default truncate">
-                                                                    {t.userId || '-'}
-                                                                    {t.userEmail ? ` / ${t.userEmail}` : ''}
-                                                                </span>
+                                                                <span className="block cursor-default truncate">{userLabel}</span>
                                                             </TooltipTrigger>
-                                                            <TooltipContent>
-                                                                <p>{t.userId && `User: ${t.userId}`}</p>
-                                                                {t.userEmail && <p>{t.userEmail}</p>}
-                                                            </TooltipContent>
+                                                            <TooltipContent>{userLabel}</TooltipContent>
                                                         </Tooltip>
                                                     ) : (
                                                         '-'
@@ -498,23 +577,19 @@ export default function AIStreamingPage() {
                                                     </span>
                                                 </td>
                                                 <td className="px-3 py-3">
-                                                    {t.semanticStatus ? (
-                                                        <span
-                                                            className={`text-xs font-semibold ${
-                                                                t.semanticStatus === 'error'
-                                                                    ? 'text-destructive'
-                                                                    : t.semanticStatus === 'cancelled'
-                                                                      ? 'text-amber-600 dark:text-amber-400'
-                                                                      : t.semanticStatus === 'ok'
-                                                                        ? 'text-green-600'
-                                                                        : ''
-                                                            }`}
-                                                        >
-                                                            {t.semanticStatus.toUpperCase()}
-                                                        </span>
-                                                    ) : (
-                                                        '-'
-                                                    )}
+                                                    <span className={`text-xs font-semibold ${statusTextClass(t.transportStatus)}`}>
+                                                        {formatStatus(t.transportStatus)}
+                                                    </span>
+                                                </td>
+                                                <td className="px-3 py-3">
+                                                    <span className={`text-xs font-semibold ${statusTextClass(t.runStatus)}`}>
+                                                        {formatStatus(t.runStatus)}
+                                                    </span>
+                                                </td>
+                                                <td className="px-3 py-3">
+                                                    <span className={`text-xs font-semibold ${statusTextClass(t.healthStatus)}`}>
+                                                        {formatStatus(t.healthStatus)}
+                                                    </span>
                                                 </td>
                                                 <td className="px-3 py-3">
                                                     {t.failureStage ? (
@@ -542,8 +617,8 @@ export default function AIStreamingPage() {
                                                     {t.chunkCount.toLocaleString()}
                                                 </td>
                                                 <td className="px-3 py-3 text-right font-mono tabular-nums">{formatBytes(t.totalBytes)}</td>
-                                                <td className="max-w-[120px] truncate px-3 py-3" title={t.model ?? ''}>
-                                                    {t.model || '-'}
+                                                <td className="max-w-[120px] px-3 py-3" title={t.model ?? ''}>
+                                                    <span className="block truncate">{t.model || '-'}</span>
                                                 </td>
                                                 <td className="px-3 py-3 text-right font-mono tabular-nums">
                                                     {t.inputTokens != null && t.outputTokens != null
@@ -558,8 +633,9 @@ export default function AIStreamingPage() {
                                                         <TooltipContent>{t.networkAt}</TooltipContent>
                                                     </Tooltip>
                                                 </td>
+                                                <td className="px-3 py-3 text-right font-mono tabular-nums">{t.warningCount ?? 0}</td>
                                                 <td className="px-3 py-3 text-center">
-                                                    {t.traceId ? (
+                                                    {t.traceId && hasSemanticTrace ? (
                                                         <Link
                                                             href={`/ai-traces/${encodeURIComponent(t.traceId)}?appId=${encodeURIComponent(effectiveAppId)}`}
                                                         >

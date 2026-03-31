@@ -51,6 +51,7 @@ export default function Index() {
   const [currentChatItem, setCurrentChatItem] = useState<API.ChatItem | null>(
     null,
   )
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   const history = useRequest(
     async () => {
@@ -144,11 +145,15 @@ export default function Index() {
     async (target: API.ChatItem, message: string) => {
       setCurrentChatItem(target)
       target.loading = true
+      const abortController = new AbortController()
+      abortControllerRef.current = abortController
       try {
         //后端接口
         const res = await api.session.chat({
           id: id!,
           message,
+        }, {
+          signal: abortController.signal,
         })
         sessionActions.updateKey()
 
@@ -156,14 +161,20 @@ export default function Index() {
         if (!reader) return
 
         await read(reader)
-      } catch (error: any) {
-        target.error = error?.message ?? 'Unknown error'
+      } catch (error: unknown) {
+        if (abortController.signal.aborted) {
+          return
+        }
+        target.error = error instanceof Error ? error.message : 'Unknown error'
         throw error
       } finally {
+        if (abortControllerRef.current === abortController) {
+          abortControllerRef.current = null
+        }
         target.loading = false
       }
 
-      async function read(reader: ReadableStreamDefaultReader<any>) {
+      async function read(reader: ReadableStreamDefaultReader<Uint8Array>) {
         let temp = ''
         const decoder = new TextDecoder('utf-8')
         while (true) {
@@ -193,10 +204,10 @@ export default function Index() {
 
       function parseData(slice: string) {
         try {
-          const str = slice
-            .trim()
-            .replace(/^data\: /, '')
-            .trim()
+            const str = slice
+              .trim()
+              .replace(/^data: /, '')
+              .trim()
           if (str === '[DONE]') {
             return
           }
@@ -344,6 +355,7 @@ export default function Index() {
             loading={loading}
             sessionId={id}
             onSend={send}
+            onStop={() => abortControllerRef.current?.abort()}
             onContract={() => setCurrentChatItem(null)}
           />
         </>

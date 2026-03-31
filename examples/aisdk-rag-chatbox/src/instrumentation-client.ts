@@ -6,5 +6,4 @@ registerCondevClient({
         stallThresholdMs: 3000,
     },
     replay: true,
-    user: { id: 'dev-tester', email: 'dev@test.com' },
 })

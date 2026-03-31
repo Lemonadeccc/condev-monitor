@@ -3,6 +3,7 @@ import './globals.css'
 import { ClerkProvider } from '@clerk/nextjs'
 import { Navigation } from '@/components/navigation'
 import { CondevErrorBoundary } from '@condev-monitor/nextjs'
+import { CondevUserSync } from '@/components/condev-user-sync'
 
 export const metadata: Metadata = {
     title: 'RAG Chatbot',
@@ -18,6 +19,7 @@ export default function RootLayout({
         <ClerkProvider>
             <html lang="en">
                 <body className="antialiased">
+                    <CondevUserSync />
                     <Navigation />
                     <CondevErrorBoundary fallback={<div>Something went wrong.</div>}>{children}</CondevErrorBoundary>
                 </body>

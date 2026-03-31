@@ -1,8 +1,12 @@
-
+import logging
+from elasticsearch import NotFoundError
 from service.core.rag.nlp.search_v2 import Dealer
 from service.core.rag.utils.es_conn import ESConnection
 
 import json
+
+logger = logging.getLogger(__name__)
+
 # 创建 ElasticsearchConnection 实例
 es_connection = ESConnection()
 
@@ -11,16 +15,24 @@ dealer = Dealer(dataStore=es_connection)
 
 
 def retrieve_content(indexNames: str, question: str):
-
-    # 执行搜索
-    results = dealer.retrieval(question = question,
-                               embd_mdl = None,
-                               tenant_ids = indexNames,
-                               kb_ids = None,
-                               vector_similarity_weight=0.6,
-                               page = 1,
-                               page_size = 5
-    )
+    try:
+        # 执行搜索
+        results = dealer.retrieval(question = question,
+                                   embd_mdl = None,
+                                   tenant_ids = indexNames,
+                                   kb_ids = None,
+                                   vector_similarity_weight=0.6,
+                                   page = 1,
+                                   page_size = 5
+        )
+    except NotFoundError:
+        logger.info("Knowledge base index %s was not found. Returning an empty retrieval result.", indexNames)
+        return []
+    except Exception as e:
+        if "index_not_found_exception" in str(e) or "no such index" in str(e):
+            logger.info("Knowledge base index %s was not found. Returning an empty retrieval result.", indexNames)
+            return []
+        raise
 
     # 提取 chunks 中的信息
     extracted_data = []

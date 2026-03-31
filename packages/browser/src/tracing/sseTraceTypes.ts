@@ -21,6 +21,13 @@ export interface SSETraceOptions {
     injectTraceId?: boolean
 
     /**
+     * Additional request origins that are allowed to receive trace headers.
+     * Same-origin requests are always allowed automatically.
+     * Useful for cross-origin dev setups such as Vite -> FastAPI.
+     */
+    traceHeaderOrigins?: string[]
+
+    /**
      * Custom header name for trace correlation. Default: 'x-condev-trace-id'
      */
     traceIdHeader?: string
@@ -49,6 +56,7 @@ export const DEFAULT_SSE_TRACE_OPTIONS: Required<SSETraceOptions> = {
     urlPatterns: [],
     stallThresholdMs: 3000,
     injectTraceId: true,
+    traceHeaderOrigins: [],
     traceIdHeader: DEFAULT_TRACE_ID_HEADER,
     excludeUrls: [],
     maxProbeChunks: 50_000,

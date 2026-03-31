@@ -19,6 +19,8 @@ export class AiController {
         @Query('from') from?: string,
         @Query('to') to?: string,
         @Query('status') status?: string,
+        @Query('runStatus') runStatus?: string,
+        @Query('healthStatus') healthStatus?: string,
         @Query('limit') limit?: string,
         @Query('offset') offset?: string
     ) {
@@ -28,6 +30,8 @@ export class AiController {
             from,
             to,
             status,
+            runStatus,
+            healthStatus,
             limit: limit ? Number(limit) : undefined,
             offset: offset ? Number(offset) : undefined,
         })
@@ -54,9 +58,24 @@ export class AiController {
     }
 
     @Get('/sessions')
-    async listSessions(@Query('appId') appId: string, @Request() req, @Query('limit') limit?: string, @Query('offset') offset?: string) {
+    async listSessions(
+        @Query('appId') appId: string,
+        @Request() req,
+        @Query('limit') limit?: string,
+        @Query('offset') offset?: string,
+        @Query('from') from?: string,
+        @Query('to') to?: string,
+        @Query('replayFilter') replayFilter?: string
+    ) {
         await this.applicationService.assertOwned(appId, req.user.id)
-        const sessions = await this.aiService.listSessions(appId, limit ? Number(limit) : undefined, offset ? Number(offset) : undefined)
+        const sessions = await this.aiService.listSessions(
+            appId,
+            limit ? Number(limit) : undefined,
+            offset ? Number(offset) : undefined,
+            from,
+            to,
+            replayFilter
+        )
         return { success: true, data: { sessions } }
     }
 
@@ -79,9 +98,24 @@ export class AiController {
     }
 
     @Get('/users')
-    async listUsers(@Query('appId') appId: string, @Request() req, @Query('limit') limit?: string, @Query('offset') offset?: string) {
+    async listUsers(
+        @Query('appId') appId: string,
+        @Request() req,
+        @Query('limit') limit?: string,
+        @Query('offset') offset?: string,
+        @Query('from') from?: string,
+        @Query('to') to?: string,
+        @Query('replayFilter') replayFilter?: string
+    ) {
         await this.applicationService.assertOwned(appId, req.user.id)
-        const users = await this.aiService.listUsers(appId, limit ? Number(limit) : undefined, offset ? Number(offset) : undefined)
+        const users = await this.aiService.listUsers(
+            appId,
+            limit ? Number(limit) : undefined,
+            offset ? Number(offset) : undefined,
+            from,
+            to,
+            replayFilter
+        )
         return { success: true, data: { users } }
     }
 

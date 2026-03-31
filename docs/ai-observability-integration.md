@@ -77,6 +77,18 @@ registerCondevClient({
 })
 ```
 
+If your frontend is cross-origin from the AI backend, allow trace headers for that backend origin as well:
+
+```ts
+registerCondevClient({
+    replay: true,
+    aiStreaming: {
+        urlPatterns: ['/chat_on_docs'],
+        traceHeaderOrigins: ['http://localhost:8000'],
+    },
+})
+```
+
 `instrumentation.ts`
 
 ```ts
@@ -245,6 +257,13 @@ except Exception as exc:
 
 trace.end(status="ok")
 ```
+
+For Vite/React + FastAPI projects, the minimum split is:
+
+- frontend browser SDK with `aiStreaming.urlPatterns`
+- `traceHeaderOrigins` for the FastAPI origin when the request is cross-origin
+- FastAPI route creates the root trace from `x-condev-trace-id`
+- retrieval and llm streaming are reported as manual spans/generations
 
 ## LangChain / LangGraph
 
