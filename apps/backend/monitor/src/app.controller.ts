@@ -41,6 +41,11 @@ export class AppController {
         // return res
     }
 
+    @Get('/healthz')
+    healthz() {
+        return { ok: true }
+    }
+
     @Get('/v2')
     async getHello2(@Query('token') token): Promise<any> {
         // const res = await this.redis.get('token')

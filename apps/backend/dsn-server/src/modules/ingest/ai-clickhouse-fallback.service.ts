@@ -53,6 +53,8 @@ export class AIClickhouseFallbackService implements OnModuleInit {
     private readonly logger = new Logger(AIClickhouseFallbackService.name)
     private readonly database: string
     private readonly pricingConfig: string | null
+    private readonly schemaInitMaxAttempts: number
+    private readonly schemaInitRetryMs: number
 
     constructor(
         @Inject('CLICKHOUSE_CLIENT')
@@ -61,10 +63,12 @@ export class AIClickhouseFallbackService implements OnModuleInit {
     ) {
         this.database = resolveClickhouseDatabase(this.config)
         this.pricingConfig = this.config.get<string>('AI_MODEL_PRICING_JSON') ?? null
+        this.schemaInitMaxAttempts = Math.max(1, Number(this.config.get('CLICKHOUSE_SCHEMA_INIT_MAX_ATTEMPTS')) || 30)
+        this.schemaInitRetryMs = Math.max(250, Number(this.config.get('CLICKHOUSE_SCHEMA_INIT_RETRY_MS')) || 2000)
     }
 
     async onModuleInit(): Promise<void> {
-        await this.ensureSchema()
+        await this.ensureSchemaWithRetry()
     }
 
     async insertBatch(appId: string, items: Record<string, unknown>[]): Promise<void> {
@@ -352,5 +356,36 @@ export class AIClickhouseFallbackService implements OnModuleInit {
                 TTL toDateTime(created_at) + INTERVAL 180 DAY
             `,
         })
+    }
+
+    private async ensureSchemaWithRetry(): Promise<void> {
+        for (let attempt = 1; attempt <= this.schemaInitMaxAttempts; attempt += 1) {
+            try {
+                await this.ensureSchema()
+                if (attempt > 1) {
+                    this.logger.log(`ClickHouse AI schema initialized after retry ${attempt}/${this.schemaInitMaxAttempts}`)
+                }
+                return
+            } catch (error) {
+                if (attempt === this.schemaInitMaxAttempts) {
+                    this.logger.error(
+                        `ClickHouse AI schema initialization failed after ${this.schemaInitMaxAttempts} attempts`,
+                        error instanceof Error ? error.stack : String(error)
+                    )
+                    throw error
+                }
+
+                this.logger.warn(
+                    `ClickHouse AI schema init failed (${attempt}/${this.schemaInitMaxAttempts}), retrying in ${this.schemaInitRetryMs}ms: ${
+                        error instanceof Error ? error.message : String(error)
+                    }`
+                )
+                await this.sleep(this.schemaInitRetryMs)
+            }
+        }
+    }
+
+    private sleep(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms))
     }
 }

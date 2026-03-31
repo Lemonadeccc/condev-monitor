@@ -6,6 +6,10 @@ repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd)"
 cd "$repo_root"
 
 KAFKA_CONTAINER="${KAFKA_CONTAINER:-condev-monitor-kafka}"
+KAFKA_EVENTS_TOPIC="${KAFKA_EVENTS_TOPIC:-monitor.sdk.events.v1}"
+KAFKA_REPLAYS_TOPIC="${KAFKA_REPLAYS_TOPIC:-monitor.sdk.replays.v1}"
+KAFKA_AI_TOPIC="${KAFKA_AI_TOPIC:-condev.ai.events}"
+KAFKA_DLQ_TOPIC="${KAFKA_DLQ_TOPIC:-monitor.sdk.dlq.v1}"
 
 # apache/kafka official image binary path
 KAFKA_BIN="/opt/kafka/bin"
@@ -58,17 +62,22 @@ fi
 echo "Creating Kafka topics (idempotent)..."
 
 docker exec "$container_id" "$KAFKA_BIN/kafka-topics.sh" --bootstrap-server localhost:9092 \
-  --create --if-not-exists --topic monitor.sdk.events.v1 \
+  --create --if-not-exists --topic "$KAFKA_EVENTS_TOPIC" \
   --partitions 6 --replication-factor 1 \
   --config retention.ms=259200000
 
 docker exec "$container_id" "$KAFKA_BIN/kafka-topics.sh" --bootstrap-server localhost:9092 \
-  --create --if-not-exists --topic monitor.sdk.replays.v1 \
+  --create --if-not-exists --topic "$KAFKA_REPLAYS_TOPIC" \
   --partitions 3 --replication-factor 1 \
   --config retention.ms=86400000
 
 docker exec "$container_id" "$KAFKA_BIN/kafka-topics.sh" --bootstrap-server localhost:9092 \
-  --create --if-not-exists --topic monitor.sdk.dlq.v1 \
+  --create --if-not-exists --topic "$KAFKA_AI_TOPIC" \
+  --partitions 3 --replication-factor 1 \
+  --config retention.ms=259200000
+
+docker exec "$container_id" "$KAFKA_BIN/kafka-topics.sh" --bootstrap-server localhost:9092 \
+  --create --if-not-exists --topic "$KAFKA_DLQ_TOPIC" \
   --partitions 1 --replication-factor 1 \
   --config retention.ms=604800000
 

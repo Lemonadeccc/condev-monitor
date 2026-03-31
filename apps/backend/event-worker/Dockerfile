@@ -1,9 +1,9 @@
-FROM node:22-alpine AS base
+FROM node:22-bookworm-slim AS base
 ENV COREPACK_HOME=/corepack
 ENV PNPM_VERSION=10.10.0
 
 FROM base AS deps
-RUN apk add --no-cache libc6-compat
+RUN apt-get update && apt-get install -y --no-install-recommends python3 make g++ ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 ENV NODE_ENV=development
@@ -24,7 +24,7 @@ COPY . .
 RUN corepack enable pnpm && pnpm --filter event-worker build
 
 FROM base AS prod-deps
-RUN apk add --no-cache libc6-compat
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 ENV NODE_ENV=production
@@ -36,6 +36,7 @@ COPY apps/backend/event-worker/package.json ./apps/backend/event-worker/package.
 RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i --prod --frozen-lockfile --ignore-scripts
 
 FROM base AS runner
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app/apps/backend/event-worker
 
 ENV NODE_ENV=production

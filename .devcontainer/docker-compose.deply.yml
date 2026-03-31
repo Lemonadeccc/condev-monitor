@@ -1,6 +1,7 @@
 services:
     condev-monitor-clickhouse:
         image: clickhouse:25.10
+        restart: unless-stopped
 
         expose:
             - '8123'
@@ -15,9 +16,16 @@ services:
             - clickhouse_data:/var/lib/clickhouse/
             - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
             - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
+        healthcheck:
+            test: ['CMD-SHELL', "clickhouse-client --query 'SELECT 1' >/dev/null 2>&1 || exit 1"]
+            interval: 5s
+            timeout: 5s
+            retries: 30
+            start_period: 10s
 
     condev-monitor-postgres:
         image: postgres:18.1
+        restart: unless-stopped
         expose:
             - '5432'
         env_file:
@@ -28,6 +36,12 @@ services:
             - POSTGRES_DB=${DB_DATABASE:-postgres}
         volumes:
             - postgres_data:/var/lib/postgresql/
+        healthcheck:
+            test: ['CMD-SHELL', 'pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB >/dev/null 2>&1 || exit 1']
+            interval: 5s
+            timeout: 5s
+            retries: 30
+            start_period: 10s
 
     condev-monitor-kafka-init:
         image: alpine
@@ -38,6 +52,7 @@ services:
 
     condev-monitor-kafka:
         image: apache/kafka:3.9.2
+        restart: unless-stopped
         depends_on:
             condev-monitor-kafka-init:
                 condition: service_completed_successfully
@@ -60,11 +75,18 @@ services:
             KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
         volumes:
             - kafka_data:/tmp/kafka-logs
+        healthcheck:
+            test: ['CMD-SHELL', '/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1 || exit 1']
+            interval: 5s
+            timeout: 10s
+            retries: 30
+            start_period: 15s
 
     condev-monitor-server:
         build:
             context: ..
             dockerfile: apps/backend/monitor/Dockerfile
+        restart: unless-stopped
         expose:
             - '8081'
         env_file:
@@ -78,7 +100,7 @@ services:
             - DB_PASSWORD=${DB_PASSWORD:-condevPostgres}
             - DB_DATABASE=${DB_DATABASE:-postgres}
             - DB_AUTOLOAD=${DB_AUTOLOAD:-true}
-            - DB_SYNC=${DB_SYNC:-true}
+            - DB_SYNC=${DB_SYNC:-false}
             - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
             - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8888}
             - MAIL_ON=${MAIL_ON:-false}
@@ -87,13 +109,28 @@ services:
         volumes:
             - sourcemap_data:/data/sourcemaps
         depends_on:
-            - condev-monitor-postgres
-            - condev-monitor-clickhouse
+            condev-monitor-postgres:
+                condition: service_healthy
+            condev-monitor-clickhouse:
+                condition: service_healthy
+        healthcheck:
+            test:
+                [
+                    'CMD',
+                    'node',
+                    '-e',
+                    "require('node:http').get('http://127.0.0.1:8081/api/healthz', res => process.exit(res.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))",
+                ]
+            interval: 10s
+            timeout: 5s
+            retries: 12
+            start_period: 20s
 
     condev-dsn-server:
         build:
             context: ..
             dockerfile: apps/backend/dsn-server/Dockerfile
+        restart: unless-stopped
         expose:
             - '8082'
         env_file:
@@ -117,8 +154,9 @@ services:
             - KAFKA_ENABLED=true
             - KAFKA_BROKERS=${KAFKA_BROKERS:-condev-monitor-kafka:9092}
             - KAFKA_CLIENT_ID=condev-monitor-dsn
-            - KAFKA_EVENTS_TOPIC=monitor.sdk.events.v1
-            - KAFKA_REPLAYS_TOPIC=monitor.sdk.replays.v1
+            - KAFKA_EVENTS_TOPIC=${KAFKA_EVENTS_TOPIC:-monitor.sdk.events.v1}
+            - KAFKA_REPLAYS_TOPIC=${KAFKA_REPLAYS_TOPIC:-monitor.sdk.replays.v1}
+            - KAFKA_AI_TOPIC=${KAFKA_AI_TOPIC:-condev.ai.events}
             - KAFKA_FALLBACK_TO_CLICKHOUSE=${KAFKA_FALLBACK_TO_CLICKHOUSE:-true}
             - INBOUND_MAX_PAYLOAD_BYTES=${INBOUND_MAX_PAYLOAD_BYTES:-524288}
             - INBOUND_UA_BLACKLIST=${INBOUND_UA_BLACKLIST:-MSIE 9,MSIE 10,Trident/5.0,Trident/6.0}
@@ -126,17 +164,35 @@ services:
             - RATE_LIMIT_EVENTS_PER_SEC=${RATE_LIMIT_EVENTS_PER_SEC:-100}
             - RATE_LIMIT_BURST=${RATE_LIMIT_BURST:-100}
             - RATE_LIMIT_MAX_APPS=${RATE_LIMIT_MAX_APPS:-5000}
+            - CLICKHOUSE_SCHEMA_INIT_MAX_ATTEMPTS=${CLICKHOUSE_SCHEMA_INIT_MAX_ATTEMPTS:-30}
+            - CLICKHOUSE_SCHEMA_INIT_RETRY_MS=${CLICKHOUSE_SCHEMA_INIT_RETRY_MS:-2000}
         volumes:
             - sourcemap_data:/data/sourcemaps
         depends_on:
-            - condev-monitor-clickhouse
-            - condev-monitor-postgres
-            - condev-monitor-kafka
+            condev-monitor-clickhouse:
+                condition: service_healthy
+            condev-monitor-postgres:
+                condition: service_healthy
+            condev-monitor-kafka:
+                condition: service_healthy
+        healthcheck:
+            test:
+                [
+                    'CMD',
+                    'node',
+                    '-e',
+                    "require('node:http').get('http://127.0.0.1:8082/dsn-api/healthz', res => process.exit(res.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))",
+                ]
+            interval: 10s
+            timeout: 5s
+            retries: 12
+            start_period: 20s
 
     condev-monitor-web:
         build:
             context: ..
             dockerfile: apps/frontend/monitor/Dockerfile
+        restart: unless-stopped
         expose:
             - '3000'
         environment:
@@ -145,11 +201,26 @@ services:
             - API_PROXY_TARGET=http://condev-monitor-server:8081
             - DSN_API_PROXY_TARGET=http://condev-dsn-server:8082
         depends_on:
-            - condev-monitor-server
-            - condev-dsn-server
+            condev-monitor-server:
+                condition: service_healthy
+            condev-dsn-server:
+                condition: service_healthy
+        healthcheck:
+            test:
+                [
+                    'CMD',
+                    'node',
+                    '-e',
+                    "require('node:http').get('http://127.0.0.1:3000/', res => process.exit(res.statusCode === 200 ? 0 : 1)).on('error', () => process.exit(1))",
+                ]
+            interval: 10s
+            timeout: 5s
+            retries: 12
+            start_period: 20s
 
     condev-monitor-caddy:
         image: caddy:2.11-alpine
+        restart: unless-stopped
         ports:
             - '${CADDY_HTTP_HOST_PORT:-8888}:${CADDY_HTTP_CONTAINER_PORT:-80}'
             - '${CADDY_HTTPS_HOST_PORT:-8443}:443'
@@ -162,14 +233,18 @@ services:
             - caddy_data:/data
             - caddy_config:/config
         depends_on:
-            - condev-monitor-server
-            - condev-monitor-web
-            - condev-dsn-server
+            condev-monitor-server:
+                condition: service_healthy
+            condev-monitor-web:
+                condition: service_healthy
+            condev-dsn-server:
+                condition: service_healthy
 
     condev-monitor-event-worker:
         build:
             context: ..
             dockerfile: apps/backend/event-worker/Dockerfile
+        restart: unless-stopped
         env_file:
             - .env
         environment:
@@ -180,9 +255,10 @@ services:
             - KAFKA_BROKERS=${KAFKA_BROKERS:-condev-monitor-kafka:9092}
             - KAFKA_CLIENT_ID=condev-monitor-worker
             - KAFKA_CONSUMER_GROUP=${KAFKA_CONSUMER_GROUP:-monitor-clickhouse-writer-v1}
-            - KAFKA_EVENTS_TOPIC=monitor.sdk.events.v1
-            - KAFKA_REPLAYS_TOPIC=monitor.sdk.replays.v1
-            - KAFKA_DLQ_TOPIC=monitor.sdk.dlq.v1
+            - KAFKA_EVENTS_TOPIC=${KAFKA_EVENTS_TOPIC:-monitor.sdk.events.v1}
+            - KAFKA_REPLAYS_TOPIC=${KAFKA_REPLAYS_TOPIC:-monitor.sdk.replays.v1}
+            - KAFKA_AI_TOPIC=${KAFKA_AI_TOPIC:-condev.ai.events}
+            - KAFKA_DLQ_TOPIC=${KAFKA_DLQ_TOPIC:-monitor.sdk.dlq.v1}
             - EVENT_BATCH_SIZE=${EVENT_BATCH_SIZE:-500}
             - EVENT_BATCH_MAX_WAIT_MS=${EVENT_BATCH_MAX_WAIT_MS:-1000}
             - EMBEDDING_MODEL_ID=${EMBEDDING_MODEL_ID:-Xenova/all-MiniLM-L6-v2}
@@ -195,9 +271,13 @@ services:
             - LLM_MODEL=${LLM_MODEL:-gpt-4o-mini}
             - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-1024}
             - LLM_TEMPERATURE=${LLM_TEMPERATURE:-0.1}
+            - CLICKHOUSE_SCHEMA_INIT_MAX_ATTEMPTS=${CLICKHOUSE_SCHEMA_INIT_MAX_ATTEMPTS:-30}
+            - CLICKHOUSE_SCHEMA_INIT_RETRY_MS=${CLICKHOUSE_SCHEMA_INIT_RETRY_MS:-2000}
         depends_on:
-            - condev-monitor-kafka
-            - condev-monitor-clickhouse
+            condev-monitor-kafka:
+                condition: service_healthy
+            condev-monitor-clickhouse:
+                condition: service_healthy
 
 volumes:
     clickhouse_data:

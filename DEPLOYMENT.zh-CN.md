@@ -99,8 +99,19 @@ cp .devcontainer/.env.example .devcontainer/.env
 | `INGEST_MODE`                                                 | `kafka` 或 `direct`，控制 DSN 写入管道   |
 | `KAFKA_BROKERS`                                               | DSN 和 event worker 的 Kafka broker 地址 |
 | `KAFKA_CONSUMER_GROUP`                                        | event worker 的消费者组                  |
+| `KAFKA_EVENTS_TOPIC`, `KAFKA_REPLAYS_TOPIC`, `KAFKA_AI_TOPIC` | DSN 与 event worker 使用的 topic 名称    |
 | `EMBEDDING_MODEL_ID`                                          | Issue 嵌入向量使用的 HuggingFace 模型    |
 | `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`    | Issue 分析 LLM 集成                      |
+
+### Postgres 迁移模式
+
+现在 `monitor` 后端的 Postgres 表结构通过仓库内的 SQL migration 管理，目录在 `.devcontainer/postgres/init`。
+
+- `scripts/init-postgres.sh` 会在业务服务启动前执行
+- 对全新数据库，会自动应用基线 migration
+- 对以前靠 `DB_SYNC=true` 建过表的数据库，会把基线标记为已应用，再继续后续 migration
+
+这样生产环境就可以安全使用 `DB_SYNC=false`，同时保留已有数据。
 
 ### compose 暴露的宿主机端口
 
@@ -137,9 +148,11 @@ pnpm docker:deploy
 
 这个命令会：
 
-1. 执行 `docker compose -p condev-monitor -f .devcontainer/docker-compose.deply.yml up -d --build`
-2. 执行 `pnpm docker:init-clickhouse`
-3. 执行 `pnpm docker:init-kafka`
+1. 先启动 ClickHouse、Postgres 和 Kafka
+2. 等待 Postgres 就绪并执行待应用的 SQL migration
+3. 等待 ClickHouse 就绪并初始化 ClickHouse schema
+4. 创建 Kafka topics，包括 AI Streaming 依赖的 topic
+5. 最后再启动 monitor backend、dsn-server、event-worker、frontend 和 Caddy
 
 注意：仓库里的文件名就是 `docker-compose.deply.yml`，虽然看起来像拼写错误，但根脚本已经按这个名字写死了。
 
@@ -154,7 +167,9 @@ pnpm docker:deploy:stop
 容器启动后，建议至少验证：
 
 - `/` -> 控制台
+- `/api/healthz` -> monitor backend 健康检查
 - `/api/*` -> monitor backend
+- `/dsn-api/healthz` -> dsn-server 健康检查
 - `/dsn-api/*` -> dsn-server
 - `/tracking/*` -> dsn-server
 - `/replay/*` -> dsn-server
@@ -197,6 +212,7 @@ pnpm docker:stop
 | ------------------------ | ------ | -------- | ------------------------------------------- |
 | `monitor.sdk.events.v1`  | 6      | 3 天     | DSN server 向 event worker 发送 SDK 事件    |
 | `monitor.sdk.replays.v1` | 3      | 1 天     | DSN server 向 event worker 发送 Replay 上传 |
+| `condev.ai.events`       | 3      | 3 天     | AI / Streaming 可观测性事件                 |
 | `monitor.sdk.dlq.v1`     | 1      | 7 天     | 处理失败的死信队列                          |
 
 ---
@@ -258,6 +274,21 @@ pnpm docker:stop
 - `apps/backend/dsn-server` 监听 `PORT`，默认 `8082`
 - `apps/backend/event-worker` 无外部端口（仅 Kafka 消费者）
 - `apps/frontend/monitor` 监听 `3000`
+
+### 启动行为
+
+当前生产 compose 已改成分阶段启动并带健康检查：
+
+1. 先拉起基础设施
+2. 初始化 Postgres migration、ClickHouse schema 和 Kafka topics
+3. 依赖健康后再启动业务服务
+
+另外：
+
+- `condev-dsn-server` 和 `condev-monitor-event-worker` 在冷启动时会重试 ClickHouse AI schema 初始化
+- `condev-monitor-event-worker` 已改为 Debian 系运行时镜像，避免 `onnxruntime-node` 因 glibc 缺失启动失败
+- 长期运行服务使用 `restart: unless-stopped`，基础设施慢启动时不再需要手动重启容器
+- 以后 Postgres 表结构有变化时，只追加新的编号 migration，不要回改已经上线过的旧 migration
 
 ### Replay 上传体积
 

@@ -100,8 +100,19 @@ The deployment compose injects variables from `.devcontainer/.env` into ClickHou
 | `INGEST_MODE`                                                 | `kafka` or `direct`, controls DSN ingest pipeline |
 | `KAFKA_BROKERS`                                               | Broker addresses for DSN and event worker         |
 | `KAFKA_CONSUMER_GROUP`                                        | Consumer group for event worker                   |
+| `KAFKA_EVENTS_TOPIC`, `KAFKA_REPLAYS_TOPIC`, `KAFKA_AI_TOPIC` | Topic names used by DSN and event worker          |
 | `EMBEDDING_MODEL_ID`                                          | HuggingFace model for issue embeddings            |
 | `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`    | LLM integration for issue analysis                |
+
+### Postgres migration mode
+
+The monitor backend now expects Postgres schema initialization to happen through checked-in SQL migrations under `.devcontainer/postgres/init`.
+
+- `scripts/init-postgres.sh` runs before app services start
+- on a fresh database it applies the baseline schema migration
+- on an existing database that was previously created by `DB_SYNC=true`, it marks the baseline as already applied and continues with later migrations
+
+This lets production run with `DB_SYNC=false` while keeping existing data intact.
 
 ### Ports Exposed by the Compose
 
@@ -138,9 +149,11 @@ pnpm docker:deploy
 
 This command:
 
-1. runs `docker compose -p condev-monitor -f .devcontainer/docker-compose.deply.yml up -d --build`
-2. runs `pnpm docker:init-clickhouse`
-3. runs `pnpm docker:init-kafka`
+1. starts ClickHouse, Postgres, and Kafka first
+2. waits for Postgres and applies pending SQL migrations
+3. waits for ClickHouse and initializes ClickHouse schema
+4. creates Kafka topics, including the AI topic used by streaming observability
+5. starts the monitor backend, DSN server, event worker, frontend, and Caddy
 
 Important note: the file name in the repository is literally `docker-compose.deply.yml`. The root script already uses that exact path.
 
@@ -155,7 +168,9 @@ pnpm docker:deploy:stop
 After the containers are up, verify:
 
 - `/` -> dashboard
+- `/api/healthz` -> monitor backend health
 - `/api/*` -> monitor backend
+- `/dsn-api/healthz` -> dsn-server health
 - `/dsn-api/*` -> dsn-server
 - `/tracking/*` -> dsn-server
 - `/replay/*` -> dsn-server
@@ -198,6 +213,7 @@ The `scripts/init-kafka-topics.sh` script creates these topics (idempotent):
 | ------------------------ | ---------- | --------- | ---------------------------------------------- |
 | `monitor.sdk.events.v1`  | 6          | 3 days    | SDK events from DSN server to event worker     |
 | `monitor.sdk.replays.v1` | 3          | 1 day     | Replay uploads from DSN server to event worker |
+| `condev.ai.events`       | 3          | 3 days    | AI / streaming observability events            |
 | `monitor.sdk.dlq.v1`     | 1          | 7 days    | Dead letter queue for failed processing        |
 
 ---
@@ -260,6 +276,21 @@ Setting `INGEST_MODE=direct` in the DSN server bypasses Kafka and writes directl
 - `apps/backend/dsn-server` listens on `PORT`, default `8082`
 - `apps/frontend/monitor` listens on `3000`
 - `apps/backend/event-worker` listens internally (no exposed port, Kafka consumer only)
+
+### Startup behavior
+
+The production compose now relies on staged startup plus health checks:
+
+1. infrastructure comes up first
+2. Postgres migrations, ClickHouse schema, and Kafka topics are initialized
+3. app services start only after their dependencies are healthy
+
+Additionally:
+
+- `condev-dsn-server` and `condev-monitor-event-worker` retry ClickHouse AI schema initialization during cold starts
+- `condev-monitor-event-worker` now uses a Debian-based runtime image so `onnxruntime-node` can load its glibc-linked native library
+- long-lived services use `restart: unless-stopped`, so transient cold-start races do not require manual restarts anymore
+- future Postgres schema changes should be added as new numbered SQL files; do not rewrite old migrations after they have reached production
 
 ### Replay upload size
 
