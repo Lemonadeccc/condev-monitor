@@ -129,3 +129,5 @@ apps/backend/monitor/apps
 .claude/**/**/env/*.env
 !.claude/**/**/env/*.example.env
 !**/.env.example
+
+examples/rag/

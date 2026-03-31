@@ -35,6 +35,10 @@ describe('KafkaConsumerService', () => {
             route: jest.fn(),
         }
 
+        const aiProjector = {
+            handleMessage: jest.fn().mockResolvedValue(undefined),
+        }
+
         const service = new KafkaConsumerService(
             {
                 get: (key: string) => {
@@ -47,7 +51,8 @@ describe('KafkaConsumerService', () => {
             fingerprintService as any,
             embeddingService as any,
             tfidfService as any,
-            bufferManager as any
+            bufferManager as any,
+            aiProjector as any
         )
 
         return {

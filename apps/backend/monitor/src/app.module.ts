@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config'
 import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm'
 
 import { AdminModule } from './admin/admin.module'
+import { AiModule } from './ai/ai.module'
 import { AppController } from './app.controller'
 import { AppService } from './app.service'
 import { ApplicationModule } from './application/application.module'
@@ -26,6 +27,7 @@ import { SourcemapModule } from './sourcemap/sourcemap.module'
         MailModule,
         ApplicationModule,
         AdminModule,
+        AiModule,
         AuthModule,
         SourcemapModule,
         ClickhouseModule,

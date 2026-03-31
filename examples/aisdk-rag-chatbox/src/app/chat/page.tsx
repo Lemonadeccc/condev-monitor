@@ -1,6 +1,7 @@
 'use client'
 import { Fragment, useState } from 'react'
 import { useChat } from '@ai-sdk/react'
+import { DefaultChatTransport } from 'ai'
 import {
     PromptInput,
     PromptInputBody,
@@ -15,6 +16,8 @@ import { GlobeIcon, Loader } from 'lucide-react'
 import { Conversation, ConversationContent, ConversationScrollButton } from '@/components/ai-elements/conversation'
 import { Message, MessageContent, MessageResponse } from '@/components/ai-elements/message'
 
+const CHAT_SESSION_STORAGE_KEY = 'condev-rag-chat-session-id'
+
 function getErrorMessage(error: Error): string {
     const msg = error.message?.toLowerCase() ?? ''
     if (msg.includes('429') || msg.includes('rate_limit')) return 'Too many requests. Please wait a moment and try again.'
@@ -25,9 +28,30 @@ function getErrorMessage(error: Error): string {
     return 'AI service temporarily unavailable. Please try again.'
 }
 
+function getOrCreateChatSessionId(): string {
+    if (typeof window === 'undefined') {
+        return crypto.randomUUID()
+    }
+
+    const existing = window.sessionStorage.getItem(CHAT_SESSION_STORAGE_KEY)
+    if (existing) return existing
+
+    const nextId = crypto.randomUUID()
+    window.sessionStorage.setItem(CHAT_SESSION_STORAGE_KEY, nextId)
+    return nextId
+}
+
 export default function RAGChatBot() {
     const [input, setInput] = useState('')
-    const { messages, sendMessage, status, error, regenerate } = useChat()
+    const [chatSessionId] = useState(getOrCreateChatSessionId)
+    const { messages, sendMessage, status, error, regenerate, stop } = useChat({
+        id: chatSessionId,
+        transport: new DefaultChatTransport({
+            body: {
+                chatSessionId,
+            },
+        }),
+    })
     const handleSubmit = (message: PromptInputMessage) => {
         if (!message.text) return
         sendMessage({ text: message.text })
@@ -37,6 +61,17 @@ export default function RAGChatBot() {
     return (
         <div className="max-w-4xl mx-auto p-6 relative size-full h-[calc(100vh-4rem)]">
             <div className="flex flex-col h-full">
+                <div className="mb-4 rounded-lg border bg-muted/20 px-4 py-3 text-sm text-muted-foreground">
+                    <div className="font-medium text-foreground">Observability smoke tests</div>
+                    <div className="mt-1">Normal trace: send any message.</div>
+                    <div>
+                        Provider error: send <code>/fail provider</code>.
+                    </div>
+                    <div>
+                        Tool failure: send <code>/fail tool</code>.
+                    </div>
+                    <div>Cancelled stream: start a normal request, then click the square submit button while streaming.</div>
+                </div>
                 <Conversation className="h-full">
                     <ConversationContent>
                         {messages.map(message => (
@@ -81,7 +116,11 @@ export default function RAGChatBot() {
                     </PromptInputBody>
                     <PromptInputTools></PromptInputTools>
                     <PromptInputFooter>
-                        <PromptInputSubmit></PromptInputSubmit>
+                        <PromptInputSubmit
+                            status={status}
+                            type={status === 'streaming' ? 'button' : 'submit'}
+                            onClick={status === 'streaming' ? () => stop() : undefined}
+                        />
                     </PromptInputFooter>
                 </PromptInput>
             </div>

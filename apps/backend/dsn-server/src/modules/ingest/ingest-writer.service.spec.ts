@@ -21,6 +21,7 @@ describe('IngestWriterService', () => {
         const service = new IngestWriterService(
             {} as any,
             clickhouseFallback as any,
+            { insertBatch: jest.fn().mockResolvedValue(undefined) } as any,
             {
                 get: (key: string) => {
                     if (key === 'INGEST_MODE') return 'direct'
@@ -47,6 +48,7 @@ describe('IngestWriterService', () => {
         const service = new IngestWriterService(
             kafkaProducer as any,
             clickhouseFallback as any,
+            { insertBatch: jest.fn().mockResolvedValue(undefined) } as any,
             {
                 get: (key: string) => {
                     if (key === 'INGEST_MODE') return 'kafka'
@@ -61,5 +63,36 @@ describe('IngestWriterService', () => {
         expect(result).toEqual({ persistedVia: 'clickhouse-fallback' })
         const [rows] = clickhouseFallback.insertEvents.mock.calls[0]
         expect(rows[0].event_id).toMatch(/^[0-9a-f-]{36}$/i)
+    })
+
+    it('persists ai events directly to ClickHouse when direct ingest is enabled', async () => {
+        const clickhouseFallback = {
+            insertEvents: jest.fn().mockResolvedValue(undefined),
+        }
+        const aiClickhouseFallback = {
+            insertBatch: jest.fn().mockResolvedValue(undefined),
+        }
+
+        const service = new IngestWriterService(
+            {} as any,
+            clickhouseFallback as any,
+            aiClickhouseFallback as any,
+            {
+                get: (key: string) => {
+                    if (key === 'INGEST_MODE') return 'direct'
+                    return undefined
+                },
+            } as any
+        )
+
+        const result = await service.writeTrackingBatch('app-1', [
+            { event_type: 'ai_span', traceId: 'trace-1', spanId: 'trace-1', parentSpanId: '', spanKind: 'entrypoint', name: 'chat' },
+        ])
+
+        expect(result).toEqual({ persistedVia: 'clickhouse' })
+        expect(aiClickhouseFallback.insertBatch).toHaveBeenCalledWith('app-1', [
+            { event_type: 'ai_span', traceId: 'trace-1', spanId: 'trace-1', parentSpanId: '', spanKind: 'entrypoint', name: 'chat' },
+        ])
+        expect(clickhouseFallback.insertEvents).not.toHaveBeenCalled()
     })
 })

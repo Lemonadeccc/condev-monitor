@@ -7,6 +7,7 @@ import { Consumer, EachBatchPayload, Kafka } from 'kafkajs'
 import { resolveClickhouseDatabase } from '../../shared/clickhouse-utils'
 import { EventRow, KafkaEventEnvelope } from '../../shared/ingest-types'
 import { formatDateTimeForCH } from '../../utils/datetime'
+import { AiEventPayload, AiProjectorService } from '../ai-observability/ai-projector.service'
 import { ClickhouseWriterService, IssueRow } from '../clickhouse/clickhouse-writer.service'
 import { DlqProducerService } from '../dlq/dlq-producer.service'
 import { EmbeddingService } from '../fingerprint/embedding.service'
@@ -27,6 +28,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
 
     private readonly eventsTopic: string
     private readonly replaysTopic: string
+    private readonly aiEventsTopic: string
     private readonly lanePolicies: Record<LaneName, LaneRetryPolicy>
     private readonly clickhouseDatabase: string
 
@@ -41,10 +43,12 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
         private readonly fingerprintService: FingerprintService,
         private readonly embeddingService: EmbeddingService,
         private readonly tfidfService: TfIdfService,
-        private readonly bufferManager: BatchBufferManager
+        private readonly bufferManager: BatchBufferManager,
+        private readonly aiProjector: AiProjectorService
     ) {
         this.eventsTopic = this.config.get<string>('KAFKA_EVENTS_TOPIC') ?? 'monitor.sdk.events.v1'
         this.replaysTopic = this.config.get<string>('KAFKA_REPLAYS_TOPIC') ?? 'monitor.sdk.replays.v1'
+        this.aiEventsTopic = this.config.get<string>('KAFKA_AI_TOPIC') ?? 'condev.ai.events'
         this.clickhouseDatabase = resolveClickhouseDatabase(this.config)
 
         this.lanePolicies = {
@@ -91,6 +95,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
 
         await this.consumer.subscribe({ topic: this.eventsTopic, fromBeginning: false })
         await this.consumer.subscribe({ topic: this.replaysTopic, fromBeginning: false })
+        await this.consumer.subscribe({ topic: this.aiEventsTopic, fromBeginning: false })
 
         this.bufferManager.configure({
             critical: rows => this.insertWithRetry(rows, 'critical'),
@@ -104,7 +109,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
             eachBatch: async (payload: EachBatchPayload) => this.handleBatch(payload),
         })
 
-        this.logger.log(`Subscribed to topics: ${this.eventsTopic}, ${this.replaysTopic}`)
+        this.logger.log(`Subscribed to topics: ${this.eventsTopic}, ${this.replaysTopic}, ${this.aiEventsTopic}`)
     }
 
     async onModuleDestroy() {
@@ -143,7 +148,57 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
         }
     }
 
+    private async handleAiBatch(payload: EachBatchPayload): Promise<void> {
+        const { batch, resolveOffset, heartbeat, commitOffsetsIfNecessary, isRunning, isStale } = payload
+        let processedSinceHeartbeat = 0
+
+        for (const message of batch.messages) {
+            if (!isRunning() || isStale()) break
+            if (!message.value) {
+                resolveOffset(message.offset)
+                continue
+            }
+            try {
+                const aiPayload = JSON.parse(message.value.toString()) as AiEventPayload
+                await this.aiProjector.handleMessage(aiPayload)
+                resolveOffset(message.offset)
+            } catch (err) {
+                this.logger.warn(
+                    `AI event processing failed at offset=${message.offset}: ${err instanceof Error ? err.message : String(err)}`
+                )
+                try {
+                    await this.dlqProducer.publish({
+                        originalTopic: batch.topic,
+                        originalOffset: message.offset,
+                        key: message.key?.toString() ?? null,
+                        reason: 'AI_PROCESSING_FAILED',
+                        rawValue: message.value.toString(),
+                    })
+                    resolveOffset(message.offset)
+                } catch (dlqErr) {
+                    this.logger.error(
+                        `DLQ publish failed for AI event at offset=${message.offset}, stopping batch`,
+                        dlqErr instanceof Error ? dlqErr.stack : String(dlqErr)
+                    )
+                    break
+                }
+            }
+            processedSinceHeartbeat += 1
+            if (processedSinceHeartbeat >= 100) {
+                await heartbeat()
+                processedSinceHeartbeat = 0
+            }
+        }
+
+        await commitOffsetsIfNecessary()
+        await heartbeat()
+    }
+
     private async handleBatch(payload: EachBatchPayload) {
+        if (payload.batch.topic === this.aiEventsTopic) {
+            return this.handleAiBatch(payload)
+        }
+
         const { batch, resolveOffset, heartbeat, commitOffsetsIfNecessary, isRunning, isStale } = payload
 
         let processedSinceHeartbeat = 0

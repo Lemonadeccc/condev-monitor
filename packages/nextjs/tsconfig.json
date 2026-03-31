@@ -2,9 +2,13 @@
     "extends": "../../tsconfig.json",
     "include": ["src/**/*"],
     "compilerOptions": {
+        "baseUrl": ".",
         "types": ["node"],
         "lib": ["DOM", "ESNext"],
         "module": "ESNext",
-        "jsx": "react-jsx"
+        "jsx": "react-jsx",
+        "paths": {
+            "@condev-monitor/monitor-sdk-ai": ["../ai/src/index.ts"]
+        }
     }
 }
