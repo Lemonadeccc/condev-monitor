@@ -68,6 +68,108 @@
     - `http://localhost:3000/chat` 聊天页面
     - `http://localhost:3000/upload` 上传页面（需管理员）
 
+## Condev SDK 接入
+
+这个示例同时也是 `Next.js + Vercel AI SDK` 项目的 Condev 接入参考实现。
+
+相对于原版项目，Condev 相关改动集中在这些文件：
+
+- `src/instrumentation-client.ts`
+- `src/app/api/chat/route.ts`
+- `src/app/chat/page.tsx`
+- `src/components/condev-user-sync.tsx`
+- `src/app/layout.tsx`
+- `.env.example`
+
+相对于原版，每个文件改了什么：
+
+- `.env.example`
+  新增 Condev 的服务端 / 浏览器端 DSN。
+- `src/instrumentation-client.ts`
+  新增浏览器 SDK 初始化、`replay` 和 `aiStreaming` 配置。
+- `src/app/api/chat/route.ts`
+  把原本直接返回 Vercel AI SDK 流响应的写法，替换成 `streamTextResponseWithCondev(...)`，从而上报语义 AI traces。
+- `src/app/chat/page.tsx`
+  用 `createCondevChatTransport(...)` 替换普通 transport，让聊天请求带稳定的 Condev session id。
+- `src/components/condev-user-sync.tsx`
+  新增鉴权用户到 SDK 的同步，让浏览器侧 AI streaming 事件带上当前业务用户。
+- `src/app/layout.tsx`
+  在应用根部挂载一次用户同步组件。
+
+### 1. 添加环境变量
+
+```env
+CONDEV_SERVER_DSN=http://localhost:8082/dsn-api/tracking/<appId>
+NEXT_PUBLIC_CONDEV_DSN=http://localhost:8082/dsn-api/tracking/<appId>
+```
+
+### 2. 初始化浏览器端 SDK
+
+在 `src/instrumentation-client.ts` 中：
+
+- 调用 `registerCondevClient(...)`
+- 开启 `replay`
+- 为真实聊天 API 路径开启 `aiStreaming`
+
+当前示例使用的是：
+
+```ts
+registerCondevClient({
+    aiStreaming: {
+        urlPatterns: ['/api/chat'],
+        stallThresholdMs: 3000,
+    },
+    replay: true,
+})
+```
+
+### 3. 用 Condev 包装 AI 路由
+
+在 `src/app/api/chat/route.ts` 中，不要直接返回 `streamText(...).toUIMessageStreamResponse()`，而是改成：
+
+- `streamTextResponseWithCondev(...)`
+- 传入 `request`
+- 传入 `sessionId`
+- 传入 `userId`
+- 传入 `input`
+- 传入 `name`、`model`、`provider` 等语义字段
+
+这一步会产出：
+
+- `AI Traces`
+- `AI Sessions`
+- `AI Users`
+- `AI Cost`
+
+### 4. 在客户端保持稳定的聊天 session id
+
+在 `src/app/chat/page.tsx` 中，使用 `createCondevChatTransport(...)`，并把生成的 `chatSessionId` 传进 `useChat(...)`。
+
+这是 `AI Sessions` 稳定分组的关键。
+
+### 5. 同步当前登录用户
+
+在 `src/components/condev-user-sync.tsx` 中，把你的鉴权用户映射成：
+
+```ts
+{
+    id: user.id,
+    email: user.email,
+}
+```
+
+然后在 `src/app/layout.tsx` 中只挂载一次这个同步组件。
+
+### 6. 验证
+
+接好以后，确认这些页面有数据：
+
+- `AI Streaming`
+- `AI Traces`
+- `AI Sessions`
+- `AI Users`
+- `AI Cost`
+
 ## 数据库与向量索引
 
 迁移包含：

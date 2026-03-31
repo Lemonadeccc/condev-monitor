@@ -808,10 +808,19 @@ Authentication is accepted through either:
 | [DEPLOYMENT.md](./DEPLOYMENT.md) \| [中文](./DEPLOYMENT.zh-CN.md)              | Full stack deployment, Caddy routing, Cloudflare frontend, volumes, and operational notes |
 | [CONTRIBUTING.md](./CONTRIBUTING.md) \| [中文](./CONTRIBUTING.zh-CN.md)        | Local setup, quality checks, commit conventions, and PR checklist                         |
 | [docs/ai-observability-integration.md](./docs/ai-observability-integration.md) | Automatic vs manual AI observability coverage, Next.js helper usage, and custom spans     |
+| [examples/aisdk-rag-chatbox/README.md](./examples/aisdk-rag-chatbox/README.md) | Concrete Condev integration example for Next.js + Vercel AI SDK                           |
+| [examples/rag/README.md](./examples/rag/README.md)                             | Concrete Condev integration example for React/Vite frontend + FastAPI RAG backend         |
 
 ---
 
 ## Publishing SDK Packages
+
+There is currently no release automation or Changesets workflow in this repository. Before publishing, bump versions manually in:
+
+- `packages/*/package.json`
+- `packages/python/pyproject.toml`
+
+### npm Packages
 
 The publishable packages live under `packages/`:
 
@@ -827,10 +836,37 @@ Suggested workflow:
 ```bash
 pnpm -r --filter "./packages/*" build
 npm login
-pnpm -r --filter "./packages/*" publish --access public
+pnpm -r --filter "./packages/*" publish --access public --no-git-checks
 ```
 
 If you keep `workspace:*` references, publish the related packages together and keep versions aligned.
+
+If you need to publish one-by-one, use dependency order:
+
+1. `@condev-monitor/monitor-sdk-core`
+2. `@condev-monitor/monitor-sdk-browser-utils`
+3. `@condev-monitor/monitor-sdk-browser`
+4. `@condev-monitor/monitor-sdk-ai`
+5. `@condev-monitor/react`
+6. `@condev-monitor/nextjs`
+
+### Python Package
+
+The Python package lives at [packages/python/pyproject.toml](./packages/python/pyproject.toml):
+
+- package name: `condev-monitor`
+- import path: `condev_monitor`
+
+Suggested workflow:
+
+```bash
+cd packages/python
+python -m pip install --upgrade build twine
+python -m build
+python -m twine upload dist/*
+```
+
+If you want a dry run first, publish to TestPyPI before uploading to PyPI.
 
 ---
 

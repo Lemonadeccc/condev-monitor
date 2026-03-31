@@ -1,68 +1,103 @@
-# React + TypeScript + Vite
+English | [中文](./README.zh-CN.md)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+# Condev Integration for the React/Vite Frontend
 
-Currently, two official plugins are available:
+This frontend is the browser-side reference for instrumenting a React/Vite app that talks to a separate AI backend such as FastAPI.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+Compared with the original frontend, the Condev-specific changes are mainly in:
 
-## Expanding the ESLint configuration
+- [src/main.tsx](./src/main.tsx)
+- [src/App.tsx](./src/App.tsx)
 
-If you are developing a production application, we recommend updating the configuration to enable type aware lint rules:
+What changed in each file:
 
-- Configure the top-level `parserOptions` property like this:
+- [src/main.tsx](./src/main.tsx)
+  Added browser SDK bootstrap, replay tuning, AI streaming configuration, and trace header origins.
+- [src/App.tsx](./src/App.tsx)
+  Added business-user sync with `setUser(...)` / `clearUser()`.
 
-```js
-export default tseslint.config({
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
-```
+## 1. Add Environment Variables
 
-- Replace `tseslint.configs.recommended` to `tseslint.configs.recommendedTypeChecked` or `tseslint.configs.strictTypeChecked`
-- Optionally add `...tseslint.configs.stylisticTypeChecked`
-- Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and update the config:
+See [.env.example](./.env.example):
 
-```js
-// eslint.config.js
-import react from 'eslint-plugin-react'
-
-export default tseslint.config({
-  // Set the react version
-  settings: { react: { version: '18.3' } },
-  plugins: {
-    // Add the react plugin
-    react,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended rules
-    ...react.configs.recommended.rules,
-    ...react.configs['jsx-runtime'].rules,
-  },
-})
-```
-
-## Condev 集成
-
-前端现在支持通过 `VITE_CONDEV_DSN` 上报：
-
-- 前端错误
-- 前端性能
-- Replay
-- AI streaming
-
-示例环境变量：
-
-```bash
+```env
 VITE_API_BASE=http://localhost:8000
 VITE_CONDEV_DSN=http://localhost:8082/dsn-api/tracking/<appId>
 ```
 
-`chat_on_docs` 的流式请求会自动采集 streaming 指标，并向后端注入 trace header。正在回答时，发送按钮会切换为“停止”，可用于测试 cancelled。
+Notes:
+
+- `VITE_CONDEV_DSN` enables browser error, replay, performance, and AI streaming reporting.
+- `VITE_API_BASE` is used to derive `traceHeaderOrigins` for cross-origin requests.
+
+## 2. Initialize the Browser SDK
+
+In [src/main.tsx](./src/main.tsx), initialize `@condev-monitor/monitor-sdk-browser` once at bootstrap:
+
+- enable `replay`
+- enable `aiStreaming`
+- configure the real AI request path
+- pass the backend origin in `traceHeaderOrigins`
+
+This example uses:
+
+```ts
+initCondev({
+  dsn: condevDsn,
+  replay: {
+    beforeErrorMs: 8000,
+    afterErrorMs: 4000,
+    maxEvents: 1200,
+    record: {
+      inlineImages: false,
+      collectFonts: false,
+      recordCanvas: false,
+      mousemoveWait: 120,
+    },
+  },
+  aiStreaming: {
+    urlPatterns: ['/chat_on_docs'],
+    traceHeaderOrigins,
+  },
+})
+```
+
+## 3. Sync the Logged-in User
+
+In [src/App.tsx](./src/App.tsx), the current business user is pushed into the browser SDK:
+
+- call `setUser(...)` when logged in
+- call `clearUser()` when logged out
+
+If your app only has a username and no email, `id` is still enough. If the username is already an email, use it for both `id` and `email`.
+
+## 4. Backend Cooperation Is Required
+
+The frontend alone is enough for:
+
+- browser errors
+- performance
+- replay
+- AI streaming
+
+But to get:
+
+- `AI Traces`
+- `AI Sessions`
+- `AI Users`
+- `AI Cost`
+
+the backend must also read `x-condev-trace-id` and report semantic AI spans. See:
+
+- [../README.md](../README.md)
+- [../backend/README.md](../backend/README.md)
+
+## 5. Validation
+
+After both sides are wired, verify:
+
+- `AI Streaming` has rows for `/chat_on_docs`
+- `AI Traces` shows semantic spans
+- `AI Sessions` groups by session
+- `AI Users` groups by business user
+- `AI Cost` shows model/provider totals

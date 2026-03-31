@@ -1,7 +1,7 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import { useSearchParams } from 'next/navigation'
 import { useMemo } from 'react'
 
@@ -40,6 +40,7 @@ export default function ReplaysPage() {
     const { user, loading } = useAuth()
     const enabled = !loading && Boolean(user)
     const searchParams = useSearchParams()
+    const router = useRouter()
 
     const { selectedAppId, setSelectedAppId, range, setRange, from, setFrom, to, setTo, clearCustomRange } = useMonitorScope('30m')
 
@@ -124,26 +125,39 @@ export default function ReplaysPage() {
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y">
-                                    {items.map((row, idx) => (
-                                        <tr key={`${row.replayId}:${idx}`} className="hover:bg-muted/20">
-                                            <td className="px-6 py-4 font-mono">
-                                                <Link
-                                                    className="text-primary hover:underline"
-                                                    href={buildMonitorScopeHref(
-                                                        `/replay?appId=${encodeURIComponent(effectiveAppId)}&replayId=${encodeURIComponent(row.replayId)}`,
-                                                        searchParams
-                                                    )}
-                                                >
-                                                    {row.replayId}
-                                                </Link>
-                                            </td>
-                                            <td className="px-6 py-4 max-w-[420px] truncate" title={row.path ?? ''}>
-                                                {row.path || '-'}
-                                            </td>
-                                            <td className="px-6 py-4">{formatTime(row.errorAt)}</td>
-                                            <td className="px-6 py-4">{formatTime(row.createdAt)}</td>
-                                        </tr>
-                                    ))}
+                                    {items.map((row, idx) => {
+                                        const href = buildMonitorScopeHref(
+                                            `/replay?appId=${encodeURIComponent(effectiveAppId)}&replayId=${encodeURIComponent(row.replayId)}`,
+                                            searchParams
+                                        )
+                                        const rowClass =
+                                            'cursor-pointer transition-colors hover:bg-muted/40 focus-visible:bg-muted/40 focus-visible:outline-none'
+
+                                        return (
+                                            <tr
+                                                key={`${row.replayId}:${idx}`}
+                                                role="link"
+                                                tabIndex={0}
+                                                className={rowClass}
+                                                onClick={() => router.push(href)}
+                                                onKeyDown={event => {
+                                                    if (event.key === 'Enter' || event.key === ' ') {
+                                                        event.preventDefault()
+                                                        router.push(href)
+                                                    }
+                                                }}
+                                            >
+                                                <td className="px-6 py-4 font-mono">
+                                                    <span className="text-primary">{row.replayId}</span>
+                                                </td>
+                                                <td className="px-6 py-4 max-w-[420px] truncate" title={row.path ?? ''}>
+                                                    {row.path || '-'}
+                                                </td>
+                                                <td className="px-6 py-4">{formatTime(row.errorAt)}</td>
+                                                <td className="px-6 py-4">{formatTime(row.createdAt)}</td>
+                                            </tr>
+                                        )
+                                    })}
                                 </tbody>
                             </table>
                         </div>

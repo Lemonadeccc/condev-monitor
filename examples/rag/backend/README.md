@@ -134,3 +134,44 @@ docker compose up -d swxy_api
 - retrieval / llm / error / cancelled spans
 
 如果没有配置 `CONDEV_SERVER_DSN`，业务逻辑仍可正常运行，只是不会上报 AI observability 数据。
+
+## Condev Integration Checklist
+
+Compared with the original `swxy` backend, the Condev-specific integration is mainly in:
+
+- [app/service/observability.py](./app/service/observability.py)
+- [app/router/chat_rt.py](./app/router/chat_rt.py)
+- [app/service/core/chat.py](./app/service/core/chat.py)
+- [app/app_main.py](./app/app_main.py)
+
+What changed in each file:
+
+- [app/service/observability.py](./app/service/observability.py)
+  Added Python SDK bootstrap, trace creation, span policy helpers, and flush support.
+- [app/router/chat_rt.py](./app/router/chat_rt.py)
+  Added `x-condev-trace-id` handling and retrieval span creation in the chat route.
+- [app/service/core/chat.py](./app/service/core/chat.py)
+  Added the main generation span plus explicit cancellation/error reporting.
+- [app/app_main.py](./app/app_main.py)
+  Added reporter flushing during FastAPI shutdown.
+
+Use this backend checklist when adding Condev to another FastAPI RAG service:
+
+1. Add `CONDEV_SERVER_DSN` to `.env`
+2. Create a small observability helper module that:
+    - bootstraps the Python SDK
+    - starts traces
+    - defines span policy metadata
+    - flushes on shutdown
+3. In the chat route:
+    - read `x-condev-trace-id`
+    - create a root trace
+    - create a retrieval span
+4. In the LLM generation layer:
+    - emit the main generation span
+    - emit post-processing spans if needed
+    - mark cancellations and errors explicitly
+5. On application shutdown:
+    - flush and close the Python reporter
+
+If browser `AI Streaming` data appears but backend `AI Traces` does not, check whether `CONDEV_SERVER_DSN` is reachable from the backend runtime itself.

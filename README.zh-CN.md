@@ -710,14 +710,24 @@ POST /api/sourcemap/upload
 
 ## 扩展文档
 
-| 文档                                                                    | 说明                                                    |
-| ----------------------------------------------------------------------- | ------------------------------------------------------- |
-| [DEPLOYMENT.md](./DEPLOYMENT.md) \| [中文](./DEPLOYMENT.zh-CN.md)       | 整栈部署、Caddy 路由、Cloudflare 前端、数据卷与运维说明 |
-| [CONTRIBUTING.md](./CONTRIBUTING.md) \| [中文](./CONTRIBUTING.zh-CN.md) | 本地初始化、质量检查、提交规范与 PR 检查清单            |
+| 文档                                                                           | 说明                                                    |
+| ------------------------------------------------------------------------------ | ------------------------------------------------------- |
+| [DEPLOYMENT.md](./DEPLOYMENT.md) \| [中文](./DEPLOYMENT.zh-CN.md)              | 整栈部署、Caddy 路由、Cloudflare 前端、数据卷与运维说明 |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) \| [中文](./CONTRIBUTING.zh-CN.md)        | 本地初始化、质量检查、提交规范与 PR 检查清单            |
+| [docs/ai-observability-integration.md](./docs/ai-observability-integration.md) | 自动与手动 AI 可观测覆盖、Next.js 帮助函数与自定义 span |
+| [examples/aisdk-rag-chatbox/README.md](./examples/aisdk-rag-chatbox/README.md) | Next.js + Vercel AI SDK 项目的 Condev 接入示例          |
+| [examples/rag/README.md](./examples/rag/README.md)                             | React/Vite 前端 + FastAPI RAG 后端的 Condev 接入示例    |
 
 ---
 
 ## SDK 发包
+
+当前仓库没有 release automation 或 Changesets 流程。发包前需要手动修改版本号：
+
+- `packages/*/package.json`
+- `packages/python/pyproject.toml`
+
+### npm 包
 
 可发布的 SDK 包都在 `packages/` 下：
 
@@ -733,10 +743,37 @@ POST /api/sourcemap/upload
 ```bash
 pnpm -r --filter "./packages/*" build
 npm login
-pnpm -r --filter "./packages/*" publish --access public
+pnpm -r --filter "./packages/*" publish --access public --no-git-checks
 ```
 
 如果内部依赖还保留 `workspace:*`，建议相关包一起发布，并保持版本一致。
+
+如果需要逐个发布，建议按依赖顺序：
+
+1. `@condev-monitor/monitor-sdk-core`
+2. `@condev-monitor/monitor-sdk-browser-utils`
+3. `@condev-monitor/monitor-sdk-browser`
+4. `@condev-monitor/monitor-sdk-ai`
+5. `@condev-monitor/react`
+6. `@condev-monitor/nextjs`
+
+### Python 包
+
+Python 包位于 [packages/python/pyproject.toml](./packages/python/pyproject.toml)：
+
+- 包名：`condev-monitor`
+- import 路径：`condev_monitor`
+
+建议流程：
+
+```bash
+cd packages/python
+python -m pip install --upgrade build twine
+python -m build
+python -m twine upload dist/*
+```
+
+如果想先做演练，建议先发到 TestPyPI，再正式发到 PyPI。
 
 ---
 

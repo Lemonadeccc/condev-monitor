@@ -82,6 +82,108 @@ Migrations include:
 - Model selection is in `src/app/api/chat/route.ts` (OpenAI by default; DeepSeek commented).
 - Retrieval defaults are `topK=3` and `threshold=0.5` (tunable).
 
+### Condev SDK Integration
+
+This example also acts as the reference integration for a `Next.js + Vercel AI SDK` app.
+
+Compared with the original project, the Condev-specific changes are concentrated in these files:
+
+- `src/instrumentation-client.ts`
+- `src/app/api/chat/route.ts`
+- `src/app/chat/page.tsx`
+- `src/components/condev-user-sync.tsx`
+- `src/app/layout.tsx`
+- `.env.example`
+
+What changed in each file compared with the original:
+
+- `.env.example`
+  Added server/browser DSNs for Condev.
+- `src/instrumentation-client.ts`
+  Added browser bootstrap with `registerCondevClient(...)`, `replay`, and `aiStreaming`.
+- `src/app/api/chat/route.ts`
+  Wrapped the original Vercel AI SDK response with `streamTextResponseWithCondev(...)` so the server route emits semantic AI traces.
+- `src/app/chat/page.tsx`
+  Replaced a plain chat transport with `createCondevChatTransport(...)` so chat requests carry a stable Condev session id.
+- `src/components/condev-user-sync.tsx`
+  Added auth-to-SDK user sync so browser AI streaming events carry the logged-in business user.
+- `src/app/layout.tsx`
+  Mounted the user sync component once at the app root.
+
+#### 1. Add environment variables
+
+```env
+CONDEV_SERVER_DSN=http://localhost:8082/dsn-api/tracking/<appId>
+NEXT_PUBLIC_CONDEV_DSN=http://localhost:8082/dsn-api/tracking/<appId>
+```
+
+#### 2. Initialize the browser client
+
+In `src/instrumentation-client.ts`:
+
+- call `registerCondevClient(...)`
+- enable `replay`
+- enable `aiStreaming` for the real chat API path
+
+This example uses:
+
+```ts
+registerCondevClient({
+    aiStreaming: {
+        urlPatterns: ['/api/chat'],
+        stallThresholdMs: 3000,
+    },
+    replay: true,
+})
+```
+
+#### 3. Wrap the AI route with Condev
+
+In `src/app/api/chat/route.ts`, replace a raw `streamText(...).toUIMessageStreamResponse()` response with:
+
+- `streamTextResponseWithCondev(...)`
+- `request`
+- `sessionId`
+- `userId`
+- `input`
+- semantic fields like `name`, `model`, and `provider`
+
+This is what creates:
+
+- `AI Traces`
+- `AI Sessions`
+- `AI Users`
+- `AI Cost`
+
+#### 4. Keep a stable chat session id on the client
+
+In `src/app/chat/page.tsx`, use `createCondevChatTransport(...)` and pass the resulting `chatSessionId` into `useChat(...)`.
+
+That is the key step for stable `AI Sessions`.
+
+#### 5. Sync the logged-in user
+
+In `src/components/condev-user-sync.tsx`, map your auth provider's current user to:
+
+```ts
+{
+    id: user.id,
+    email: user.email,
+}
+```
+
+Then mount that sync component once in `src/app/layout.tsx`.
+
+#### 6. Validate
+
+After wiring the above, verify:
+
+- `AI Streaming`
+- `AI Traces`
+- `AI Sessions`
+- `AI Users`
+- `AI Cost`
+
 ### Open Source Info
 
 There is currently no `LICENSE` file in the repository. Add one (plus contributing docs) if you plan to open source it.
