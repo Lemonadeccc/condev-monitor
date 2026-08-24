@@ -136,3 +136,12 @@ apps/backend/monitor/apps
 # Python bytecode
 packages/python/**/__pycache__/
 packages/python/**/*.pyc
+.omx/
+.codex/*
+!.codex/agents/
+!.codex/agents/**
+!.codex/skills/
+!.codex/skills/**
+.codex/skills/.system/**
+!.codex/prompts/
+!.codex/prompts/**
