@@ -616,6 +616,20 @@ describe('shared performance runtime', () => {
             paintTime: 170,
             presentationTime: null,
         })
+        observers.get('long-animation-frame')!.emit([
+            {
+                entryType: 'long-animation-frame',
+                name: 'frame',
+                startTime: 200,
+                duration: 60,
+                blockingDuration: 10,
+                renderStart: 230,
+                styleAndLayoutStart: 240,
+                toJSON: () => ({}),
+            } as PerformanceEntry,
+        ])
+        expect(safeSubscriber.mock.calls[1]?.[0]).not.toHaveProperty('paintTime')
+        expect(safeSubscriber.mock.calls[1]?.[0]).not.toHaveProperty('presentationTime')
         expect(deferredThrow).not.toHaveBeenCalled()
         deferredThrow.mockRestore()
 
