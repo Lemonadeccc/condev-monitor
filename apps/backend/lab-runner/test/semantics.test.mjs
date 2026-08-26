@@ -1,0 +1,464 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+import { ANIMATION_LAB_METRIC_CATALOG_V1, validateAnimationLabSemanticsV2 } from '@condev-monitor/animation-lab'
+
+import {
+    actionWindowFromProbe,
+    aggregateMeasuredAttempts,
+    buildAnimationLabSemantics,
+    decorateLabMetric,
+    projectAttemptsForReport,
+} from '../build/index.js'
+
+const scenario = {
+    schemaVersion: 1,
+    name: 'semantic-fixture',
+    url: 'http://localhost:5173/',
+    routeKey: 'semantic.fixture',
+    viewport: { width: 1280, height: 720 },
+    warmupRuns: 0,
+    measuredRuns: 3,
+    actions: [
+        {
+            kind: 'hover',
+            label: 'hero-hover',
+            actionId: 'hero-hover',
+            selector: '[data-lab="hero"]',
+            durationMs: 500,
+            subject: { scope: 'renderer-surface', subjectKey: 'hero-surface', role: 'hero', surface: 'webgl' },
+            technologies: [
+                { axis: 'ui-framework', technologyKey: 'react', version: '19' },
+                { axis: 'renderer', technologyKey: 'three' },
+            ],
+        },
+    ],
+}
+
+function frameMetric(value, samples = 120) {
+    return {
+        family: 'frameCadence',
+        name: 'frameDurationMs',
+        stat: 'p95',
+        unit: 'ms',
+        value,
+        samples,
+        status: 'measured',
+        evidenceLevel: 'controlled-lab-measurement',
+    }
+}
+
+test('creates selector-free action semantics and across-attempt metrics', () => {
+    const attempts = [28, 30, 32].map((value, index) => {
+        const attemptId = `attempt-${index}`
+        return {
+            attemptId,
+            phase: 'measured',
+            index,
+            startedAt: `2026-08-26T00:00:0${index}.000Z`,
+            endedAt: `2026-08-26T00:00:0${index + 1}.000Z`,
+            durationMs: 1_000,
+            metrics: [
+                decorateLabMetric(frameMetric(value), { level: 'attempt', attemptId }),
+                decorateLabMetric(frameMetric(value, 40), { level: 'action', attemptId, actionId: 'hero-hover' }),
+            ],
+            actionWindows: [
+                actionWindowFromProbe(scenario.actions[0], 0, {
+                    startedAtMs: 100 + index,
+                    endedAtMs: 600 + index,
+                    outcome: 'completed',
+                }),
+            ],
+            capabilities: { longtask: true },
+            limitations: [],
+        }
+    })
+    const aggregateMetrics = aggregateMeasuredAttempts(attempts)
+    const semantics = buildAnimationLabSemantics({
+        scenario,
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts,
+        aggregateMetrics,
+    })
+
+    assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
+    assert.equal(semantics.actionWindows.length, 1)
+    assert.equal(semantics.actionWindows[0].timestamps.durationMs, 500)
+    assert.equal(semantics.metrics.find(metric => metric.scope.actionId === 'hero-hover').scope.attemptId, undefined)
+    assert.equal(semantics.metrics.find(metric => metric.scope.actionId === 'hero-hover').samples, 120)
+    assert.ok(semantics.technologyEvidence.some(item => item.technologyKey === 'webgl' && item.status === 'declared'))
+    assert.ok(
+        semantics.technologyEvidence.some(
+            item =>
+                item.technologyKey === 'react' &&
+                item.axis === 'ui-framework' &&
+                item.status === 'declared' &&
+                item.scope.actionId === 'hero-hover'
+        )
+    )
+    assert.ok(
+        semantics.technologyEvidence.some(
+            item => item.technologyKey === 'three' && item.limitations.includes('declared-technology-is-not-runtime-owner-proof')
+        )
+    )
+    assert.ok(semantics.technologyEvidence.some(item => item.technologyKey === 'condev-runner-monotonic-clock'))
+    assert.equal(
+        semantics.technologyEvidence.some(item => item.technologyKey === 'playwright-runner-clock'),
+        false
+    )
+    assert.ok(semantics.findings.some(item => item.ruleId === 'frame-tail' && item.actionIds.includes('hero-hover')))
+    assert.equal(JSON.stringify(semantics).includes('[data-lab'), false)
+})
+
+test('preserves unsupported metrics instead of turning them into zero', () => {
+    const attempts = Array.from({ length: 3 }, (_, index) => ({
+        attemptId: `attempt-${index}`,
+        phase: 'measured',
+        index,
+        startedAt: '2026-08-26T00:00:00.000Z',
+        endedAt: '2026-08-26T00:00:01.000Z',
+        durationMs: 1_000,
+        metrics: [
+            decorateLabMetric(
+                { ...frameMetric(0, 0), value: null, samples: null, status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' },
+                { level: 'attempt', attemptId: `attempt-${index}` }
+            ),
+        ],
+        capabilities: {},
+        limitations: [],
+    }))
+    const [metric] = aggregateMeasuredAttempts(attempts)
+    assert.equal(metric.value, null)
+    assert.equal(metric.status, 'unsupported')
+    assert.equal(metric.samples, 0)
+})
+
+test('uses producer metricId to disambiguate the Lighthouse CLS tuple', () => {
+    const metric = decorateLabMetric(
+        {
+            family: 'userOutcome',
+            name: 'CLS',
+            stat: 'latest',
+            unit: 'score',
+            value: 0.1,
+            samples: 1,
+            status: 'measured',
+            evidenceLevel: 'controlled-lab-measurement',
+            metricId: 'lighthouse.cls.latest',
+        },
+        { level: 'attempt', attemptId: 'lighthouse-attempt' },
+        { evidenceId: 'lighthouse' }
+    )
+    assert.equal(metric.metricId, 'lighthouse.cls.latest')
+})
+
+test('keeps canonical analysis valid for the maximum action count by projecting metrics deterministically', () => {
+    const actions = Array.from({ length: 100 }, (_, index) => ({
+        kind: 'hover',
+        label: `hover-${index}`,
+        actionId: `hover-${index}`,
+        selector: `[data-lab="item-${index}"]`,
+        durationMs: 100,
+    }))
+    const largeScenario = { ...scenario, name: 'large-semantic-fixture', actions }
+    const catalogEntries = ANIMATION_LAB_METRIC_CATALOG_V1.slice(0, 3)
+    const runMetric = decorateLabMetric(frameMetric(8), { level: 'run' }, { acrossAttempts: true })
+    const actionMetrics = actions.flatMap(action =>
+        catalogEntries.map(entry =>
+            decorateLabMetric(
+                {
+                    family: entry.family,
+                    name: entry.name,
+                    stat: entry.stat,
+                    unit: entry.unit,
+                    value: 1,
+                    samples: 120,
+                    status: 'measured',
+                    evidenceLevel: 'controlled-lab-measurement',
+                },
+                { level: 'action', actionId: action.actionId },
+                { acrossAttempts: true }
+            )
+        )
+    )
+
+    const semantics = buildAnimationLabSemantics({
+        scenario: largeScenario,
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts: [],
+        aggregateMetrics: [...actionMetrics.reverse(), runMetric],
+    })
+
+    assert.equal(semantics.metrics.length, 256)
+    assert.equal(semantics.metrics[0].scope.level, 'run')
+    assert.ok(semantics.metrics.some(metric => metric.scope.actionId === 'hover-99'))
+    assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
+    assert.ok(
+        semantics.technologyEvidence
+            .find(item => item.evidenceId === 'runtime-browser')
+            .limitations.includes('canonical-metric-projection-truncated')
+    )
+})
+
+test('projects every report attempt to the platform limit without starving later actions', () => {
+    const actions = Array.from({ length: 100 }, (_, index) => ({
+        kind: 'hover',
+        label: `hover-${index}`,
+        actionId: `hover-${index}`,
+        selector: `[data-lab="item-${index}"]`,
+        durationMs: 100,
+    }))
+    const largeScenario = { ...scenario, name: 'large-attempt-fixture', actions }
+    const scenarioActions = actions.map((action, order) => ({
+        actionId: action.actionId,
+        order,
+        kind: action.kind,
+        label: action.label,
+        trigger: { source: 'scenario' },
+    }))
+    const attemptId = 'large-attempt'
+    const rootMetrics = ANIMATION_LAB_METRIC_CATALOG_V1.slice(0, 43).map(entry =>
+        decorateLabMetric(
+            {
+                family: entry.family,
+                name: entry.name,
+                stat: entry.stat,
+                unit: entry.unit,
+                value: 1,
+                samples: 120,
+                status: 'measured',
+                evidenceLevel: 'controlled-lab-measurement',
+                metricId: entry.metricId,
+            },
+            { level: 'attempt', attemptId }
+        )
+    )
+    const actionCatalog = ANIMATION_LAB_METRIC_CATALOG_V1.slice(0, 13)
+    const actionMetrics = actions.flatMap(action =>
+        actionCatalog.map(entry =>
+            decorateLabMetric(
+                {
+                    family: entry.family,
+                    name: entry.name,
+                    stat: entry.stat,
+                    unit: entry.unit,
+                    value: 1,
+                    samples: 120,
+                    status: 'measured',
+                    evidenceLevel: 'controlled-lab-measurement',
+                    metricId: entry.metricId,
+                },
+                { level: 'action', attemptId, actionId: action.actionId }
+            )
+        )
+    )
+    const measuredAttempt = {
+        attemptId,
+        phase: 'measured',
+        index: 0,
+        startedAt: '2026-08-26T00:00:00.000Z',
+        endedAt: '2026-08-26T00:00:01.000Z',
+        durationMs: 1_000,
+        metrics: [...actionMetrics.reverse(), ...rootMetrics],
+        capabilities: {},
+        limitations: [],
+    }
+    const warmupAttempt = { ...measuredAttempt, attemptId: 'warmup-attempt', phase: 'warmup', index: 0 }
+    const projected = projectAttemptsForReport([warmupAttempt, measuredAttempt], scenarioActions)
+
+    assert.equal(projected[0].metrics.length, 0)
+    assert.equal(projected[0].actionWindows, undefined)
+    assert.ok(projected[0].limitations.includes('warmup-detail-omitted-from-report'))
+    assert.equal(projected[1].metrics.length, 256)
+    assert.ok(projected[1].metrics.some(metric => metric.scope.actionId === 'hover-99'))
+    assert.ok(projected[1].limitations.includes('attempt-metric-projection-truncated'))
+    assert.equal(JSON.stringify(projected).includes('[data-lab'), false)
+    assert.equal(largeScenario.actions.length, 100)
+})
+
+test('projects declared technology evidence fairly and keeps declarations distinct from observations', () => {
+    const actions = Array.from({ length: 100 }, (_, index) => ({
+        kind: 'wait',
+        label: `technology-${index}`,
+        actionId: `technology-${index}`,
+        durationMs: 1,
+        subject: { scope: 'page', role: 'scene', surface: 'webgl' },
+        technologies: [
+            { axis: 'ui-framework', technologyKey: `framework-${index}` },
+            { axis: 'renderer', technologyKey: `renderer-${index}` },
+            { axis: 'motion-engine', technologyKey: `motion-${index}` },
+            { axis: 'meta-runtime', technologyKey: `runtime-${index}` },
+        ],
+    }))
+    const semantics = buildAnimationLabSemantics({
+        scenario: { ...scenario, name: 'technology-projection-fixture', actions },
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts: [],
+        aggregateMetrics: [decorateLabMetric(frameMetric(8), { level: 'run' }, { acrossAttempts: true })],
+    })
+
+    assert.equal(semantics.technologyEvidence.length, 256)
+    assert.ok(
+        semantics.technologyEvidence.some(
+            item =>
+                item.technologyKey === 'framework-99' &&
+                item.scope.actionId === 'technology-99' &&
+                item.status === 'declared' &&
+                item.source === 'scenario-declaration'
+        )
+    )
+    assert.ok(
+        semantics.technologyEvidence.some(
+            item => item.technologyKey === 'webgl' && item.scope.actionId === 'technology-99' && item.status === 'declared'
+        )
+    )
+    assert.ok(
+        semantics.technologyEvidence
+            .find(item => item.evidenceId === 'runtime-browser')
+            .limitations.includes('technology-evidence-projection-truncated')
+    )
+    assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
+})
+
+test('finding identity distinguishes a run-scoped action id from the run scope', () => {
+    const runNamedScenario = {
+        ...scenario,
+        name: 'run-id-fixture',
+        actions: [{ ...scenario.actions[0], actionId: 'run' }],
+    }
+    const semantics = buildAnimationLabSemantics({
+        scenario: runNamedScenario,
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts: [],
+        aggregateMetrics: [
+            decorateLabMetric(frameMetric(30), { level: 'run' }, { acrossAttempts: true }),
+            decorateLabMetric(frameMetric(30), { level: 'action', actionId: 'run' }, { acrossAttempts: true }),
+        ],
+    })
+
+    assert.equal(semantics.findings.length, 2)
+    assert.equal(new Set(semantics.findings.map(finding => finding.findingId)).size, 2)
+    assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
+})
+
+test('aggregation keeps actionId run distinct from the run scope', () => {
+    const attempts = Array.from({ length: 3 }, (_, index) => {
+        const attemptId = `scope-${index}`
+        return {
+            attemptId,
+            phase: 'measured',
+            index,
+            startedAt: '2026-08-26T00:00:00.000Z',
+            endedAt: '2026-08-26T00:00:01.000Z',
+            durationMs: 1_000,
+            metrics: [
+                decorateLabMetric(frameMetric(10, 40), { level: 'attempt', attemptId }),
+                decorateLabMetric(frameMetric(30, 40), { level: 'action', attemptId, actionId: 'run' }),
+            ],
+            capabilities: {},
+            limitations: [],
+        }
+    })
+
+    const metrics = aggregateMeasuredAttempts(attempts)
+    assert.equal(metrics.length, 2)
+    assert.deepEqual(
+        metrics.map(metric => ({ scope: metric.scope, value: metric.value, samples: metric.samples, status: metric.status })),
+        [
+            { scope: { level: 'run' }, value: 10, samples: 120, status: 'measured' },
+            { scope: { level: 'action', actionId: 'run' }, value: 30, samples: 120, status: 'measured' },
+        ]
+    )
+})
+
+test('uses a true even-sample median for metrics and action windows', () => {
+    const values = [1, 2, 100, 101]
+    const starts = [0, 10, 100, 110]
+    const durations = [10, 20, 100, 110]
+    const attempts = values.map((value, index) => {
+        const attemptId = `even-${index}`
+        return {
+            attemptId,
+            phase: 'measured',
+            index,
+            startedAt: '2026-08-26T00:00:00.000Z',
+            endedAt: '2026-08-26T00:00:01.000Z',
+            durationMs: 1_000,
+            metrics: [decorateLabMetric(frameMetric(value), { level: 'attempt', attemptId })],
+            actionWindows: [
+                actionWindowFromProbe(scenario.actions[0], 0, {
+                    startedAtMs: starts[index],
+                    endedAtMs: starts[index] + durations[index],
+                    outcome: 'completed',
+                }),
+            ],
+            capabilities: {},
+            limitations: [],
+        }
+    })
+    const aggregateMetrics = aggregateMeasuredAttempts(attempts)
+    const semantics = buildAnimationLabSemantics({
+        scenario,
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts,
+        aggregateMetrics,
+    })
+
+    assert.equal(aggregateMetrics[0].value, 51)
+    assert.equal(semantics.actionWindows[0].timestamps.startedAtMs, 55)
+    assert.equal(semantics.actionWindows[0].timestamps.durationMs, 60)
+})
+
+test('marks a metric partial when it is missing from measured attempts', () => {
+    const attempts = Array.from({ length: 10 }, (_, index) => {
+        const attemptId = `coverage-${index}`
+        return {
+            attemptId,
+            phase: 'measured',
+            index,
+            startedAt: '2026-08-26T00:00:00.000Z',
+            endedAt: '2026-08-26T00:00:01.000Z',
+            durationMs: 1_000,
+            metrics: index < 3 ? [decorateLabMetric(frameMetric(index + 1), { level: 'attempt', attemptId })] : [],
+            capabilities: {},
+            limitations: [],
+        }
+    })
+    const [metric] = aggregateMeasuredAttempts(attempts)
+    assert.equal(metric.status, 'partial')
+    assert.ok(metric.limitations.includes('eligible-attempts-3'))
+    assert.ok(metric.limitations.includes('total-attempts-10'))
+})
+
+test('does not upgrade cross-document partial samples or their findings to observed', () => {
+    const attempts = Array.from({ length: 3 }, (_, index) => {
+        const attemptId = `cross-document-${index}`
+        return {
+            attemptId,
+            phase: 'measured',
+            index,
+            startedAt: '2026-08-26T00:00:00.000Z',
+            endedAt: '2026-08-26T00:00:01.000Z',
+            durationMs: 1_000,
+            metrics: [
+                decorateLabMetric(
+                    { ...frameMetric(30, 40), status: 'partial', limitations: ['cross-document-sampling-partial'] },
+                    { level: 'attempt', attemptId }
+                ),
+            ],
+            capabilities: {},
+            limitations: [],
+        }
+    })
+    const aggregateMetrics = aggregateMeasuredAttempts(attempts)
+    const semantics = buildAnimationLabSemantics({
+        scenario,
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts,
+        aggregateMetrics,
+    })
+
+    assert.equal(aggregateMetrics[0].status, 'partial')
+    assert.equal(semantics.findings[0].status, 'candidate')
+    assert.ok(semantics.findings[0].limitations.includes('cross-document-sampling-partial'))
+})
