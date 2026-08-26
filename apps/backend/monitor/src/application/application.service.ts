@@ -266,7 +266,7 @@ export class ApplicationService {
 
         const res = await this.clickhouseClient.query({
             query: `
-                SELECT max(updated_at) AS latest_updated_at
+                SELECT toUnixTimestamp(max(updated_at)) AS latest_updated_at_seconds
                 FROM ${this.clickhouseDatabase}.app_settings
                 WHERE app_id = {appId:String}
             `,
@@ -275,14 +275,12 @@ export class ApplicationService {
         })
 
         const json = (await res.json()) as {
-            data?: Array<{ latest_updated_at?: string | null }>
+            data?: Array<{ latest_updated_at_seconds?: number | string | null }>
         }
 
-        const latest = json.data?.[0]?.latest_updated_at
-        const latestSeconds = latest ? Math.floor(new Date(latest).getTime() / 1000) : 0
+        const latestSeconds = Number(json.data?.[0]?.latest_updated_at_seconds ?? 0)
         const nowSeconds = Math.floor(Date.now() / 1000)
-        const nextSeconds = latestSeconds >= nowSeconds ? latestSeconds + 1 : nowSeconds
-        return new Date(nextSeconds * 1000).toISOString()
+        return Number.isFinite(latestSeconds) && latestSeconds >= nowSeconds ? latestSeconds + 1 : nowSeconds
     }
 
     private async syncReplaySetting(params: { appId: string; replayEnabled: boolean }) {
