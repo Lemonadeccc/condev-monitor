@@ -249,6 +249,127 @@ test('hidden periods cancel rAF and reset the timestamp so background gaps are n
     assert.equal(snapshot.visibility.visibleTransitionCount, 1)
 })
 
+test('input dispatch scheduling uses the shared rAF callback entry and stays distinct from visual evidence', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime, maxInputFrameSchedulingSamples: 2 }).start()
+    assert.equal(collector.snapshot().inputFrameScheduling.status, 'not-instrumented')
+
+    const recorder = collector.createInputFrameSchedulingRecorder()
+    runtime.advance(10.1236)
+    const pointerMarker = recorder.record('pointer')
+    assert.equal(pointerMarker.accepted, true)
+    runtime.advance(0.0002)
+    const interaction = collector.beginInteraction('pointer', 'automatic-pointer-window')
+    assert.equal(pointerMarker.associateInteraction(interaction.id), true)
+    runtime.advance(7.9998)
+    for (const callback of [...runtime.frames]) callback(12)
+    runtime.advance(1)
+    interaction.end()
+    const correlated = collector.snapshot().interactions.recent[0].performance.inputFrameScheduling
+    assert.equal(correlated.duration.p95, 8)
+    assert.equal(correlated.status, 'measured')
+
+    assert.equal(recorder.record('keyboard').accepted, true)
+    runtime.advance(4)
+    for (const callback of [...runtime.frames]) callback(15)
+    assert.equal(recorder.record('click').accepted, true)
+    runtime.advance(6)
+    for (const callback of [...runtime.frames]) callback(16)
+
+    recorder.dispose()
+    const snapshot = collector.stop()
+    assert.equal(snapshot.inputFrameScheduling.status, 'partial')
+    assert.equal(snapshot.inputFrameScheduling.totalObservedCount, 3)
+    assert.equal(snapshot.inputFrameScheduling.retainedCount, 2)
+    assert.equal(snapshot.inputFrameScheduling.droppedSampleCount, 1)
+    assert.deepEqual(snapshot.inputFrameScheduling.byKind, { pointer: 1, keyboard: 1, click: 1 })
+    assert.equal(snapshot.inputFrameScheduling.duration.p95, 5.9)
+    assert.equal(snapshot.interactions.recent[0].performance.inputFrameScheduling.status, 'partial')
+    assert.equal(snapshot.interactions.recent[0].performance.inputFrameScheduling.totalObservedCount, 1)
+    assert.equal(snapshot.interactions.recent[0].performance.inputFrameScheduling.retainedCount, 0)
+    assert.equal(snapshot.interactions.recent[0].performance.inputFrameScheduling.droppedSampleCount, 1)
+    assert.equal(snapshot.interactions.recent[0].performance.inputFrameScheduling.duration, null)
+    assert.equal(snapshot.interactions.recent[0].performance.quality.inputToVisual, null)
+
+    const report = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    assert.equal(report.metrics.length, 32)
+    assert.equal(JSON.stringify(report).includes('inputFrameScheduling'), false)
+})
+
+test('input dispatch scheduling bounds pending work and cancels hidden or stopped samples without manufacturing zeroes', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    const recorder = collector.createInputFrameSchedulingRecorder()
+
+    for (let index = 0; index < 8; index += 1) assert.equal(recorder.record('pointer').accepted, true)
+    assert.equal(recorder.record('pointer').accepted, false)
+    runtime.setVisibility('hidden')
+    let snapshot = collector.snapshot()
+    assert.equal(snapshot.inputFrameScheduling.status, 'not-observed')
+    assert.equal(snapshot.inputFrameScheduling.duration, null)
+    assert.equal(snapshot.inputFrameScheduling.droppedSampleCount, 1)
+    assert.equal(snapshot.inputFrameScheduling.cancelledSampleCount, 8)
+
+    runtime.setVisibility('visible')
+    assert.equal(recorder.record('keyboard').accepted, true)
+    recorder.dispose()
+    snapshot = collector.stop()
+    assert.equal(snapshot.inputFrameScheduling.status, 'not-observed')
+    assert.equal(snapshot.inputFrameScheduling.cancelledSampleCount, 9)
+    assert.equal(snapshot.inputFrameScheduling.pendingCount, 0)
+})
+
+test('input scheduling attributes invalid durations and ring loss only to their associated interaction', () => {
+    const invalidRuntime = new FakeRuntime()
+    const invalidCollector = new AnimationCollector({ runtime: invalidRuntime }).start()
+    const invalidRecorder = invalidCollector.createInputFrameSchedulingRecorder()
+    const invalidMarker = invalidRecorder.record('pointer')
+    const invalidInteraction = invalidCollector.beginInteraction('pointer', 'invalid-duration-window')
+    assert.equal(invalidMarker.associateInteraction(invalidInteraction.id), true)
+    invalidRuntime.advance(600_001)
+    for (const callback of [...invalidRuntime.frames]) callback(invalidRuntime.now())
+    invalidInteraction.end()
+    const invalidSummary = invalidCollector.snapshot().interactions.recent[0].performance.inputFrameScheduling
+    assert.equal(invalidSummary.status, 'partial')
+    assert.equal(invalidSummary.totalObservedCount, 0)
+    assert.equal(invalidSummary.droppedSampleCount, 1)
+    assert.equal(invalidSummary.cancelledSampleCount, 0)
+    assert.equal(invalidSummary.duration, null)
+    invalidRecorder.dispose()
+    invalidCollector.stop()
+
+    const ringRuntime = new FakeRuntime()
+    const ringCollector = new AnimationCollector({
+        runtime: ringRuntime,
+        maxInteractions: 1,
+        maxInputFrameSchedulingSamples: 1,
+    }).start()
+    const ringRecorder = ringCollector.createInputFrameSchedulingRecorder()
+    for (const label of ['first', 'second']) {
+        const marker = ringRecorder.record('click')
+        const interaction = ringCollector.beginInteraction('pointer', label)
+        assert.equal(marker.associateInteraction(interaction.id), true)
+        ringRuntime.advance(4)
+        for (const callback of [...ringRuntime.frames]) callback(ringRuntime.now())
+        interaction.end()
+    }
+    ringCollector.beginInteraction('custom', 'unrelated-new-window').end()
+    const ringSnapshot = ringCollector.snapshot()
+    const unrelated = ringSnapshot.interactions.recent[0].performance.inputFrameScheduling
+    assert.equal(ringSnapshot.inputFrameScheduling.droppedSampleCount, 1)
+    assert.equal(unrelated.status, 'not-observed')
+    assert.equal(unrelated.totalObservedCount, 0)
+    assert.equal(unrelated.droppedSampleCount, 0)
+    assert.equal(unrelated.cancelledSampleCount, 0)
+    assert.equal(ringCollector.inputFrameSchedulingResolvedByInteraction.size, 0)
+    ringRecorder.dispose()
+    ringCollector.stop()
+})
+
 test('bounded local signals retain presentation delay and interaction overlap, marking truncation partial', () => {
     const runtime = new FakeRuntime({ reducedMotion: true })
     const collector = new AnimationCollector({

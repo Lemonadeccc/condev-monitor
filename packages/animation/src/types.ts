@@ -173,11 +173,57 @@ export interface InteractionSignalWindowSummary {
     duration: DurationStatistics | null
 }
 
+export type AnimationInputDispatchKind = 'pointer' | 'keyboard' | 'click'
+
+export type InputFrameSchedulingStatus = 'measured' | 'partial' | 'not-observed' | 'not-instrumented'
+
+/**
+ * Local scheduling evidence from an input capture-listener entry to the next
+ * main-thread rAF callback entry. This is not paint, presentation, a visual
+ * update, or GPU completion evidence.
+ */
+export interface InputFrameSchedulingSummary {
+    version: 1
+    status: InputFrameSchedulingStatus
+    retainedCount: number
+    totalObservedCount: number
+    droppedSampleCount: number
+    cancelledSampleCount: number
+    pendingCount: number
+    capacity: number
+    duration: DurationStatistics | null
+    byKind: Record<AnimationInputDispatchKind, number>
+}
+
+export interface InteractionInputFrameSchedulingSummary {
+    status: InputFrameSchedulingStatus
+    retainedCount: number
+    totalObservedCount: number
+    droppedSampleCount: number
+    cancelledSampleCount: number
+    pendingCount: number
+    duration: DurationStatistics | null
+}
+
+/** Opaque one-shot marker used to associate a captured input with its SDK interaction. */
+export interface InputFrameSchedulingMarker {
+    readonly accepted: boolean
+    associateInteraction(interactionId: string): boolean
+}
+
+/** Browser-owned low-level recorder; it retains no Event or DOM data. */
+export interface InputFrameSchedulingRecorder {
+    record(kind: AnimationInputDispatchKind): InputFrameSchedulingMarker | null
+    dispose(): void
+}
+
 export interface InteractionPerformanceSummary {
     frames: InteractionFrameWindowSummary
     longAnimationFrames: InteractionSignalWindowSummary
     longTasks: InteractionSignalWindowSummary
     eventTiming: InteractionSignalWindowSummary
+    /** Additive local-only field; absent in snapshots produced before this probe existed. */
+    inputFrameScheduling?: InteractionInputFrameSchedulingSummary
     quality: InteractionQualitySummary
 }
 
@@ -421,6 +467,8 @@ export interface AnimationSnapshot {
     longAnimationFrames: LongAnimationFrameSummary
     longTasks: BoundedSignalSummary
     eventTiming: EventTimingSummary
+    /** Additive local-only field; never projected into animation_rum v1. */
+    inputFrameScheduling?: InputFrameSchedulingSummary
     interactions: InteractionSummary
     visibility: VisibilitySummary
     captureSufficiency: CaptureSufficiencySummary
@@ -484,6 +532,8 @@ export interface AnimationCollectorOptions {
     maxResourceEntries?: number
     maxHostEvidenceSamples?: number
     maxInteractionQualitySamples?: number
+    /** Bounded local input-dispatch → next-rAF callback proxy samples. */
+    maxInputFrameSchedulingSamples?: number
     explicitRefreshHz?: number
     slowFrameFactor?: number
     inferenceMinimumSamples?: number

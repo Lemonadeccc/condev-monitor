@@ -15,6 +15,7 @@ import type {
     AnimationElementSelectionHandle,
     AnimationElementSelectionOptions,
     AnimationHostEvidenceSummary,
+    AnimationInputDispatchKind,
     AnimationInteractionHandle,
     AnimationInteractionKind,
     AnimationResourceCategory,
@@ -34,6 +35,7 @@ import type {
     FrameBudget,
     FrameSummary,
     InteractionFrameWindowSummary,
+    InteractionInputFrameSchedulingSummary,
     InteractionMeasurement,
     InteractionOutcome,
     InteractionPerformanceSummary,
@@ -41,6 +43,9 @@ import type {
     InteractionQualitySummary,
     InteractionSignalWindowSummary,
     InteractionSummary,
+    InputFrameSchedulingRecorder,
+    InputFrameSchedulingMarker,
+    InputFrameSchedulingSummary,
     LongAnimationFrameSummary,
     MonitorOverheadSummary,
     PerformanceObserverHandle,
@@ -56,6 +61,7 @@ const DEFAULT_MAX_SIGNAL_ENTRIES = 128
 const DEFAULT_MAX_RESOURCE_ENTRIES = 512
 const DEFAULT_MAX_HOST_EVIDENCE_SAMPLES = 256
 const DEFAULT_MAX_INTERACTION_QUALITY_SAMPLES = 256
+const DEFAULT_MAX_INPUT_FRAME_SCHEDULING_SAMPLES = 256
 const DEFAULT_SLOW_FRAME_FACTOR = 1.5
 const DEFAULT_INFERENCE_MINIMUM_SAMPLES = 30
 const MINIMUM_VISIBLE_CAPTURE_MS = 5_000
@@ -66,6 +72,8 @@ const MAX_SIGNAL_CAPACITY = 2_048
 const MAX_RESOURCE_CAPACITY = 8_192
 const MAX_HOST_EVIDENCE_CAPACITY = 4_096
 const MAX_INTERACTION_QUALITY_CAPACITY = 4_096
+const MAX_INPUT_FRAME_SCHEDULING_CAPACITY = 4_096
+const MAX_PENDING_INPUT_DISPATCHES = 8
 const MAX_QUALITY_DURATION_MS = 600_000
 const MAX_QUALITY_COUNT = 1_000_000
 const INTERACTION_KINDS: readonly AnimationInteractionKind[] = [
@@ -81,6 +89,11 @@ const INTERACTION_KINDS: readonly AnimationInteractionKind[] = [
     'custom',
 ]
 const RESOURCE_CATEGORIES: readonly AnimationResourceCategory[] = ['script', 'image', 'media', 'fetch-xhr', 'link-css', 'frame', 'other']
+const INPUT_DISPATCH_KINDS: readonly AnimationInputDispatchKind[] = ['pointer', 'keyboard', 'click']
+
+function createInputDispatchKindCounts(): Record<AnimationInputDispatchKind, number> {
+    return { pointer: 0, keyboard: 0, click: 0 }
+}
 
 interface ResolvedOptions {
     maxFrames: number
@@ -89,6 +102,7 @@ interface ResolvedOptions {
     maxResourceEntries: number
     maxHostEvidenceSamples: number
     maxInteractionQualitySamples: number
+    maxInputFrameSchedulingSamples: number
     explicitRefreshHz?: number
     slowFrameFactor: number
     inferenceMinimumSamples: number
@@ -132,6 +146,17 @@ interface EventSample {
 interface FrameSample {
     startTime: number
     endTime: number
+    duration: number
+}
+
+interface PendingInputDispatch {
+    dispatchedAt: number
+    kind: AnimationInputDispatchKind
+    interactionId: string | null
+}
+
+interface InputFrameSchedulingSample extends PendingInputDispatch {
+    callbackAt: number
     duration: number
 }
 
@@ -240,6 +265,12 @@ function resolveOptions(options: AnimationCollectorOptions): ResolvedOptions {
             options.maxInteractionQualitySamples,
             DEFAULT_MAX_INTERACTION_QUALITY_SAMPLES,
             MAX_INTERACTION_QUALITY_CAPACITY
+        ),
+        maxInputFrameSchedulingSamples: boundedInteger(
+            'maxInputFrameSchedulingSamples',
+            options.maxInputFrameSchedulingSamples,
+            DEFAULT_MAX_INPUT_FRAME_SCHEDULING_SAMPLES,
+            MAX_INPUT_FRAME_SCHEDULING_CAPACITY
         ),
         explicitRefreshHz: options.explicitRefreshHz,
         slowFrameFactor,
@@ -648,6 +679,7 @@ export class AnimationCollector {
     private readonly overheadSamples: BoundedRing<number>
     private readonly reportBuildSamples: BoundedRing<number>
     private readonly interactionSamples: BoundedRing<StoredInteractionMeasurement>
+    private readonly inputFrameSchedulingSamples: BoundedRing<InputFrameSchedulingSample>
     private readonly activeInteractions = new Map<string, ActiveInteraction>()
     private readonly interactionKindCounts = createKindCounts()
     private readonly cleanupCallbacks = new Set<() => void>()
@@ -705,6 +737,16 @@ export class AnimationCollector {
     private resourceBufferFullEvents = 0
     private excludedPreCaptureResources = 0
     private callbackTotalDuration = 0
+    private readonly pendingInputDispatches: PendingInputDispatch[] = []
+    private readonly inputDispatchKindCounts = createInputDispatchKindCounts()
+    private readonly inputFrameSchedulingResolvedByInteraction = new Map<string, number>()
+    private readonly inputFrameSchedulingDroppedByInteraction = new Map<string, number>()
+    private readonly inputFrameSchedulingCancelledByInteraction = new Map<string, number>()
+    private readonly retainedInteractionIds = new Set<string>()
+    private inputFrameSchedulingInstalled = false
+    private activeInputFrameSchedulingRecorders = 0
+    private inputFrameSchedulingOverflowCount = 0
+    private inputFrameSchedulingCancelledCount = 0
 
     constructor(options: AnimationCollectorOptions = {}) {
         this.options = resolveOptions(options)
@@ -718,6 +760,7 @@ export class AnimationCollector {
         this.overheadSamples = new BoundedRing<number>(this.options.maxSignalEntries)
         this.reportBuildSamples = new BoundedRing<number>(this.options.maxSignalEntries)
         this.interactionSamples = new BoundedRing<StoredInteractionMeasurement>(this.options.maxInteractions)
+        this.inputFrameSchedulingSamples = new BoundedRing<InputFrameSchedulingSample>(this.options.maxInputFrameSchedulingSamples)
     }
 
     get state(): CollectorState {
@@ -796,7 +839,7 @@ export class AnimationCollector {
             }
             this.addCleanup(
                 this.runtime.subscribeFrames(timestamp => {
-                    this.measureOverhead(() => this.handleFrame(timestamp))
+                    this.measureOverhead(callbackEnteredAt => this.handleFrame(timestamp, callbackEnteredAt))
                 })
             )
         } catch (error) {
@@ -826,6 +869,7 @@ export class AnimationCollector {
         // Drain while observers and semantic interactions are still active so
         // records queued immediately before stop participate in attribution.
         this.drainPendingPerformanceEntries()
+        this.cancelPendingInputDispatches()
         for (const active of [...this.activeInteractions.values()]) active.finalize()
         this.stoppedAt = this.runtime.now()
         this.cleanupResources()
@@ -839,6 +883,70 @@ export class AnimationCollector {
         if (this.collectorState === 'running') this.stop()
         else this.cleanupResources()
         this.collectorState = 'destroyed'
+    }
+
+    /**
+     * Installs a local-only recorder used by the Browser input capture layer.
+     * `record()` stores only a coarse input kind and a monotonic boundary; the
+     * next shared rAF callback converts that boundary to a duration.
+     */
+    createInputFrameSchedulingRecorder(): InputFrameSchedulingRecorder {
+        if (this.collectorState !== 'running') {
+            throw new AnimationStateError(
+                `createInputFrameSchedulingRecorder() requires running state; current state is ${this.collectorState}`
+            )
+        }
+        this.inputFrameSchedulingInstalled = true
+        this.activeInputFrameSchedulingRecorders = Math.min(1_000_000_000, this.activeInputFrameSchedulingRecorders + 1)
+        let active = true
+        return {
+            record: kind => {
+                if (!active || this.collectorState !== 'running' || !INPUT_DISPATCH_KINDS.includes(kind)) return null
+                let eligible = false
+                let pending: PendingInputDispatch | null = null
+                let dropped = false
+                this.measureOverhead(callbackEnteredAt => {
+                    if (this.currentVisibility !== 'visible') return
+                    eligible = true
+                    if (this.pendingInputDispatches.length >= MAX_PENDING_INPUT_DISPATCHES) {
+                        this.inputFrameSchedulingOverflowCount = clampCount(this.inputFrameSchedulingOverflowCount)
+                        dropped = true
+                        return
+                    }
+                    const dispatchedAt = callbackEnteredAt
+                    if (!Number.isFinite(dispatchedAt) || dispatchedAt < 0) {
+                        this.inputFrameSchedulingOverflowCount = clampCount(this.inputFrameSchedulingOverflowCount)
+                        dropped = true
+                        return
+                    }
+                    pending = { dispatchedAt, kind, interactionId: null }
+                    this.pendingInputDispatches.push(pending)
+                })
+                if (!eligible) return null
+                let associated = false
+                const marker: InputFrameSchedulingMarker = {
+                    accepted: pending !== null,
+                    associateInteraction: interactionId => {
+                        if (associated || this.collectorState !== 'running' || !this.activeInteractions.has(interactionId)) {
+                            return false
+                        }
+                        associated = true
+                        if (pending) pending.interactionId = interactionId
+                        else if (dropped) {
+                            this.incrementInputFrameSchedulingInteractionCount(this.inputFrameSchedulingDroppedByInteraction, interactionId)
+                        }
+                        return true
+                    },
+                }
+                return marker
+            },
+            dispose: () => {
+                if (!active) return
+                active = false
+                this.activeInputFrameSchedulingRecorders = Math.max(0, this.activeInputFrameSchedulingRecorders - 1)
+                if (this.activeInputFrameSchedulingRecorders === 0) this.cancelPendingInputDispatches()
+            },
+        }
     }
 
     beginInteraction(kind: AnimationInteractionKind, label?: string): AnimationInteractionHandle {
@@ -925,7 +1033,13 @@ export class AnimationCollector {
                 qualitySummary: qualitySummary(),
             }
             this.activeInteractions.delete(id)
+            const evictedInteractionId =
+                this.interactionSamples.retainedCount === this.interactionSamples.capacity
+                    ? this.interactionSamples.toArray()[0]?.id
+                    : undefined
             this.interactionSamples.push(stored)
+            this.retainedInteractionIds.add(id)
+            if (evictedInteractionId) this.releaseInputFrameSchedulingInteraction(evictedInteractionId)
             this.interactionKindCounts[kind] = clampCount(this.interactionKindCounts[kind])
             if (outcome === 'completed') this.completedInteractions = clampCount(this.completedInteractions)
             else if (outcome === 'cancelled') this.cancelledInteractions = clampCount(this.cancelledInteractions)
@@ -1209,12 +1323,14 @@ export class AnimationCollector {
         if (state === 'visible') {
             this.visibleTransitions = clampCount(this.visibleTransitions)
         } else {
+            this.cancelPendingInputDispatches()
             if (state === 'hidden') this.hiddenTransitions = clampCount(this.hiddenTransitions)
         }
     }
 
-    private handleFrame(timestamp: number): void {
+    private handleFrame(timestamp: number, callbackEnteredAt: number): void {
         if (this.collectorState !== 'running' || this.currentVisibility !== 'visible') return
+        this.resolvePendingInputDispatches(callbackEnteredAt)
         if (this.lastFrameTimestamp !== null) {
             const delta = timestamp - this.lastFrameTimestamp
             if (Number.isFinite(delta) && delta > 0) {
@@ -1228,10 +1344,57 @@ export class AnimationCollector {
         this.lastFrameTimestamp = timestamp
     }
 
-    private measureOverhead(callback: () => void): void {
+    private resolvePendingInputDispatches(callbackAt: number): void {
+        if (this.pendingInputDispatches.length === 0) return
+        const pending = this.pendingInputDispatches.splice(0)
+        for (const sample of pending) {
+            const duration = callbackAt - sample.dispatchedAt
+            if (!Number.isFinite(duration) || duration < 0 || duration > MAX_QUALITY_DURATION_MS) {
+                this.inputFrameSchedulingOverflowCount = clampCount(this.inputFrameSchedulingOverflowCount)
+                if (sample.interactionId) {
+                    this.incrementInputFrameSchedulingInteractionCount(this.inputFrameSchedulingDroppedByInteraction, sample.interactionId)
+                }
+                continue
+            }
+            this.inputFrameSchedulingSamples.push({
+                ...sample,
+                callbackAt,
+                duration,
+            })
+            this.inputDispatchKindCounts[sample.kind] = clampCount(this.inputDispatchKindCounts[sample.kind])
+            if (sample.interactionId) {
+                this.incrementInputFrameSchedulingInteractionCount(this.inputFrameSchedulingResolvedByInteraction, sample.interactionId)
+            }
+        }
+    }
+
+    private cancelPendingInputDispatches(): void {
+        if (this.pendingInputDispatches.length === 0) return
+        for (const sample of this.pendingInputDispatches) {
+            this.inputFrameSchedulingCancelledCount = clampCount(this.inputFrameSchedulingCancelledCount)
+            if (sample.interactionId) {
+                this.incrementInputFrameSchedulingInteractionCount(this.inputFrameSchedulingCancelledByInteraction, sample.interactionId)
+            }
+        }
+        this.pendingInputDispatches.length = 0
+    }
+
+    private incrementInputFrameSchedulingInteractionCount(counts: Map<string, number>, interactionId: string): void {
+        if (!this.activeInteractions.has(interactionId) && !this.retainedInteractionIds.has(interactionId)) return
+        counts.set(interactionId, clampCount(counts.get(interactionId) ?? 0))
+    }
+
+    private releaseInputFrameSchedulingInteraction(interactionId: string): void {
+        this.retainedInteractionIds.delete(interactionId)
+        this.inputFrameSchedulingResolvedByInteraction.delete(interactionId)
+        this.inputFrameSchedulingDroppedByInteraction.delete(interactionId)
+        this.inputFrameSchedulingCancelledByInteraction.delete(interactionId)
+    }
+
+    private measureOverhead(callback: (callbackEnteredAt: number) => void): void {
         const started = this.runtime.now()
         try {
-            callback()
+            callback(started)
         } finally {
             const elapsed = Math.max(0, this.runtime.now() - started)
             if (Number.isFinite(elapsed)) {
@@ -1501,6 +1664,61 @@ export class AnimationCollector {
         }
     }
 
+    private inputFrameSchedulingSummary(): InputFrameSchedulingSummary {
+        const droppedSampleCount = Math.min(
+            1_000_000_000,
+            this.inputFrameSchedulingSamples.droppedCount + this.inputFrameSchedulingOverflowCount
+        )
+        const totalObservedCount = this.inputFrameSchedulingSamples.totalCount
+        return {
+            version: 1,
+            status: !this.inputFrameSchedulingInstalled
+                ? 'not-instrumented'
+                : totalObservedCount === 0
+                  ? 'not-observed'
+                  : droppedSampleCount + this.inputFrameSchedulingCancelledCount > 0
+                    ? 'partial'
+                    : 'measured',
+            retainedCount: this.inputFrameSchedulingSamples.retainedCount,
+            totalObservedCount,
+            droppedSampleCount,
+            cancelledSampleCount: this.inputFrameSchedulingCancelledCount,
+            pendingCount: this.pendingInputDispatches.length,
+            capacity: this.inputFrameSchedulingSamples.capacity,
+            duration: durationStatistics(this.inputFrameSchedulingSamples.toArray().map(sample => sample.duration)),
+            byKind: { ...this.inputDispatchKindCounts },
+        }
+    }
+
+    private interactionInputFrameScheduling(interactionId: string): InteractionInputFrameSchedulingSummary {
+        const samples = this.inputFrameSchedulingSamples.toArray().filter(sample => sample.interactionId === interactionId)
+        const totalObservedCount = this.inputFrameSchedulingResolvedByInteraction.get(interactionId) ?? 0
+        const droppedSampleCount = Math.min(
+            1_000_000_000,
+            Math.max(0, totalObservedCount - samples.length) + (this.inputFrameSchedulingDroppedByInteraction.get(interactionId) ?? 0)
+        )
+        const cancelledSampleCount = this.inputFrameSchedulingCancelledByInteraction.get(interactionId) ?? 0
+        const pendingCount = this.pendingInputDispatches.filter(sample => sample.interactionId === interactionId).length
+        const incomplete = droppedSampleCount + cancelledSampleCount > 0
+        return {
+            status: !this.inputFrameSchedulingInstalled
+                ? 'not-instrumented'
+                : totalObservedCount === 0
+                  ? incomplete
+                      ? 'partial'
+                      : 'not-observed'
+                  : incomplete
+                    ? 'partial'
+                    : 'measured',
+            retainedCount: samples.length,
+            totalObservedCount,
+            droppedSampleCount,
+            cancelledSampleCount,
+            pendingCount,
+            duration: durationStatistics(samples.map(sample => sample.duration)),
+        }
+    }
+
     private interactionSummary(capturedAt: number): InteractionSummary {
         const recent = this.interactionSamples.toArray().map(
             (measurement): InteractionMeasurement => ({
@@ -1558,6 +1776,7 @@ export class AnimationCollector {
             longAnimationFrames: this.signalOverlap(this.loafSamples, this.loafCapability, measurement.startedAt, measurement.endedAt),
             longTasks: this.signalOverlap(this.longTaskSamples, this.longTaskCapability, measurement.startedAt, measurement.endedAt),
             eventTiming: this.signalOverlap(this.eventSamples, this.eventCapability, measurement.startedAt, measurement.endedAt),
+            inputFrameScheduling: this.interactionInputFrameScheduling(measurement.id),
             quality: measurement.qualitySummary,
         }
     }
@@ -1689,6 +1908,7 @@ export class AnimationCollector {
             longAnimationFrames: this.loafSummary(),
             longTasks: signalSummary(this.longTaskSamples, this.longTaskCapability, this.longTaskTotalDuration),
             eventTiming: this.eventSummary(),
+            inputFrameScheduling: this.inputFrameSchedulingSummary(),
             interactions: this.interactionSummary(capturedAt),
             visibility: this.visibilitySummary(),
             captureSufficiency,
