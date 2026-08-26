@@ -11,6 +11,7 @@ import {
     type AnimationElementSelectionOptions,
     type AnimationFrameworkStatsSample,
     type AnimationHostFramework,
+    type AnimationInputDispatchKind,
     type AnimationIntegrationOptions,
     type AnimationInteractionHandle,
     type AnimationInteractionKind,
@@ -26,6 +27,8 @@ import {
     type FrameworkCommitProbe,
     type GsapLifecycleProbe,
     type GsapLifecycleProbeOptions,
+    type InputFrameSchedulingRecorder,
+    type InputFrameSchedulingMarker,
     type ThreeRendererProbe,
     type ThreeRendererProbeOptions,
     type VideoFrameProbe,
@@ -351,6 +354,7 @@ class AutomaticInputWindows {
     private readonly hover = timedAutomaticWindow()
     private readonly scroll = timedAutomaticWindow()
     private readonly resize = timedAutomaticWindow()
+    private inputFrameSchedulingRecorder: InputFrameSchedulingRecorder | null = null
     private disposed = false
 
     constructor(
@@ -362,12 +366,25 @@ class AutomaticInputWindows {
 
     start(): void {
         if (this.disposed || typeof this.windowValue.addEventListener !== 'function') return
+        this.activateCollector()
         if (this.options.pointer) this.installPointerWindows()
         if (this.options.scroll) this.installScrollWindows()
         if (this.options.hover) this.installHoverWindows()
         if (this.options.keyboard) this.installKeyboardWindows()
         if (this.options.resize) this.installResizeWindows()
         if (this.options.load) this.installLoadWindow()
+    }
+
+    activateCollector(): void {
+        if (
+            this.disposed ||
+            this.inputFrameSchedulingRecorder ||
+            (!this.options.pointer && !this.options.keyboard) ||
+            this.integration.collector.state !== 'running'
+        ) {
+            return
+        }
+        this.inputFrameSchedulingRecorder = this.integration.collector.createInputFrameSchedulingRecorder()
     }
 
     private listen(
@@ -412,6 +429,12 @@ class AutomaticInputWindows {
         } catch {
             return null
         }
+    }
+
+    private captureInputFrameScheduling(event: Event, kind: AnimationInputDispatchKind): InputFrameSchedulingMarker | null {
+        if (event.isTrusted !== true) return null
+        this.activateCollector()
+        return this.inputFrameSchedulingRecorder?.record(kind) ?? null
     }
 
     private settle(id: string | null, outcome: 'end' | 'cancel'): boolean {
@@ -496,8 +519,10 @@ class AutomaticInputWindows {
     private installPointerWindows(): void {
         const onPointerDown = (event: Event): void => {
             if (fromMonitorUi(event)) return
+            const scheduling = this.captureInputFrameScheduling(event, 'pointer')
             this.settle(this.pointerId, 'cancel')
             this.pointerId = this.begin('pointer', 'automatic-pointer-window')
+            if (this.pointerId) scheduling?.associateInteraction(this.pointerId)
         }
         const onPointerUp = (event: Event): void => {
             const completedId = this.pointerId
@@ -512,7 +537,9 @@ class AutomaticInputWindows {
         }
         const onClick = (event: Event): void => {
             if (fromMonitorUi(event) || this.pointerId || this.keyboardId) return
+            const scheduling = this.captureInputFrameScheduling(event, 'click')
             this.pointerId = this.begin('pointer', 'automatic-pointer-window')
+            if (this.pointerId) scheduling?.associateInteraction(this.pointerId)
             this.finishPointer(this.pointerId)
         }
         const onPointerMove = (event: Event): void => {
@@ -552,7 +579,9 @@ class AutomaticInputWindows {
     private installKeyboardWindows(): void {
         const onKeyDown = (event: Event): void => {
             if (fromMonitorUi(event) || this.keyboardId) return
+            const scheduling = (event as KeyboardEvent).repeat === true ? null : this.captureInputFrameScheduling(event, 'keyboard')
             this.keyboardId = this.begin('keyboard', 'automatic-keyboard-window')
+            if (this.keyboardId) scheduling?.associateInteraction(this.keyboardId)
         }
         const onKeyUp = (event: Event): void => {
             const completedId = this.keyboardId
@@ -617,6 +646,8 @@ class AutomaticInputWindows {
         this.active.clear()
         this.pointerId = null
         this.keyboardId = null
+        this.inputFrameSchedulingRecorder?.dispose()
+        this.inputFrameSchedulingRecorder = null
     }
 }
 
@@ -841,7 +872,9 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     }
 
     start(): boolean {
-        return this.integration.start()
+        const started = this.integration.start()
+        this.automaticInputWindows?.activateCollector()
+        return started
     }
 
     stop(): BrowserAnimationSnapshot | null {

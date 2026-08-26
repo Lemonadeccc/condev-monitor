@@ -52,6 +52,32 @@ function runtime(): AnimationRuntime {
     }
 }
 
+function controllableFrameRuntime(): {
+    runtime: AnimationRuntime
+    advance(deltaMs: number): void
+    frame(timestamp?: number): void
+} {
+    let now = 1_000
+    const subscribers = new Set<(timestamp: number) => void>()
+    return {
+        runtime: {
+            ...runtime(),
+            now: () => now,
+            wallNow: () => 1_750_000_000_000 + now,
+            subscribeFrames: callback => {
+                subscribers.add(callback)
+                return () => subscribers.delete(callback)
+            },
+        },
+        advance: deltaMs => {
+            now += deltaMs
+        },
+        frame: (timestamp = now) => {
+            for (const callback of [...subscribers]) callback(timestamp)
+        },
+    }
+}
+
 function installBrowserGlobals(): () => void {
     const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
     const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
@@ -104,12 +130,21 @@ interface InteractiveBrowserGlobals {
     windowTarget: FakeEventTarget
     documentTarget: FakeEventTarget
     visualViewportTarget: FakeEventTarget
+    overlayElement: Element
     restore(): void
 }
 
 function installInteractiveBrowserGlobals(finePointer = true): InteractiveBrowserGlobals {
     const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window')
     const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document')
+    const originalElement = Object.getOwnPropertyDescriptor(globalThis, 'Element')
+    class FakeElement {
+        constructor(private readonly attributes: ReadonlySet<string>) {}
+
+        hasAttribute(name: string): boolean {
+            return this.attributes.has(name)
+        }
+    }
     const windowTarget = new FakeEventTarget()
     const documentTarget = new FakeEventTarget()
     const visualViewportTarget = new FakeEventTarget()
@@ -127,15 +162,19 @@ function installInteractiveBrowserGlobals(finePointer = true): InteractiveBrowse
     Object.assign(documentTarget, { readyState: 'complete' })
     Object.defineProperty(globalThis, 'window', { configurable: true, value: windowValue })
     Object.defineProperty(globalThis, 'document', { configurable: true, value: documentTarget })
+    Object.defineProperty(globalThis, 'Element', { configurable: true, value: FakeElement })
     return {
         windowTarget,
         documentTarget,
         visualViewportTarget,
+        overlayElement: new FakeElement(new Set(['data-condev-animation-overlay'])) as unknown as Element,
         restore: () => {
             if (originalWindow) Object.defineProperty(globalThis, 'window', originalWindow)
             else delete (globalThis as { window?: Window }).window
             if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument)
             else delete (globalThis as { document?: Document }).document
+            if (originalElement) Object.defineProperty(globalThis, 'Element', originalElement)
+            else delete (globalThis as { Element?: typeof Element }).Element
         },
     }
 }
@@ -162,6 +201,27 @@ describe('browser animation single-init entry', () => {
         expect(mockTransportSend).not.toHaveBeenCalled()
         await first.destroy()
         await second.destroy()
+    })
+
+    it('keeps deferred autoStart compatible and activates input scheduling after manual start', async () => {
+        jest.useFakeTimers()
+        const globals = installInteractiveBrowserGlobals()
+        const clock = controllableFrameRuntime()
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: clock.runtime, autoStart: false, autoInputWindows: { load: false } } })
+
+        expect(client.animation.started).toBe(false)
+        expect(client.animation.start()).toBe(true)
+        globals.windowTarget.dispatch('pointerdown', { isTrusted: true, pointerType: 'mouse' })
+        globals.windowTarget.dispatch('pointerup', { isTrusted: true, pointerType: 'mouse' })
+        clock.advance(6)
+        clock.frame()
+        jest.advanceTimersByTime(40)
+
+        expect(client.animation.snapshot().inputFrameScheduling?.duration?.p95).toBe(6)
+        await client.destroy()
+        globals.restore()
+        jest.useRealTimers()
     })
 
     it('keeps ordinary Browser monitoring and animation on one client and one transport', async () => {
@@ -436,6 +496,75 @@ describe('browser animation single-init entry', () => {
         expect(JSON.stringify(snapshot)).not.toContain('private-key-value')
         expect(JSON.stringify(snapshot)).not.toContain('clientX')
         expect(JSON.stringify(snapshot)).not.toContain('clientY')
+
+        await client.destroy()
+        globals.restore()
+        jest.useRealTimers()
+    })
+
+    it('records trusted discrete input to the next shared rAF callback without claiming visual completion', async () => {
+        jest.useFakeTimers()
+        const globals = installInteractiveBrowserGlobals()
+        const clock = controllableFrameRuntime()
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: clock.runtime, autoInputWindows: { load: false } } })
+
+        globals.windowTarget.dispatch('pointerdown', {
+            isTrusted: true,
+            composedPath: () => [globals.overlayElement],
+            secret: 'private-overlay-value',
+        })
+        globals.windowTarget.dispatch('pointerdown', {
+            isTrusted: true,
+            pointerType: 'mouse',
+            clientX: 42,
+            secret: 'private-pointer-value',
+        })
+        globals.windowTarget.dispatch('pointerup', { isTrusted: true, pointerType: 'mouse' })
+        globals.windowTarget.dispatch('click', { isTrusted: true })
+        clock.advance(7)
+        clock.frame(123)
+        jest.advanceTimersByTime(40)
+
+        globals.windowTarget.dispatch('keydown', { isTrusted: true, key: 'private-key-value', repeat: false })
+        globals.windowTarget.dispatch('keydown', { isTrusted: true, key: 'private-key-value', repeat: true })
+        globals.windowTarget.dispatch('keyup', { isTrusted: true, key: 'private-key-value' })
+        clock.advance(5)
+        clock.frame(124)
+        jest.advanceTimersByTime(40)
+
+        globals.windowTarget.dispatch('click', { isTrusted: false, secret: 'private-click-value' })
+        clock.advance(5)
+        clock.frame(125)
+        jest.advanceTimersByTime(40)
+
+        globals.windowTarget.dispatch('click', { isTrusted: true, secret: 'private-activation-value' })
+        clock.advance(3)
+        clock.frame(126)
+        jest.advanceTimersByTime(40)
+
+        const snapshot = client.animation.snapshot()
+        const scheduling = snapshot.inputFrameScheduling
+        expect(scheduling).toBeDefined()
+        expect(scheduling?.status).toBe('measured')
+        expect(scheduling?.totalObservedCount).toBe(3)
+        expect(scheduling?.byKind).toEqual({ pointer: 1, keyboard: 1, click: 1 })
+        expect(scheduling?.duration?.count).toBe(3)
+        expect(scheduling?.duration?.max).toBe(7)
+        expect(
+            snapshot.interactions.recent.filter(
+                interaction =>
+                    interaction.performance.inputFrameScheduling?.duration !== null &&
+                    interaction.performance.inputFrameScheduling?.duration !== undefined
+            )
+        ).toHaveLength(3)
+        expect(snapshot.interactions.recent.every(interaction => interaction.performance.quality.inputToVisual === null)).toBe(true)
+        expect(JSON.stringify(snapshot)).not.toContain('private-pointer-value')
+        expect(JSON.stringify(snapshot)).not.toContain('private-key-value')
+        expect(JSON.stringify(snapshot)).not.toContain('private-click-value')
+        expect(JSON.stringify(snapshot)).not.toContain('private-overlay-value')
+        expect(JSON.stringify(snapshot)).not.toContain('private-activation-value')
+        expect(JSON.stringify(snapshot)).not.toContain('clientX')
 
         await client.destroy()
         globals.restore()
