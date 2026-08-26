@@ -992,6 +992,22 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         appendTextElement(documentValue, signals, 'h4', '', overlayText(locale, 'overlappingSignals'))
         appendTextElement(documentValue, signals, 'p', '', selected.signalSummary)
         interactionDetail.appendChild(signals)
+        if (selected.inputFrameScheduling) {
+            const scheduling = documentValue.createElement('section')
+            scheduling.className = 'detail-section'
+            scheduling.setAttribute('data-input-frame-scheduling', selected.measurement.id)
+            appendTextElement(documentValue, scheduling, 'h4', '', overlayText(locale, 'inputFrameScheduling'))
+            appendTextElement(
+                documentValue,
+                scheduling,
+                'p',
+                '',
+                `${selected.inputFrameScheduling.value} · ${selected.inputFrameScheduling.statusLabel}`
+            )
+            appendTextElement(documentValue, scheduling, 'p', '', selected.inputFrameScheduling.evidence)
+            appendTextElement(documentValue, scheduling, 'p', '', overlayText(locale, 'inputFrameSchedulingBoundary'))
+            interactionDetail.appendChild(scheduling)
+        }
         if (selected.qualityFacts.length > 0) {
             const quality = documentValue.createElement('section')
             quality.className = 'detail-section'
@@ -1930,6 +1946,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             card.setAttribute('data-metric', metric.id)
             card.setAttribute('data-tone', metric.tone)
             if (metric.id === 'live-fps') card.setAttribute('title', overlayText(locale, 'recentFpsBoundary'))
+            if (metric.id === 'input-scheduling') card.setAttribute('title', overlayText(locale, 'inputFrameSchedulingBoundary'))
             appendTextElement(documentValue, card, 'div', 'metric-label', metric.label)
             appendTextElement(documentValue, card, 'div', 'metric-value', metric.value)
             appendTextElement(documentValue, card, 'div', 'metric-context', metric.context)

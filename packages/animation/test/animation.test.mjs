@@ -2479,6 +2479,23 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
         coalescedEventsConsumed: 3,
         coalescedEventUtilization: 0.75,
     })
+    Object.assign(snapshot.inputFrameScheduling, {
+        status: 'measured',
+        retainedCount: 4,
+        totalObservedCount: 4,
+        droppedSampleCount: 0,
+        cancelledSampleCount: 0,
+        pendingCount: 0,
+        duration: statistics(9, 4),
+        byKind: { pointer: 3, keyboard: 1, click: 0 },
+    })
+    Object.assign(snapshot.interactions.recent[0].performance.inputFrameScheduling, {
+        status: 'measured',
+        retainedCount: 4,
+        totalObservedCount: 4,
+        droppedSampleCount: 0,
+        duration: statistics(9, 4),
+    })
 
     const document = new FakeDocument()
     let overlaySnapshotIndex = 0
@@ -2534,6 +2551,8 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     assert.match(fakeNodeText(panel), /30 FPS/)
     assert.match(fakeNodeText(panel), /60 Hz/)
     assert.match(fakeNodeText(panel), /Live rAF cadence/)
+    assert.match(fakeNodeText(panel), /Input → next rAF proxy p95/)
+    assert.match(fakeNodeText(panel), /4\/4 retained · Measured · 0 lost\/cancelled/)
 
     const interactionsTab = findFakeNodes(panel, node => node.getAttribute('data-overlay-tab') === 'interactions')[0]
     assert.ok(interactionsTab)
@@ -2552,6 +2571,12 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     assert.match(fakeNodeText(panel), /Settle time p95 120 ms/)
     assert.match(fakeNodeText(panel), /Overshoot p95 10%/)
     assert.match(fakeNodeText(panel), /Coalesced utilization 75% · 3\/4 events/)
+    const scheduling = findFakeNodes(panel, node => node.getAttribute('data-input-frame-scheduling') !== null)[0]
+    assert.ok(scheduling)
+    assert.match(fakeNodeText(scheduling), /Input dispatch → next rAF callback/)
+    assert.match(fakeNodeText(scheduling), /9 ms · Measured/)
+    assert.match(fakeNodeText(scheduling), /4\/4 retained · 0 dropped · 0 cancelled · 0 pending/)
+    assert.match(fakeNodeText(scheduling), /does not prove a visual update, paint, presentation, or GPU completion/)
 
     const coverageTab = findFakeNodes(panel, node => node.getAttribute('data-overlay-tab') === 'coverage')[0]
     assert.ok(coverageTab)
@@ -2662,6 +2687,8 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     assert.match(fakeNodeText(chinesePanel), /前台 1\.25 秒/)
     assert.match(fakeNodeText(chinesePanel), /整个文档周期/)
     assert.match(fakeNodeText(chinesePanel), /未观测到 未知/)
+    assert.match(fakeNodeText(chinesePanel), /输入 → 下一次 rAF 代理 p95/)
+    assert.match(fakeNodeText(chinesePanel), /不证明视觉更新、绘制、屏幕呈现或 GPU 已完成/)
     const chineseCoverageTab = findFakeNodes(chinesePanel, node => node.getAttribute('data-overlay-tab') === 'coverage')[0]
     chineseCoverageTab.click()
     const chineseResourcesCoverage = findFakeNodes(chinesePanel, node => node.getAttribute('data-coverage-family') === 'resourcesMedia')[0]

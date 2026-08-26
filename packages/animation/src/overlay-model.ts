@@ -64,7 +64,14 @@ export interface OverlayInteractionView {
     signalSummary: string
     outcomeLabel: string
     status: 'warning' | 'neutral'
+    inputFrameScheduling: OverlayInputFrameSchedulingView | null
     qualityFacts: readonly OverlayInteractionQualityFact[]
+}
+
+export interface OverlayInputFrameSchedulingView {
+    value: string
+    statusLabel: string
+    evidence: string
 }
 
 export interface OverlayInteractionQualityFact {
@@ -107,7 +114,7 @@ export interface OverlayCoverageView {
 }
 
 export interface OverlayMetricView {
-    id: 'live-fps' | 'frame-tail' | 'bursts' | 'missed'
+    id: 'live-fps' | 'frame-tail' | 'bursts' | 'missed' | 'input-scheduling'
     label: string
     value: string
     context: string
@@ -289,6 +296,7 @@ function interactionView(
         .filter((entry): entry is [string, number] => typeof entry[1] === 'number' && entry[1] > 0)
         .map(([label, count]) => `${label} ×${count}`)
     const quality = measurement.performance.quality
+    const inputFrameScheduling = measurement.performance.inputFrameScheduling
     const qualityFacts: OverlayInteractionQualityFact[] = []
     const appendQualityFact = (
         id: OverlayInteractionQualityFact['id'],
@@ -362,6 +370,21 @@ function interactionView(
         signalSummary: overlaps.length > 0 ? overlaps.join(' · ') : overlayText(locale, 'noOverlappingSignal'),
         outcomeLabel: outcomeText(locale, measurement.outcome),
         status: frameWarning ? 'warning' : 'neutral',
+        inputFrameScheduling:
+            inputFrameScheduling &&
+            (inputFrameScheduling.duration !== null || inputFrameScheduling.status === 'partial' || inputFrameScheduling.pendingCount > 0)
+                ? {
+                      value: formatOverlayMeasurement(inputFrameScheduling.duration?.p95, 'ms', locale),
+                      statusLabel: coverageStatusText(locale, inputFrameScheduling.status),
+                      evidence: overlayText(locale, 'inputFrameSchedulingCounts', {
+                          retained: inputFrameScheduling.retainedCount,
+                          total: inputFrameScheduling.totalObservedCount,
+                          dropped: inputFrameScheduling.droppedSampleCount,
+                          cancelled: inputFrameScheduling.cancelledSampleCount,
+                          pending: inputFrameScheduling.pendingCount,
+                      }),
+                  }
+                : null,
         qualityFacts,
     }
 }
@@ -399,6 +422,8 @@ export function buildAnimationOverlayViewModel(
               : overlayText(locale, 'noThresholdBreachSummary')
     const frameTail = snapshot.frames.duration?.p95
     const frameTailTarget = snapshot.frameBudget.frameBudgetMs * 1.5
+    const inputFrameScheduling = snapshot.inputFrameScheduling
+    const inputFrameSchedulingStatus = coverageStatusText(locale, inputFrameScheduling?.status ?? 'not-instrumented')
     const metrics: OverlayMetricView[] = [
         {
             id: 'live-fps',
@@ -436,6 +461,20 @@ export function buildAnimationOverlayViewModel(
             value: formatOverlayMeasurement(snapshot.frames.missedFrameOpportunities, 'frames', locale),
             context: overlayText(locale, 'retainedFrames', { count: frameSamples }),
             tone: snapshot.frames.missedFrameOpportunities > 0 ? 'warning' : 'neutral',
+        },
+        {
+            id: 'input-scheduling',
+            label: overlayText(locale, 'inputFrameSchedulingProxy'),
+            value: formatOverlayMeasurement(inputFrameScheduling?.duration?.p95, 'ms', locale),
+            context: inputFrameScheduling?.duration
+                ? overlayText(locale, 'inputFrameSchedulingProxyContext', {
+                      retained: inputFrameScheduling.retainedCount,
+                      total: inputFrameScheduling.totalObservedCount,
+                      status: inputFrameSchedulingStatus,
+                      losses: inputFrameScheduling.droppedSampleCount + inputFrameScheduling.cancelledSampleCount,
+                  })
+                : overlayText(locale, 'inputFrameSchedulingProxyUnavailable', { status: inputFrameSchedulingStatus }),
+            tone: inputFrameScheduling?.status === 'measured' ? 'neutral' : 'unknown',
         },
     ]
     const coverage = (
