@@ -6,8 +6,11 @@ import { DEFAULT_SSE_TRACE_OPTIONS } from './sseTraceTypes'
 const PATCHED = Symbol.for('condev-sse-trace')
 
 export class SSETraceIntegration {
+    readonly name = 'sseTrace'
     private readonly cfg: Required<SSETraceOptions>
     private readonly normalizedDsnUrl: string
+    private previousFetch: typeof window.fetch | null = null
+    private installedFetch: typeof window.fetch | null = null
 
     constructor(
         private transport: Transport,
@@ -19,10 +22,17 @@ export class SSETraceIntegration {
         this.normalizedDsnUrl = parsed ? `${parsed.origin}${parsed.basePath}/tracking/${parsed.appId}` : dsnUrl
     }
 
+    setup(transport: Transport): void {
+        this.transport = transport
+        this.init()
+    }
+
     init(): void {
+        if (typeof window === 'undefined' || typeof window.fetch !== 'function') return
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         if ((window.fetch as any)[PATCHED]) return
         const prevFetch = window.fetch
+        this.previousFetch = prevFetch
         const self = this
 
         const patchedFetch = function (_this: unknown, input: RequestInfo | URL, init?: RequestInit) {
@@ -119,11 +129,21 @@ export class SSETraceIntegration {
                 })
         }
 
-        window.fetch = function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
+        const installedFetch = function (this: unknown, input: RequestInfo | URL, init?: RequestInit) {
             return patchedFetch(this, input, init)
         }
+        window.fetch = installedFetch
+        this.installedFetch = installedFetch
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         Object.defineProperty(window.fetch, PATCHED, { value: true })
+    }
+
+    destroy(): void {
+        if (typeof window !== 'undefined' && this.installedFetch && window.fetch === this.installedFetch && this.previousFetch) {
+            window.fetch = this.previousFetch
+        }
+        this.installedFetch = null
+        this.previousFetch = null
     }
 
     // ---- failure telemetry ----

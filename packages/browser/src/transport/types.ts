@@ -24,11 +24,18 @@ export interface ReportEnvelope {
 export interface RetryRecord {
     id: string
     appId: string
+    /** Canonical DSN tracking endpoint this record is allowed to be sent to. */
+    target?: string
     createdAt: number
     nextRetryAt: number
     retryCount: number
     leaseUntil: number
     payload: ReportEnvelope[]
+}
+
+export interface RetryScope {
+    appId: string
+    target: string
 }
 
 // ---- Abstract interfaces (upgrade-friendly) ----
@@ -43,6 +50,12 @@ export interface Store<T> {
     delete(ids: string[]): Promise<void>
     count(): Promise<number>
     prune(maxItems: number, maxAgeMs: number): Promise<void>
+}
+
+/** Offline transport stores must lease only records for the active DSN target. */
+export interface ScopedRetryStore<T> extends Omit<Store<T>, 'getReadyAndLease' | 'prune'> {
+    getReadyAndLease(scope: RetryScope, limit: number, leaseDurationMs: number): Promise<T[]>
+    prune(scope: RetryScope, maxItems: number, maxAgeMs: number): Promise<void>
 }
 
 export interface IScheduler {

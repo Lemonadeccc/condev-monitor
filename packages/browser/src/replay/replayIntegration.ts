@@ -64,7 +64,9 @@ const REPLAY_STORE_MAX_ITEMS = 20
 const REPLAY_STORE_MAX_AGE_MS = 24 * 60 * 60 * 1000
 
 export class Replay {
+    readonly name = 'replay'
     private enabled = false
+    private destroyed = false
     private events: eventWithTime[] = []
     private rrwebRecord: typeof import('rrweb').record | null = null
     private rrwebEventType: typeof import('rrweb').EventType | null = null
@@ -135,11 +137,23 @@ export class Replay {
         }
     }
 
+    setup(transport: Transport): void {
+        this.transport = transport
+        this.init()
+    }
+
     init() {
+        if (this.destroyed || typeof window === 'undefined' || typeof document === 'undefined') return
         void this.bootstrap()
     }
 
+    flush(): Promise<void> {
+        if (this.destroyed) return Promise.resolve()
+        return this.flushPending()
+    }
+
     private async bootstrap() {
+        if (this.destroyed) return
         const parsed = parseDsn(this.dsn)
         if (!parsed) return
 
@@ -149,6 +163,10 @@ export class Replay {
             const [{ ReplayStore }, { ReplayRetryWorker }] = await Promise.all([import('./replayStore'), import('./replayRetryWorker')])
             const store = new ReplayStore()
             const worker = new ReplayRetryWorker(store)
+            if (this.destroyed) {
+                worker.stop()
+                return
+            }
             this.replayStore = store
             this.replayWorker = worker
             this.handleOnlineForRetry = () => {
@@ -176,7 +194,7 @@ export class Replay {
             replayEnabled = false
         }
 
-        if (!replayEnabled) return
+        if (!replayEnabled || this.destroyed) return
 
         // Lazy-load rrweb only when replay is actually enabled
         let rrweb: Awaited<ReturnType<typeof loadRrweb>>
@@ -186,6 +204,7 @@ export class Replay {
             console.warn('[condev-monitor] rrweb failed to load, replay disabled:', e)
             return
         }
+        if (this.destroyed) return
         this.rrwebRecord = rrweb.record
         this.rrwebEventType = rrweb.EventType
 
@@ -433,16 +452,18 @@ export class Replay {
     }
 
     stop() {
-        if (this.pendingUpload?.timerId) window.clearTimeout(this.pendingUpload.timerId)
+        this.destroyed = true
+        const browserWindow = typeof window === 'undefined' ? null : window
+        if (this.pendingUpload?.timerId && browserWindow) browserWindow.clearTimeout(this.pendingUpload.timerId)
         this.pendingUpload = null
         if (this.stopRecording) this.stopRecording()
         this.stopRecording = null
         if (this.handlePageHide) {
-            window.removeEventListener('pagehide', this.handlePageHide, { capture: true })
+            browserWindow?.removeEventListener('pagehide', this.handlePageHide, { capture: true })
             this.handlePageHide = null
         }
         if (this.handleOnlineForRetry) {
-            window.removeEventListener('online', this.handleOnlineForRetry)
+            browserWindow?.removeEventListener('online', this.handleOnlineForRetry)
             this.handleOnlineForRetry = null
         }
         this.replayWorker?.stop()
@@ -450,5 +471,11 @@ export class Replay {
         this.replayStore = null
         this.events = []
         this.enabled = false
+    }
+
+    async destroy(): Promise<void> {
+        if (this.destroyed) return
+        await this.flushPending()
+        this.stop()
     }
 }

@@ -1,5 +1,5 @@
 import type { TransportGateway } from '../gateway'
-import type { RetryRecord, Store, TransportConfig } from '../types'
+import type { RetryRecord, RetryScope, ScopedRetryStore, TransportConfig } from '../types'
 
 const RETRY_POLL_INTERVAL_MS = 60_000
 const BATCH_DELAY_MS = 500
@@ -10,14 +10,15 @@ export class RetryWorker {
     private running = false
 
     constructor(
-        private store: Store<RetryRecord>,
+        private store: ScopedRetryStore<RetryRecord>,
         private gateway: TransportGateway,
-        private cfg: Required<TransportConfig>
+        private cfg: Required<TransportConfig>,
+        private scope: RetryScope
     ) {}
 
     start(): void {
         if (this.timerId !== null) return
-        this.timerId = setInterval(() => void this.tryOnce(), RETRY_POLL_INTERVAL_MS)
+        this.timerId = setInterval(() => this.runScheduled('interval'), RETRY_POLL_INTERVAL_MS)
     }
 
     stop(): void {
@@ -34,8 +35,12 @@ export class RetryWorker {
 
         this.running = true
         try {
-            await this.store.prune(this.cfg.storeMaxItems, this.cfg.storeMaxAgeMs)
-            const records = await this.store.getReadyAndLease(10, LEASE_DURATION_MS)
+            await this.store.prune(this.scope, this.cfg.storeMaxItems, this.cfg.storeMaxAgeMs)
+            const leasedRecords = await this.store.getReadyAndLease(this.scope, 10, LEASE_DURATION_MS)
+            // Keep a second fail-closed guard at the delivery boundary. A stale
+            // or custom Store implementation must not route another app/DSN's
+            // telemetry through this worker's fixed gateway.
+            const records = leasedRecords.filter(record => record.appId === this.scope.appId && record.target === this.scope.target)
             if (records.length === 0) return
 
             for (const record of records) {
@@ -66,5 +71,12 @@ export class RetryWorker {
         } finally {
             this.running = false
         }
+    }
+
+    /** Fire-and-forget entrypoint for timers/lifecycle hooks. */
+    runScheduled(reason: 'initial' | 'interval' | 'online' | 'visible' | 'verified'): void {
+        void this.tryOnce().catch(error => {
+            if (this.cfg.debug) console.debug(`[Transport] ${reason} offline retry deferred`, error)
+        })
     }
 }

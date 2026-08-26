@@ -1,7 +1,8 @@
 export { captureConsoleIntegration } from './integrations/captureConsoleIntegration'
 export type * from './integrations/captureConsoleIntegration'
 
-export type { Integration } from './types'
+export { Integration } from './types'
+export type { IIntegration, IntegrationLike, MonitorIntegration, MonitorIntegrationTeardown, MonitoringOptions } from './types'
 
 export type { Transport } from './transport'
 

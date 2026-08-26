@@ -30,7 +30,9 @@ export class NetworkManager {
     }
 
     private handleOnline = (): void => {
-        void this.verify()
+        void this.verify().catch(error => {
+            if (this.debug) console.debug('[Transport] Network verification deferred', error)
+        })
     }
 
     private handleOffline = (): void => {
@@ -39,7 +41,7 @@ export class NetworkManager {
 
     private handleVisibilityChange = (): void => {
         if (document.visibilityState === 'visible') {
-            void this.retryWorker.tryOnce()
+            this.retryWorker.runScheduled('visible')
         }
     }
 
@@ -69,7 +71,7 @@ export class NetworkManager {
                 clearTimeout(timerId)
                 if (res.ok || res.status < 500) {
                     if (this.debug) console.debug('[Transport] Network verified, triggering retry')
-                    void this.retryWorker.tryOnce()
+                    this.retryWorker.runScheduled('verified')
                 }
             } catch {
                 clearTimeout(timerId)

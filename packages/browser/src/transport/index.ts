@@ -35,9 +35,7 @@ export class BrowserTransport implements Transport {
         this.scheduler = new FlushScheduler(
             this.queue,
             this.gateway,
-            failed => {
-                void this.handleSendFailure(failed)
-            },
+            failed => this.handleSendFailure(failed),
             this.cfg.queueMax,
             this.cfg.queueWaitMs,
             this.cfg.debug
@@ -51,6 +49,7 @@ export class BrowserTransport implements Transport {
     // ---- Transport interface ----
 
     send(data: Record<string, unknown>): void {
+        if (this._destroyed) return
         let processed = data
         for (const fn of this.interceptors) processed = fn(processed)
         const enriched = enrichPayload(processed, this.context)
@@ -63,14 +62,17 @@ export class BrowserTransport implements Transport {
 
     /** Register a pre-enqueue interceptor (used by Replay integration). */
     addBeforeEnqueue(fn: (data: Record<string, unknown>) => Record<string, unknown>): void {
+        if (this._destroyed) return
         this.interceptors.push(fn)
     }
 
     async flush(reason?: FlushReason): Promise<void> {
+        if (this._destroyed) return
         return this.scheduler.flush(reason ?? 'manual')
     }
 
     destroy(): void {
+        if (this._destroyed) return
         this._destroyed = true
         this.scheduler.destroy()
         this.offlineNetMgr?.stop()
@@ -81,22 +83,25 @@ export class BrowserTransport implements Transport {
 
     // ---- Private ----
 
-    private async handleSendFailure(failed: ReportEnvelope[]): Promise<void> {
-        if (!this.cfg.enableOffline) return
+    private async handleSendFailure(failed: ReportEnvelope[]): Promise<boolean> {
+        if (!this.cfg.enableOffline) return false
         try {
             const { FailureStore } = await import('./offline/failureStore')
             const store = new FailureStore()
             await store.put({
                 id: `batch_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`,
                 appId: this.appId,
+                target: this.trackingUrl,
                 createdAt: Date.now(),
                 nextRetryAt: Date.now() + this.cfg.retryBaseDelayMs,
                 retryCount: 0,
                 leaseUntil: 0,
                 payload: failed.map(e => ({ ...e, retryCount: e.retryCount + 1 })),
             })
+            return true
         } catch {
-            // IndexedDB unavailable — silently discard
+            // IndexedDB unavailable — the scheduler restores the in-memory batch.
+            return false
         }
     }
 
@@ -108,7 +113,10 @@ export class BrowserTransport implements Transport {
                 import('./offline/networkManager'),
             ])
             const store = new FailureStore()
-            const worker = new RetryWorker(store, this.gateway, this.cfg)
+            const worker = new RetryWorker(store, this.gateway, this.cfg, {
+                appId: this.appId,
+                target: this.trackingUrl,
+            })
             const netMgr = new NetworkManager(this.trackingUrl, worker, this.cfg.debug)
             this.offlineWorker = worker
             this.offlineNetMgr = netMgr
@@ -117,7 +125,7 @@ export class BrowserTransport implements Transport {
                 netMgr.stop()
                 return
             }
-            void worker.tryOnce()
+            worker.runScheduled('initial')
             netMgr.start()
         } catch {
             // Offline modules unavailable

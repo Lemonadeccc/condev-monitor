@@ -1,13 +1,18 @@
+import { subscribePageLifecycle, type PageLifecycleEvent } from '@condev-monitor/monitor-sdk-browser-utils/performance-runtime'
+
 import type { FlushReason, IScheduler, ReportEnvelope, SendResult } from '../types'
 import type { MemoryQueue } from '../queue/memoryQueue'
 import type { TransportGateway } from '../gateway'
 
-type FailureHandler = (batch: ReportEnvelope[]) => void
+type FailureHandler = (batch: ReportEnvelope[]) => boolean | Promise<boolean>
 
 export class FlushScheduler implements IScheduler {
     private timerId: ReturnType<typeof setInterval> | null = null
-    private flushing = false
+    /** Always-settled tail used as a mutex for every explicit and scheduled flush. */
+    private flushTail: Promise<void> = Promise.resolve()
     private flushedOnHide = false
+    private destroyed = false
+    private unsubscribeLifecycle: (() => void) | null = null
 
     constructor(
         private queue: MemoryQueue,
@@ -29,29 +34,51 @@ export class FlushScheduler implements IScheduler {
         }
     }
 
-    async flush(reason: FlushReason): Promise<void> {
-        if (this.flushing) return
-        // Skip flush when offline — data is preserved in queue and will be retried
+    flush(reason: FlushReason): Promise<void> {
+        if (this.destroyed) return Promise.resolve()
+
+        const flushPromise = this.flushTail.then(() => {
+            if (this.destroyed) return
+            return this.flushOnce(reason)
+        })
+        // Keep the mutex usable after a failed send/persist attempt while
+        // returning the original rejecting promise to explicit callers.
+        this.flushTail = flushPromise.catch(() => undefined)
+        return flushPromise
+    }
+
+    private async flushOnce(reason: FlushReason): Promise<void> {
+        const batch = this.queue.drain(reason)
+        if (batch.length === 0) return
+
         if (typeof navigator !== 'undefined' && !navigator.onLine) {
-            if (this.debug) console.debug('[Transport] Skipping flush: offline')
+            if (this.debug) console.debug('[Transport] Persisting offline batch')
+            await this.persistOrRestore(batch)
             return
         }
-        this.flushing = true
 
+        const result: SendResult = await this.gateway.send(batch, reason)
+        if (!result.ok && result.retryable) {
+            await this.persistOrRestore(batch)
+        }
+    }
+
+    private async persistOrRestore(batch: ReportEnvelope[]): Promise<void> {
+        let persisted = false
         try {
-            const batch = this.queue.drain(reason)
-            if (batch.length === 0) return
-
-            const result: SendResult = await this.gateway.send(batch, reason)
-            if (!result.ok && result.retryable) {
-                this.onSendFailure(batch)
-            }
-        } finally {
-            this.flushing = false
+            persisted = await this.onSendFailure(batch)
+        } catch {
+            // Persistence is best-effort; restore below so an active page can retry.
+        }
+        if (!persisted) {
+            this.queue.restore(batch)
+            throw new Error('[Transport] Batch was not sent or persisted; restored in memory for retry')
         }
     }
 
     destroy(): void {
+        if (this.destroyed) return
+        this.destroyed = true
         if (this.timerId !== null) {
             clearInterval(this.timerId)
             this.timerId = null
@@ -62,15 +89,16 @@ export class FlushScheduler implements IScheduler {
     // ---- Private ----
 
     private scheduleFlush(reason: FlushReason): void {
+        if (this.destroyed) return
         if (reason === 'immediate') {
-            void this.flush('immediate')
+            this.runScheduledFlush('immediate')
             return
         }
 
         if (typeof requestIdleCallback === 'function') {
-            requestIdleCallback(() => void this.flush(reason))
+            requestIdleCallback(() => this.runScheduledFlush(reason))
         } else {
-            setTimeout(() => void this.flush(reason), 0)
+            setTimeout(() => this.runScheduledFlush(reason), 0)
         }
     }
 
@@ -84,29 +112,37 @@ export class FlushScheduler implements IScheduler {
 
     // ---- Lifecycle events ----
 
-    private handleVisibilityChange = (): void => {
-        if (document.visibilityState === 'hidden') {
+    private handleLifecycle = (event: PageLifecycleEvent): void => {
+        if (event.type === 'hidden') {
             this.flushedOnHide = true
-            void this.flush('visibilitychange')
-        } else {
+            this.scheduleLifecycleFlush('visibilitychange')
+        } else if (event.type === 'visible' || event.type === 'pageshow') {
             this.flushedOnHide = false
-        }
-    }
-
-    private handlePageHide = (): void => {
-        // Deduplicate with visibilitychange if already flushed
-        if (!this.flushedOnHide) {
-            void this.flush('pagehide')
+        } else if (event.type === 'pagehide' && !this.flushedOnHide) {
+            this.scheduleLifecycleFlush('pagehide')
         }
     }
 
     private bindLifecycle(): void {
-        document.addEventListener('visibilitychange', this.handleVisibilityChange)
-        window.addEventListener('pagehide', this.handlePageHide)
+        // Run after collectors and defer the drain to a microtask so any legacy
+        // visibility listeners can finalize and enqueue before transport flushes.
+        this.unsubscribeLifecycle = subscribePageLifecycle(this.handleLifecycle, { priority: -100 })
     }
 
     private unbindLifecycle(): void {
-        document.removeEventListener('visibilitychange', this.handleVisibilityChange)
-        window.removeEventListener('pagehide', this.handlePageHide)
+        this.unsubscribeLifecycle?.()
+        this.unsubscribeLifecycle = null
+    }
+
+    private scheduleLifecycleFlush(reason: 'visibilitychange' | 'pagehide'): void {
+        Promise.resolve().then(() => {
+            if (!this.destroyed) this.runScheduledFlush(reason)
+        })
+    }
+
+    private runScheduledFlush(reason: FlushReason): void {
+        void this.flush(reason).catch(error => {
+            if (this.debug) console.debug('[Transport] Scheduled flush deferred for retry', error)
+        })
     }
 }

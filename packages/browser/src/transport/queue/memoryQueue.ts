@@ -41,6 +41,19 @@ export class MemoryQueue {
         return [...this.drainImmediate(), ...this.drainBatch()]
     }
 
+    /** Restore an unsuccessfully persisted/sent batch ahead of newer entries. */
+    restore(envelopes: ReportEnvelope[]): void {
+        const immediate = envelopes.filter(envelope => envelope.priority === 'immediate')
+        const batch = envelopes.filter(envelope => envelope.priority !== 'immediate')
+        this.immediateQueue = [...immediate, ...this.immediateQueue]
+        this.batchQueue = [...batch, ...this.batchQueue]
+
+        while (this.size() > TOTAL_QUEUE_LIMIT && this.batchQueue.length > 0) {
+            this.batchQueue.shift()
+            if (this.debug) console.debug('[Transport] Queue overflow, dropped oldest batch event')
+        }
+    }
+
     batchSize(): number {
         return this.batchQueue.length
     }

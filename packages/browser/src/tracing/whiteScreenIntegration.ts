@@ -106,41 +106,77 @@ function pickWrapperElements(selectors: string[]): Element[] {
 }
 
 export class WhiteScreen {
+    readonly name = 'whiteScreen'
     private hasReported = false
+    private initialized = false
+    private destroyed = false
     private checkCount = 0
+    private initialDelayTimer: number | null = null
     private timer: number | null = null
     private mutationObserver: MutationObserver | null = null
     private mutationDebounceTimer: number | null = null
     private armedUntil = 0
     private armReason: string | null = null
     private armTimer: number | null = null
+    private runtimeEventsBound = false
+    private originalPushState: History['pushState'] | null = null
+    private originalReplaceState: History['replaceState'] | null = null
+    private wrappedPushState: History['pushState'] | null = null
+    private wrappedReplaceState: History['replaceState'] | null = null
 
     constructor(
         private transport: Transport,
         private options: WhiteScreenOptions = {}
     ) {}
 
-    init() {
-        const startAuto = () => {
-            const delay = this.options.checkDelayMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.checkDelayMs
-            window.setTimeout(() => this.startPolling('auto'), delay)
+    private readonly startAuto = (): void => {
+        if (this.destroyed) return
+        const delay = this.options.checkDelayMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.checkDelayMs
+        this.initialDelayTimer = window.setTimeout(() => {
+            this.initialDelayTimer = null
+            this.startPolling('auto')
+        }, delay)
 
-            if (this.options.runtimeWatch) {
-                // Arm for a short window after initial load.
-                const duration = this.options.watchDurationMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.watchDurationMs
-                this.armRuntimeWatch('load', duration)
-                this.initRuntimeWatch()
-            }
-        }
-
-        if (document.readyState === 'complete') {
-            startAuto()
-        } else {
-            window.addEventListener('load', startAuto, { once: true })
+        if (this.options.runtimeWatch) {
+            // Arm for a short window after initial load.
+            const duration = this.options.watchDurationMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.watchDurationMs
+            this.armRuntimeWatch('load', duration)
+            this.initRuntimeWatch()
         }
     }
 
+    setup(transport: Transport): void {
+        this.transport = transport
+        this.init()
+    }
+
+    init(): void {
+        if (this.initialized || this.destroyed || typeof window === 'undefined' || typeof document === 'undefined') return
+        this.initialized = true
+        if (document.readyState === 'complete') {
+            this.startAuto()
+        } else {
+            window.addEventListener('load', this.startAuto, { once: true })
+        }
+    }
+
+    destroy(): void {
+        if (this.destroyed) return
+        this.destroyed = true
+        if (typeof window !== 'undefined') {
+            window.removeEventListener('load', this.startAuto)
+            if (this.initialDelayTimer !== null) {
+                window.clearTimeout(this.initialDelayTimer)
+                this.initialDelayTimer = null
+            }
+        }
+        this.stopPolling()
+        this.teardownRuntimeWatch()
+        this.initialized = false
+    }
+
     trigger(reason = 'manual') {
+        if (this.destroyed) return
         if (this.options.runtimeWatch) {
             const duration = this.options.watchDurationMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.watchDurationMs
             this.armRuntimeWatch(reason, duration)
@@ -149,6 +185,7 @@ export class WhiteScreen {
     }
 
     private startPolling(reason: string) {
+        if (this.destroyed) return
         this.stopPolling()
         this.checkCount = 0
 
@@ -234,18 +271,12 @@ export class WhiteScreen {
     }
 
     private bindRuntimeArmEvents() {
-        const duration = this.options.watchDurationMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.watchDurationMs
+        if (this.runtimeEventsBound) return
+        this.runtimeEventsBound = true
 
-        window.addEventListener(
-            'click',
-            () => {
-                this.armRuntimeWatch('click', duration)
-            },
-            true
-        )
-
-        window.addEventListener('popstate', () => this.armRuntimeWatch('popstate', duration))
-        window.addEventListener('hashchange', () => this.armRuntimeWatch('hashchange', duration))
+        window.addEventListener('click', this.handleRuntimeClick, true)
+        window.addEventListener('popstate', this.handleRuntimePopState)
+        window.addEventListener('hashchange', this.handleRuntimeHashChange)
 
         const history = window.history
         const pushState = history.pushState
@@ -258,6 +289,8 @@ export class WhiteScreen {
                 return ret
             }
             ;(wrappedPushState as unknown as { __condev_monitor_patched__?: boolean }).__condev_monitor_patched__ = true
+            this.originalPushState = pushState
+            this.wrappedPushState = wrappedPushState
             history.pushState = wrappedPushState
         }
 
@@ -268,10 +301,28 @@ export class WhiteScreen {
                 return ret
             }
             ;(wrappedReplaceState as unknown as { __condev_monitor_patched__?: boolean }).__condev_monitor_patched__ = true
+            this.originalReplaceState = replaceState
+            this.wrappedReplaceState = wrappedReplaceState
             history.replaceState = wrappedReplaceState
         }
 
-        window.addEventListener('__condev_monitor_history_change__', () => this.armRuntimeWatch('history', duration))
+        window.addEventListener('__condev_monitor_history_change__', this.handleRuntimeHistoryChange)
+    }
+
+    private readonly handleRuntimeClick = (): void => {
+        this.armRuntimeWatch('click', this.options.watchDurationMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.watchDurationMs)
+    }
+
+    private readonly handleRuntimePopState = (): void => {
+        this.armRuntimeWatch('popstate', this.options.watchDurationMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.watchDurationMs)
+    }
+
+    private readonly handleRuntimeHashChange = (): void => {
+        this.armRuntimeWatch('hashchange', this.options.watchDurationMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.watchDurationMs)
+    }
+
+    private readonly handleRuntimeHistoryChange = (): void => {
+        this.armRuntimeWatch('history', this.options.watchDurationMs ?? DEFAULT_WHITE_SCREEN_OPTIONS.watchDurationMs)
     }
 
     private armRuntimeWatch(reason: string, durationMs: number) {
@@ -292,6 +343,24 @@ export class WhiteScreen {
     }
 
     private teardownRuntimeWatch() {
+        if (this.runtimeEventsBound && typeof window !== 'undefined') {
+            window.removeEventListener('click', this.handleRuntimeClick, true)
+            window.removeEventListener('popstate', this.handleRuntimePopState)
+            window.removeEventListener('hashchange', this.handleRuntimeHashChange)
+            window.removeEventListener('__condev_monitor_history_change__', this.handleRuntimeHistoryChange)
+            this.runtimeEventsBound = false
+
+            if (this.wrappedPushState && window.history.pushState === this.wrappedPushState && this.originalPushState) {
+                window.history.pushState = this.originalPushState
+            }
+            if (this.wrappedReplaceState && window.history.replaceState === this.wrappedReplaceState && this.originalReplaceState) {
+                window.history.replaceState = this.originalReplaceState
+            }
+            this.originalPushState = null
+            this.originalReplaceState = null
+            this.wrappedPushState = null
+            this.wrappedReplaceState = null
+        }
         if (this.mutationDebounceTimer !== null) {
             window.clearTimeout(this.mutationDebounceTimer)
             this.mutationDebounceTimer = null
