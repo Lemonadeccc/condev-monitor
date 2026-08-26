@@ -22,9 +22,9 @@ import { LabRunnerGrantEntity } from './entity/lab-runner-grant.entity'
 import {
     createHash,
     type CreateLabRunInput,
-    LAB_RUNNER_CONTRACT_VERSION,
     LAB_RUN_ARTIFACT_TOTAL_MAX_BYTES,
     LAB_RUN_SUMMARY_MAX_BYTES,
+    LAB_RUNNER_CONTRACT_VERSION,
     type LabArtifactUploadMetadata,
     type LabRunSummary,
     parseLabRunConfig,

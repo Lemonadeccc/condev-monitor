@@ -1,7 +1,7 @@
 import { HttpException } from '@nestjs/common'
 
-import { LabRunnerController } from './lab-runner.controller'
 import { LAB_RUNNER_CONTRACT_VERSION } from './lab.contracts'
+import { LabRunnerController } from './lab-runner.controller'
 
 const runId = '11111111-1111-4111-8111-111111111111'
 const token = `labg_${'a'.repeat(43)}`
