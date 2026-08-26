@@ -154,6 +154,39 @@ test('fails before navigation when the local reviewed trace cap cannot cover the
     assert.throws(() => applyClaimedRunAuthority(localScenario, claim), /trace duration cap is shorter/u)
 })
 
+test('ships the generic scenario with enough bounded Trace headroom for the default platform claim', async () => {
+    const scenario = JSON.parse(await fs.readFile(new URL('../examples/generic-page.scenario.json', import.meta.url), 'utf8'))
+    const claim = {
+        runId,
+        targetUrl: 'http://localhost:5173/',
+        config: {
+            browser: 'chromium',
+            viewport: { width: 1280, height: 720 },
+            deviceScaleFactor: 1,
+            reducedMotion: 'no-preference',
+            cacheState: 'warm',
+            warmupRuns: 1,
+            measuredRuns: 3,
+            durationMs: 30_000,
+            trace: true,
+            lighthouse: true,
+        },
+    }
+
+    const result = applyClaimedRunAuthority(scenario, claim)
+    const maximumResult = applyClaimedRunAuthority(scenario, {
+        ...claim,
+        config: { ...claim.config, durationMs: 120_000 },
+    })
+
+    assert.equal(result.scenario.durationMs, claim.config.durationMs)
+    assert.equal(result.scenario.trace.enabled, true)
+    assert.ok(result.scenario.trace.maxDurationMs >= claim.config.durationMs + 500)
+    assert.equal(result.scenario.trace.maxDurationMs, 360_000)
+    assert.equal(maximumResult.scenario.durationMs, 120_000)
+    assert.ok(maximumResult.scenario.trace.maxDurationMs >= maximumResult.scenario.durationMs + 500)
+})
+
 test('keeps the maximum platform observation duration executable with a bounded attached Trace hard cap', () => {
     const localScenario = {
         schemaVersion: 1,

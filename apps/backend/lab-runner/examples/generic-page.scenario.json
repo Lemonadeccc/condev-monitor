@@ -63,7 +63,7 @@
     "trace": {
         "enabled": true,
         "screenshots": false,
-        "maxDurationMs": 30000
+        "maxDurationMs": 360000
     },
     "lighthouse": {
         "enabled": true,

@@ -7,7 +7,7 @@ The CLI requires Node.js 22 or newer. Chromium mode uses a compatible local Chro
 Public online pages work through the same URL boundary. A target URL must be HTTP(S) without embedded credentials. Cross-origin iframe actions, service-worker-dependent behavior, client certificates, Canvas scene-object hit testing, and authenticated hidden business states remain explicit limitations.
 
 ```bash
-pnpm --filter @condev-monitor/animation-lab-runner build
+pnpm --filter '@condev-monitor/animation-lab-runner...' build
 node apps/backend/lab-runner/build/cli.js \
   --config apps/backend/lab-runner/examples/generic-page.scenario.json \
   --browser chromium \
