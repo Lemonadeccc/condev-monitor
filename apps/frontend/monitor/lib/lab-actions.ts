@@ -211,9 +211,15 @@ function technologyMatches(action: LabMergedAction, item: LabTechnologyEvidence)
 }
 
 function metricMatches(action: LabMergedAction, metric: LabMetric): boolean {
-    if (token(metric.scope?.actionId) === action.actionId) return true
+    if (metric.scope?.level === 'action') return token(metric.scope.actionId) === action.actionId
+    if (metric.scope?.level !== 'subject') return false
+
     const actionSubject = token(action.subject?.subjectKey)
-    return Boolean(actionSubject && token(metric.scope?.subjectKey) === actionSubject)
+    const metricSubject = token(metric.scope.subjectKey)
+    if (!actionSubject || metricSubject !== actionSubject) return false
+
+    const metricActionId = token(metric.scope.actionId)
+    return metricActionId === null || metricActionId === action.actionId
 }
 
 function findingMatches(action: LabMergedAction, finding: LabFinding): boolean {
@@ -322,9 +328,14 @@ export function buildLabActionDiagnostics(
             : Array.isArray(run.summary?.metrics)
               ? run.summary.metrics
               : []
-    const metrics = uniqueBy(
-        metricSource.slice(0, MAX_METRICS),
-        metric => `${metricId(metric)}:${token(metric.scope?.actionId) ?? ''}:${token(metric.scope?.subjectKey) ?? ''}`
+    const metrics = uniqueBy(metricSource.slice(0, MAX_METRICS), metric =>
+        [
+            metricId(metric),
+            token(metric.scope?.level) ?? 'legacy',
+            token(metric.scope?.attemptId) ?? '',
+            token(metric.scope?.actionId) ?? '',
+            token(metric.scope?.subjectKey) ?? '',
+        ].join(':')
     )
     const findings = Array.isArray(analysis?.findings) ? analysis.findings.slice(0, MAX_FINDINGS) : []
     const runTechnologies = technologies.filter(item => !isActionScoped(item) && !token(item.actionId))
@@ -371,8 +382,7 @@ export function buildLabActionDiagnostics(
     const diagnostics = actionRecords.map(record => {
         const actionTechnologies = technologies.filter(item => technologyMatches(record.action, item))
         const actionFindings = findings.filter(finding => findingMatches(record.action, finding))
-        const findingMetricIds = new Set(actionFindings.flatMap(finding => finding.metricIds))
-        const actionMetrics = metrics.filter(metric => metricMatches(record.action, metric) || findingMetricIds.has(metricId(metric)))
+        const actionMetrics = metrics.filter(metric => metricMatches(record.action, metric))
         const budgetRefs = uniqueBy(
             [
                 ...actionMetrics.flatMap(metric => (Array.isArray(metric.budgetRefs) ? metric.budgetRefs : [])),

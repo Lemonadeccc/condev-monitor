@@ -3,9 +3,11 @@
 import { Activity, AlertTriangle, Cpu, Crosshair, Gauge, Layers3, Lightbulb, MousePointerClick } from 'lucide-react'
 import { type ReactNode, useMemo, useState } from 'react'
 
+import { LabMetricTable } from '@/components/lab/lab-metric-table'
 import { Badge } from '@/components/ui/badge'
-import { formatLabBytes, formatLabDuration, formatLabScore } from '@/lib/lab'
+import { formatLabDuration } from '@/lib/lab'
 import { buildLabActionDiagnostics, type LabActionDiagnostic, resolveLabBudgetRule } from '@/lib/lab-actions'
+import { formatLabMetricValue, getLabLimitationLabel, labBudgetRefLabel } from '@/lib/lab-metrics'
 import { cn } from '@/lib/utils'
 import type {
     LabBudgetRuleRef,
@@ -231,48 +233,14 @@ function outcomeLabel(value: string | null | undefined) {
     }
 }
 
-function formatNumber(value: number) {
-    if (Number.isInteger(value)) return value.toLocaleString()
-    return value.toLocaleString(undefined, { maximumFractionDigits: 3 })
-}
-
-function formatMeasurement(value: number | null | undefined, unit: string | null | undefined) {
-    if (value == null || !Number.isFinite(value)) return UNKNOWN
-    switch (unit) {
-        case 'ms':
-            return value < 100 ? `${value.toFixed(value < 10 ? 2 : 1)} ms` : formatLabDuration(value)
-        case 'bytes':
-            return formatLabBytes(value)
-        case 'score':
-            return formatLabScore(value)
-        case 'percent':
-            return `${formatNumber(value)}%`
-        case 'ratio':
-            return `${formatNumber(value * 100)}%`
-        case 'hz':
-            return `${formatNumber(value)} Hz`
-        default:
-            return `${formatNumber(value)}${unit ? ` ${unit}` : ''}`
-    }
-}
-
-function budgetRefLabel(ref: LabBudgetRuleRef | LabRunAnalysis['measurementContract']['budgetRef']) {
-    const rule = 'ruleId' in ref ? ` / ${ref.ruleId}` : ''
-    return `catalog v${ref.catalogVersion} · ${ref.budgetId}@${ref.budgetVersion}${rule}`
-}
-
-function metricKey(metric: LabMetric, index: number) {
-    return metric.metricId || `${metric.family}:${metric.name}:${metric.stat}:${index}`
-}
-
 function BudgetRuleLine({ ref, contract }: { ref: LabBudgetRuleRef; contract: LabRunAnalysis['measurementContract'] | null | undefined }) {
     const rule = resolveLabBudgetRule(ref, contract)
     return (
         <span className="grid gap-1">
-            <span>{budgetRefLabel(ref)}</span>
+            <span>{labBudgetRefLabel(ref)}</span>
             <span className="font-sans text-muted-foreground">
                 {rule
-                    ? `${rule.comparator === '<=' ? '≤' : rule.comparator} ${formatMeasurement(rule.target, rule.unit)} · 最少 ${rule.minimumSamples.toLocaleString()} 个样本`
+                    ? `${rule.comparator === '<=' ? '≤' : rule.comparator} ${formatLabMetricValue(rule.target, rule.unit)} · 最少 ${rule.minimumSamples.toLocaleString()} 个样本`
                     : '该版本规则未展开；不猜测阈值'}
             </span>
         </span>
@@ -290,6 +258,16 @@ function MetadataItem({ label, value, mono = false }: { label: string; value: Re
 
 function EmptyEvidence({ children }: { children: ReactNode }) {
     return <p className="rounded-md border border-dashed px-4 py-5 text-sm text-muted-foreground">{children}</p>
+}
+
+function LimitationText({ code }: { code: string }) {
+    const label = getLabLimitationLabel(code)
+    return (
+        <span title={code} className="block">
+            <span className="block">{label.zhCN}</span>
+            <span className="block text-xs text-muted-foreground">{label.en}</span>
+        </span>
+    )
 }
 
 function TechnologyEvidenceGrid({ items, runScoped = false }: { items: LabTechnologyEvidence[]; runScoped?: boolean }) {
@@ -328,83 +306,6 @@ function TechnologyEvidenceGrid({ items, runScoped = false }: { items: LabTechno
                     </article>
                 )
             })}
-        </div>
-    )
-}
-
-function MetricTable({
-    diagnostic,
-    contract,
-}: {
-    diagnostic: LabActionDiagnostic
-    contract: LabRunAnalysis['measurementContract'] | null | undefined
-}) {
-    if (!diagnostic.metrics.length) {
-        return (
-            <div className="grid gap-2">
-                <EmptyEvidence>这个动作没有 action / subject scope 的指标；不能把页面级指标自动归因给它。</EmptyEvidence>
-                {diagnostic.unscopedMetricCount > 0 ? (
-                    <p className="text-xs text-muted-foreground">
-                        报告另有 {diagnostic.unscopedMetricCount.toLocaleString()} 个运行级指标，为避免伪归因未放入此动作。
-                    </p>
-                ) : null}
-            </div>
-        )
-    }
-
-    return (
-        <div className="overflow-x-auto rounded-lg border">
-            <table className="w-full min-w-[760px] text-sm">
-                <thead className="bg-muted/40 text-xs text-muted-foreground">
-                    <tr>
-                        <th className="px-4 py-3 text-left font-medium">指标</th>
-                        <th className="px-4 py-3 text-left font-medium">观察值</th>
-                        <th className="px-4 py-3 text-left font-medium">证据与聚合</th>
-                        <th className="px-4 py-3 text-left font-medium">预算阈值</th>
-                    </tr>
-                </thead>
-                <tbody className="divide-y">
-                    {diagnostic.metrics.map((metric, index) => (
-                        <tr key={metricKey(metric, index)} className="align-top">
-                            <td className="px-4 py-4">
-                                <div className="font-medium">{metric.name || UNKNOWN}</div>
-                                <div className="mt-1 font-mono text-xs text-muted-foreground">
-                                    {metric.metricId || UNKNOWN} · {metric.stat || 'unknown'}
-                                </div>
-                            </td>
-                            <td className="px-4 py-4">
-                                <div className="font-mono tabular-nums">{formatMeasurement(metric.value, metric.unit)}</div>
-                                <div className="mt-1 text-xs text-muted-foreground">
-                                    {metric.samples == null ? '样本数未采集' : `${metric.samples.toLocaleString()} 个样本`} ·{' '}
-                                    {metric.status || '状态未知'}
-                                </div>
-                            </td>
-                            <td className="px-4 py-4 text-xs">
-                                <div>{evidenceLabel(metric.evidenceLevel)}</div>
-                                <div className="mt-1 text-muted-foreground">
-                                    {metric.aggregation
-                                        ? `${metric.aggregation.population} / ${metric.aggregation.method}`
-                                        : '聚合方式未采集'}
-                                </div>
-                                <div className="mt-1 text-muted-foreground">范围：{scopeLabel(metric.scope?.level)}</div>
-                            </td>
-                            <td className="px-4 py-4 text-xs">
-                                {metric.budgetRefs?.length ? (
-                                    <ul className="grid gap-1 font-mono">
-                                        {metric.budgetRefs.map(ref => (
-                                            <li key={budgetRefLabel(ref)}>
-                                                <BudgetRuleLine ref={ref} contract={contract} />
-                                            </li>
-                                        ))}
-                                    </ul>
-                                ) : (
-                                    <span className="text-muted-foreground">未关联预算；不自动判定通过或失败。</span>
-                                )}
-                            </td>
-                        </tr>
-                    ))}
-                </tbody>
-            </table>
         </div>
     )
 }
@@ -459,10 +360,10 @@ function FindingCard({
                 <div className="break-words">指标：{finding.metricIds.length ? finding.metricIds.join('；') : UNKNOWN}</div>
                 <div className="break-words">证据：{finding.evidenceRefs.length ? finding.evidenceRefs.join('；') : UNKNOWN}</div>
                 <div className="break-words">
-                    预算：{finding.budgetRefs.length ? finding.budgetRefs.map(budgetRefLabel).join('；') : UNKNOWN}
+                    预算：{finding.budgetRefs.length ? finding.budgetRefs.map(labBudgetRefLabel).join('；') : UNKNOWN}
                 </div>
                 {finding.budgetRefs.map(ref => (
-                    <BudgetRuleLine key={budgetRefLabel(ref)} ref={ref} contract={contract} />
+                    <BudgetRuleLine key={labBudgetRefLabel(ref)} ref={ref} contract={contract} />
                 ))}
             </div>
             <div className="mt-4 rounded-md border border-sky-500/20 bg-sky-500/5 p-3 text-sm">
@@ -473,7 +374,16 @@ function FindingCard({
                 <p className="mt-2 text-xs font-medium">这是证据驱动的排查方向，不是已确认根因或已测得收益。</p>
             </div>
             {finding.limitations.length ? (
-                <p className="mt-3 text-xs text-muted-foreground">限制：{finding.limitations.join('；')}</p>
+                <div className="mt-3 text-xs">
+                    <div className="mb-1 font-medium text-muted-foreground">限制 / Limitations</div>
+                    <ul className="grid gap-1.5">
+                        {finding.limitations.map(code => (
+                            <li key={code}>
+                                <LimitationText code={code} />
+                            </li>
+                        ))}
+                    </ul>
+                </div>
             ) : null}
         </article>
     )
@@ -557,22 +467,26 @@ function ActionDetail({
                     <Gauge className="h-4 w-4" aria-hidden="true" /> 测量合同与预算
                 </h4>
                 <dl className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    <MetadataItem label="Metric catalog" value={contract ? `v${contract.metricCatalogVersion}` : UNKNOWN} mono />
-                    <MetadataItem label="预算包" value={contract ? budgetRefLabel(contract.budgetRef) : UNKNOWN} mono />
+                    <MetadataItem
+                        label="指标目录版本 / Metric catalog"
+                        value={contract ? `v${contract.metricCatalogVersion}` : UNKNOWN}
+                        mono
+                    />
+                    <MetadataItem label="预算包" value={contract ? labBudgetRefLabel(contract.budgetRef) : UNKNOWN} mono />
                     <MetadataItem
                         label="刷新率合同"
                         value={
                             contract
-                                ? `${formatMeasurement(contract.expectedHz, 'hz')} · ${contract.source} / ${confidenceLabel(contract.confidence)}`
+                                ? `${formatLabMetricValue(contract.expectedHz, 'hz')} · ${contract.source} / ${confidenceLabel(contract.confidence)}`
                                 : UNKNOWN
                         }
                     />
-                    <MetadataItem label="帧目标" value={formatMeasurement(contract?.targetFrameMs, 'ms')} mono />
+                    <MetadataItem label="帧目标" value={formatLabMetricValue(contract?.targetFrameMs, 'ms')} mono />
                 </dl>
                 {diagnostic.budgetRefs.length ? (
                     <div className="mt-3 rounded-md border bg-muted/15 p-3 text-xs">
                         <span className="text-muted-foreground">动作关联规则：</span>{' '}
-                        <span className="font-mono">{diagnostic.budgetRefs.map(budgetRefLabel).join('；')}</span>
+                        <span className="font-mono">{diagnostic.budgetRefs.map(labBudgetRefLabel).join('；')}</span>
                     </div>
                 ) : (
                     <p className="mt-3 text-xs text-muted-foreground">没有动作级预算规则引用；不自动判定通过或失败。</p>
@@ -614,8 +528,18 @@ function ActionDetail({
                 <h4 id="lab-action-metrics-title" className="inline-flex items-center gap-2 text-sm font-semibold">
                     <Activity className="h-4 w-4" aria-hidden="true" /> 关联指标与预算
                 </h4>
-                <div className="mt-3">
-                    <MetricTable diagnostic={diagnostic} contract={contract} />
+                <div className="mt-3 grid gap-2">
+                    <LabMetricTable
+                        metrics={diagnostic.metrics}
+                        contract={contract}
+                        emptyMessage="这个动作没有 action / subject scope 的指标；不能把页面级指标自动归因给它。"
+                    />
+                    {diagnostic.unscopedMetricCount > 0 ? (
+                        <p className="text-xs text-muted-foreground">
+                            报告另有 {diagnostic.unscopedMetricCount.toLocaleString()}{' '}
+                            个运行级或其他非动作范围指标；运行级聚合在上方独立展示，不会合并到当前动作。
+                        </p>
+                    ) : null}
                 </div>
             </section>
 
@@ -710,7 +634,9 @@ function ActionDetail({
                             {diagnostic.actionLimitations.length ? (
                                 <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
                                     {diagnostic.actionLimitations.map(value => (
-                                        <li key={value}>{value}</li>
+                                        <li key={value}>
+                                            <LimitationText code={value} />
+                                        </li>
                                     ))}
                                 </ul>
                             ) : (
@@ -722,7 +648,9 @@ function ActionDetail({
                             {diagnostic.runLimitations.length ? (
                                 <ul className="mt-2 list-disc space-y-1 pl-5 text-sm">
                                     {diagnostic.runLimitations.map(value => (
-                                        <li key={value}>{value}</li>
+                                        <li key={value}>
+                                            <LimitationText code={value} />
+                                        </li>
                                     ))}
                                 </ul>
                             ) : (
@@ -779,55 +707,62 @@ export function LabActionInspector({
         <div className="grid min-w-0 grid-cols-1 lg:grid-cols-[18rem_minmax(0,1fr)]">
             <aside className="min-w-0 border-b bg-muted/10 lg:border-r lg:border-b-0">
                 <div className="border-b p-4">
-                    <h3 className="text-sm font-semibold">动作</h3>
+                    <h3 id="lab-action-list-title" className="text-sm font-semibold">
+                        动作
+                    </h3>
                     <p className="mt-1 text-xs leading-5 text-muted-foreground">
                         {diagnostics.structuredActionCount.toLocaleString()} 个结构化动作 ·{' '}
                         {diagnostics.recoveredActionCount.toLocaleString()} 个旧标签重建
                     </p>
                 </div>
-                <div className="max-h-[48rem] overflow-y-auto p-2" role="listbox" aria-label="实验动作">
+                <ul className="max-h-[48rem] overflow-y-auto p-2" aria-labelledby="lab-action-list-title">
                     {diagnostics.actions.map((item, index) => {
                         const active = selected?.action.actionId === item.action.actionId
                         return (
-                            <button
-                                key={item.action.actionId}
-                                type="button"
-                                role="option"
-                                aria-selected={active}
-                                onClick={() => setSelectedId(item.action.actionId)}
-                                className={cn(
-                                    'mb-1 w-full rounded-md border px-3 py-3 text-left transition-colors last:mb-0',
-                                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                                    active
-                                        ? 'border-primary/30 bg-background shadow-sm'
-                                        : 'border-transparent hover:border-border hover:bg-background/70'
-                                )}
-                            >
-                                <div className="flex items-start gap-2">
-                                    <span className="mt-0.5 w-5 shrink-0 font-mono text-xs text-muted-foreground">{index + 1}.</span>
-                                    <span className="min-w-0 flex-1">
-                                        <span className="block break-words text-sm font-medium">{item.action.label || '未命名动作'}</span>
-                                        <span className="mt-1 block text-xs text-muted-foreground">
-                                            {actionKindLabel(item.action.kind)} ·{' '}
-                                            {item.action.timestamps ? formatLabDuration(item.action.timestamps.durationMs) : UNKNOWN}
+                            <li key={item.action.actionId} className="mb-1 last:mb-0">
+                                <button
+                                    type="button"
+                                    aria-current={active ? 'true' : undefined}
+                                    onClick={() => setSelectedId(item.action.actionId)}
+                                    className={cn(
+                                        'w-full rounded-md border px-3 py-3 text-left transition-colors',
+                                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                                        active
+                                            ? 'border-primary/30 bg-background shadow-sm'
+                                            : 'border-transparent hover:border-border hover:bg-background/70'
+                                    )}
+                                >
+                                    <div className="flex items-start gap-2">
+                                        <span className="mt-0.5 w-5 shrink-0 font-mono text-xs text-muted-foreground">{index + 1}.</span>
+                                        <span className="min-w-0 flex-1">
+                                            <span className="block break-words text-sm font-medium">
+                                                {item.action.label || '未命名动作'}
+                                            </span>
+                                            <span className="mt-1 block text-xs text-muted-foreground">
+                                                {actionKindLabel(item.action.kind)} ·{' '}
+                                                {item.action.timestamps ? formatLabDuration(item.action.timestamps.durationMs) : UNKNOWN}
+                                            </span>
+                                            <span className="mt-1 block truncate font-mono text-[11px] text-muted-foreground">
+                                                {item.action.subject?.subjectKey || subjectScopeLabel(item.action.subject?.scope)}
+                                            </span>
                                         </span>
-                                        <span className="mt-1 block truncate font-mono text-[11px] text-muted-foreground">
-                                            {item.action.subject?.subjectKey || subjectScopeLabel(item.action.subject?.scope)}
-                                        </span>
-                                    </span>
-                                </div>
-                                <div className="mt-2 flex flex-wrap gap-1.5 pl-7">
-                                    <Badge variant={item.source === 'structured-report' ? 'outline' : 'secondary'} className="text-[10px]">
-                                        {item.source === 'structured-report' ? '结构化' : '旧标签'}
-                                    </Badge>
-                                    <Badge variant="outline" className="text-[10px]">
-                                        {item.events.length ? `${item.events.length} 条事件` : '无关联事件'}
-                                    </Badge>
-                                </div>
-                            </button>
+                                    </div>
+                                    <div className="mt-2 flex flex-wrap gap-1.5 pl-7">
+                                        <Badge
+                                            variant={item.source === 'structured-report' ? 'outline' : 'secondary'}
+                                            className="text-[10px]"
+                                        >
+                                            {item.source === 'structured-report' ? '结构化' : '旧标签'}
+                                        </Badge>
+                                        <Badge variant="outline" className="text-[10px]">
+                                            {item.events.length ? `${item.events.length} 条事件` : '无关联事件'}
+                                        </Badge>
+                                    </div>
+                                </button>
+                            </li>
                         )
                     })}
-                </div>
+                </ul>
             </aside>
 
             {selected ? <ActionDetail diagnostic={selected} analysis={analysis} timelineTruncated={timelineTruncated} /> : null}

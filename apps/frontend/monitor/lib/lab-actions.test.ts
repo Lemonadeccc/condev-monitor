@@ -159,6 +159,79 @@ describe('buildLabActionDiagnostics', () => {
         assert.equal(recovered.unscopedMetricCount, 1)
     })
 
+    it('keeps run and attempt metrics out of an action even when a finding references the same metric id', () => {
+        const baseMetric = {
+            metricId: 'frame.interval.p95',
+            family: 'frameCadence',
+            name: 'frameDurationMs',
+            stat: 'p95',
+            unit: 'ms',
+            value: 12,
+            samples: 120,
+            status: 'measured',
+            evidenceLevel: 'controlled-lab-measurement' as const,
+            aggregation: { population: 'frames', method: 'nearest-rank' },
+            budgetRefs: [],
+            evidenceRefs: ['runtime-browser'],
+            limitations: [],
+        }
+        const analysis: LabRunAnalysis = {
+            semanticsVersion: 2,
+            measurementContract: {
+                contractVersion: 2,
+                expectedHz: 60,
+                targetFrameMs: 16.667,
+                source: 'explicit',
+                confidence: 'explicit',
+                budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 1 },
+                metricCatalogVersion: 2,
+            },
+            scenarioActions: [
+                {
+                    actionId: 'open-card',
+                    order: 0,
+                    kind: 'click',
+                    label: 'open-card',
+                    trigger: { source: 'scenario' },
+                    subject: { scope: 'subject', subjectKey: 'product-card', surface: 'dom' },
+                },
+            ],
+            actionWindows: [],
+            metrics: [
+                { ...baseMetric, scope: { level: 'run' } },
+                { ...baseMetric, scope: { level: 'attempt', attemptId: 'attempt-1' } },
+                { ...baseMetric, scope: { level: 'action', actionId: 'open-card' } },
+                {
+                    ...baseMetric,
+                    scope: { level: 'subject', actionId: 'open-card', subjectKey: 'product-card' },
+                },
+            ],
+            technologyEvidence: [],
+            findings: [
+                {
+                    findingId: 'finding-frame-tail',
+                    ruleId: 'frame-tail',
+                    severity: 'warning',
+                    status: 'observed',
+                    scope: { level: 'action', actionId: 'open-card' },
+                    metricIds: ['frame.interval.p95'],
+                    evidenceRefs: ['runtime-browser'],
+                    budgetRefs: [],
+                    actionIds: ['open-card'],
+                    limitations: [],
+                },
+            ],
+        }
+
+        const diagnostic = buildLabActionDiagnostics(run, analysis, []).actions[0]
+
+        assert.deepEqual(
+            diagnostic.metrics.map(metric => metric.scope?.level),
+            ['action', 'subject']
+        )
+        assert.equal(diagnostic.unscopedMetricCount, 2)
+    })
+
     it('does not expose an unsafe subject token even if a malformed client payload bypasses backend validation', () => {
         const analysis = {
             semanticsVersion: 2,

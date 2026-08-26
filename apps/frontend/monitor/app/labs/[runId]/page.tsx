@@ -8,8 +8,10 @@ import { useParams, useSearchParams } from 'next/navigation'
 import { useMemo } from 'react'
 
 import { AIMonitorHeader, AIMonitorPage, AIPanelCard, AIStatCard, AIStateMessage } from '@/components/ai/page-shell'
+import { LabRunMetricTable } from '@/components/lab/lab-metric-table'
 import { LabStatusBadge } from '@/components/lab/lab-status-badge'
 import { useAuth } from '@/components/providers'
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { buildMonitorScopeHref } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
@@ -124,6 +126,12 @@ export default function LabRunPage() {
                 actions={
                     <div className="flex flex-wrap items-center gap-2">
                         {run ? <LabStatusBadge status={run.status} /> : null}
+                        {run ? (
+                            <Badge variant={analysis?.measurementContract.metricCatalogVersion === 2 ? 'default' : 'outline'}>
+                                指标目录 / Metric catalog{' '}
+                                {analysis?.measurementContract ? `v${analysis.measurementContract.metricCatalogVersion}` : '未知 / Unknown'}
+                            </Badge>
+                        ) : null}
                         <Button asChild variant="outline" size="sm">
                             <Link href={backHref}>
                                 <ArrowLeft aria-hidden="true" /> 返回 Labs
@@ -181,59 +189,71 @@ export default function LabRunPage() {
                         {tab === 'overview' ? (
                             <Overview run={run} />
                         ) : tab === 'animation' || tab === 'performance' ? (
-                            timelineQuery.isLoading ? (
-                                <AIPanelCard contentClassName="px-0">
-                                    <AIStateMessage>正在加载有界时间线…</AIStateMessage>
-                                </AIPanelCard>
-                            ) : timelineQuery.isError ? (
-                                <AIPanelCard contentClassName="px-0">
-                                    <AIStateMessage tone="destructive">{timelineQuery.error.message}</AIStateMessage>
-                                </AIPanelCard>
-                            ) : timeline ? (
-                                <>
-                                    {tab === 'animation' ? (
+                            <>
+                                {tab === 'animation' ? (
+                                    <AIPanelCard
+                                        title="运行级指标 / Run metrics"
+                                        description="跨测量尝试聚合的页面级证据；它与动作级指标分开显示，不能自动归因给某个动作或元素。"
+                                        headerBorder
+                                    >
+                                        <LabRunMetricTable run={run} analysis={analysis} />
+                                    </AIPanelCard>
+                                ) : null}
+                                {timelineQuery.isLoading ? (
+                                    <AIPanelCard contentClassName="px-0">
+                                        <AIStateMessage>正在加载有界时间线…</AIStateMessage>
+                                    </AIPanelCard>
+                                ) : timelineQuery.isError ? (
+                                    <AIPanelCard contentClassName="px-0">
+                                        <AIStateMessage tone="destructive">{timelineQuery.error.message}</AIStateMessage>
+                                    </AIPanelCard>
+                                ) : timeline ? (
+                                    <>
+                                        {tab === 'animation' ? (
+                                            <AIPanelCard
+                                                title="动作级诊断"
+                                                description="左侧选择场景动作，右侧只展示明确绑定该 actionId / subjectKey 的技术、指标、预算、证据与建议；旧报告仅按保留的时间标签重建。"
+                                                contentClassName="px-0"
+                                                headerBorder
+                                            >
+                                                <LabActionInspector
+                                                    run={run}
+                                                    analysis={analysis}
+                                                    events={timeline.events}
+                                                    timelineTruncated={timeline.truncated}
+                                                />
+                                            </AIPanelCard>
+                                        ) : null}
                                         <AIPanelCard
-                                            title="动作级诊断"
-                                            description="左侧选择场景动作，右侧只展示明确绑定该 actionId / subjectKey 的技术、指标、预算、证据与建议；旧报告仅按保留的时间标签重建。"
+                                            title={tab === 'animation' ? '动画与交互时间线' : 'Performance 时间线'}
+                                            description={
+                                                tab === 'animation'
+                                                    ? '仅显示动画、交互与渲染相关事件；时间重叠和首个堆栈只用于候选归因，不自动证明根因。'
+                                                    : '有界展示脚本、Long Task、Style/Layout、Paint/Composite、资源与渲染事件；事件可能嵌套或重叠。'
+                                            }
                                             contentClassName="px-0"
                                             headerBorder
                                         >
-                                            <LabActionInspector
-                                                run={run}
-                                                analysis={analysis}
-                                                events={timeline.events}
-                                                timelineTruncated={timeline.truncated}
+                                            <LabTimeline
+                                                events={visibleTimelineEvents}
+                                                durationMs={timeline.durationMs}
+                                                totalEvents={
+                                                    tab === 'performance'
+                                                        ? timeline.totalEvents
+                                                        : timeline.events.filter(event =>
+                                                              LAB_ANIMATION_TIMELINE_CATEGORIES.has(event.category)
+                                                          ).length
+                                                }
+                                                truncated={timeline.truncated}
                                             />
                                         </AIPanelCard>
-                                    ) : null}
-                                    <AIPanelCard
-                                        title={tab === 'animation' ? '动画与交互时间线' : 'Performance 时间线'}
-                                        description={
-                                            tab === 'animation'
-                                                ? '仅显示动画、交互与渲染相关事件；时间重叠和首个堆栈只用于候选归因，不自动证明根因。'
-                                                : '有界展示脚本、Long Task、Style/Layout、Paint/Composite、资源与渲染事件；事件可能嵌套或重叠。'
-                                        }
-                                        contentClassName="px-0"
-                                        headerBorder
-                                    >
-                                        <LabTimeline
-                                            events={visibleTimelineEvents}
-                                            durationMs={timeline.durationMs}
-                                            totalEvents={
-                                                tab === 'performance'
-                                                    ? timeline.totalEvents
-                                                    : timeline.events.filter(event => LAB_ANIMATION_TIMELINE_CATEGORIES.has(event.category))
-                                                          .length
-                                            }
-                                            truncated={timeline.truncated}
-                                        />
+                                    </>
+                                ) : (
+                                    <AIPanelCard contentClassName="px-0">
+                                        <AIStateMessage>这个任务没有时间线产物。</AIStateMessage>
                                     </AIPanelCard>
-                                </>
-                            ) : (
-                                <AIPanelCard contentClassName="px-0">
-                                    <AIStateMessage>这个任务没有时间线产物。</AIStateMessage>
-                                </AIPanelCard>
-                            )
+                                )}
+                            </>
                         ) : tab === 'lighthouse' ? (
                             lighthouseQuery.isLoading ? (
                                 <AIPanelCard contentClassName="px-0">
