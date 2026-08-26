@@ -80,7 +80,7 @@ graph LR
     ROOT --> BE2[apps/backend/dsn-server<br/>NestJS + ClickHouse + PG fallback]
     ROOT --> BE3[apps/backend/event-worker<br/>NestJS + Kafka + ClickHouse]
     ROOT --> FE[apps/frontend/monitor<br/>Next.js dashboard]
-    ROOT --> EX[examples/<br/>vanilla + ai-sdk chatbox]
+    ROOT --> EX[examples/<br/>vanilla + AI + local animation fixtures]
     ROOT --> OPS[.devcontainer/<br/>Compose + Caddy + infra config]
 ```
 
@@ -235,12 +235,14 @@ condev-monitor/
 │   ├── core/                       # Core monitoring primitives and capture helpers
 │   ├── browser/                    # Browser SDK
 │   ├── browser-utils/              # Metrics helpers / Web Vitals helpers
+│   ├── animation/                  # Framework-neutral animation capture, guidance, overlay, and opt-in RUM
 │   ├── ai/                         # AI semantic monitoring adapters
 │   ├── react/                      # React integration (ErrorBoundary, useMonitorUser)
 │   └── nextjs/                     # Next.js integration (registerCondevClient/Server, RSC-safe re-exports)
 ├── examples/
 │   ├── vanilla/                    # Vite example with browser SDK and sourcemap scripts
-│   └── aisdk-rag-chatbox/          # Next.js example with browser + AI SDK tracing
+│   ├── aisdk-rag-chatbox/          # Next.js example with browser + AI SDK tracing
+│   └── animation-fixtures/         # Three selected local projects with one Browser animation init each
 ├── .devcontainer/
 │   ├── docker-compose.yml          # Local infra: ClickHouse + Postgres + Kafka
 │   ├── docker-compose.deply.yml    # Full stack deploy file used by root scripts
@@ -257,8 +259,8 @@ condev-monitor/
 
 ### Workspace Notes
 
-- `pnpm-workspace.yaml` includes `packages/*`, `apps/frontend/*`, `apps/backend/*`, and `examples/*`.
-- `pnpm start:dev` runs workspace `start:dev` scripts through Turbo. In this repository that means both backend services and the event worker.
+- `pnpm-workspace.yaml` includes `packages/*`, `apps/frontend/*`, `apps/backend/*`, `examples/*`, and `examples/animation-fixtures/*`.
+- `pnpm start:dev` runs the dashboard, both backend services, and the event worker through Turbo.
 - `pnpm start:fro` starts the dashboard only.
 - The frontend package name is `@condev-monitor/monitor-client`.
 - The backend package names are `monitor`, `dsn-server`, and `event-worker`.
@@ -306,7 +308,7 @@ This single command starts and initializes:
 
 Note: `pnpm docker:start` already runs both `docker:init-kafka` and `docker:init-clickhouse` automatically. You only need to run those scripts individually for recovery or idempotent re-initialization.
 
-### 4. Start all backend services in watch mode
+### 4. Start the full application stack in development mode
 
 ```bash
 pnpm start:dev
@@ -314,17 +316,24 @@ pnpm start:dev
 
 This launches:
 
+- `apps/frontend/monitor` on `http://localhost:3000`
 - `apps/backend/monitor` on `http://localhost:8081/api/*`
 - `apps/backend/dsn-server` on `http://localhost:8082/dsn-api/*`
 - `apps/backend/event-worker` (Kafka consumer, writes to ClickHouse)
 
-### 5. Start the dashboard
+If port 3000 is already occupied, use the task-specific shell variable without editing any `.env` file:
+
+```bash
+CONDEV_MONITOR_FRONTEND_PORT=3001 pnpm start:dev
+```
+
+### 5. Dashboard-only alternative
 
 ```bash
 pnpm start:fro
 ```
 
-The dashboard runs on `http://localhost:3000`.
+This starts only the dashboard on `http://localhost:3000`; the full `pnpm start:dev` command above already includes it.
 
 By default it proxies:
 
@@ -370,6 +379,7 @@ pnpm --filter aisdk-rag-chatbox dev
 - Local dsn-server backend: `apps/backend/dsn-server/.env`
 - Full-stack Docker deployment: `.devcontainer/.env`
 - Frontend local proxy envs: shell environment before `pnpm start:fro`
+- Full-stack dashboard port override: `CONDEV_MONITOR_FRONTEND_PORT` in the shell before `pnpm start:dev` (defaults to `3000`)
 
 Both backend apps explicitly search for env files in this order:
 
@@ -839,13 +849,15 @@ Authentication is accepted through either:
 
 ## Additional Docs
 
-| Document                                                                       | Description                                                                               |
-| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
-| [DEPLOYMENT.md](./DEPLOYMENT.md) \| [中文](./DEPLOYMENT.zh-CN.md)              | Full stack deployment, Caddy routing, Cloudflare frontend, volumes, and operational notes |
-| [CONTRIBUTING.md](./CONTRIBUTING.md) \| [中文](./CONTRIBUTING.zh-CN.md)        | Local setup, quality checks, commit conventions, and PR checklist                         |
-| [docs/ai-observability-integration.md](./docs/ai-observability-integration.md) | Automatic vs manual AI observability coverage, Next.js helper usage, and custom spans     |
-| [examples/aisdk-rag-chatbox/README.md](./examples/aisdk-rag-chatbox/README.md) | Concrete Condev integration example for Next.js + Vercel AI SDK                           |
-| [examples/rag/README.md](./examples/rag/README.md)                             | Concrete Condev integration example for React/Vite frontend + FastAPI RAG backend         |
+| Document                                                                                         | Description                                                                               |
+| ------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| [DEPLOYMENT.md](./DEPLOYMENT.md) \| [中文](./DEPLOYMENT.zh-CN.md)                                | Full stack deployment, Caddy routing, Cloudflare frontend, volumes, and operational notes |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) \| [中文](./CONTRIBUTING.zh-CN.md)                          | Local setup, quality checks, commit conventions, and PR checklist                         |
+| [docs/ai-observability-integration.md](./docs/ai-observability-integration.md)                   | Automatic vs manual AI observability coverage, Next.js helper usage, and custom spans     |
+| [Animation monitoring architecture (Chinese)](./docs/animation-monitoring-architecture.zh-CN.md) | Shared collector, local/RUM/DevTools locations, privacy boundary, and rollout order       |
+| [Animation fixture projects](./examples/animation-fixtures/)                                     | Vanilla/Vite, React/Vite, and Next.js examples using the Browser animation init           |
+| [examples/aisdk-rag-chatbox/README.md](./examples/aisdk-rag-chatbox/README.md)                   | Concrete Condev integration example for Next.js + Vercel AI SDK                           |
+| [examples/rag/README.md](./examples/rag/README.md)                                               | Concrete Condev integration example for React/Vite frontend + FastAPI RAG backend         |
 
 ---
 
@@ -862,6 +874,7 @@ The publishable packages live under `packages/`:
 
 - `@condev-monitor/monitor-sdk-core`
 - `@condev-monitor/monitor-sdk-browser-utils`
+- `@condev-monitor/monitor-sdk-animation`
 - `@condev-monitor/monitor-sdk-browser`
 - `@condev-monitor/monitor-sdk-ai`
 - `@condev-monitor/react`
@@ -881,10 +894,11 @@ If you need to publish one-by-one, use dependency order:
 
 1. `@condev-monitor/monitor-sdk-core`
 2. `@condev-monitor/monitor-sdk-browser-utils`
-3. `@condev-monitor/monitor-sdk-browser`
-4. `@condev-monitor/monitor-sdk-ai`
-5. `@condev-monitor/react`
-6. `@condev-monitor/nextjs`
+3. `@condev-monitor/monitor-sdk-animation`
+4. `@condev-monitor/monitor-sdk-browser`
+5. `@condev-monitor/monitor-sdk-ai`
+6. `@condev-monitor/react`
+7. `@condev-monitor/nextjs`
 
 ### Python Package
 

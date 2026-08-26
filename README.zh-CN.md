@@ -80,7 +80,7 @@ graph LR
     ROOT --> BE2[apps/backend/dsn-server<br/>NestJS + ClickHouse + PG fallback]
     ROOT --> BE3[apps/backend/event-worker<br/>NestJS + Kafka + ClickHouse]
     ROOT --> FE[apps/frontend/monitor<br/>Next.js dashboard]
-    ROOT --> EX[examples/<br/>vanilla + ai-sdk chatbox]
+    ROOT --> EX[examples/<br/>vanilla + AI + 本地动画夹具]
     ROOT --> OPS[.devcontainer/<br/>Compose + Caddy + infra config]
 ```
 
@@ -235,12 +235,14 @@ condev-monitor/
 │   ├── core/                       # 监控核心能力与 capture API
 │   ├── browser/                    # 浏览器 SDK
 │   ├── browser-utils/              # Metrics / Web Vitals 工具
+│   ├── animation/                  # 框架无关的动画采集、建议、overlay 与可选 RUM
 │   ├── ai/                         # AI 语义监控适配层
 │   ├── react/                      # React 集成（ErrorBoundary、useMonitorUser）
 │   └── nextjs/                     # Next.js 集成（registerCondevClient/Server，RSC 安全再导出）
 ├── examples/
 │   ├── vanilla/                    # Vite 示例，包含浏览器 SDK 和 sourcemap 脚本
-│   └── aisdk-rag-chatbox/          # Next.js 示例，包含浏览器端 + AI SDK tracing
+│   ├── aisdk-rag-chatbox/          # Next.js 示例，包含浏览器端 + AI SDK tracing
+│   └── animation-fixtures/         # 三个选定的本地项目；每个项目只有一次 Browser 动画初始化
 ├── .devcontainer/
 │   ├── docker-compose.yml          # 本地基础设施：ClickHouse + Postgres + Kafka
 │   ├── docker-compose.deply.yml    # 根脚本实际使用的整栈部署文件
@@ -257,8 +259,8 @@ condev-monitor/
 
 ### 工作区说明
 
-- `pnpm-workspace.yaml` 纳入了 `packages/*`、`apps/frontend/*`、`apps/backend/*`、`examples/*`
-- `pnpm start:dev` 通过 Turbo 跑工作区内所有 `start:dev` 脚本；在本仓库里就是两个后端和事件处理 worker
+- `pnpm-workspace.yaml` 纳入了 `packages/*`、`apps/frontend/*`、`apps/backend/*`、`examples/*` 和 `examples/animation-fixtures/*`
+- `pnpm start:dev` 通过 Turbo 同时启动控制台、两个后端服务和事件处理 worker
 - `pnpm start:fro` 只启动控制台
 - 前端包名是 `@condev-monitor/monitor-client`
 - 后端包名分别是 `monitor`、`dsn-server` 和 `event-worker`
@@ -306,7 +308,7 @@ pnpm docker:start
 
 注意：`pnpm docker:start` 会自动执行 `docker:init-kafka` 和 `docker:init-clickhouse`。只有在需要恢复或幂等重新初始化时才需要单独运行这些脚本。
 
-### 4. 启动所有后端的 watch 模式
+### 4. 启动完整应用的开发模式
 
 ```bash
 pnpm start:dev
@@ -314,17 +316,24 @@ pnpm start:dev
 
 启动后可访问：
 
+- `apps/frontend/monitor` -> `http://localhost:3000`
 - `apps/backend/monitor` -> `http://localhost:8081/api/*`
 - `apps/backend/dsn-server` -> `http://localhost:8082/dsn-api/*`
 - `apps/backend/event-worker`（Kafka 消费者，写入 ClickHouse）
 
-### 5. 启动控制台
+如果 3000 端口已被占用，可以使用任务专用的 shell 变量，不需要修改任何 `.env` 文件：
+
+```bash
+CONDEV_MONITOR_FRONTEND_PORT=3001 pnpm start:dev
+```
+
+### 5. 仅启动控制台
 
 ```bash
 pnpm start:fro
 ```
 
-控制台地址：`http://localhost:3000`
+这个命令只启动 `http://localhost:3000` 上的控制台；上面的完整 `pnpm start:dev` 已经包含控制台。
 
 默认代理关系：
 
@@ -370,6 +379,7 @@ pnpm --filter aisdk-rag-chatbox dev
 - 本地 dsn-server backend：`apps/backend/dsn-server/.env`
 - 整栈 Docker 部署：`.devcontainer/.env`
 - 前端本地代理变量：运行 `pnpm start:fro` 前在 shell 里注入
+- 整栈开发时的控制台端口：运行 `pnpm start:dev` 前在 shell 里设置 `CONDEV_MONITOR_FRONTEND_PORT`（默认 `3000`）
 
 两个后端的代码都会显式按顺序查找 env：
 
@@ -746,13 +756,15 @@ POST /api/sourcemap/upload
 
 ## 扩展文档
 
-| 文档                                                                           | 说明                                                    |
-| ------------------------------------------------------------------------------ | ------------------------------------------------------- |
-| [DEPLOYMENT.md](./DEPLOYMENT.md) \| [中文](./DEPLOYMENT.zh-CN.md)              | 整栈部署、Caddy 路由、Cloudflare 前端、数据卷与运维说明 |
-| [CONTRIBUTING.md](./CONTRIBUTING.md) \| [中文](./CONTRIBUTING.zh-CN.md)        | 本地初始化、质量检查、提交规范与 PR 检查清单            |
-| [docs/ai-observability-integration.md](./docs/ai-observability-integration.md) | 自动与手动 AI 可观测覆盖、Next.js 帮助函数与自定义 span |
-| [examples/aisdk-rag-chatbox/README.md](./examples/aisdk-rag-chatbox/README.md) | Next.js + Vercel AI SDK 项目的 Condev 接入示例          |
-| [examples/rag/README.md](./examples/rag/README.md)                             | React/Vite 前端 + FastAPI RAG 后端的 Condev 接入示例    |
+| 文档                                                                                                 | 说明                                                               |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| [DEPLOYMENT.md](./DEPLOYMENT.md) \| [中文](./DEPLOYMENT.zh-CN.md)                                    | 整栈部署、Caddy 路由、Cloudflare 前端、数据卷与运维说明            |
+| [CONTRIBUTING.md](./CONTRIBUTING.md) \| [中文](./CONTRIBUTING.zh-CN.md)                              | 本地初始化、质量检查、提交规范与 PR 检查清单                       |
+| [docs/ai-observability-integration.md](./docs/ai-observability-integration.md)                       | 自动与手动 AI 可观测覆盖、Next.js 帮助函数与自定义 span            |
+| [docs/animation-monitoring-architecture.zh-CN.md](./docs/animation-monitoring-architecture.zh-CN.md) | 动画监控三种使用方式、代码归属、隐私边界与发布顺序                 |
+| [动画示例项目](./examples/animation-fixtures/)                                                       | 使用 Browser 动画 init 的 Vanilla/Vite、React/Vite 与 Next.js 示例 |
+| [examples/aisdk-rag-chatbox/README.md](./examples/aisdk-rag-chatbox/README.md)                       | Next.js + Vercel AI SDK 项目的 Condev 接入示例                     |
+| [examples/rag/README.md](./examples/rag/README.md)                                                   | React/Vite 前端 + FastAPI RAG 后端的 Condev 接入示例               |
 
 ---
 
@@ -769,6 +781,7 @@ POST /api/sourcemap/upload
 
 - `@condev-monitor/monitor-sdk-core`
 - `@condev-monitor/monitor-sdk-browser-utils`
+- `@condev-monitor/monitor-sdk-animation`
 - `@condev-monitor/monitor-sdk-browser`
 - `@condev-monitor/monitor-sdk-ai`
 - `@condev-monitor/react`
@@ -788,10 +801,11 @@ pnpm -r --filter "./packages/*" publish --access public --no-git-checks
 
 1. `@condev-monitor/monitor-sdk-core`
 2. `@condev-monitor/monitor-sdk-browser-utils`
-3. `@condev-monitor/monitor-sdk-browser`
-4. `@condev-monitor/monitor-sdk-ai`
-5. `@condev-monitor/react`
-6. `@condev-monitor/nextjs`
+3. `@condev-monitor/monitor-sdk-animation`
+4. `@condev-monitor/monitor-sdk-browser`
+5. `@condev-monitor/monitor-sdk-ai`
+6. `@condev-monitor/react`
+7. `@condev-monitor/nextjs`
 
 ### Python 包
 
