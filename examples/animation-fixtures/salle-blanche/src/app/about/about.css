@@ -1,0 +1,61 @@
+.about-hero {
+  position: relative;
+  width: 100%;
+  height: 250vh;
+  overflow: hidden;
+  background-color: var(--base-500);
+}
+
+.about-hero-pin {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+  width: 100%;
+  height: 100vh;
+  padding: 2.5rem;
+}
+
+.hero-heading {
+  z-index: 2;
+  text-align: center;
+}
+
+.hero-heading h1 {
+  font-size: clamp(4rem, 10vw, 20rem);
+  will-change: transform;
+}
+
+.hero-image {
+  position: relative;
+  width: 100%;
+  max-width: 600px;
+  overflow: hidden;
+  border-radius: 0.35rem;
+  aspect-ratio: 16 / 9;
+  transform-origin: center;
+  will-change: transform, opacity;
+}
+
+.hero-image img {
+  transform-origin: center;
+  will-change: transform;
+}
+
+.about-info {
+  padding: 2rem 0 8rem 0;
+  background-color: var(--base-500);
+}
+
+.about-info .container {
+  display: flex;
+  flex-direction: column;
+}
+
+.about-info .container p,
+.about-info .container h3 {
+  margin-bottom: 2rem;
+}

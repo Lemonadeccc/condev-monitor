@@ -1,0 +1,201 @@
+.reservation-hero {
+  position: relative;
+  width: 100%;
+  height: 100svh;
+  background-color: var(--base-500);
+}
+
+.reservation-hero .container {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 2.5rem;
+  text-align: center;
+}
+
+.reservation-hero h2 {
+  width: 65%;
+}
+
+.reservation-hero .container p.lg {
+  max-width: 800px;
+  font-weight: 400;
+}
+
+.reservation-btn {
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  padding: 1.15rem 3rem;
+  border-radius: 999px;
+  background-color: var(--base-100);
+  text-decoration: none;
+  cursor: pointer;
+  transition: transform 0.35s ease;
+}
+
+.reservation-btn:hover {
+  transform: scale(1.05);
+}
+
+.reservation-btn span {
+  font-family: var(--font-host-grotesk), sans-serif;
+  font-size: 1.15rem;
+  font-weight: 600;
+  color: var(--base-500);
+}
+
+.reservation-info {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  height: 100svh;
+  overflow: hidden;
+  background-color: var(--base-500);
+  will-change: transform;
+}
+
+.reservation-info .container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 1rem;
+  width: 85%;
+  height: 85%;
+  margin: 0 auto;
+}
+
+.info-panel {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  height: 100%;
+  border-radius: 0.25rem;
+  background-color: var(--base-400);
+  transform: translateY(125%);
+  will-change: transform;
+}
+
+.info-panel:nth-child(1) {
+  z-index: 2;
+}
+
+.info-panel:nth-child(2) {
+  z-index: 1;
+}
+
+.info-panel:nth-child(3) {
+  z-index: 0;
+}
+
+.info-panel-icon {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0);
+  font-size: 6rem;
+  color: var(--base-300);
+  will-change: transform;
+}
+
+.info-card {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 2rem;
+  width: calc(100% + 4px);
+  height: calc(100% + 4px);
+  padding: 4rem 2.5rem;
+  border-radius: 0.25rem;
+  background-color: var(--base-100);
+  text-align: center;
+  color: var(--base-500);
+  will-change: transform;
+}
+
+.info-panel:nth-child(1) .info-card {
+  transform: translate(350%, -50%) scale(0.75) rotate(20deg);
+}
+
+.info-panel:nth-child(2) .info-card {
+  transform: translate(250%, -50%) scale(0.75) rotate(20deg);
+}
+
+.info-panel:nth-child(3) .info-card {
+  transform: translate(150%, -50%) scale(0.75) rotate(20deg);
+}
+
+.info-card-icon {
+  font-size: 2.5rem;
+  color: var(--base-500);
+}
+
+.info-card h5 {
+  color: var(--base-500);
+}
+
+.info-card p {
+  max-width: 360px;
+  color: var(--base-300);
+  font-weight: 400;
+}
+
+.info-card p.mono {
+  color: var(--base-300);
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.info-card-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  margin-top: 1rem;
+}
+
+.reservation-info a[href^="tel"],
+.reservation-hero a[href^="tel"] {
+  color: inherit;
+  text-decoration: none;
+}
+
+.reservation-info-mobile {
+  height: auto;
+  overflow: visible;
+}
+
+.reservation-info-mobile .container {
+  flex-direction: column;
+  width: 100%;
+  height: auto;
+}
+
+.reservation-info-mobile .info-panel {
+  height: auto;
+  transform: none;
+}
+
+.reservation-info-mobile .info-panel-icon {
+  display: none;
+}
+
+.reservation-info-mobile .info-card,
+.reservation-info-mobile .info-panel:nth-child(1) .info-card,
+.reservation-info-mobile .info-panel:nth-child(2) .info-card,
+.reservation-info-mobile .info-panel:nth-child(3) .info-card {
+  position: relative;
+  top: auto;
+  left: auto;
+  width: 100%;
+  height: auto;
+  padding: 3rem 2rem;
+  transform: none;
+}

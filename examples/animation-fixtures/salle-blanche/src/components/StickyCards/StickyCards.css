@@ -1,0 +1,63 @@
+.sticky-cards {
+  position: relative;
+  width: 100%;
+  background-color: var(--base-500);
+}
+
+.sticky-card {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 1.5rem;
+  width: 50%;
+  height: 100svh;
+  padding: 2rem;
+  text-align: center;
+  will-change: transform;
+}
+
+.sticky-card:nth-child(odd) {
+  margin-left: auto;
+}
+
+.sticky-card:nth-child(3n + 1) {
+  background-color: var(--base-300);
+}
+
+.sticky-card:nth-child(3n + 2) {
+  background-color: var(--base-400);
+}
+
+.sticky-card:nth-child(3n + 3) {
+  background-color: var(--base-500);
+}
+
+.sticky-card-img {
+  width: 30%;
+  margin-bottom: 1.5rem;
+  overflow: hidden;
+  border-radius: 0.35rem;
+  aspect-ratio: 4 / 5;
+}
+
+.sticky-card h3 {
+  color: var(--base-100);
+}
+
+.sticky-card p {
+  max-width: 400px;
+}
+
+.sticky-cards-mobile .sticky-card {
+  position: relative;
+  width: 100%;
+  height: auto;
+  min-height: 100svh;
+}
+
+.sticky-cards-mobile .sticky-card:nth-child(odd) {
+  margin-left: 0;
+}

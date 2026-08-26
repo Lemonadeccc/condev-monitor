@@ -1,0 +1,111 @@
+.preloader {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  min-height: 100vh;
+  padding: 2rem;
+  overflow: hidden;
+  background: var(--base-600);
+  transition:
+    opacity 0.7s ease,
+    visibility 0.7s ease;
+}
+
+.preloader.is-exiting {
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.preloader-inner {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3rem;
+}
+
+.preloader-title-wrap {
+  position: relative;
+  display: inline-block;
+}
+
+.preloader-title {
+  white-space: nowrap;
+  text-align: center;
+  line-height: 0.85;
+}
+
+.preloader-title-base {
+  color: rgba(224, 222, 209, 0.16);
+}
+
+.preloader-title-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0%;
+  overflow: hidden;
+  color: var(--base-100);
+  will-change: width;
+}
+
+.preloader-action-slot {
+  position: relative;
+  min-width: 16rem;
+  height: 3.75rem;
+}
+
+.preloader-loading {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  margin: 0;
+  white-space: nowrap;
+  font-family: var(--font-dm-mono), monospace;
+  text-transform: uppercase;
+  color: var(--base-200);
+  transform: translate(-50%, -50%);
+  transition:
+    opacity 0.35s ease,
+    transform 0.35s ease;
+}
+
+.preloader-loading.is-hidden {
+  opacity: 0;
+  transform: translate(-50%, calc(-50% - 6px));
+  pointer-events: none;
+}
+
+.preloader-button-wrap {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translate(-50%, calc(-50% + 10px));
+  pointer-events: none;
+  transition:
+    opacity 0.45s ease,
+    transform 0.45s ease;
+  transition-delay: 0.35s;
+}
+
+.preloader-button-wrap.is-visible {
+  opacity: 1;
+  transform: translate(-50%, -50%);
+  pointer-events: auto;
+}
+
+@media (max-width: 1000px) {
+  .preloader {
+    padding: 1.5rem;
+  }
+
+  .preloader-inner {
+    gap: 2.5rem;
+  }
+}

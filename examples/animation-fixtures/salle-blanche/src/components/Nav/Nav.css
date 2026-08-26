@@ -1,0 +1,232 @@
+.nav-bar {
+  position: fixed;
+  left: 50%;
+  z-index: 100;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  max-width: 2000px;
+  padding: 2.5rem;
+  transform: translateX(-50%);
+}
+
+.nav-logo a svg {
+  width: 5rem;
+  height: auto;
+  object-fit: cover;
+}
+
+.nav-toggle {
+  position: relative;
+  width: 3rem;
+  height: 1.5rem;
+  cursor: pointer;
+}
+
+.nav-toggle p {
+  position: absolute;
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--base-100);
+  transform-origin: top left;
+  will-change: transform, opacity;
+}
+
+#nav-toggle-close {
+  opacity: 0;
+  transform: translateX(-5px) translateY(10px) rotate(5deg);
+}
+
+.nav-menu-overlay {
+  position: fixed;
+  z-index: 9;
+  width: 100%;
+  height: 100svh;
+  background-color: var(--base-600);
+  clip-path: polygon(0% 0%, 100% 0%, 100% 0%, 0% 0%);
+}
+
+.nav-menu-content {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 100%;
+  max-width: 2000px;
+  height: 100%;
+  margin: 0 auto;
+  transform: translateX(-100px) translateY(-100px) scale(1.5) rotate(-15deg);
+  transform-origin: left bottom;
+  opacity: 0.25;
+  will-change: opacity, transform;
+}
+
+.nav-menu-items,
+.nav-menu-footer {
+  display: flex;
+  gap: 1.25rem;
+  width: 100%;
+  padding: 2.5rem;
+}
+
+.nav-col-lg {
+  flex: 3;
+}
+
+.nav-col-sm {
+  flex: 2;
+}
+
+.nav-menu-items .nav-col-lg {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+}
+
+.nav-menu-items .nav-col-sm {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  padding: 1.25rem 0;
+}
+
+.nav-preview-img {
+  position: relative;
+  width: 45%;
+  height: 90%;
+  max-height: 700px;
+  overflow: hidden;
+  border-radius: 0.35rem;
+}
+
+.nav-preview-img img {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  will-change: transform, opacity;
+}
+
+.nav-menu-links,
+.nav-menu-socials {
+  display: flex;
+  flex-direction: column;
+}
+
+.nav-link,
+.nav-social {
+  padding-bottom: 1.25rem;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0% 100%);
+}
+
+.nav-social {
+  padding-bottom: 0.5rem;
+}
+
+.nav-link a,
+.nav-social a {
+  display: inline-block;
+  text-decoration: none;
+  color: var(--base-100);
+  transform: translateY(140%);
+  opacity: 0.25;
+  transition: color 0.5s;
+  will-change: transform;
+}
+
+.nav-link a {
+  font-family: "Roslindale Variable", sans-serif;
+  font-size: clamp(3rem, 8vw, 6rem);
+  font-weight: 900;
+  line-height: 1;
+  text-transform: uppercase;
+}
+
+.nav-social a {
+  font-family: var(--font-host-grotesk), sans-serif;
+  font-weight: 400;
+  letter-spacing: -0.025rem;
+  color: var(--base-300);
+}
+
+.nav-social a:hover {
+  color: var(--base-100);
+}
+
+.nav-link a::after,
+.nav-social a::after {
+  content: "";
+  position: absolute;
+  top: 102%;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  background: var(--base-100);
+  transform: scaleX(0);
+  transform-origin: right;
+  transition: transform 0.3s cubic-bezier(0.6, 0, 0.4, 1);
+}
+
+.nav-social a::after {
+  height: 1.25px;
+}
+
+.nav-link a:hover::after,
+.nav-social a:hover::after,
+.nav-menu-footer a:hover::after {
+  transform: scaleX(1);
+  transform-origin: left;
+}
+
+.nav-menu-footer {
+  position: absolute;
+  bottom: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.nav-menu-footer p {
+  display: inline-block;
+  font-family: var(--font-host-grotesk), sans-serif;
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: -0.025rem;
+  color: var(--base-300);
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0% 100%);
+}
+
+.nav-menu-footer p span {
+  display: inline-block;
+  transform: translateY(120%);
+  opacity: 0.25;
+  will-change: transform;
+}
+
+.nav-menu-footer .nav-col-sm {
+  display: flex;
+  justify-content: space-between;
+}
+
+.page-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+@media (max-width: 900px) {
+  .nav-bar {
+    padding: 2rem 1.5rem;
+  }
+
+  .nav-menu-items .nav-col-lg {
+    display: none;
+  }
+
+  .nav-link a::after,
+  .nav-social a::after {
+    display: none;
+  }
+}

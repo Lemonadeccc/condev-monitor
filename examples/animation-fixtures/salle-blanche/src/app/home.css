@@ -1,0 +1,141 @@
+.hero {
+  position: relative;
+  width: 100%;
+  height: 100svh;
+  overflow: hidden;
+  background-color: var(--base-500);
+}
+
+.hero .hero-img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.hero .container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+.about {
+  position: relative;
+  width: 100%;
+  min-height: 100svh;
+  height: 100%;
+  background-color: var(--base-500);
+}
+
+.about .about-header {
+  position: sticky;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100svh;
+}
+
+.about .about-header .container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+}
+
+.about .about-header .container h3 {
+  width: 75%;
+  will-change: opacity;
+}
+
+.about .section-footer p {
+  color: var(--base-300);
+}
+
+.about .about-imgs {
+  position: relative;
+  width: 100%;
+  height: 300svh;
+}
+
+.about .about-imgs .about-img {
+  position: absolute;
+  overflow: hidden;
+  border-radius: 0.35rem;
+  will-change: transform;
+}
+
+.about .about-imgs #about-img-1 {
+  top: 2.5%;
+  left: 25%;
+  width: 12.5%;
+  aspect-ratio: 1;
+}
+
+.about .about-imgs #about-img-2 {
+  top: 7.5%;
+  left: 60%;
+  width: 15%;
+  aspect-ratio: 5/7;
+}
+
+.about .about-imgs #about-img-3 {
+  top: 20%;
+  left: 8rem;
+  width: 17.5%;
+  aspect-ratio: 4/5;
+}
+
+.about .about-imgs #about-img-4 {
+  top: 30%;
+  left: 40%;
+  width: 20%;
+  aspect-ratio: 1;
+}
+
+.about .about-imgs #about-img-5 {
+  top: 45%;
+  right: 4rem;
+  width: 10%;
+  aspect-ratio: 1;
+}
+
+.about .about-imgs #about-img-6 {
+  top: 50%;
+  left: 20%;
+  width: 16%;
+  aspect-ratio: 5/7;
+}
+
+@media (max-width: 1000px) {
+  .about .about-header .container h3 {
+    width: 100%;
+  }
+
+  .about .about-imgs #about-img-1 {
+    width: 22.5%;
+  }
+
+  .about .about-imgs #about-img-2 {
+    top: 12.5%;
+    width: 17.5%;
+  }
+
+  .about .about-imgs #about-img-3 {
+    width: 20%;
+  }
+
+  .about .about-imgs #about-img-4 {
+    width: 22.5%;
+  }
+
+  .about .about-imgs #about-img-5 {
+    width: 15%;
+  }
+
+  .about .about-imgs #about-img-6 {
+    width: 20%;
+  }
+}

@@ -1,0 +1,254 @@
+.dining-menu {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  padding: 12rem 0;
+  overflow: hidden;
+}
+
+.dining-menu-bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: -1;
+  width: 100%;
+  height: 100%;
+}
+
+.dining-menu .container {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6rem;
+}
+
+.dining-menu-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 2rem;
+  width: 100%;
+}
+
+.dining-nav {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: 1;
+  gap: 1rem;
+}
+
+.dining-nav-button {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  width: 80px;
+  height: 80px;
+  border: none;
+  border-radius: 50%;
+  background: var(--base-100);
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: var(--base-500);
+  opacity: 1;
+  cursor: pointer;
+  transition:
+    opacity 0.3s,
+    transform 0.2s ease;
+}
+
+.dining-nav-button:active {
+  transform: scale(0.85);
+}
+
+.dining-nav-button span {
+  position: relative;
+  top: -2px;
+}
+
+.dining-nav-button.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.dining-preview {
+  display: flex;
+  justify-content: center;
+  flex: 2;
+}
+
+.dining-preview-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 1.75rem;
+  width: 600px;
+  height: 750px;
+  padding: 4rem 3rem;
+  border-radius: 0.35rem;
+  background: var(--base-100);
+  color: var(--base-600);
+  transform: scale(0.85);
+  will-change: transform, opacity;
+}
+
+.dining-preview-card h6 {
+  margin-bottom: 0;
+  text-align: center;
+  color: var(--base-500);
+}
+
+.dining-preview-item {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.dining-preview-item p,
+.dining-preview-group p {
+  color: var(--base-500);
+  font-weight: 450;
+}
+
+.dining-preview-item p:nth-child(2),
+.dining-preview-group p:nth-child(2) {
+  color: var(--base-300);
+  font-weight: 400;
+}
+
+.dining-preview-item-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.dining-preview-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.dining-preview-group p.mono {
+  color: var(--base-300);
+  font-weight: 500;
+  -webkit-text-stroke: 0.15px var(--base-300);
+}
+
+.dining-preview-group-header {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.dining-preview-group-header span {
+  flex: 1;
+  height: 1px;
+  background: var(--base-200);
+}
+
+.dining-preview-footer {
+  position: absolute;
+  bottom: 3rem;
+  left: 50%;
+  z-index: 2;
+  transform: translateX(-50%);
+  text-align: center;
+}
+
+.dining-preview-footer p {
+  font-family: "Roslindale Variable", sans-serif;
+  font-size: 0.9rem;
+  font-weight: 900;
+  line-height: 0.85;
+  text-transform: uppercase;
+  color: var(--base-500);
+}
+
+.dining-minimap {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1;
+  gap: 1.5rem;
+}
+
+.dining-minimap-item {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  cursor: pointer;
+  will-change: transform, opacity;
+}
+
+.dining-minimap-img {
+  position: relative;
+  width: 4rem;
+  height: 5rem;
+  padding: 0.35rem;
+  overflow: hidden;
+  border-radius: 0.175rem;
+  background-color: var(--base-100);
+}
+
+.dining-minimap-img::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.2);
+  opacity: 1;
+  transition: 0.3s;
+}
+
+.dining-minimap-item p {
+  transition: 0.3s;
+}
+
+.dining-minimap-item.active .dining-minimap-img::after {
+  opacity: 0;
+}
+
+.dining-minimap-item.active p {
+  color: var(--base-100);
+}
+
+@media (max-width: 1000px) {
+  .dining-menu {
+    padding: 6rem 0;
+  }
+
+  .dining-menu-content {
+    flex-direction: column-reverse;
+  }
+
+  .dining-nav {
+    flex-direction: row-reverse;
+  }
+
+  .dining-nav-button:nth-child(1),
+  .dining-nav-button:nth-child(2) {
+    transform: rotate(90deg);
+  }
+
+  .dining-minimap {
+    display: none;
+  }
+
+  .dining-preview,
+  .dining-preview-card {
+    width: 100%;
+  }
+
+  .dining-preview-item .dining-preview-item-row p:nth-child(1) {
+    width: 75%;
+  }
+
+  .dining-preview-item-description {
+    display: none;
+  }
+}
