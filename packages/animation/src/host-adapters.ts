@@ -1,0 +1,751 @@
+// cspell:ignore gsap profiler rvfc tweens webgl webgpu
+
+/**
+ * Explicit, framework-neutral evidence emitted by host integrations.
+ *
+ * These adapters deliberately do not create semantic interactions. They only
+ * forward measurements the host can prove, and they keep sink failures from
+ * changing application behavior.
+ */
+
+export type AnimationHostFramework = 'react' | 'preact' | 'vue' | 'angular' | 'svelte' | 'solid' | 'qwik' | 'lit' | 'vanilla' | 'other'
+
+export type AnimationFrameworkCommitPhase = 'mount' | 'update' | 'nested-update' | 'hydrate' | 'other'
+
+export interface AnimationFrameworkStatsSample {
+    source: 'manual' | 'react-profiler'
+    framework: AnimationHostFramework
+    phase: AnimationFrameworkCommitPhase
+    /** Render work only. React Profiler actualDuration is recorded here. */
+    renderMs?: number
+    /** Commit work only when the host measured it independently. */
+    commitMs?: number
+    /** React Profiler baseDuration; it is not a commit duration. */
+    baseRenderMs?: number
+    timestampMs: number
+}
+
+export type AnimationRendererBackend = 'webgl' | 'webgl2' | 'webgpu' | 'unknown'
+export type AnimationHostGpuTimingSource = 'webgl-disjoint-timer-query' | 'webgpu-timestamp-query' | 'host-timer-query'
+export type AnimationGpuTimingStatus = 'measured' | 'not-provided' | 'invalid' | 'disjoint' | 'context-lost' | 'error'
+
+export type AnimationGpuTimingEvidence =
+    | {
+          status: 'measured'
+          timeMs: number
+          source: AnimationHostGpuTimingSource
+          valid: true
+          disjoint: false
+          contextLost: false
+      }
+    | {
+          status: Exclude<AnimationGpuTimingStatus, 'measured'>
+          timeMs?: never
+          source?: AnimationHostGpuTimingSource
+          valid?: boolean
+          disjoint?: boolean
+          contextLost?: boolean
+      }
+
+export interface AnimationRenderStatsSample {
+    source: 'three-renderer-info'
+    backend: AnimationRendererBackend
+    timestampMs: number
+    drawCalls?: number
+    triangles?: number
+    lines?: number
+    points?: number
+    geometries?: number
+    textures?: number
+    programs?: number
+    gpu: AnimationGpuTimingEvidence
+}
+
+export type AnimationLifecycleCheckpoint = 'mount' | 'after-interaction' | 'unmount' | 'manual'
+export type AnimationLifecycleReadStatus = 'measured' | 'unsupported' | 'error'
+
+export interface AnimationLifecycleCountEvidence {
+    status: AnimationLifecycleReadStatus
+    total?: number
+    active?: number
+    rejectedActiveChecks?: number
+}
+
+export interface AnimationLifecycleStatsSample {
+    source: 'gsap-public-api'
+    checkpoint: AnimationLifecycleCheckpoint
+    timestampMs: number
+    animations: AnimationLifecycleCountEvidence
+    scrollTriggers: AnimationLifecycleCountEvidence
+}
+
+export interface AnimationWorkStatsSample {
+    source: 'host'
+    timestampMs: number
+    workMs: number
+    category: 'script' | 'layout' | 'paint' | 'composite' | 'other'
+}
+
+export type AnimationPlaybackQualityStatus = 'measured' | 'unsupported' | 'error'
+
+export interface AnimationMediaStatsSample {
+    source: 'video-rvfc'
+    timestampMs: number
+    callbackIntervalMs: number
+    mediaTimeDeltaMs?: number
+    presentedFramesDelta?: number
+    displayLatenessMs?: number
+    processingDurationMs?: number
+    playbackQuality: {
+        status: AnimationPlaybackQualityStatus
+        totalVideoFramesDelta?: number
+        droppedVideoFramesDelta?: number
+        corruptedVideoFramesDelta?: number
+    }
+}
+
+/** Closed host-evidence surface; arbitrary event families are intentionally absent. */
+export interface AnimationHostEvidenceSink {
+    recordFrameworkStats(sample: AnimationFrameworkStatsSample): boolean | void
+    recordRenderStats(sample: AnimationRenderStatsSample): boolean | void
+    recordLifecycleStats(sample: AnimationLifecycleStatsSample): boolean | void
+    recordWorkStats(sample: AnimationWorkStatsSample): boolean | void
+    recordMediaStats(sample: AnimationMediaStatsSample): boolean | void
+}
+
+export interface FrameworkCommitInput {
+    phase?: AnimationFrameworkCommitPhase
+    renderMs?: number
+    commitMs?: number
+    baseRenderMs?: number
+    timestampMs?: number
+}
+
+export interface FrameworkCommitProbe {
+    recordCommit(input: FrameworkCommitInput): boolean
+    /** Compatible with React Profiler's onRender callback without importing React. */
+    onReactProfilerRender(
+        id: string,
+        phase: string,
+        actualDuration: number,
+        baseDuration: number,
+        startTime: number,
+        commitTime: number
+    ): void
+    dispose(): void
+}
+
+export interface FrameworkCommitProbeOptions {
+    sink: Pick<AnimationHostEvidenceSink, 'recordFrameworkStats'>
+    framework: AnimationHostFramework
+    now?: () => number
+}
+
+function defaultNow(): number {
+    return globalThis.performance?.now?.() ?? Date.now()
+}
+
+const MAX_HOST_DURATION_MS = 600_000
+const MAX_HOST_COUNT = 1_000_000_000
+const MAX_HOST_TIMESTAMP_MS = 1_000_000_000_000_000
+
+function finiteNonNegative(value: unknown, maximum = MAX_HOST_DURATION_MS): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= maximum ? value : undefined
+}
+
+function finiteTimestamp(value: unknown): number | undefined {
+    return finiteNonNegative(value, MAX_HOST_TIMESTAMP_MS)
+}
+
+function finiteCount(value: unknown): number | undefined {
+    const normalized = finiteNonNegative(value, MAX_HOST_COUNT)
+    return normalized === undefined || !Number.isInteger(normalized) ? undefined : normalized
+}
+
+function safeNow(now: () => number): number {
+    try {
+        return finiteTimestamp(now()) ?? finiteTimestamp(defaultNow()) ?? 0
+    } catch {
+        return finiteTimestamp(defaultNow()) ?? 0
+    }
+}
+
+function safeEmit(emit: () => boolean | void): boolean {
+    try {
+        return emit() !== false
+    } catch {
+        return false
+    }
+}
+
+function normalizeFrameworkPhase(phase: unknown): AnimationFrameworkCommitPhase {
+    if (phase === 'mount' || phase === 'update' || phase === 'nested-update' || phase === 'hydrate') return phase
+    return 'other'
+}
+
+function normalizeHostFramework(framework: unknown): AnimationHostFramework {
+    return ['react', 'preact', 'vue', 'angular', 'svelte', 'solid', 'qwik', 'lit', 'vanilla'].includes(framework as string)
+        ? (framework as AnimationHostFramework)
+        : 'other'
+}
+
+export function createFrameworkCommitProbe(options: FrameworkCommitProbeOptions): FrameworkCommitProbe {
+    const now = options.now ?? defaultNow
+    const framework = normalizeHostFramework(options.framework)
+    let disposed = false
+
+    const record = (input: FrameworkCommitInput, source: AnimationFrameworkStatsSample['source']): boolean => {
+        if (disposed) return false
+        const renderMs = finiteNonNegative(input.renderMs)
+        const commitMs = finiteNonNegative(input.commitMs)
+        const baseRenderMs = finiteNonNegative(input.baseRenderMs)
+        if (renderMs === undefined && commitMs === undefined) return false
+
+        const sample: AnimationFrameworkStatsSample = {
+            source,
+            framework,
+            phase: normalizeFrameworkPhase(input.phase),
+            timestampMs: finiteTimestamp(input.timestampMs) ?? safeNow(now),
+            ...(renderMs === undefined ? {} : { renderMs }),
+            ...(commitMs === undefined ? {} : { commitMs }),
+            ...(baseRenderMs === undefined ? {} : { baseRenderMs }),
+        }
+        return safeEmit(() => options.sink.recordFrameworkStats(sample))
+    }
+
+    return {
+        recordCommit(input): boolean {
+            return record(input, 'manual')
+        },
+        onReactProfilerRender(_id, phase, actualDuration, baseDuration, _startTime, commitTime): void {
+            if (framework !== 'react') return
+            // React commitTime is a timestamp. It must never be relabelled as commit work.
+            record(
+                {
+                    phase: normalizeFrameworkPhase(phase),
+                    renderMs: actualDuration,
+                    baseRenderMs: baseDuration,
+                    timestampMs: commitTime,
+                },
+                'react-profiler'
+            )
+        },
+        dispose(): void {
+            disposed = true
+        },
+    }
+}
+
+export interface ThreeRendererLike {
+    info?: {
+        render?: {
+            calls?: number
+            triangles?: number
+            lines?: number
+            points?: number
+        }
+        memory?: {
+            geometries?: number
+            textures?: number
+        }
+        programs?: ArrayLike<unknown> | null
+    }
+    getContext?(): {
+        isContextLost?(): boolean
+    } | null
+}
+
+export interface ThreeGpuTimingReading {
+    timeMs: number
+    valid: boolean
+    disjoint: boolean
+    contextLost: boolean
+    source?: AnimationHostGpuTimingSource
+}
+
+export interface ThreeRendererSnapshotOptions {
+    backend?: AnimationRendererBackend
+    now?: () => number
+    readGpuTiming?: () => ThreeGpuTimingReading | null | undefined
+}
+
+export interface ThreeRendererProbeOptions extends ThreeRendererSnapshotOptions {
+    sink: Pick<AnimationHostEvidenceSink, 'recordRenderStats'>
+    renderer: ThreeRendererLike
+}
+
+export interface ThreeRendererProbe {
+    capture(): AnimationRenderStatsSample | null
+    dispose(): void
+}
+
+const GPU_TIMING_SOURCES = new Set<AnimationHostGpuTimingSource>([
+    'webgl-disjoint-timer-query',
+    'webgpu-timestamp-query',
+    'host-timer-query',
+])
+
+function normalizeRendererBackend(backend: unknown): AnimationRendererBackend {
+    return backend === 'webgl' || backend === 'webgl2' || backend === 'webgpu' ? backend : 'unknown'
+}
+
+function safeProperty<T>(read: () => T): T | undefined {
+    try {
+        return read()
+    } catch {
+        return undefined
+    }
+}
+
+function rendererContextLost(renderer: ThreeRendererLike): boolean | 'error' | undefined {
+    if (!renderer.getContext) return undefined
+    let context: ReturnType<NonNullable<ThreeRendererLike['getContext']>>
+    try {
+        context = renderer.getContext()
+    } catch {
+        return 'error'
+    }
+    if (!context?.isContextLost) return undefined
+    try {
+        return context.isContextLost()
+    } catch {
+        return 'error'
+    }
+}
+
+function readGpuEvidence(
+    renderer: ThreeRendererLike,
+    readGpuTiming: ThreeRendererSnapshotOptions['readGpuTiming']
+): AnimationGpuTimingEvidence {
+    if (!readGpuTiming) return { status: 'not-provided' }
+
+    let reading: ThreeGpuTimingReading | null | undefined
+    try {
+        reading = readGpuTiming()
+    } catch {
+        return { status: 'error' }
+    }
+    if (!reading) return { status: 'not-provided' }
+
+    const source = GPU_TIMING_SOURCES.has(reading.source as AnimationHostGpuTimingSource) ? reading.source : undefined
+    const timeMs = finiteNonNegative(reading.timeMs)
+    const contextLost = rendererContextLost(renderer)
+    if (contextLost === 'error') return { status: 'error', ...(source ? { source } : {}) }
+    if (reading.contextLost !== false || contextLost === true) return { status: 'context-lost', ...(source ? { source } : {}) }
+    if (reading.disjoint !== false) return { status: 'disjoint', ...(source ? { source } : {}) }
+    if (reading.valid !== true || timeMs === undefined || !source) return { status: 'invalid', ...(source ? { source } : {}) }
+    return { status: 'measured', timeMs, source, valid: true, disjoint: false, contextLost: false }
+}
+
+export function readThreeRendererSnapshot(
+    renderer: ThreeRendererLike,
+    options: ThreeRendererSnapshotOptions = {}
+): AnimationRenderStatsSample {
+    const now = options.now ?? defaultNow
+    const drawCalls = finiteCount(safeProperty(() => renderer.info?.render?.calls))
+    const triangles = finiteCount(safeProperty(() => renderer.info?.render?.triangles))
+    const lines = finiteCount(safeProperty(() => renderer.info?.render?.lines))
+    const points = finiteCount(safeProperty(() => renderer.info?.render?.points))
+    const geometries = finiteCount(safeProperty(() => renderer.info?.memory?.geometries))
+    const textures = finiteCount(safeProperty(() => renderer.info?.memory?.textures))
+    const programs = finiteCount(safeProperty(() => renderer.info?.programs?.length))
+
+    return {
+        source: 'three-renderer-info',
+        backend: normalizeRendererBackend(options.backend),
+        timestampMs: safeNow(now),
+        ...(drawCalls === undefined ? {} : { drawCalls }),
+        ...(triangles === undefined ? {} : { triangles }),
+        ...(lines === undefined ? {} : { lines }),
+        ...(points === undefined ? {} : { points }),
+        ...(geometries === undefined ? {} : { geometries }),
+        ...(textures === undefined ? {} : { textures }),
+        ...(programs === undefined ? {} : { programs }),
+        gpu: readGpuEvidence(renderer, options.readGpuTiming),
+    }
+}
+
+export function createThreeRendererProbe(options: ThreeRendererProbeOptions): ThreeRendererProbe {
+    let disposed = false
+    return {
+        capture(): AnimationRenderStatsSample | null {
+            if (disposed) return null
+            const sample = readThreeRendererSnapshot(options.renderer, options)
+            safeEmit(() => options.sink.recordRenderStats(sample))
+            return sample
+        },
+        dispose(): void {
+            disposed = true
+        },
+    }
+}
+
+export interface GsapLike {
+    globalTimeline?: {
+        getChildren?(nested?: boolean, tweens?: boolean, timelines?: boolean): readonly unknown[]
+    }
+}
+
+export interface GsapAnimationLike {
+    isActive?(): boolean
+}
+
+export interface ScrollTriggerLike {
+    getAll?(): readonly unknown[]
+}
+
+export interface GsapLifecycleSources {
+    gsap?: GsapLike
+    scrollTrigger?: ScrollTriggerLike
+}
+
+export interface GsapLifecycleSnapshotOptions {
+    checkpoint?: AnimationLifecycleCheckpoint
+    now?: () => number
+}
+
+export interface GsapLifecycleProbeOptions extends GsapLifecycleSources, GsapLifecycleSnapshotOptions {
+    sink: Pick<AnimationHostEvidenceSink, 'recordLifecycleStats'>
+}
+
+export interface GsapLifecycleProbe {
+    capture(checkpoint?: AnimationLifecycleCheckpoint): AnimationLifecycleStatsSample | null
+    dispose(): void
+}
+
+function normalizeLifecycleCheckpoint(checkpoint: unknown): AnimationLifecycleCheckpoint {
+    return checkpoint === 'mount' || checkpoint === 'after-interaction' || checkpoint === 'unmount' ? checkpoint : 'manual'
+}
+
+function readGsapAnimationCounts(gsap: GsapLike | undefined): AnimationLifecycleCountEvidence {
+    if (!gsap?.globalTimeline?.getChildren) return { status: 'unsupported' }
+    let children: readonly unknown[]
+    try {
+        // getChildren is a public GSAP API. Private ticker internals are intentionally untouched.
+        children = gsap.globalTimeline.getChildren(true, true, true)
+    } catch {
+        return { status: 'error' }
+    }
+    if (!Array.isArray(children)) return { status: 'error' }
+
+    let active = 0
+    let rejectedActiveChecks = 0
+    for (const child of children) {
+        const isActive = (child as GsapAnimationLike | null)?.isActive
+        if (typeof isActive !== 'function') {
+            rejectedActiveChecks += 1
+            continue
+        }
+        try {
+            if (isActive.call(child)) active += 1
+        } catch {
+            rejectedActiveChecks += 1
+        }
+    }
+    return {
+        status: 'measured',
+        total: children.length,
+        ...(rejectedActiveChecks === 0 ? { active } : {}),
+        ...(rejectedActiveChecks === 0 ? {} : { rejectedActiveChecks }),
+    }
+}
+
+function readScrollTriggerCounts(scrollTrigger: ScrollTriggerLike | undefined): AnimationLifecycleCountEvidence {
+    if (!scrollTrigger?.getAll) return { status: 'unsupported' }
+    try {
+        const triggers = scrollTrigger.getAll()
+        if (!Array.isArray(triggers)) return { status: 'error' }
+        return { status: 'measured', total: triggers.length }
+    } catch {
+        return { status: 'error' }
+    }
+}
+
+export function readGsapLifecycleSnapshot(
+    sources: GsapLifecycleSources,
+    options: GsapLifecycleSnapshotOptions = {}
+): AnimationLifecycleStatsSample {
+    const now = options.now ?? defaultNow
+    return {
+        source: 'gsap-public-api',
+        checkpoint: normalizeLifecycleCheckpoint(options.checkpoint),
+        timestampMs: safeNow(now),
+        animations: readGsapAnimationCounts(sources.gsap),
+        scrollTriggers: readScrollTriggerCounts(sources.scrollTrigger),
+    }
+}
+
+export function createGsapLifecycleProbe(options: GsapLifecycleProbeOptions): GsapLifecycleProbe {
+    let disposed = false
+    return {
+        capture(checkpoint = options.checkpoint ?? 'manual'): AnimationLifecycleStatsSample | null {
+            if (disposed) return null
+            const sample = readGsapLifecycleSnapshot(options, {
+                checkpoint: normalizeLifecycleCheckpoint(checkpoint),
+                now: options.now,
+            })
+            safeEmit(() => options.sink.recordLifecycleStats(sample))
+            return sample
+        },
+        dispose(): void {
+            // The probe owns no GSAP animation and therefore never calls kill().
+            disposed = true
+        },
+    }
+}
+
+export interface VideoPlaybackQualityLike {
+    totalVideoFrames: number
+    droppedVideoFrames: number
+    corruptedVideoFrames?: number
+}
+
+export interface VideoFrameMetadataLike {
+    mediaTime?: number
+    presentedFrames?: number
+    expectedDisplayTime?: number
+    processingDuration?: number
+}
+
+export type VideoFrameRequestCallbackLike = (now: number, metadata: VideoFrameMetadataLike) => void
+
+export interface VideoFrameSourceLike {
+    requestVideoFrameCallback?(callback: VideoFrameRequestCallbackLike): number
+    cancelVideoFrameCallback?(handle: number): void
+    getVideoPlaybackQuality?(): VideoPlaybackQualityLike
+}
+
+export interface VideoPlaybackQualitySnapshot {
+    status: AnimationPlaybackQualityStatus
+    totalVideoFrames?: number
+    droppedVideoFrames?: number
+    corruptedVideoFrames?: number
+}
+
+export interface VideoFrameProbeOptions {
+    sink: Pick<AnimationHostEvidenceSink, 'recordMediaStats'>
+    video: VideoFrameSourceLike
+    /**
+     * Optional aggregate cadence. Intermediate RVFC callbacks keep the probe alive
+     * but do not read playback quality or emit. Defaults to every callback.
+     */
+    minimumSampleIntervalMs?: number
+}
+
+export interface VideoFrameProbe {
+    readonly running: boolean
+    start(): boolean
+    /** Re-baseline after hidden/offscreen periods without controlling playback. */
+    resetBaseline(): void
+    stop(): void
+    dispose(): void
+}
+
+interface VideoFrameBaseline {
+    callbackNowMs: number
+    mediaTimeMs?: number
+    presentedFrames?: number
+    quality: VideoPlaybackQualitySnapshot
+}
+
+export function readVideoPlaybackQuality(video: VideoFrameSourceLike): VideoPlaybackQualitySnapshot {
+    if (!video.getVideoPlaybackQuality) return { status: 'unsupported' }
+    let quality: VideoPlaybackQualityLike
+    try {
+        quality = video.getVideoPlaybackQuality()
+    } catch {
+        return { status: 'error' }
+    }
+    const totalVideoFrames = finiteCount(quality?.totalVideoFrames)
+    const droppedVideoFrames = finiteCount(quality?.droppedVideoFrames)
+    const corruptedVideoFrames = quality?.corruptedVideoFrames === undefined ? undefined : finiteCount(quality.corruptedVideoFrames)
+    if (
+        totalVideoFrames === undefined ||
+        droppedVideoFrames === undefined ||
+        (quality?.corruptedVideoFrames !== undefined && corruptedVideoFrames === undefined)
+    ) {
+        return { status: 'error' }
+    }
+    if (droppedVideoFrames > totalVideoFrames || (corruptedVideoFrames !== undefined && corruptedVideoFrames > totalVideoFrames)) {
+        return { status: 'error' }
+    }
+    return {
+        status: 'measured',
+        totalVideoFrames,
+        droppedVideoFrames,
+        ...(corruptedVideoFrames === undefined ? {} : { corruptedVideoFrames }),
+    }
+}
+
+function counterReset(previous: number | undefined, current: number | undefined): boolean {
+    return previous !== undefined && current !== undefined && current < previous
+}
+
+function playbackCountersReset(previous: VideoPlaybackQualitySnapshot, current: VideoPlaybackQualitySnapshot): boolean {
+    if (previous.status !== 'measured' || current.status !== 'measured') return false
+    return (
+        counterReset(previous.totalVideoFrames, current.totalVideoFrames) ||
+        counterReset(previous.droppedVideoFrames, current.droppedVideoFrames) ||
+        counterReset(previous.corruptedVideoFrames, current.corruptedVideoFrames)
+    )
+}
+
+function optionalDelta(current: number | undefined, previous: number | undefined): number | undefined {
+    if (current === undefined || previous === undefined || current < previous) return undefined
+    return current - previous
+}
+
+function nextVideoBaseline(
+    callbackNowMs: number,
+    metadata: VideoFrameMetadataLike,
+    quality: VideoPlaybackQualitySnapshot
+): VideoFrameBaseline | null {
+    const safeCallbackNow = finiteTimestamp(callbackNowMs)
+    if (safeCallbackNow === undefined) return null
+    const mediaTimeSeconds = finiteNonNegative(metadata.mediaTime, MAX_HOST_TIMESTAMP_MS / 1_000)
+    const presentedFrames = finiteCount(metadata.presentedFrames)
+    return {
+        callbackNowMs: safeCallbackNow,
+        ...(mediaTimeSeconds === undefined ? {} : { mediaTimeMs: mediaTimeSeconds * 1_000 }),
+        ...(presentedFrames === undefined ? {} : { presentedFrames }),
+        quality,
+    }
+}
+
+export function createVideoFrameProbe(options: VideoFrameProbeOptions): VideoFrameProbe {
+    const minimumSampleIntervalMs = finiteNonNegative(options.minimumSampleIntervalMs, 10_000) ?? 0
+    let active = false
+    let disposed = false
+    let pendingHandle: number | null = null
+    let baseline: VideoFrameBaseline | null = null
+
+    const schedule = (): boolean => {
+        const request = options.video.requestVideoFrameCallback
+        if (!active || !request) return false
+        try {
+            pendingHandle = request.call(options.video, onVideoFrame)
+            return true
+        } catch {
+            pendingHandle = null
+            active = false
+            return false
+        }
+    }
+
+    const onVideoFrame: VideoFrameRequestCallbackLike = (callbackNowMs, metadata): void => {
+        pendingHandle = null
+        if (!active) return
+
+        const safeCallbackNow = finiteTimestamp(callbackNowMs)
+        if (
+            safeCallbackNow !== undefined &&
+            baseline &&
+            safeCallbackNow >= baseline.callbackNowMs &&
+            safeCallbackNow - baseline.callbackNowMs < minimumSampleIntervalMs
+        ) {
+            schedule()
+            return
+        }
+
+        const quality = readVideoPlaybackQuality(options.video)
+        const current = nextVideoBaseline(callbackNowMs, metadata, quality)
+        if (!current) {
+            baseline = null
+            schedule()
+            return
+        }
+
+        const previous = baseline
+        const reset =
+            previous !== null &&
+            (current.callbackNowMs < previous.callbackNowMs ||
+                counterReset(previous.mediaTimeMs, current.mediaTimeMs) ||
+                counterReset(previous.presentedFrames, current.presentedFrames) ||
+                (current.quality.status === 'measured' && previous.quality.status !== 'measured') ||
+                playbackCountersReset(previous.quality, current.quality))
+        baseline = current
+
+        // The first callback and every counter reset establish a baseline only.
+        if (previous && !reset) {
+            const callbackIntervalMs = current.callbackNowMs - previous.callbackNowMs
+            const mediaTimeDeltaMs = optionalDelta(current.mediaTimeMs, previous.mediaTimeMs)
+            const presentedFramesDelta = optionalDelta(current.presentedFrames, previous.presentedFrames)
+            const expectedDisplayTime = finiteTimestamp(metadata.expectedDisplayTime)
+            const processingDurationSeconds = finiteNonNegative(metadata.processingDuration, MAX_HOST_DURATION_MS / 1_000)
+            const displayLatenessMs =
+                expectedDisplayTime === undefined ? undefined : Math.max(0, current.callbackNowMs - expectedDisplayTime)
+            if (
+                callbackIntervalMs <= 0 ||
+                callbackIntervalMs > MAX_HOST_DURATION_MS ||
+                (mediaTimeDeltaMs !== undefined && mediaTimeDeltaMs > MAX_HOST_DURATION_MS) ||
+                (displayLatenessMs !== undefined && displayLatenessMs > MAX_HOST_DURATION_MS) ||
+                (metadata.expectedDisplayTime !== undefined && expectedDisplayTime === undefined) ||
+                (metadata.processingDuration !== undefined && processingDurationSeconds === undefined)
+            ) {
+                schedule()
+                return
+            }
+            const measuredQuality = previous.quality.status === 'measured' && current.quality.status === 'measured'
+            const sample: AnimationMediaStatsSample = {
+                source: 'video-rvfc',
+                timestampMs: current.callbackNowMs,
+                callbackIntervalMs,
+                ...(mediaTimeDeltaMs === undefined ? {} : { mediaTimeDeltaMs }),
+                ...(presentedFramesDelta === undefined ? {} : { presentedFramesDelta }),
+                ...(displayLatenessMs === undefined ? {} : { displayLatenessMs }),
+                ...(processingDurationSeconds === undefined ? {} : { processingDurationMs: processingDurationSeconds * 1_000 }),
+                playbackQuality: measuredQuality
+                    ? {
+                          status: 'measured',
+                          totalVideoFramesDelta: current.quality.totalVideoFrames! - previous.quality.totalVideoFrames!,
+                          droppedVideoFramesDelta: current.quality.droppedVideoFrames! - previous.quality.droppedVideoFrames!,
+                          ...(() => {
+                              const corruptedVideoFramesDelta = optionalDelta(
+                                  current.quality.corruptedVideoFrames,
+                                  previous.quality.corruptedVideoFrames
+                              )
+                              return corruptedVideoFramesDelta === undefined ? {} : { corruptedVideoFramesDelta }
+                          })(),
+                      }
+                    : { status: current.quality.status },
+            }
+            safeEmit(() => options.sink.recordMediaStats(sample))
+        }
+        schedule()
+    }
+
+    const stop = (): void => {
+        if (!active && pendingHandle === null) return
+        active = false
+        baseline = null
+        const handle = pendingHandle
+        pendingHandle = null
+        if (handle === null || !options.video.cancelVideoFrameCallback) return
+        try {
+            options.video.cancelVideoFrameCallback.call(options.video, handle)
+        } catch {
+            // Teardown must remain safe when a host has already released the video.
+        }
+    }
+
+    return {
+        get running(): boolean {
+            return active
+        },
+        start(): boolean {
+            if (disposed || active || !options.video.requestVideoFrameCallback) return false
+            active = true
+            baseline = null
+            return schedule()
+        },
+        resetBaseline(): void {
+            baseline = null
+        },
+        stop,
+        dispose(): void {
+            if (disposed) return
+            disposed = true
+            stop()
+        },
+    }
+}
