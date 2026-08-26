@@ -297,7 +297,8 @@ describe('lab platform artifact projections', () => {
 
     it('retains and verifies the executed platform envelope against actual attempt structure', () => {
         const legacy = animationReport()
-        const { lighthouse: _lighthouse, ...withoutLighthouse } = legacy
+        const { lighthouse, ...withoutLighthouse } = legacy
+        expect(lighthouse).toBeDefined()
         const execution = {
             warmupRuns: 0,
             measuredRuns: 3,
@@ -365,7 +366,8 @@ describe('lab platform artifact projections', () => {
 
     it.each(['firefox', 'webkit'])('accepts a zero-duration unsupported trace attempt from %s', browserName => {
         const legacy = animationReport()
-        const { lighthouse: _lighthouse, ...withoutLighthouse } = legacy
+        const { lighthouse, ...withoutLighthouse } = legacy
+        expect(lighthouse).toBeDefined()
         const execution = {
             warmupRuns: 0,
             measuredRuns: 3,
@@ -421,7 +423,8 @@ describe('lab platform artifact projections', () => {
 
     it('accepts the maximum platform execution envelope within the two-hour runner grant window', () => {
         const legacy = animationReport()
-        const { lighthouse: _lighthouse, ...base } = legacy
+        const { lighthouse, ...base } = legacy
+        expect(lighthouse).toBeDefined()
         const startedAt = '2026-08-25T00:00:00.000Z'
         const endedAt = '2026-08-25T01:40:00.000Z'
         const pageAttempt = (phase: 'warmup' | 'measured', index: number) => ({
