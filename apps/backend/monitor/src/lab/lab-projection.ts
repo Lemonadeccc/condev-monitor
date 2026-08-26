@@ -13,6 +13,7 @@ export const LAB_ANIMATION_REPORT_DECODED_MAX_BYTES = 2 * 1024 * 1024
 export const LAB_TRACE_INDEX_DECODED_MAX_BYTES = 4 * 1024 * 1024
 
 const MAX_DURATION_MS = 60 * 60 * 1000
+const MAX_REPORT_WINDOW_MS = 2 * 60 * 60 * 1000
 const MAX_TRACE_INPUT_EVENTS = 2_000_000
 const MAX_METRICS = 512
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,159}$/
@@ -55,6 +56,7 @@ type ParsedTimeline = {
 }
 
 export type ParsedAnimationReport = {
+    runId: string
     compactSummary: LabRunSummary
     analysis: AnimationLabSemanticsV2 | null
     context: {
@@ -63,7 +65,26 @@ export type ParsedAnimationReport = {
         durationMs: number
         environment: string
         browser: string
+        browserName: string
+        browserHeadless: boolean
         viewport: { width: number; height: number; dpr: number }
+        reducedMotion: 'no-preference' | 'reduce'
+        cacheMode: 'cold' | 'warm'
+        execution: {
+            warmupRuns: number
+            measuredRuns: number
+            durationMs: number | null
+            trace: boolean
+            lighthouse: boolean
+            colorScheme: 'light' | 'dark' | null
+            cpuThrottleRate: number
+            network: {
+                offline?: boolean
+                latencyMs?: number
+                downloadBytesPerSecond?: number
+                uploadBytesPerSecond?: number
+            } | null
+        } | null
     }
     lighthouse: {
         version: string | null
@@ -364,6 +385,7 @@ function scenario(value: unknown, semanticsV2: boolean) {
             'viewport',
             'reducedMotion',
             'cacheMode',
+            'execution',
             'actionLabels',
             ...(semanticsV2 ? ['actions'] : []),
         ],
@@ -373,6 +395,72 @@ function scenario(value: unknown, semanticsV2: boolean) {
     exactKeys(viewportRaw, ['width', 'height', 'deviceScaleFactor'], 'animation-report.scenario.viewport')
     const actionLabels = boundedArray(raw.actionLabels, 'animation-report.scenario.actionLabels', 128)
     actionLabels.forEach((item, index) => string(item, `animation-report.scenario.actionLabels[${index}]`, 160))
+    let execution: ParsedAnimationReport['context']['execution'] = null
+    if (raw.execution !== undefined) {
+        const executionRaw = record(raw.execution, 'animation-report.scenario.execution')
+        exactKeys(
+            executionRaw,
+            ['warmupRuns', 'measuredRuns', 'durationMs', 'trace', 'lighthouse', 'colorScheme', 'cpuThrottleRate', 'network'],
+            'animation-report.scenario.execution'
+        )
+        let network: NonNullable<ParsedAnimationReport['context']['execution']>['network'] = null
+        if (executionRaw.network !== null) {
+            const networkRaw = record(executionRaw.network, 'animation-report.scenario.execution.network')
+            exactKeys(
+                networkRaw,
+                ['offline', 'latencyMs', 'downloadBytesPerSecond', 'uploadBytesPerSecond'],
+                'animation-report.scenario.execution.network'
+            )
+            network = {
+                ...(networkRaw.offline === undefined
+                    ? {}
+                    : { offline: boolean(networkRaw.offline, 'animation-report.scenario.execution.network.offline') }),
+                ...(networkRaw.latencyMs === undefined
+                    ? {}
+                    : {
+                          latencyMs: finite(networkRaw.latencyMs, 'animation-report.scenario.execution.network.latencyMs', 0, 120_000),
+                      }),
+                ...(networkRaw.downloadBytesPerSecond === undefined
+                    ? {}
+                    : {
+                          downloadBytesPerSecond: finite(
+                              networkRaw.downloadBytesPerSecond,
+                              'animation-report.scenario.execution.network.downloadBytesPerSecond',
+                              1,
+                              1_000_000_000
+                          ),
+                      }),
+                ...(networkRaw.uploadBytesPerSecond === undefined
+                    ? {}
+                    : {
+                          uploadBytesPerSecond: finite(
+                              networkRaw.uploadBytesPerSecond,
+                              'animation-report.scenario.execution.network.uploadBytesPerSecond',
+                              1,
+                              1_000_000_000
+                          ),
+                      }),
+            }
+        }
+        execution = {
+            warmupRuns: integer(executionRaw.warmupRuns, 'animation-report.scenario.execution.warmupRuns', 0, 10),
+            measuredRuns: integer(executionRaw.measuredRuns, 'animation-report.scenario.execution.measuredRuns', 3, 20),
+            durationMs:
+                executionRaw.durationMs === undefined
+                    ? null
+                    : integer(executionRaw.durationMs, 'animation-report.scenario.execution.durationMs', 5_000, 120_000),
+            trace: boolean(executionRaw.trace, 'animation-report.scenario.execution.trace'),
+            lighthouse: boolean(executionRaw.lighthouse, 'animation-report.scenario.execution.lighthouse'),
+            colorScheme:
+                executionRaw.colorScheme === null
+                    ? null
+                    : enumeration(executionRaw.colorScheme, 'animation-report.scenario.execution.colorScheme', ['light', 'dark'] as const),
+            cpuThrottleRate: finite(executionRaw.cpuThrottleRate, 'animation-report.scenario.execution.cpuThrottleRate', 1, 20),
+            network,
+        }
+    }
+    const reducedMotion = enumeration(raw.reducedMotion, 'animation-report.scenario.reducedMotion', ['no-preference', 'reduce'] as const)
+    const cacheMode = enumeration(raw.cacheMode, 'animation-report.scenario.cacheMode', ['cold', 'warm'] as const)
     return {
         name: string(raw.name, 'animation-report.scenario.name', 120),
         routeKey: token(raw.routeKey, 'animation-report.scenario.routeKey', 160),
@@ -384,6 +472,9 @@ function scenario(value: unknown, semanticsV2: boolean) {
             height: integer(viewportRaw.height, 'animation-report.scenario.viewport.height', 240, 4320),
             dpr: finite(viewportRaw.deviceScaleFactor, 'animation-report.scenario.viewport.deviceScaleFactor', 0.5, 8),
         },
+        reducedMotion,
+        cacheMode,
+        execution,
     }
 }
 
@@ -399,6 +490,7 @@ function attempt(value: unknown, index: number, semanticsV2: boolean) {
             'startedAt',
             'endedAt',
             'durationMs',
+            'observationDurationMs',
             'metrics',
             'capabilities',
             'limitations',
@@ -407,15 +499,33 @@ function attempt(value: unknown, index: number, semanticsV2: boolean) {
         label
     )
     token(raw.attemptId, `${label}.attemptId`, 160)
-    enumeration(raw.phase, `${label}.phase`, ['warmup', 'measured', 'diagnostic-trace', 'lighthouse'] as const)
+    const phase = enumeration(raw.phase, `${label}.phase`, ['warmup', 'measured', 'diagnostic-trace', 'lighthouse'] as const)
     integer(raw.index, `${label}.index`, 0, 100)
-    isoDate(raw.startedAt, `${label}.startedAt`)
-    isoDate(raw.endedAt, `${label}.endedAt`)
-    finite(raw.durationMs, `${label}.durationMs`, 0, MAX_DURATION_MS)
+    const startedAt = isoDate(raw.startedAt, `${label}.startedAt`)
+    const endedAt = isoDate(raw.endedAt, `${label}.endedAt`)
+    const durationMs = finite(raw.durationMs, `${label}.durationMs`, 0, MAX_DURATION_MS)
+    const observationDurationMs =
+        raw.observationDurationMs === undefined
+            ? null
+            : finite(raw.observationDurationMs, `${label}.observationDurationMs`, 0, MAX_DURATION_MS)
+    const wallDurationMs = Date.parse(endedAt) - Date.parse(startedAt)
+    if (wallDurationMs < 0 || Math.abs(wallDurationMs - durationMs) > 1_000) {
+        throw new BadRequestException(`${label} timestamps do not match durationMs`)
+    }
+    if (observationDurationMs !== null && observationDurationMs > durationMs + 1) {
+        throw new BadRequestException(`${label}.observationDurationMs cannot exceed durationMs`)
+    }
     const parsedMetrics = metrics(raw.metrics, `${label}.metrics`, MAX_METRICS, semanticsV2)
     const parsedCapabilities = capabilities(raw.capabilities, `${label}.capabilities`)
     const parsedLimitations = limitations(raw.limitations, `${label}.limitations`)
-    return { metrics: parsedMetrics, capabilities: parsedCapabilities, limitations: parsedLimitations }
+    return {
+        phase,
+        durationMs,
+        observationDurationMs,
+        metrics: parsedMetrics,
+        capabilities: parsedCapabilities,
+        limitations: parsedLimitations,
+    }
 }
 
 function lighthouseAudit(value: unknown, label: string) {
@@ -561,23 +671,86 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
     )
     if (raw.schemaVersion !== 1) throw new BadRequestException('Unsupported animation-report schemaVersion')
     const analysis = semanticsV2 ? parseAnimationLabSemanticsV2FromReport(raw) : null
-    string(raw.runId, 'animation-report.runId', 160)
+    const reportRunId = string(raw.runId, 'animation-report.runId', 160)
     const parsedScenario = scenario(raw.scenario, semanticsV2)
     const browserRaw = record(raw.browser, 'animation-report.browser')
     exactKeys(browserRaw, ['name', 'version', 'headless'], 'animation-report.browser')
     const browserName = token(browserRaw.name, 'animation-report.browser.name', 40)
     const browserVersion = string(browserRaw.version, 'animation-report.browser.version', 120, true)
-    boolean(browserRaw.headless, 'animation-report.browser.headless')
+    const browserHeadless = boolean(browserRaw.headless, 'animation-report.browser.headless')
     const startedAt = isoDate(raw.startedAt, 'animation-report.startedAt')
     const endedAt = isoDate(raw.endedAt, 'animation-report.endedAt')
     const durationMs = Math.max(0, Date.parse(endedAt) - Date.parse(startedAt))
-    if (durationMs > MAX_DURATION_MS) throw new BadRequestException('animation-report duration is too large')
+    if (durationMs > MAX_REPORT_WINDOW_MS) throw new BadRequestException('animation-report duration is too large')
     const parsedAttempts = boundedArray(raw.attempts, 'animation-report.attempts', 32).map((item, index) =>
         attempt(item, index, semanticsV2)
     )
+    if (parsedScenario.execution) {
+        const warmupCount = parsedAttempts.filter(item => item.phase === 'warmup').length
+        const measuredCount = parsedAttempts.filter(item => item.phase === 'measured').length
+        const traceAttempts = parsedAttempts.filter(item => item.phase === 'diagnostic-trace')
+        const traceCount = traceAttempts.length
+        const lighthouseAttempts = parsedAttempts.filter(item => item.phase === 'lighthouse')
+        const lighthouseCount = lighthouseAttempts.length
+        if (warmupCount !== parsedScenario.execution.warmupRuns || measuredCount !== parsedScenario.execution.measuredRuns) {
+            throw new BadRequestException('animation-report attempts do not match the declared execution config')
+        }
+        if (traceCount !== (parsedScenario.execution.trace ? 1 : 0) || lighthouseCount !== (parsedScenario.execution.lighthouse ? 1 : 0)) {
+            throw new BadRequestException('animation-report diagnostics do not match the declared execution config')
+        }
+        if (traceAttempts.some(item => typeof item.capabilities.cdpTrace !== 'boolean')) {
+            throw new BadRequestException('animation-report trace attempt has no closed capability status')
+        }
+        if (lighthouseAttempts.some(item => typeof item.capabilities.lighthouse !== 'boolean')) {
+            throw new BadRequestException('animation-report Lighthouse attempt has no closed capability status')
+        }
+        if (
+            traceAttempts.some(
+                item =>
+                    item.capabilities.cdpTrace === false &&
+                    (item.durationMs !== 0 || item.observationDurationMs !== null || item.metrics.length !== 0)
+            )
+        ) {
+            throw new BadRequestException('animation-report unsupported trace attempt must be an empty zero-duration diagnostic')
+        }
+        if (
+            lighthouseAttempts.some(
+                item =>
+                    item.capabilities.lighthouse === false &&
+                    (item.durationMs !== 0 || item.observationDurationMs !== null || item.metrics.length !== 0)
+            )
+        ) {
+            throw new BadRequestException('animation-report unavailable Lighthouse attempt must be an empty zero-duration diagnostic')
+        }
+        if (
+            parsedScenario.execution.durationMs !== null &&
+            parsedAttempts
+                .filter(
+                    item =>
+                        item.phase === 'warmup' ||
+                        item.phase === 'measured' ||
+                        (item.phase === 'diagnostic-trace' && item.capabilities.cdpTrace === true)
+                )
+                .some(item => item.observationDurationMs === null || item.observationDurationMs + 1 < parsedScenario.execution!.durationMs!)
+        ) {
+            throw new BadRequestException('animation-report attempt is shorter than the declared observation duration')
+        }
+        if (
+            raw.timeline !== undefined &&
+            (!parsedScenario.execution.trace || !traceAttempts.some(item => item.capabilities.cdpTrace === true))
+        ) {
+            throw new BadRequestException('animation-report timeline does not match an executed CDP Trace')
+        }
+    }
     const aggregateMetrics = metrics(raw.aggregateMetrics, 'animation-report.aggregateMetrics', 256, semanticsV2)
     if (raw.timeline !== undefined) parseTraceIndexArtifact(raw.timeline)
     const parsedLighthouse = raw.lighthouse === undefined ? null : lighthouse(raw.lighthouse, semanticsV2)
+    if (parsedScenario.execution) {
+        const lighthouseSucceeded = parsedAttempts.some(item => item.phase === 'lighthouse' && item.capabilities.lighthouse === true)
+        if ((parsedLighthouse !== null) !== lighthouseSucceeded) {
+            throw new BadRequestException('animation-report Lighthouse result does not match an executed Lighthouse attempt')
+        }
+    }
     privacy(raw.privacy)
 
     const mergedCapabilities: Record<string, boolean | 'unknown' | null> = {}
@@ -630,6 +803,7 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
     }
 
     return {
+        runId: reportRunId,
         compactSummary,
         analysis,
         context: {
@@ -638,7 +812,12 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
             durationMs,
             environment: parsedScenario.environment,
             browser: browserVersion ? `${browserName} ${browserVersion}` : browserName,
+            browserName,
+            browserHeadless,
             viewport: parsedScenario.viewport,
+            reducedMotion: parsedScenario.reducedMotion,
+            cacheMode: parsedScenario.cacheMode,
+            execution: parsedScenario.execution,
         },
         lighthouse: parsedLighthouse,
     }

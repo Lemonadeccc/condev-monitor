@@ -1,15 +1,29 @@
-import { Body, Controller, Param, Patch, Post, Put, Request, UnauthorizedException } from '@nestjs/common'
+import { Body, Controller, Get, Param, Patch, Post, Put, Request, UnauthorizedException } from '@nestjs/common'
 import type { Request as ExpressRequest } from 'express'
 
-import { parseArtifactUploadMetadata, parseRunnerGrantToken, parseUpdateLabRunInput } from './lab.contracts'
+import {
+    LAB_RUNNER_CONTRACT_VERSION,
+    parseArtifactUploadMetadata,
+    parseLabRunnerContractVersion,
+    parseRunnerGrantToken,
+    parseUpdateLabRunInput,
+} from './lab.contracts'
 import { LabService } from './lab.service'
 
 @Controller('/labs/runner')
 export class LabRunnerController {
     constructor(private readonly labService: LabService) {}
 
+    @Get('/runs/:runId/contract')
+    async negotiateContract(@Param('runId') runId: string, @Request() req: ExpressRequest) {
+        this.runnerContract(req)
+        const data = await this.labService.negotiateRunnerContract(runId, this.runnerToken(req))
+        return { success: true, data }
+    }
+
     @Post('/runs/:runId/claim')
     async claimRun(@Param('runId') runId: string, @Request() req: ExpressRequest) {
+        this.runnerContract(req)
         const data = await this.labService.claimRun(runId, this.runnerToken(req))
         return { success: true, data }
     }
@@ -50,5 +64,9 @@ export class LabRunnerController {
         } catch {
             throw new UnauthorizedException('Invalid runner grant')
         }
+    }
+
+    private runnerContract(req: ExpressRequest): typeof LAB_RUNNER_CONTRACT_VERSION {
+        return parseLabRunnerContractVersion(req.headers['x-lab-runner-contract'])
     }
 }

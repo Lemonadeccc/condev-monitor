@@ -295,6 +295,206 @@ describe('lab platform artifact projections', () => {
         expect(parsed.compactSummary.metrics?.[0]).toEqual(expect.objectContaining({ evidenceLevel: 'controlled-lab-measurement' }))
     })
 
+    it('retains and verifies the executed platform envelope against actual attempt structure', () => {
+        const legacy = animationReport()
+        const { lighthouse: _lighthouse, ...withoutLighthouse } = legacy
+        const execution = {
+            warmupRuns: 0,
+            measuredRuns: 3,
+            durationMs: 5_000,
+            trace: false,
+            lighthouse: false,
+            colorScheme: 'light',
+            cpuThrottleRate: 1,
+            network: null,
+        }
+        const report = {
+            ...withoutLighthouse,
+            scenario: { ...legacy.scenario, execution },
+            attempts: Array.from({ length: 3 }, (_, index) => ({
+                ...legacy.attempts[0],
+                attemptId: `attempt_${index}`,
+                index,
+                observationDurationMs: 5_000,
+            })),
+        }
+
+        expect(parseAnimationReportArtifact(report).context.execution).toEqual(execution)
+
+        const drift = structuredClone(report)
+        drift.scenario.execution.measuredRuns = 4
+        expect(() => parseAnimationReportArtifact(drift)).toThrow('attempts do not match')
+
+        const tooShort = structuredClone(report)
+        tooShort.attempts[0].observationDurationMs = 4_000
+        expect(() => parseAnimationReportArtifact(tooShort)).toThrow('shorter than the declared observation duration')
+
+        const impossibleObservation = structuredClone(report)
+        impossibleObservation.attempts[0].observationDurationMs = 10_002
+        expect(() => parseAnimationReportArtifact(impossibleObservation)).toThrow('observationDurationMs cannot exceed durationMs')
+
+        const inconsistentClock = structuredClone(report)
+        inconsistentClock.attempts[0].durationMs = 7_000
+        expect(() => parseAnimationReportArtifact(inconsistentClock)).toThrow('timestamps do not match durationMs')
+
+        const undeclaredTimeline = { ...structuredClone(report), timeline: traceIndex() }
+        expect(() => parseAnimationReportArtifact(undeclaredTimeline)).toThrow('timeline does not match an executed CDP Trace')
+
+        const undeclaredLighthouse = { ...structuredClone(report), lighthouse: legacy.lighthouse }
+        expect(() => parseAnimationReportArtifact(undeclaredLighthouse)).toThrow(
+            'Lighthouse result does not match an executed Lighthouse attempt'
+        )
+
+        const missingLighthouseResult = structuredClone(report)
+        missingLighthouseResult.scenario.execution.lighthouse = true
+        ;(missingLighthouseResult.attempts as unknown as Array<Record<string, unknown>>).push({
+            attemptId: 'lighthouse_success',
+            phase: 'lighthouse',
+            index: 0,
+            startedAt: '2026-08-25T00:00:11.000Z',
+            endedAt: '2026-08-25T00:00:11.000Z',
+            durationMs: 0,
+            metrics: [],
+            capabilities: { lighthouse: true, chromium: true },
+            limitations: [],
+        })
+        expect(() => parseAnimationReportArtifact(missingLighthouseResult)).toThrow(
+            'Lighthouse result does not match an executed Lighthouse attempt'
+        )
+    })
+
+    it.each(['firefox', 'webkit'])('accepts a zero-duration unsupported trace attempt from %s', browserName => {
+        const legacy = animationReport()
+        const { lighthouse: _lighthouse, ...withoutLighthouse } = legacy
+        const execution = {
+            warmupRuns: 0,
+            measuredRuns: 3,
+            durationMs: 5_000,
+            trace: true,
+            lighthouse: false,
+            colorScheme: 'light',
+            cpuThrottleRate: 1,
+            network: null,
+        }
+        const measured = Array.from({ length: 3 }, (_, index) => ({
+            ...legacy.attempts[0],
+            attemptId: `attempt_${index}`,
+            index,
+            observationDurationMs: 5_000,
+        }))
+        const unavailableTrace = {
+            attemptId: 'trace-unavailable',
+            phase: 'diagnostic-trace',
+            index: 0,
+            startedAt: '2026-08-25T00:00:11.000Z',
+            endedAt: '2026-08-25T00:00:11.000Z',
+            durationMs: 0,
+            metrics: [],
+            capabilities: { cdpTrace: false, cpuProfile: false, screenshots: false },
+            limitations: [`cdp-trace-unavailable-browser-${browserName}`],
+        }
+        const report = {
+            ...withoutLighthouse,
+            browser: { name: browserName, version: 'test', headless: true },
+            scenario: { ...legacy.scenario, execution },
+            attempts: [...measured, unavailableTrace],
+        }
+
+        expect(parseAnimationReportArtifact(report).context).toEqual(expect.objectContaining({ browserName, execution }))
+
+        const forgedUnsupportedTrace = structuredClone(report)
+        ;(forgedUnsupportedTrace.attempts as unknown as Array<Record<string, unknown>>)[3] = {
+            ...unavailableTrace,
+            endedAt: '2026-08-25T00:00:11.100Z',
+            durationMs: 100,
+            metrics: [metric()],
+        }
+        expect(() => parseAnimationReportArtifact(forgedUnsupportedTrace)).toThrow('empty zero-duration diagnostic')
+
+        const falseMeasuredTrace = structuredClone(report)
+        falseMeasuredTrace.attempts[3] = {
+            ...unavailableTrace,
+            capabilities: { ...unavailableTrace.capabilities, cdpTrace: true },
+        }
+        expect(() => parseAnimationReportArtifact(falseMeasuredTrace)).toThrow('shorter than the declared observation duration')
+    })
+
+    it('accepts the maximum platform execution envelope within the two-hour runner grant window', () => {
+        const legacy = animationReport()
+        const { lighthouse: _lighthouse, ...base } = legacy
+        const startedAt = '2026-08-25T00:00:00.000Z'
+        const endedAt = '2026-08-25T01:40:00.000Z'
+        const pageAttempt = (phase: 'warmup' | 'measured', index: number) => ({
+            ...legacy.attempts[0],
+            attemptId: `${phase}_${index}`,
+            phase,
+            index,
+            startedAt,
+            endedAt: '2026-08-25T00:02:00.000Z',
+            durationMs: 120_000,
+            observationDurationMs: 120_000,
+        })
+        const report = {
+            ...base,
+            browser: { name: 'firefox', version: 'test', headless: true },
+            startedAt,
+            endedAt,
+            scenario: {
+                ...legacy.scenario,
+                cacheMode: 'warm',
+                execution: {
+                    warmupRuns: 5,
+                    measuredRuns: 20,
+                    durationMs: 120_000,
+                    trace: true,
+                    lighthouse: true,
+                    colorScheme: 'light',
+                    cpuThrottleRate: 1,
+                    network: null,
+                },
+            },
+            attempts: [
+                ...Array.from({ length: 5 }, (_, index) => pageAttempt('warmup', index)),
+                ...Array.from({ length: 20 }, (_, index) => pageAttempt('measured', index)),
+                {
+                    attemptId: 'trace_unavailable',
+                    phase: 'diagnostic-trace',
+                    index: 0,
+                    startedAt: endedAt,
+                    endedAt,
+                    durationMs: 0,
+                    metrics: [],
+                    capabilities: { cdpTrace: false, cpuProfile: false, screenshots: false },
+                    limitations: ['cdp-trace-unavailable-browser-firefox'],
+                },
+                {
+                    attemptId: 'lighthouse_unavailable',
+                    phase: 'lighthouse',
+                    index: 0,
+                    startedAt: endedAt,
+                    endedAt,
+                    durationMs: 0,
+                    metrics: [],
+                    capabilities: { lighthouse: false, chromium: false },
+                    limitations: ['lighthouse-unavailable-browser-firefox'],
+                },
+            ],
+        }
+
+        expect(parseAnimationReportArtifact(report).context.durationMs).toBe(6_000_000)
+
+        const forgedUnavailableLighthouse = structuredClone(report)
+        const unavailableLighthouse = (forgedUnavailableLighthouse.attempts as unknown as Array<Record<string, unknown>>)[26]!
+        unavailableLighthouse.endedAt = '2026-08-25T01:40:00.100Z'
+        unavailableLighthouse.durationMs = 100
+        unavailableLighthouse.metrics = [metric()]
+        expect(() => parseAnimationReportArtifact(forgedUnavailableLighthouse)).toThrow('empty zero-duration diagnostic')
+
+        const beyondGrant = structuredClone(report)
+        beyondGrant.endedAt = '2026-08-25T02:00:00.001Z'
+        expect(() => parseAnimationReportArtifact(beyondGrant)).toThrow('duration is too large')
+    })
+
     it('strictly projects canonical v2 semantics and preserves expanded summary metric metadata', () => {
         const parsed = parseAnimationReportArtifact(animationReportV2())
 

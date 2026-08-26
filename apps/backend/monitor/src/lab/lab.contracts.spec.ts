@@ -2,8 +2,10 @@ import { BadRequestException, HttpException } from '@nestjs/common'
 
 import {
     createHash,
+    LAB_RUNNER_CONTRACT_VERSION,
     parseArtifactUploadMetadata,
     parseCreateLabRunInput,
+    parseLabRunnerContractVersion,
     parseLabRunSummary,
     parseUpdateLabRunInput,
 } from './lab.contracts'
@@ -74,6 +76,27 @@ describe('animation lab contracts', () => {
         expect(() => parseCreateLabRunInput({ appId: 'app-123', scenarioKey: 'scenario', config: { measuredRuns: 2 } })).toThrow(
             BadRequestException
         )
+        expect(() =>
+            parseCreateLabRunInput({
+                appId: 'app-123',
+                scenarioKey: 'scenario',
+                config: { cacheState: 'warm', warmupRuns: 0 },
+            })
+        ).toThrow('requires at least one warmup run')
+    })
+
+    it('requires the exact runner contract before a grant can be claimed', () => {
+        expect(parseLabRunnerContractVersion(String(LAB_RUNNER_CONTRACT_VERSION))).toBe(LAB_RUNNER_CONTRACT_VERSION)
+        for (const version of [undefined, '1', '3']) {
+            try {
+                parseLabRunnerContractVersion(version)
+                throw new Error('expected contract rejection')
+            } catch (error) {
+                expect(error).toBeInstanceOf(HttpException)
+                expect((error as HttpException).getStatus()).toBe(426)
+                expect((error as Error).message).toMatch(/upgrade Monitor and the local Runner together/u)
+            }
+        }
     })
 
     it('accepts only the closed, bounded summary shape', () => {

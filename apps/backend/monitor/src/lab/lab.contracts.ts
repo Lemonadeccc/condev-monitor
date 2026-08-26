@@ -8,6 +8,7 @@ import { type AnimationLabMetricV2Projection, parseAnimationLabMetricV2 } from '
 export const LAB_RUN_CONFIG_MAX_BYTES = 16 * 1024
 export const LAB_RUN_SUMMARY_MAX_BYTES = 64 * 1024
 export const LAB_RUN_ARTIFACT_TOTAL_MAX_BYTES = 128 * 1024 * 1024
+export const LAB_RUNNER_CONTRACT_VERSION = 2 as const
 
 export const LAB_RUN_STATUSES = ['created', 'running', 'completed', 'failed', 'cancelled', 'expired'] as const
 export type LabRunStatus = (typeof LAB_RUN_STATUSES)[number]
@@ -52,6 +53,15 @@ export type LabRunConfig = {
     durationMs: number
     trace: boolean
     lighthouse: boolean
+}
+
+export function parseLabRunnerContractVersion(value: unknown): typeof LAB_RUNNER_CONTRACT_VERSION {
+    const raw = Array.isArray(value) ? value[0] : value
+    if (raw === String(LAB_RUNNER_CONTRACT_VERSION)) return LAB_RUNNER_CONTRACT_VERSION
+    throw new HttpException(
+        `Animation Lab Runner contract ${LAB_RUNNER_CONTRACT_VERSION} is required; upgrade Monitor and the local Runner together`,
+        426
+    )
 }
 
 export type CreateLabRunInput = {
@@ -236,7 +246,7 @@ function normalizeTargetUrl(value: unknown): string {
     return parsed.href
 }
 
-function parseRunConfig(raw: unknown): LabRunConfig {
+export function parseLabRunConfig(raw: unknown): LabRunConfig {
     if (raw === undefined) raw = {}
     if (!isRecord(raw)) throw new BadRequestException('config must be an object')
     exactKeys(
@@ -273,6 +283,9 @@ function parseRunConfig(raw: unknown): LabRunConfig {
         trace: booleanValue(raw.trace, 'config.trace', true),
         lighthouse: booleanValue(raw.lighthouse, 'config.lighthouse', true),
     }
+    if (config.cacheState === 'warm' && config.warmupRuns < 1) {
+        throw new BadRequestException('config.cacheState warm requires at least one warmup run')
+    }
     if (jsonBytes(config, 'config') > LAB_RUN_CONFIG_MAX_BYTES) throw new BadRequestException('config is too large')
     return config
 }
@@ -292,7 +305,7 @@ export function parseCreateLabRunInput(raw: unknown): CreateLabRunInput {
             targetUrl: normalizeTargetUrl(raw.targetUrl),
             release: '',
             buildId: '',
-            config: parseRunConfig({ browser: raw.browser }),
+            config: parseLabRunConfig({ browser: raw.browser }),
         }
     }
     exactKeys(raw, ['appId', 'name', 'scenarioKey', 'targetOrigin', 'release', 'buildId', 'config'], 'request body')
@@ -305,7 +318,7 @@ export function parseCreateLabRunInput(raw: unknown): CreateLabRunInput {
         targetUrl: normalizeOrigin(raw.targetOrigin),
         release: optionalString(raw.release, 'release', 120, SAFE_DIMENSION),
         buildId: optionalString(raw.buildId, 'buildId', 120, SAFE_DIMENSION),
-        config: parseRunConfig(raw.config),
+        config: parseLabRunConfig(raw.config),
     }
 }
 

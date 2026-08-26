@@ -22,10 +22,12 @@ import { LabRunnerGrantEntity } from './entity/lab-runner-grant.entity'
 import {
     createHash,
     type CreateLabRunInput,
+    LAB_RUNNER_CONTRACT_VERSION,
     LAB_RUN_ARTIFACT_TOTAL_MAX_BYTES,
     LAB_RUN_SUMMARY_MAX_BYTES,
     type LabArtifactUploadMetadata,
     type LabRunSummary,
+    parseLabRunConfig,
     parseLabRunSummary,
     type UpdateLabRunInput,
 } from './lab.contracts'
@@ -199,7 +201,7 @@ export class LabService {
         return this.dataSource.transaction(async manager => {
             const { run, grant } = await this.authenticateRunner(manager, runId, token, { requireClaimed: false, allowTerminal: true })
             if (isTerminalLabStatus(run.status)) {
-                if (grant.consumedAt) return this.serializeRun(run)
+                if (grant.consumedAt) return this.serializeRunnerClaim(run)
                 throw new ConflictException(`Lab run is already ${run.status}`)
             }
             claimLabRunState(run)
@@ -208,7 +210,14 @@ export class LabService {
             grant.lastUsedAt = now
             await manager.getRepository(LabRunnerGrantEntity).save(grant)
             await manager.getRepository(LabRunEntity).save(run)
-            return this.serializeRun(run)
+            return this.serializeRunnerClaim(run)
+        })
+    }
+
+    async negotiateRunnerContract(runId: string, token: string) {
+        return this.dataSource.transaction(async manager => {
+            const { run } = await this.authenticateRunner(manager, runId, token, { requireClaimed: false, allowTerminal: true })
+            return { runId: run.id, runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION }
         })
     }
 
@@ -281,6 +290,7 @@ export class LabService {
                     this.assertIdempotentArtifact(duplicate, params.metadata)
                     return this.serializeArtifact(duplicate)
                 }
+                if (params.metadata.kind === 'trace-index') this.assertTraceIndexMatchesRunConfig(run)
                 const aggregate = await artifactRepository
                     .createQueryBuilder('artifact')
                     .select('COUNT(*)', 'count')
@@ -319,6 +329,7 @@ export class LabService {
                 })
                 await artifactRepository.save(artifact)
                 if (derivedReport) {
+                    this.assertReportMatchesRunConfig(run, derivedReport)
                     const compactSummary = parseLabRunSummary(derivedReport.compactSummary)
                     const encodedSummary = JSON.stringify(compactSummary)
                     if (Buffer.byteLength(encodedSummary, 'utf8') > LAB_RUN_SUMMARY_MAX_BYTES) {
@@ -486,6 +497,93 @@ export class LabService {
             environment: context?.environment || null,
             browser: context?.browser ?? (typeof config.browser === 'string' ? config.browser : null),
             viewport: context?.viewport ?? (viewport && viewport.width !== null && viewport.height !== null ? viewport : null),
+        }
+    }
+
+    private serializeRunnerClaim(run: LabRunEntity) {
+        let storedConfig: unknown
+        try {
+            storedConfig = JSON.parse(run.config) as unknown
+        } catch {
+            throw new ConflictException('Lab run has an invalid stored execution config')
+        }
+        const expectedConfigKeys = [
+            'browser',
+            'viewport',
+            'deviceScaleFactor',
+            'reducedMotion',
+            'cacheState',
+            'warmupRuns',
+            'measuredRuns',
+            'durationMs',
+            'trace',
+            'lighthouse',
+        ]
+        if (
+            !storedConfig ||
+            typeof storedConfig !== 'object' ||
+            Array.isArray(storedConfig) ||
+            Object.keys(storedConfig).length !== expectedConfigKeys.length ||
+            Object.keys(storedConfig).some(key => !expectedConfigKeys.includes(key))
+        ) {
+            throw new ConflictException('Lab run has an invalid stored execution config')
+        }
+        let config
+        try {
+            config = parseLabRunConfig(storedConfig)
+        } catch {
+            throw new ConflictException('Lab run has an invalid stored execution config')
+        }
+        if (!run.targetOrigin) throw new ConflictException('Lab run has no target URL')
+        return {
+            ...this.serializeRun(run),
+            runId: run.id,
+            targetUrl: run.targetOrigin,
+            config,
+            runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION,
+        }
+    }
+
+    private assertReportMatchesRunConfig(run: LabRunEntity, report: ParsedAnimationReport): void {
+        let config: ReturnType<typeof parseLabRunConfig>
+        try {
+            config = parseLabRunConfig(JSON.parse(run.config) as unknown)
+        } catch {
+            throw new ConflictException('Lab run has an invalid stored execution config')
+        }
+        const execution = report.context.execution
+        if (!execution) throw new ConflictException('Animation report does not declare its executed platform config')
+        const matches =
+            report.runId === run.id &&
+            report.context.browserName === config.browser &&
+            report.context.browserHeadless === true &&
+            report.context.viewport.width === config.viewport.width &&
+            report.context.viewport.height === config.viewport.height &&
+            report.context.viewport.dpr === config.deviceScaleFactor &&
+            report.context.reducedMotion === config.reducedMotion &&
+            report.context.cacheMode === config.cacheState &&
+            execution.warmupRuns === config.warmupRuns &&
+            execution.measuredRuns === config.measuredRuns &&
+            execution.durationMs === config.durationMs &&
+            execution.trace === config.trace &&
+            execution.lighthouse === config.lighthouse &&
+            execution.colorScheme === 'light' &&
+            execution.cpuThrottleRate === 1 &&
+            execution.network === null
+        if (!matches) throw new ConflictException('Animation report execution config does not match the claimed platform run')
+    }
+
+    private assertTraceIndexMatchesRunConfig(run: LabRunEntity): void {
+        let config: ReturnType<typeof parseLabRunConfig>
+        let summary: LabRunSummary
+        try {
+            config = parseLabRunConfig(JSON.parse(run.config) as unknown)
+            summary = parseLabRunSummary(JSON.parse(run.summary) as unknown)
+        } catch {
+            throw new ConflictException('Lab run has no verifiable Trace execution evidence')
+        }
+        if (!config.trace || summary.capabilities?.cdpTrace !== true) {
+            throw new ConflictException('Trace index does not match a verified CDP Trace for the claimed platform run')
         }
     }
 

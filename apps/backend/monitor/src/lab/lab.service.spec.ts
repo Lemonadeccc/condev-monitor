@@ -1,10 +1,10 @@
 // cspell:ignore labg
-import { UnauthorizedException } from '@nestjs/common'
+import { ConflictException, UnauthorizedException } from '@nestjs/common'
 
 import { LabArtifactEntity } from './entity/lab-artifact.entity'
 import { LabRunEntity } from './entity/lab-run.entity'
 import { LabRunnerGrantEntity } from './entity/lab-runner-grant.entity'
-import { createHash, parseCreateLabRunInput } from './lab.contracts'
+import { createHash, LAB_RUNNER_CONTRACT_VERSION, parseCreateLabRunInput } from './lab.contracts'
 import { LabService } from './lab.service'
 
 function repository<T>() {
@@ -109,7 +109,9 @@ describe('LabService runner grants and ownership', () => {
         const grants = repository<LabRunnerGrantEntity>()
         const rawToken = `labg_${'a'.repeat(43)}`
         const run = runEntity()
-        run.config = JSON.stringify({ browser: 'webkit', viewport: { width: 1280, height: 720 }, deviceScaleFactor: 1 })
+        run.config = JSON.stringify(
+            parseCreateLabRunInput({ appId: 'app-123', scenarioKey: 'pointer.follow.v1', config: { browser: 'webkit' } }).config
+        )
         const grant: LabRunnerGrantEntity = {
             id: '22222222-2222-4222-8222-222222222222',
             runId: run.id,
@@ -139,18 +141,65 @@ describe('LabService runner grants and ownership', () => {
             {} as never
         )
 
+        const negotiated = await service.negotiateRunnerContract(run.id, rawToken)
+        expect(negotiated).toEqual({ runId: run.id, runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION })
+        expect(grant.consumedAt).toBeNull()
+        expect(run.status).toBe('created')
+
         const first = await service.claimRun(run.id, rawToken)
         const consumedAt = grant.consumedAt
         const second = await service.claimRun(run.id, rawToken)
 
         expect(first).toEqual(
-            expect.objectContaining({ status: 'running', phase: 'claimed', config: expect.objectContaining({ browser: 'webkit' }) })
+            expect.objectContaining({
+                runId: run.id,
+                targetUrl: run.targetOrigin,
+                config: expect.objectContaining({ browser: 'webkit' }),
+                runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION,
+            })
         )
         expect(second).toEqual(
-            expect.objectContaining({ status: 'running', phase: 'claimed', config: expect.objectContaining({ browser: 'webkit' }) })
+            expect.objectContaining({ runId: run.id, targetUrl: run.targetOrigin, config: expect.objectContaining({ browser: 'webkit' }) })
         )
         expect(consumedAt).toBeInstanceOf(Date)
         expect(grant.consumedAt).toBe(consumedAt)
+    })
+
+    it('fails closed when a claimed run has an incomplete persisted execution config', async () => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const rawToken = `labg_${'z'.repeat(43)}`
+        const run = runEntity({ config: JSON.stringify({ browser: 'chromium' }) })
+        const grant: LabRunnerGrantEntity = {
+            id: '22222222-2222-4222-8222-222222222222',
+            runId: run.id,
+            appId: run.appId,
+            tokenHash: createHash(rawToken),
+            expiresAt: new Date(Date.now() + 60_000),
+            consumedAt: null,
+            lastUsedAt: null,
+            revokedAt: null,
+            createdAt: new Date(),
+        }
+        runs.findOne.mockResolvedValue(run)
+        grants.findOne.mockResolvedValue(grant)
+        const repositories = new Map<unknown, unknown>([
+            [LabRunEntity, runs],
+            [LabArtifactEntity, artifacts],
+            [LabRunnerGrantEntity, grants],
+        ])
+        const manager = { getRepository: (entity: unknown) => repositories.get(entity) }
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            { transaction: jest.fn(async callback => callback(manager)) } as never,
+            { assertOwned: jest.fn() } as never,
+            {} as never
+        )
+
+        await expect(service.claimRun(run.id, rawToken)).rejects.toThrow('invalid stored execution config')
     })
 
     it('rejects an expired grant without claiming the run', async () => {
@@ -283,5 +332,121 @@ describe('LabService runner grants and ownership', () => {
         await expect(service.getRun(7, run.id)).resolves.toEqual(
             expect.objectContaining({ analysis: null, artifacts: [expect.objectContaining({ artifactId: artifact.id })] })
         )
+    })
+
+    it('accepts only reports whose executed envelope matches the claimed platform config', () => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const config = parseCreateLabRunInput({
+            appId: 'app-123',
+            scenarioKey: 'pointer.follow.v1',
+            config: { browser: 'webkit', measuredRuns: 4, durationMs: 15_000, trace: false, lighthouse: false },
+        }).config
+        const run = runEntity({ config: JSON.stringify(config) })
+        const service = new LabService(runs as never, artifacts as never, grants as never, {} as never, {} as never, {} as never)
+        const report = {
+            runId: run.id,
+            compactSummary: {},
+            analysis: null,
+            context: {
+                startedAt: '2026-08-25T00:00:00.000Z',
+                endedAt: '2026-08-25T00:01:00.000Z',
+                durationMs: 60_000,
+                environment: 'development',
+                browser: 'webkit 1',
+                browserName: 'webkit',
+                browserHeadless: true,
+                viewport: { width: config.viewport.width, height: config.viewport.height, dpr: config.deviceScaleFactor },
+                reducedMotion: config.reducedMotion,
+                cacheMode: config.cacheState,
+                execution: {
+                    warmupRuns: config.warmupRuns,
+                    measuredRuns: config.measuredRuns,
+                    durationMs: config.durationMs,
+                    trace: config.trace,
+                    lighthouse: config.lighthouse,
+                    colorScheme: 'light',
+                    cpuThrottleRate: 1,
+                    network: null,
+                },
+            },
+            lighthouse: null,
+        }
+
+        expect(() => (service as any).assertReportMatchesRunConfig(run, report)).not.toThrow()
+        report.runId = '99999999-9999-4999-8999-999999999999'
+        expect(() => (service as any).assertReportMatchesRunConfig(run, report)).toThrow(ConflictException)
+        report.runId = run.id
+        report.context.viewport.width += 1
+        expect(() => (service as any).assertReportMatchesRunConfig(run, report)).toThrow(ConflictException)
+    })
+
+    it.each(['firefox', 'webkit'] as const)('accepts an attached %s report with an explicitly unsupported trace attempt', browser => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const config = parseCreateLabRunInput({
+            appId: 'app-123',
+            scenarioKey: 'pointer.follow.v1',
+            config: { browser, durationMs: 15_000, trace: true, lighthouse: false },
+        }).config
+        const run = runEntity({ config: JSON.stringify(config) })
+        const service = new LabService(runs as never, artifacts as never, grants as never, {} as never, {} as never, {} as never)
+        const parsedReport = {
+            runId: run.id,
+            compactSummary: { limitations: [`cdp-trace-unavailable-browser-${browser}`] },
+            analysis: null,
+            context: {
+                startedAt: '2026-08-25T00:00:00.000Z',
+                endedAt: '2026-08-25T00:01:00.000Z',
+                durationMs: 60_000,
+                environment: 'development',
+                browser: `${browser} test`,
+                browserName: browser,
+                browserHeadless: true,
+                viewport: { width: config.viewport.width, height: config.viewport.height, dpr: config.deviceScaleFactor },
+                reducedMotion: config.reducedMotion,
+                cacheMode: config.cacheState,
+                execution: {
+                    warmupRuns: config.warmupRuns,
+                    measuredRuns: config.measuredRuns,
+                    durationMs: config.durationMs,
+                    trace: true,
+                    lighthouse: false,
+                    colorScheme: 'light',
+                    cpuThrottleRate: 1,
+                    network: null,
+                },
+            },
+            lighthouse: null,
+        }
+
+        expect(() => (service as any).assertReportMatchesRunConfig(run, parsedReport)).not.toThrow()
+
+        parsedReport.context.browserHeadless = false
+        expect(() => (service as any).assertReportMatchesRunConfig(run, parsedReport)).toThrow(ConflictException)
+    })
+
+    it('accepts a trace index only after the same claimed run reported a real CDP Trace', () => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const service = new LabService(runs as never, artifacts as never, grants as never, {} as never, {} as never, {} as never)
+        const enabled = parseCreateLabRunInput({
+            appId: 'app-123',
+            scenarioKey: 'pointer.follow.v1',
+            config: { trace: true },
+        }).config
+        const run = runEntity({ config: JSON.stringify(enabled), summary: JSON.stringify({ capabilities: { cdpTrace: true } }) })
+
+        expect(() => (service as any).assertTraceIndexMatchesRunConfig(run)).not.toThrow()
+
+        run.summary = JSON.stringify({ capabilities: { cdpTrace: false } })
+        expect(() => (service as any).assertTraceIndexMatchesRunConfig(run)).toThrow(ConflictException)
+
+        run.config = JSON.stringify({ ...enabled, trace: false })
+        run.summary = JSON.stringify({ capabilities: { cdpTrace: true } })
+        expect(() => (service as any).assertTraceIndexMatchesRunConfig(run)).toThrow(ConflictException)
     })
 })
