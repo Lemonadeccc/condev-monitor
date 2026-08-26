@@ -1,3 +1,6 @@
 /dist
 *.yaml
 examples/rag/frontend
+examples/animation-fixtures/lemon-bureau
+examples/animation-fixtures/nico-palmer
+examples/animation-fixtures/salle-blanche

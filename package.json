@@ -6,8 +6,8 @@
     "scripts": {
         "start:dev": "turbo start:dev",
         "start:fro": "pnpm --filter @condev-monitor/monitor-client dev",
-        "build": "turbo build --filter=!aisdk-rag-chatbox --filter=!ragzbxy --filter=!vanilla",
-        "build:sdk": "turbo build --filter=@condev-monitor/monitor-sdk-core --filter=@condev-monitor/monitor-sdk-browser-utils --filter=@condev-monitor/monitor-sdk-ai --filter=@condev-monitor/monitor-sdk-browser",
+        "build": "turbo build --filter=!aisdk-rag-chatbox --filter=!ragzbxy --filter=!vanilla --filter=!lemon-bureau --filter=!nico-palmer --filter=!salle-blanche",
+        "build:sdk": "turbo build --filter=@condev-monitor/monitor-sdk-core --filter=@condev-monitor/monitor-sdk-browser-utils --filter=@condev-monitor/monitor-sdk-ai --filter=@condev-monitor/monitor-sdk-browser --filter=@condev-monitor/monitor-sdk-animation",
         "build:watch": "turbo build:watch",
         "docker:start": "docker compose -p condev-monitor -f .devcontainer/docker-compose.yml up -d && COMPOSE_FILE=.devcontainer/docker-compose.yml pnpm docker:init-postgres && pnpm docker:init-kafka && COMPOSE_FILE=.devcontainer/docker-compose.yml pnpm docker:init-clickhouse",
         "docker:stop": "docker compose -p condev-monitor -f .devcontainer/docker-compose.yml down",

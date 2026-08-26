@@ -17,3 +17,7 @@ apps/backend/monitor/log
 *.log
 .DS_Store
 .git
+examples/animation-fixtures/**/.env*
+examples/animation-fixtures/lemon-bureau
+examples/animation-fixtures/nico-palmer
+examples/animation-fixtures/salle-blanche
