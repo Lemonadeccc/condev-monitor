@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ANIMATION_LAB_METRIC_CATALOG_V1, validateAnimationLabSemanticsV2 } from '@condev-monitor/animation-lab'
+import {
+    ANIMATION_LAB_METRIC_CATALOG_V1,
+    ANIMATION_LAB_METRIC_CATALOG_V2,
+    DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
+    validateAnimationLabSemanticsV2,
+} from '@condev-monitor/animation-lab'
 
 import {
     actionWindowFromProbe,
@@ -130,7 +135,121 @@ test('preserves unsupported metrics instead of turning them into zero', () => {
     const [metric] = aggregateMeasuredAttempts(attempts)
     assert.equal(metric.value, null)
     assert.equal(metric.status, 'unsupported')
+    assert.equal(metric.evidenceLevel, 'unsupported-or-unknown')
     assert.equal(metric.samples, 0)
+})
+
+test('keeps mixed unsupported and unknown availability unknown across attempts', () => {
+    const attempts = ['unsupported', 'unknown', 'unsupported'].map((status, index) => ({
+        attemptId: `attempt-${index}`,
+        phase: 'measured',
+        index,
+        startedAt: '2026-08-26T00:00:00.000Z',
+        endedAt: '2026-08-26T00:00:01.000Z',
+        durationMs: 1_000,
+        metrics: [
+            decorateLabMetric(
+                { ...frameMetric(0, 0), value: null, samples: null, status, evidenceLevel: 'unsupported-or-unknown' },
+                { level: 'attempt', attemptId: `attempt-${index}` }
+            ),
+        ],
+        capabilities: {},
+        limitations: [],
+    }))
+    const [metric] = aggregateMeasuredAttempts(attempts)
+    assert.equal(metric.value, null)
+    assert.equal(metric.status, 'unknown')
+    assert.equal(metric.evidenceLevel, 'unsupported-or-unknown')
+    assert.equal(metric.samples, 0)
+})
+
+test('normalizes unavailable aggregate evidence for unsupported/not-observed mixtures and all-unknown attempts', () => {
+    for (const statuses of [
+        ['unsupported', 'not-observed', 'unsupported'],
+        ['unknown', 'unknown', 'unknown'],
+    ]) {
+        const attempts = statuses.map((status, index) => ({
+            attemptId: `unavailable-${index}`,
+            phase: 'measured',
+            index,
+            startedAt: '2026-08-26T00:00:00.000Z',
+            endedAt: '2026-08-26T00:00:01.000Z',
+            durationMs: 1_000,
+            metrics: [
+                decorateLabMetric(
+                    {
+                        ...frameMetric(0, 0),
+                        value: null,
+                        samples: status === 'not-observed' ? 0 : null,
+                        status,
+                        evidenceLevel: status === 'not-observed' ? 'controlled-lab-measurement' : 'unsupported-or-unknown',
+                    },
+                    { level: 'attempt', attemptId: `unavailable-${index}` }
+                ),
+            ],
+            capabilities: {},
+            limitations: [],
+        }))
+        const [metric] = aggregateMeasuredAttempts(attempts)
+        assert.equal(metric.value, null)
+        assert.equal(metric.status, 'unknown')
+        assert.equal(metric.evidenceLevel, 'unsupported-or-unknown')
+    }
+
+    const notObservedAttempts = Array.from({ length: 3 }, (_, index) => ({
+        attemptId: `not-observed-${index}`,
+        phase: 'measured',
+        index,
+        startedAt: '2026-08-26T00:00:00.000Z',
+        endedAt: '2026-08-26T00:00:01.000Z',
+        durationMs: 1_000,
+        metrics: [
+            decorateLabMetric(
+                {
+                    ...frameMetric(0, 0),
+                    value: null,
+                    samples: 0,
+                    status: 'not-observed',
+                    evidenceLevel: 'controlled-lab-measurement',
+                },
+                { level: 'attempt', attemptId: `not-observed-${index}` }
+            ),
+        ],
+        capabilities: {},
+        limitations: [],
+    }))
+    const [notObserved] = aggregateMeasuredAttempts(notObservedAttempts)
+    assert.equal(notObserved.status, 'not-observed')
+    assert.equal(notObserved.evidenceLevel, 'controlled-lab-measurement')
+})
+
+test('uses available measured evidence when a partial aggregate begins with an unsupported attempt', () => {
+    const statuses = ['unsupported', 'measured', 'measured']
+    const attempts = statuses.map((status, index) => ({
+        attemptId: `partial-evidence-${index}`,
+        phase: 'measured',
+        index,
+        startedAt: '2026-08-26T00:00:00.000Z',
+        endedAt: '2026-08-26T00:00:01.000Z',
+        durationMs: 1_000,
+        metrics: [
+            decorateLabMetric(
+                {
+                    ...frameMetric(index + 10),
+                    value: status === 'measured' ? index + 10 : null,
+                    samples: status === 'measured' ? 40 : null,
+                    status,
+                    evidenceLevel: status === 'measured' ? 'controlled-lab-measurement' : 'unsupported-or-unknown',
+                },
+                { level: 'attempt', attemptId: `partial-evidence-${index}` }
+            ),
+        ],
+        capabilities: {},
+        limitations: [],
+    }))
+    const [metric] = aggregateMeasuredAttempts(attempts)
+    assert.equal(metric.status, 'partial')
+    assert.equal(metric.evidenceLevel, 'controlled-lab-measurement')
 })
 
 test('uses producer metricId to disambiguate the Lighthouse CLS tuple', () => {
@@ -150,6 +269,59 @@ test('uses producer metricId to disambiguate the Lighthouse CLS tuple', () => {
         { evidenceId: 'lighthouse' }
     )
     assert.equal(metric.metricId, 'lighthouse.cls.latest')
+})
+
+test('decorates and validates every new opt-in catalog v2 scheduling and LoAF diagnostic metric', () => {
+    const metricIds = [
+        'main.input-capture-to-next-raf-callback.count',
+        'main.input-capture-to-next-raf-callback.p95',
+        'interaction.loaf-first-ui-event-to-frame-end.count',
+        'interaction.loaf-first-ui-event-to-frame-end.p95',
+        'pipeline.loaf-attributed-forced-style-layout.count',
+        'pipeline.loaf-attributed-forced-style-layout.p95',
+    ]
+    const metrics = metricIds.map(metricId => {
+        const entry = ANIMATION_LAB_METRIC_CATALOG_V2.find(item => item.metricId === metricId)
+        return decorateLabMetric(
+            {
+                family: entry.family,
+                name: entry.name,
+                stat: entry.stat,
+                unit: entry.unit,
+                value: entry.stat === 'count' ? 3 : 24,
+                samples: 3,
+                status: 'measured',
+                evidenceLevel: 'controlled-lab-measurement',
+                limitations: ['diagnostic-proxy'],
+            },
+            { level: 'run' },
+            { acrossAttempts: true }
+        )
+    })
+    const semantics = buildAnimationLabSemantics({
+        scenario: {
+            ...scenario,
+            measurementContract: {
+                contractVersion: 2,
+                expectedHz: 60,
+                targetFrameMs: 16.666667,
+                source: 'explicit',
+                confidence: 'explicit',
+                budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
+                metricCatalogVersion: 2,
+            },
+        },
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts: [],
+        aggregateMetrics: metrics,
+    })
+
+    assert.deepEqual(
+        metrics.map(metric => metric.metricId),
+        metricIds
+    )
+    assert.equal(semantics.measurementContract.metricCatalogVersion, 2)
+    assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
 })
 
 test('keeps canonical analysis valid for the maximum action count by projecting metrics deterministically', () => {

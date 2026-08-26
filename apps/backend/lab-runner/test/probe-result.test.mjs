@@ -1,13 +1,16 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ANIMATION_LAB_METRIC_CATALOG_V1 } from '@condev-monitor/animation-lab'
+import { ANIMATION_LAB_METRIC_CATALOG_V1, ANIMATION_LAB_METRIC_CATALOG_V2 } from '@condev-monitor/animation-lab'
 
 import {
     decodePageProbeResult,
     PAGE_PROBE_ACTION_METRIC_IDS,
+    PAGE_PROBE_ACTION_METRIC_IDS_V2,
     PAGE_PROBE_CAPABILITY_KEYS,
+    PAGE_PROBE_CAPABILITY_KEYS_V2,
     PAGE_PROBE_ROOT_METRIC_IDS,
+    PAGE_PROBE_ROOT_METRIC_IDS_V2,
 } from '../src/probe-result.ts'
 
 const expectedActions = [{ actionId: 'hero-hover', order: 0, kind: 'hover' }]
@@ -26,7 +29,7 @@ function metric(overrides = {}) {
     }
 }
 
-const catalogById = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [entry.metricId, entry]))
+const catalogByIdV2 = new Map(ANIMATION_LAB_METRIC_CATALOG_V2.map(entry => [entry.metricId, entry]))
 const catalogIdByTuple = new Map(
     ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [[entry.family, entry.name, entry.stat, entry.unit].join('|'), entry.metricId])
 )
@@ -36,7 +39,7 @@ function metricId(metric) {
 }
 
 function metricForId(metricId, overrides = {}) {
-    const entry = catalogById.get(metricId)
+    const entry = catalogByIdV2.get(metricId)
     assert.ok(entry, metricId)
     return {
         family: entry.family,
@@ -50,6 +53,19 @@ function metricForId(metricId, overrides = {}) {
         ...overrides,
     }
 }
+
+const loafPaintMetricIds = [
+    'pipeline.loaf-render-start-to-paint.count',
+    'pipeline.loaf-render-start-to-paint.p95',
+    'pipeline.loaf-paint-to-presentation.count',
+    'pipeline.loaf-paint-to-presentation.p95',
+]
+const inputFrameSchedulingMetricIds = ['main.input-capture-to-next-raf-callback.count', 'main.input-capture-to-next-raf-callback.p95']
+const loafFirstUIEventMetricIds = ['interaction.loaf-first-ui-event-to-frame-end.count', 'interaction.loaf-first-ui-event-to-frame-end.p95']
+const loafForcedStyleLayoutMetricIds = [
+    'pipeline.loaf-attributed-forced-style-layout.count',
+    'pipeline.loaf-attributed-forced-style-layout.p95',
+]
 
 function rawResult() {
     return {
@@ -81,6 +97,57 @@ function rawResult() {
     }
 }
 
+function rawResultV2() {
+    const result = rawResult()
+    result.metrics = PAGE_PROBE_ROOT_METRIC_IDS_V2.map(metricId =>
+        metricForId(metricId, metricId === 'probe.dropped-samples.count' ? { value: 0 } : {})
+    )
+    result.actionResults[0].metrics = PAGE_PROBE_ACTION_METRIC_IDS_V2.map(metricId => metricForId(metricId))
+    result.capabilities = Object.fromEntries(PAGE_PROBE_CAPABILITY_KEYS_V2.map(key => [key, true]))
+    result.sampleDrops.inputFrameScheduling = 0
+    return result
+}
+
+function setLoafPaintStatus(result, status) {
+    const evidenceLevel = status === 'unsupported' || status === 'unknown' ? 'unsupported-or-unknown' : 'controlled-lab-measurement'
+    for (const metrics of [result.metrics, ...result.actionResults.map(action => action.metrics)]) {
+        for (const [index, item] of metrics.entries()) {
+            const id = ANIMATION_LAB_METRIC_CATALOG_V2.find(
+                entry => entry.family === item.family && entry.name === item.name && entry.stat === item.stat && entry.unit === item.unit
+            )?.metricId
+            if (!loafPaintMetricIds.includes(id)) continue
+            const isCount = id.endsWith('.count')
+            metrics[index] = {
+                ...item,
+                value: status === 'not-observed' && isCount ? 0 : null,
+                samples: status === 'not-observed' ? 0 : null,
+                status: status === 'not-observed' && isCount ? 'measured' : status,
+                evidenceLevel,
+            }
+        }
+    }
+}
+
+function setPairStatus(result, metricIds, status) {
+    const evidenceLevel = status === 'unsupported' || status === 'unknown' ? 'unsupported-or-unknown' : 'controlled-lab-measurement'
+    for (const metrics of [result.metrics, ...result.actionResults.map(action => action.metrics)]) {
+        for (const [index, item] of metrics.entries()) {
+            const id = ANIMATION_LAB_METRIC_CATALOG_V2.find(
+                entry => entry.family === item.family && entry.name === item.name && entry.stat === item.stat && entry.unit === item.unit
+            )?.metricId
+            if (!metricIds.includes(id)) continue
+            const isCount = id.endsWith('.count')
+            metrics[index] = {
+                ...item,
+                value: status === 'not-observed' && isCount ? 0 : null,
+                samples: status === 'not-observed' ? 0 : null,
+                status: status === 'not-observed' && isCount ? 'measured' : status,
+                evidenceLevel,
+            }
+        }
+    }
+}
+
 test('rebuilds a catalog-only probe result and replaces page limitations with runner codes', () => {
     const raw = rawResult()
     const decoded = decodePageProbeResult(raw, expectedActions)
@@ -91,6 +158,113 @@ test('rebuilds a catalog-only probe result and replaces page limitations with ru
     assert.deepEqual(decoded.capabilities, raw.capabilities)
     assert.ok(decoded.limitations.every(value => /^[a-z0-9-]+$/.test(value)))
     assert.equal(JSON.stringify(decoded).includes('private page prose'), false)
+})
+
+test('decodes catalog v2 LoAF paint phases without changing the default v1 payload contract', () => {
+    const raw = rawResultV2()
+    const decoded = decodePageProbeResult(raw, expectedActions, 2)
+    const renderP95 = decoded.metrics.find(item => item.name === 'longAnimationFrameRenderStartToPaintMs')
+    const presentationP95 = decoded.metrics.find(item => item.name === 'longAnimationFramePaintToPresentationMs')
+
+    assert.equal(renderP95.value, 1)
+    assert.ok(renderP95.limitations.includes('loaf-only-over-50ms'))
+    assert.ok(presentationP95.limitations.includes('presentation-time-implementation-dependent'))
+    assert.throws(() => decodePageProbeResult(raw, expectedActions), TypeError)
+
+    const legacyUnknown = rawResult()
+    legacyUnknown.metrics[0].value = null
+    legacyUnknown.metrics[0].samples = null
+    legacyUnknown.metrics[0].status = 'unknown'
+    assert.throws(() => decodePageProbeResult(legacyUnknown, expectedActions), TypeError)
+})
+
+test('preserves missing, unknown, and exposed-null LoAF paint evidence instead of manufacturing zero milliseconds', () => {
+    const unsupported = rawResultV2()
+    unsupported.capabilities.loafPaintTime = false
+    unsupported.capabilities.loafPresentationTime = false
+    setLoafPaintStatus(unsupported, 'unsupported')
+    const unsupportedMetrics = decodePageProbeResult(unsupported, expectedActions, 2).metrics.filter(item => item.name.includes('Paint'))
+    assert.ok(unsupportedMetrics.every(item => item.value === null && item.status === 'unsupported'))
+
+    const unknown = rawResultV2()
+    unknown.capabilities.loafPaintTime = null
+    unknown.capabilities.loafPresentationTime = null
+    setLoafPaintStatus(unknown, 'unknown')
+    const unknownMetrics = decodePageProbeResult(unknown, expectedActions, 2).metrics.filter(item => item.name.includes('Paint'))
+    assert.ok(unknownMetrics.every(item => item.value === null && item.status === 'unknown'))
+
+    const exposedNull = rawResultV2()
+    setLoafPaintStatus(exposedNull, 'not-observed')
+    const exposedMetrics = decodePageProbeResult(exposedNull, expectedActions, 2).metrics.filter(item => item.name.includes('Paint'))
+    assert.ok(exposedMetrics.filter(item => item.stat === 'p95').every(item => item.value === null && item.status === 'not-observed'))
+    assert.ok(exposedMetrics.filter(item => item.stat === 'count').every(item => item.value === 0 && item.status === 'measured'))
+})
+
+test('decodes v2 input scheduling and LoAF diagnostic pairs with closed proxy limitations', () => {
+    const decoded = decodePageProbeResult(rawResultV2(), expectedActions, 2)
+    const input = decoded.metrics.find(item => item.name === 'inputCaptureToNextRafCallbackMs')
+    const firstUi = decoded.metrics.find(item => item.name === 'longAnimationFrameFirstUIEventToFrameEndMs')
+    const forced = decoded.metrics.find(item => item.name === 'longAnimationFrameAttributedForcedStyleAndLayoutMs')
+
+    assert.ok(input.limitations.includes('input-capture-listener-to-next-raf-callback-proxy'))
+    assert.ok(input.limitations.includes('not-paint-or-presentation-timing'))
+    assert.ok(firstUi.limitations.includes('first-ui-event-may-predate-loaf'))
+    assert.ok(firstUi.limitations.includes('loaf-frame-end-not-paint-or-presentation'))
+    assert.ok(forced.limitations.includes('loaf-attributed-scripts-lower-bound'))
+    assert.ok(forced.limitations.includes('forced-style-layout-implementation-dependent'))
+})
+
+test('keeps false, unknown, and supported-with-no-samples distinct for the six v2 metrics', () => {
+    const raw = rawResultV2()
+    raw.capabilities.inputFrameScheduling = false
+    raw.capabilities.loafFirstUIEventTimestamp = null
+    setPairStatus(raw, inputFrameSchedulingMetricIds, 'unsupported')
+    setPairStatus(raw, loafFirstUIEventMetricIds, 'unknown')
+    setPairStatus(raw, loafForcedStyleLayoutMetricIds, 'not-observed')
+
+    const decoded = decodePageProbeResult(raw, expectedActions, 2)
+    const input = decoded.metrics.filter(item => item.name.startsWith('inputCaptureToNextRaf'))
+    const firstUi = decoded.metrics.filter(item => item.name.startsWith('longAnimationFrameFirstUIEvent'))
+    const forced = decoded.metrics.filter(item => item.name.startsWith('longAnimationFrameAttributedForced'))
+    assert.ok(input.every(item => item.status === 'unsupported' && item.value === null && item.samples === null))
+    assert.ok(firstUi.every(item => item.status === 'unknown' && item.value === null && item.samples === null))
+    assert.equal(forced.find(item => item.stat === 'count').status, 'measured')
+    assert.equal(forced.find(item => item.stat === 'count').value, 0)
+    assert.equal(forced.find(item => item.stat === 'p95').status, 'not-observed')
+})
+
+test('derives partial percentiles from incomplete v2 candidates without falsifying exact valid counts', () => {
+    const raw = rawResultV2()
+    for (const metrics of [raw.metrics, raw.actionResults[0].metrics]) {
+        const count = metrics.find(item => item.name === 'longAnimationFrameFirstUIEventToFrameEndCount')
+        count.samples = 2
+    }
+
+    const decoded = decodePageProbeResult(raw, expectedActions, 2)
+    const rootCount = decoded.metrics.find(item => item.name === 'longAnimationFrameFirstUIEventToFrameEndCount')
+    const rootP95 = decoded.metrics.find(item => item.name === 'longAnimationFrameFirstUIEventToFrameEndMs')
+    const actionP95 = decoded.actionResults[0].metrics.find(item => item.name === 'longAnimationFrameFirstUIEventToFrameEndMs')
+    assert.equal(rootCount.status, 'measured')
+    assert.equal(rootCount.value, 1)
+    assert.equal(rootCount.samples, 2)
+    assert.ok(rootCount.limitations.includes('loaf-first-ui-event-candidates-incomplete'))
+    assert.equal(rootP95.status, 'partial')
+    assert.equal(actionP95.status, 'partial')
+})
+
+test('rejects unexplained retained-sample loss and impossible v2 pair relationships', () => {
+    const unexplainedLoss = rawResultV2()
+    unexplainedLoss.metrics.find(item => item.name === 'inputCaptureToNextRafCallbackCount').value = 2
+    unexplainedLoss.metrics.find(item => item.name === 'inputCaptureToNextRafCallbackCount').samples = 2
+    assert.throws(() => decodePageProbeResult(unexplainedLoss, expectedActions, 2), TypeError)
+
+    const moreValidThanCandidates = rawResultV2()
+    moreValidThanCandidates.metrics.find(item => item.name === 'longAnimationFrameAttributedForcedStyleAndLayoutCount').samples = 0
+    assert.throws(() => decodePageProbeResult(moreValidThanCandidates, expectedActions, 2), TypeError)
+
+    const falseButMeasured = rawResultV2()
+    falseButMeasured.capabilities.inputFrameScheduling = false
+    assert.throws(() => decodePageProbeResult(falseButMeasured, expectedActions, 2), TypeError)
 })
 
 test('fails closed for non-records and unsupported fields at every trust boundary', () => {
@@ -164,12 +338,29 @@ test('requires capability and producer metric statuses to agree', () => {
             }
         }
     }
-    assert.doesNotThrow(() => decodePageProbeResult(coherentUnsupported, expectedActions))
+    const normalizedUnsupported = decodePageProbeResult(coherentUnsupported, expectedActions)
+    assert.ok(
+        normalizedUnsupported.metrics
+            .filter(item => item.name === 'longTaskCount' || item.name === 'longTaskDurationMs')
+            .every(item => item.status === 'unsupported' && item.evidenceLevel === 'unsupported-or-unknown')
+    )
 
     const trueButUnsupported = rawResult()
     const index = trueButUnsupported.metrics.findIndex(item => item.name === 'LCP')
     trueButUnsupported.metrics[index] = { ...trueButUnsupported.metrics[index], value: null, status: 'unsupported' }
     assert.throws(() => decodePageProbeResult(trueButUnsupported, expectedActions), TypeError)
+})
+
+test('requires v2 LoAF field exposure and phase statuses to agree', () => {
+    const missingFieldButMeasured = rawResultV2()
+    missingFieldButMeasured.capabilities.loafPaintTime = false
+    assert.throws(() => decodePageProbeResult(missingFieldButMeasured, expectedActions, 2), TypeError)
+
+    const noLoafButUnknownField = rawResultV2()
+    noLoafButUnknownField.capabilities.loaf = false
+    noLoafButUnknownField.capabilities.loafPaintTime = null
+    noLoafButUnknownField.capabilities.loafPresentationTime = null
+    assert.throws(() => decodePageProbeResult(noLoafButUnknownField, expectedActions, 2), TypeError)
 })
 
 test('requires a one-to-one scenario action match and bounded monotonic clocks', () => {
@@ -266,6 +457,45 @@ test('downgrades only sample-derived metrics for the truncated stream', () => {
     assert.equal(eventCount.status, 'measured')
     assert.equal(eventCount.limitations, undefined)
     assert.equal(frameP95.status, 'measured')
+})
+
+test('keeps v2 full-stream LoAF phase counts measured while retained percentiles and action phases become partial', () => {
+    const raw = rawResultV2()
+    const droppedIndex = raw.metrics.findIndex(item => item.name === 'droppedProbeSamples')
+    raw.metrics[droppedIndex] = { ...raw.metrics[droppedIndex], value: 4 }
+    raw.sampleDrops.longAnimationFrames = 4
+
+    const decoded = decodePageProbeResult(raw, expectedActions, 2)
+    const rootCount = decoded.metrics.find(item => item.name === 'longAnimationFrameRenderStartToPaintCount')
+    const rootP95 = decoded.metrics.find(item => item.name === 'longAnimationFrameRenderStartToPaintMs')
+    const actionCount = decoded.actionResults[0].metrics.find(item => item.name === 'longAnimationFrameRenderStartToPaintCount')
+    const actionP95 = decoded.actionResults[0].metrics.find(item => item.name === 'longAnimationFrameRenderStartToPaintMs')
+
+    assert.equal(rootCount.status, 'measured')
+    assert.equal(rootP95.status, 'partial')
+    assert.equal(actionCount.status, 'partial')
+    assert.equal(actionP95.status, 'partial')
+    assert.ok(rootP95.limitations.includes('page-probe-loaf-samples-truncated'))
+})
+
+test('tracks v2 input scheduling drops separately and leaves the completed full-stream count measured', () => {
+    const raw = rawResultV2()
+    const droppedIndex = raw.metrics.findIndex(item => item.name === 'droppedProbeSamples')
+    raw.metrics[droppedIndex] = { ...raw.metrics[droppedIndex], value: 3 }
+    raw.sampleDrops.inputFrameScheduling = 3
+
+    const decoded = decodePageProbeResult(raw, expectedActions, 2)
+    const rootCount = decoded.metrics.find(item => item.name === 'inputCaptureToNextRafCallbackCount')
+    const rootP95 = decoded.metrics.find(item => item.name === 'inputCaptureToNextRafCallbackMs')
+    const actionP95 = decoded.actionResults[0].metrics.find(item => item.name === 'inputCaptureToNextRafCallbackMs')
+    assert.equal(rootCount.status, 'measured')
+    assert.equal(rootP95.status, 'partial')
+    assert.equal(actionP95.status, 'partial')
+    assert.ok(rootP95.limitations.includes('page-probe-input-frame-scheduling-samples-truncated'))
+
+    const legacy = rawResult()
+    legacy.sampleDrops.inputFrameScheduling = 0
+    assert.throws(() => decodePageProbeResult(legacy, expectedActions), TypeError)
 })
 
 test('preserves complete streaming totals while every truncated retained distribution becomes partial', () => {

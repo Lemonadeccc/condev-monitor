@@ -36,9 +36,22 @@ export function aggregateMeasuredAttempts(attempts: readonly LabAttemptSummary[]
         )
         const unavailableStatus = group.every(metric => metric.status === 'unsupported')
             ? 'unsupported'
-            : group.every(metric => metric.status === 'unknown')
-              ? 'unknown'
-              : 'not-observed'
+            : group.every(metric => metric.status === 'not-observed')
+              ? 'not-observed'
+              : 'unknown'
+        const status: AnimationLabMetric['status'] =
+            values.length >= 3 &&
+            values.length === measuredAttempts.length &&
+            group.length === measuredAttempts.length &&
+            group.every(metric => metric.status === 'measured')
+                ? 'measured'
+                : values.length > 0
+                  ? 'partial'
+                  : unavailableStatus
+        const evidenceLevel: AnimationLabMetric['evidenceLevel'] =
+            status === 'unsupported' || status === 'unknown'
+                ? 'unsupported-or-unknown'
+                : (group.find(metric => metric.evidenceLevel !== 'unsupported-or-unknown')?.evidenceLevel ?? 'controlled-lab-measurement')
         const aggregateScope =
             first.scope?.level === 'action' && first.scope.actionId
                 ? { level: 'action' as const, actionId: first.scope.actionId }
@@ -53,15 +66,8 @@ export function aggregateMeasuredAttempts(attempts: readonly LabAttemptSummary[]
             ...first,
             value: values.length > 0 ? Math.round(median(values) * 1_000_000) / 1_000_000 : null,
             samples: rawSamples,
-            status:
-                values.length >= 3 &&
-                values.length === measuredAttempts.length &&
-                group.length === measuredAttempts.length &&
-                group.every(metric => metric.status === 'measured')
-                    ? 'measured'
-                    : values.length > 0
-                      ? 'partial'
-                      : unavailableStatus,
+            status,
+            evidenceLevel,
             ...(first.metricId
                 ? {
                       scope: aggregateScope,

@@ -24,7 +24,7 @@
             "budgetId": "condev.animation.default",
             "budgetVersion": 1
         },
-        "metricCatalogVersion": 1
+        "metricCatalogVersion": 2
     },
     "actions": [
         {
@@ -49,6 +49,14 @@
             "trigger": { "source": "scenario" },
             "deltaY": 1800,
             "durationMs": 2200
+        },
+        {
+            "kind": "press",
+            "label": "page-keyboard-scheduling",
+            "actionId": "page-keyboard-scheduling",
+            "subject": { "scope": "page", "role": "keyboard-scheduling", "surface": "unknown" },
+            "trigger": { "source": "scenario" },
+            "key": "Escape"
         },
         {
             "kind": "resize",

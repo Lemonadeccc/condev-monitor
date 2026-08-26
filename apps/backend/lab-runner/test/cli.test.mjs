@@ -156,6 +156,18 @@ test('fails before navigation when the local reviewed trace cap cannot cover the
 
 test('ships the generic scenario with enough bounded Trace headroom for the default platform claim', async () => {
     const scenario = JSON.parse(await fs.readFile(new URL('../examples/generic-page.scenario.json', import.meta.url), 'utf8'))
+    assert.deepEqual(
+        scenario.actions.find(action => action.actionId === 'page-keyboard-scheduling'),
+        {
+            kind: 'press',
+            label: 'page-keyboard-scheduling',
+            actionId: 'page-keyboard-scheduling',
+            subject: { scope: 'page', role: 'keyboard-scheduling', surface: 'unknown' },
+            trigger: { source: 'scenario' },
+            key: 'Escape',
+        }
+    )
+    assert.equal(scenario.measurementContract.metricCatalogVersion, 2)
     const claim = {
         runId,
         targetUrl: 'http://localhost:5173/',
@@ -179,6 +191,7 @@ test('ships the generic scenario with enough bounded Trace headroom for the defa
         config: { ...claim.config, durationMs: 120_000 },
     })
 
+    assert.equal(result.scenario.measurementContract.metricCatalogVersion, 2)
     assert.equal(result.scenario.durationMs, claim.config.durationMs)
     assert.equal(result.scenario.trace.enabled, true)
     assert.ok(result.scenario.trace.maxDurationMs >= claim.config.durationMs + 500)

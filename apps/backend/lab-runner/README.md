@@ -15,6 +15,8 @@ node apps/backend/lab-runner/build/cli.js \
   --out-dir ./lab-results
 ```
 
+The bundled generic scenario explicitly selects metric catalog v2. In addition to privacy-bounded LoAF render-start→paint and paint→presentation evidence, v2 measures trusted discrete-input capture-listener→next-rAF-callback scheduling and projects LoAF `firstUIEventTimestamp`→frame-end plus attributed `scripts[].forcedStyleAndLayoutDuration` as closed valid-count/p95 pairs. Its reviewed `Escape` press exists only to exercise the scheduling proxy before the following resize wait; it does not assert input-to-paint latency or an animation/business outcome. A v1 scenario remains valid and keeps the exact v1 metric, capability, and sample-drop shapes. Uploading the generic v2 report requires a Monitor deployment that accepts catalog v2; the runner and platform in this workspace are version-aligned.
+
 `--local-display` is optional. It shows the current attempt/action position and the final diagnostic-budget status in the Runner terminal. The sink receives a fresh closed projection only: no action label, selector, URL, coordinates, credentials, raw metrics, or authentication state. Sink failures are best-effort and cannot change scenario execution or the retained report. This is deliberately separate from the SDK's lower-right in-page development panel.
 
 An installed package exposes the same command as `condev-animation-lab`.
@@ -87,6 +89,8 @@ Supplying either `--storage-state` or `--ignore-https-errors` skips Lighthouse e
 ## Measurement contract and diagnostic budget
 
 If `measurementContract` is omitted, the runner records the package default as 60 Hz with `targetFrameMs = 16.666667`. Observed refresh cadence remains evidence and never silently relaxes that target. Declare another expected cadence explicitly when the test contract requires it.
+
+Catalog v2's input timing ends when the next visible rAF callback begins; it is not input-to-paint, presentation, or GPU latency. It observes trusted pointer activation, first non-repeat keydown, and standalone click fallback, deduplicates generated clicks, and retains no event target or input data. LoAF first-UI timing accepts an event timestamp before the LoAF start but never after its frame end; zero is the no-event sentinel. Forced style/layout is summed only across a complete bounded attributed-script list, so it remains an implementation-dependent lower bound rather than total page style/layout cost. Capability `false`, field exposure `unknown`, supported-but-not-observed, incomplete candidates, and bounded-buffer truncation remain distinct in the decoded report; no default budget rule is attached to these diagnostics.
 
 The bundled `condev.animation.default@1` budget checks frame-duration p95 at `1.5 * targetFrameMs` (25 ms at 60 Hz), slow-frame ratio at 5%, zero jank bursts, zero Long Tasks, and input-delay p95 at 100 ms. Their minimum sample counts are respectively 120 frames, 120 frames, 120 frames, one observed task, and three input events. These values are diagnostic defaults, not browser standards or universal product grades. Unknown budget references fail closed.
 

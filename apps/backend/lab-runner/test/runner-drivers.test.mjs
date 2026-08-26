@@ -8,9 +8,21 @@ import { PAGE_PROBE_ACTION_METRIC_IDS, PAGE_PROBE_CAPABILITY_KEYS, PAGE_PROBE_RO
 
 const catalogById = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [entry.metricId, entry]))
 
-function metricForId(metricId) {
+function metricForId(metricId, notObservedMetricId) {
     const entry = catalogById.get(metricId)
     assert.ok(entry, metricId)
+    if (metricId === notObservedMetricId) {
+        return {
+            family: entry.family,
+            name: entry.name,
+            stat: entry.stat,
+            unit: entry.unit,
+            value: null,
+            samples: 0,
+            status: 'not-observed',
+            evidenceLevel: 'controlled-lab-measurement',
+        }
+    }
     return {
         family: entry.family,
         name: entry.name,
@@ -23,22 +35,24 @@ function metricForId(metricId) {
     }
 }
 
-function rawProbeResult(action, durationMs = 1_000) {
+function rawProbeResult(action, durationMs = 1_000, options = {}) {
     return {
         durationMs,
-        metrics: PAGE_PROBE_ROOT_METRIC_IDS.map(metricForId),
-        actionResults: [
-            {
-                actionId: action.actionId,
-                order: action.order,
-                label: action.label,
-                kind: action.kind,
-                startedAtMs: 100,
-                endedAtMs: 200,
-                outcome: 'completed',
-                metrics: PAGE_PROBE_ACTION_METRIC_IDS.map(metricForId),
-            },
-        ],
+        metrics: PAGE_PROBE_ROOT_METRIC_IDS.map(metricId => metricForId(metricId, options.notObservedMetricId)),
+        actionResults: options.omitActionResult
+            ? []
+            : [
+                  {
+                      actionId: action.actionId,
+                      order: action.order,
+                      label: action.label,
+                      kind: action.kind,
+                      startedAtMs: 100,
+                      endedAtMs: 200,
+                      outcome: 'completed',
+                      metrics: PAGE_PROBE_ACTION_METRIC_IDS.map(metricForId),
+                  },
+              ],
         capabilities: Object.fromEntries(PAGE_PROBE_CAPABILITY_KEYS.map(key => [key, true])),
         sampleDrops: {
             frames: 0,
@@ -55,6 +69,7 @@ class FakePage {
     #expectedSequence = 0
     #capability = null
     #activeAction = null
+    #timeOrigin = 1_000
 
     constructor(action, state) {
         this.action = action
@@ -68,13 +83,18 @@ class FakePage {
     }
     async wait(durationMs) {
         this.state.waitDurations.push(durationMs)
+        if (this.#activeAction !== null && this.state.crossDocumentDuringAction) {
+            this.#timeOrigin += 1_000
+            this.#expectedSequence = 0
+            this.#activeAction = null
+        }
         if (this.state.traceStarted && durationMs >= (this.state.delayTraceWaitAtLeast ?? Number.POSITIVE_INFINITY)) {
             await new Promise(resolve => setTimeout(resolve, durationMs))
         }
     }
     async markAction() {}
     async documentTimeOrigin() {
-        return 1_000
+        return this.#timeOrigin
     }
     async notifyProbe(_key, capability, sequence, actionId, phase) {
         this.#capability ??= capability
@@ -94,7 +114,10 @@ class FakePage {
         assert.equal(capability, this.#capability)
         assert.equal(sequence, this.#expectedSequence)
         assert.equal(this.#activeAction, null)
-        return rawProbeResult(this.action, this.state.probeDurationMs)
+        return rawProbeResult(this.action, this.state.probeDurationMs, {
+            omitActionResult: this.state.crossDocumentDuringAction,
+            notObservedMetricId: this.state.notObservedMetricId,
+        })
     }
     async click() {}
     async hover() {}
@@ -132,6 +155,8 @@ function fakeDriver(engine, options = {}) {
         probeDurationMs: options.probeDurationMs ?? 1_000,
         delayTraceWaitAtLeast: options.delayTraceWaitAtLeast,
         traceStarted: false,
+        crossDocumentDuringAction: options.crossDocumentDuringAction ?? false,
+        notObservedMetricId: options.notObservedMetricId,
     }
     const session = {
         engine,
@@ -229,6 +254,32 @@ test('starts the minimum observation floor after slow navigation completes', asy
     const floorWaits = state.waitDurations.filter(durationMs => durationMs > 4_900)
     assert.equal(floorWaits.length, 3)
     assert.equal(result.report.attempts.filter(attempt => attempt.phase === 'measured').length, 3)
+})
+
+test('marks final-document absence unknown while bounding measured evidence after cross-document actions', async () => {
+    const { driver } = fakeDriver('webkit', {
+        crossDocumentDuringAction: true,
+        notObservedMetricId: 'media.video-dropped-frame-rate',
+    })
+    const result = await runAnimationLab(
+        {
+            ...scenario(),
+            trace: { enabled: false },
+            lighthouse: { enabled: false },
+        },
+        { browser: 'webkit', driver }
+    )
+
+    const attempt = result.report.attempts.find(item => item.phase === 'measured')
+    const unavailable = attempt?.metrics.find(item => item.name === 'videoDroppedFrameRate')
+    const measured = attempt?.metrics.find(item => item.name === 'frameDurationMs' && item.stat === 'p95')
+
+    assert.equal(unavailable?.status, 'unknown')
+    assert.equal(unavailable?.value, null)
+    assert.equal(unavailable?.evidenceLevel, 'unsupported-or-unknown')
+    assert.ok(unavailable?.limitations?.includes('cross-document-sampling-partial'))
+    assert.equal(measured?.status, 'partial')
+    assert.ok(measured?.limitations?.includes('cross-document-sampling-partial'))
 })
 
 test('fails Trace after reviewed actions and before the floor wait when the hard cap cannot cover it', async () => {

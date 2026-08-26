@@ -177,7 +177,7 @@ async function measuredAttempt(
                 ? [{ actionId: scenarioActionId(action, actionIndex), order: actionIndex, kind: action.kind }]
                 : []
         )
-        const probe = decodePageProbeResult(result, expectedProbeActions)
+        const probe = decodePageProbeResult(result, expectedProbeActions, scenario.measurementContract?.metricCatalogVersion ?? 1)
         const actionWindows = actionExecutions.map(actionResult =>
             actionWindowFromProbe(scenario.actions[actionResult.order]!, actionResult.order, {
                 ...actionResult,
@@ -187,10 +187,23 @@ async function measuredAttempt(
         const crossedDocument = actionExecutions.some(action => action.crossDocument)
         const metrics = [
             ...probe.metrics.map(metric => {
-                const boundedMetric =
-                    crossedDocument && !['unsupported', 'unknown'].includes(metric.status)
-                        ? { ...metric, status: 'partial' as const, limitations: ['cross-document-sampling-partial'] }
-                        : metric
+                const crossDocumentLimitations = [...new Set([...(metric.limitations ?? []), 'cross-document-sampling-partial'])]
+                const boundedMetric = !crossedDocument
+                    ? metric
+                    : metric.status === 'measured'
+                      ? { ...metric, status: 'partial' as const, limitations: crossDocumentLimitations }
+                      : metric.status === 'partial'
+                        ? { ...metric, limitations: crossDocumentLimitations }
+                        : metric.status === 'not-observed'
+                          ? {
+                                ...metric,
+                                status: 'unknown' as const,
+                                evidenceLevel: 'unsupported-or-unknown' as const,
+                                limitations: crossDocumentLimitations,
+                            }
+                          : metric.status === 'unknown'
+                            ? { ...metric, limitations: crossDocumentLimitations }
+                            : metric
                 return decorateLabMetric(boundedMetric, { level: 'attempt', attemptId }, { evidenceId: 'runtime-browser' })
             }),
             ...(probe.actionResults ?? []).flatMap(actionResult =>

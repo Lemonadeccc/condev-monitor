@@ -25,5 +25,23 @@ test('uses a fixed package-default 60 Hz budget instead of self-calibrating to o
     assert.equal(contract.expectedHz, 60)
     assert.equal(contract.source, 'package-default')
     assert.ok(Math.abs(contract.targetFrameMs - 1_000 / 60) < 0.001)
-    assert.deepEqual(probeFrameContract(scenario), { expectedRefreshHz: 60, targetFrameMs: contract.targetFrameMs })
+    assert.deepEqual(probeFrameContract(scenario), {
+        expectedRefreshHz: 60,
+        targetFrameMs: contract.targetFrameMs,
+        metricCatalogVersion: 1,
+    })
+})
+
+test('forwards an explicit additive metric catalog without changing the default', () => {
+    const current = {
+        ...scenario,
+        measurementContract: {
+            ...measurementContractForReport(scenario),
+            source: 'explicit',
+            confidence: 'explicit',
+            metricCatalogVersion: 2,
+        },
+    }
+    assert.equal(measurementContractForReport(current).metricCatalogVersion, 2)
+    assert.equal(probeFrameContract(current).metricCatalogVersion, 2)
 })

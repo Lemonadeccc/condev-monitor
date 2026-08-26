@@ -1,5 +1,5 @@
 import {
-    ANIMATION_LAB_METRIC_CATALOG_V1,
+    ANIMATION_LAB_METRIC_CATALOG_V2,
     ANIMATION_LAB_METRIC_CATALOG_VERSION,
     ANIMATION_LAB_SEMANTICS_VERSION,
     type AnimationLabMetric,
@@ -44,7 +44,7 @@ function median(values: readonly number[]): number {
 }
 
 function catalogEntry(metric: AnimationLabMetric) {
-    return ANIMATION_LAB_METRIC_CATALOG_V1.find(
+    return ANIMATION_LAB_METRIC_CATALOG_V2.find(
         entry =>
             (metric.metricId ? entry.metricId === metric.metricId : true) &&
             entry.family === metric.family &&
@@ -100,11 +100,19 @@ export function measurementContractForReport(scenario: AnimationLabScenario): La
     }
 }
 
-export function probeFrameContract(scenario: AnimationLabScenario): { expectedRefreshHz?: number; targetFrameMs?: number } {
+export function probeFrameContract(scenario: AnimationLabScenario): {
+    expectedRefreshHz: number
+    targetFrameMs: number
+    metricCatalogVersion: 1 | 2
+} {
     const contract = scenario.measurementContract
     return contract
-        ? { expectedRefreshHz: contract.expectedHz, targetFrameMs: contract.targetFrameMs }
-        : { expectedRefreshHz: 60, targetFrameMs: round(1_000 / 60) }
+        ? {
+              expectedRefreshHz: contract.expectedHz,
+              targetFrameMs: contract.targetFrameMs,
+              metricCatalogVersion: contract.metricCatalogVersion,
+          }
+        : { expectedRefreshHz: 60, targetFrameMs: round(1_000 / 60), metricCatalogVersion: ANIMATION_LAB_METRIC_CATALOG_VERSION }
 }
 
 export function actionWindowFromProbe(
@@ -368,7 +376,7 @@ function canonicalMetricProjection(
     scenarioActions: readonly LabReportScenarioActionV2[]
 ): { metrics: AnimationLabMetricV2[]; omittedActionIds: ReadonlySet<string>; truncated: boolean } {
     const actionOrder = new Map(scenarioActions.map(action => [action.actionId, action.order]))
-    const catalogOrder = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map((entry, index) => [entry.metricId, index]))
+    const catalogOrder = new Map(ANIMATION_LAB_METRIC_CATALOG_V2.map((entry, index) => [entry.metricId, index]))
     const candidates = metrics
         .filter((metric): metric is AnimationLabMetricV2 => Boolean(metric.metricId && metric.scope))
         .map((metric, originalOrder) => ({ metric, originalOrder }))

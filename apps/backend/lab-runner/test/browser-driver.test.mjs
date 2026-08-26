@@ -3,6 +3,7 @@ import test from 'node:test'
 
 import { createBrowserDriver, validateBrowserDriverScenario } from '../build/index.js'
 import { browserProbeSource } from '../src/browser-probe.ts'
+import { decodePageProbeResult } from '../src/probe-result.ts'
 
 function scenario(overrides = {}) {
     return {
@@ -116,6 +117,154 @@ test('accepts only standard CSS and capability-sequenced probe commands in a rea
         abortedPage.abort('lab-action-timeout')
         abortedPage.abort('lab-action-timeout')
         await abortedPage.close()
+    } finally {
+        await context.close().catch(() => undefined)
+        await session.close().catch(() => undefined)
+    }
+})
+
+test('derives catalog v2 LoAF paint phases only from complete browser boundaries', async () => {
+    const driver = createBrowserDriver('chromium')
+    const session = await driver.launch()
+    const context = await session.createContext(scenario())
+    try {
+        const page = await context.newPage()
+        const key = '__condevLabProbe_loaf_paint_fixture'
+        const capability = 'B'.repeat(43)
+        const fakeObserver = `;(() => {
+          class FixturePerformanceObserver {
+            constructor(callback) { this.callback = callback; this.type = ''; this.drained = false; }
+            observe(options) { this.type = options.type; }
+            takeRecords() {
+              if (this.drained || this.type !== 'long-animation-frame') return [];
+              this.drained = true;
+              return [
+                {
+                  startTime: 10,
+                  duration: 100,
+                  blockingDuration: 20,
+                  renderStart: 30,
+                  styleAndLayoutStart: 50,
+                  paintTime: 70,
+                  presentationTime: 85,
+                  firstUIEventTimestamp: 5,
+                  scripts: [{ forcedStyleAndLayoutDuration: 2 }, { forcedStyleAndLayoutDuration: 3 }],
+                },
+                {
+                  startTime: 120,
+                  duration: 100,
+                  blockingDuration: 10,
+                  renderStart: 150,
+                  styleAndLayoutStart: 170,
+                  paintTime: null,
+                  presentationTime: null,
+                  firstUIEventTimestamp: 0,
+                  scripts: [{ forcedStyleAndLayoutDuration: 0 }],
+                },
+                {
+                  startTime: 240,
+                  duration: 100,
+                  blockingDuration: 10,
+                  renderStart: 290,
+                  styleAndLayoutStart: 300,
+                  paintTime: 280,
+                  presentationTime: 270,
+                  firstUIEventTimestamp: 350,
+                  scripts: [{ forcedStyleAndLayoutDuration: 2 }, {}],
+                },
+                {
+                  startTime: 360,
+                  duration: 100,
+                  blockingDuration: 10,
+                  renderStart: 390,
+                  styleAndLayoutStart: 420,
+                  paintTime: null,
+                  presentationTime: null,
+                  firstUIEventTimestamp: 0,
+                  scripts: [{}],
+                },
+              ];
+            }
+            disconnect() {}
+          }
+          Object.defineProperty(window, 'PerformanceObserver', { configurable: true, value: FixturePerformanceObserver });
+        })();`
+        await page.addInitScript(
+            `${fakeObserver}${browserProbeSource(key, {
+                capability,
+                expectedRefreshHz: 60,
+                targetFrameMs: 1000 / 60,
+                metricCatalogVersion: 2,
+                actions: [],
+            })}`
+        )
+        await page.navigate('data:text/html,<!doctype html><main>loaf paint fixture</main>', 10_000)
+        await page.wait(100)
+        const raw = await page.collectProbeResult(key, capability, 0)
+        const result = decodePageProbeResult(raw, [], 2)
+
+        assert.equal(result.capabilities.loafPaintTime, true)
+        assert.equal(result.capabilities.loafPresentationTime, true)
+        assert.equal(result.metrics.find(item => item.name === 'longAnimationFrameRenderStartToPaintCount')?.value, 1)
+        assert.equal(result.metrics.find(item => item.name === 'longAnimationFrameRenderStartToPaintMs')?.value, 40)
+        assert.equal(result.metrics.find(item => item.name === 'longAnimationFramePaintToPresentationCount')?.value, 1)
+        assert.equal(result.metrics.find(item => item.name === 'longAnimationFramePaintToPresentationMs')?.value, 15)
+        assert.equal(result.capabilities.loafFirstUIEventTimestamp, true)
+        assert.equal(result.capabilities.loafForcedStyleAndLayoutDuration, true)
+        const firstUiCount = result.metrics.find(item => item.name === 'longAnimationFrameFirstUIEventToFrameEndCount')
+        const firstUiP95 = result.metrics.find(item => item.name === 'longAnimationFrameFirstUIEventToFrameEndMs')
+        const forcedCount = result.metrics.find(item => item.name === 'longAnimationFrameAttributedForcedStyleAndLayoutCount')
+        const forcedP95 = result.metrics.find(item => item.name === 'longAnimationFrameAttributedForcedStyleAndLayoutMs')
+        assert.deepEqual([firstUiCount.value, firstUiCount.samples], [1, 2])
+        assert.equal(firstUiP95.value, 105)
+        assert.equal(firstUiP95.status, 'partial')
+        assert.deepEqual([forcedCount.value, forcedCount.samples], [2, 4])
+        assert.equal(forcedP95.value, 5)
+        assert.equal(forcedP95.status, 'partial')
+    } finally {
+        await context.close().catch(() => undefined)
+        await session.close().catch(() => undefined)
+    }
+})
+
+test('measures trusted discrete input capture to the next real rAF callback without pointer click double-counting', async () => {
+    const driver = createBrowserDriver('chromium')
+    const session = await driver.launch()
+    const context = await session.createContext(scenario())
+    try {
+        const page = await context.newPage()
+        const key = '__condevLabProbe_input_frame_fixture'
+        const capability = 'C'.repeat(43)
+        const action = { actionId: 'trusted-input', order: 0, label: 'trusted-input', kind: 'click' }
+        await page.addInitScript(
+            `${browserProbeSource(key, {
+                capability,
+                expectedRefreshHz: 60,
+                targetFrameMs: 1000 / 60,
+                metricCatalogVersion: 2,
+                actions: [action],
+            })}
+            window.dispatchEvent(new PointerEvent('pointerdown'));
+            window.dispatchEvent(new KeyboardEvent('keydown', { key: 'x' }));`
+        )
+        await page.navigate('data:text/html,<!doctype html><button id="target">target</button>', 10_000)
+        assert.equal(await page.notifyProbe(key, capability, 0, action.actionId, 'start', 'completed'), true)
+        await page.click('#target', 1_000)
+        await page.pressKey('Enter')
+        await page.wait(100)
+        assert.equal(await page.notifyProbe(key, capability, 1, action.actionId, 'end', 'completed'), true)
+        const raw = await page.collectProbeResult(key, capability, 2)
+        const result = decodePageProbeResult(raw, [{ actionId: action.actionId, order: action.order, kind: action.kind }], 2)
+
+        assert.equal(result.capabilities.inputFrameScheduling, true)
+        const rootCount = result.metrics.find(item => item.name === 'inputCaptureToNextRafCallbackCount')
+        const rootP95 = result.metrics.find(item => item.name === 'inputCaptureToNextRafCallbackMs')
+        const actionCount = result.actionResults[0].metrics.find(item => item.name === 'inputCaptureToNextRafCallbackCount')
+        assert.deepEqual([rootCount.value, rootCount.samples], [2, 2])
+        assert.equal(rootP95.status, 'measured')
+        assert.ok(rootP95.value >= 0)
+        assert.deepEqual([actionCount.value, actionCount.samples], [2, 2])
+        assert.equal(raw.sampleDrops.inputFrameScheduling, 0)
     } finally {
         await context.close().catch(() => undefined)
         await session.close().catch(() => undefined)
