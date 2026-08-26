@@ -19,7 +19,7 @@ The v1 scenario and report shape remains valid. Semantics v2 is an additive, str
 - scenario actions may add caller-owned `actionId`, `subject`, `trigger`, and up to four action-level `technologies` declarations; selectors remain local execution inputs, and declared technologies never become observed evidence merely because they were named;
 - `resolveLabActionId()` generates a stable order-plus-label identity when `actionId` is omitted;
 - `measurementContract` records explicit `expectedHz`, the matching `targetFrameMs`, provenance/confidence, and versioned budget/catalog references;
-- reports may add `scenario.actions`, per-attempt and top-level aggregate `actionWindows`, metric scope/aggregation/budget/evidence metadata, multi-axis `technologyEvidence`, and reference-only `findings`;
+- reports may add `scenario.actions`, a lowercase SHA-256 `scenario.protocolHash`, per-attempt and top-level aggregate `actionWindows`, metric scope/aggregation/budget/evidence metadata, multi-axis `technologyEvidence`, and reference-only `findings`;
 - `validateAnimationLabSemanticsV2()` rejects unknown fields, broken references, catalog tuple drift, inconsistent clocks, selectors, DOM fields, URLs, and free-text channels.
 
 `ANIMATION_LAB_METRIC_CATALOG_V1` and `DEFAULT_ANIMATION_LAB_BUDGET_V1` are centralized, versioned defaults. When a scenario omits `measurementContract`, the runner materializes an explicit package default of 60 Hz, `targetFrameMs = 16.666667`, and metric catalog v1; it does not silently turn the observed display cadence into a more permissive budget or change an existing consumer's metric tuple set. A different expected cadence or metric catalog must be declared in the scenario.
@@ -66,3 +66,5 @@ The bundled `condev.animation.default@1` rules are:
 These are diagnostic project defaults, not Web Platform standards or universal UX grades. The v1 runtime executes only this bundled budget. Adding another budget requires a versioned catalog implementation across the runner, backend validator, and UI; an unknown reference fails closed instead of being guessed.
 
 Semantic fields accept only bounded enums, numeric measurements, and caller-owned tokens. They never accept selectors, DOM text, element attributes, URLs, input values, arbitrary descriptions, or raw browser events.
+
+`scenario.protocolHash` identifies the reviewed action order, semantic action ids, action parameters, measurement contract, viewport, execution envelope, Trace, and Lighthouse settings. It intentionally excludes the target URL, deployment identity, and raw selector values. Selector presence is retained only as page/targeted mode, so callers must change the semantic action id when a selector is repointed to a different conceptual target. Equal hashes support a caller-attested Before/After comparison; they do not prove that two selector strings resolved to the same element or that the physical host conditions were identical.

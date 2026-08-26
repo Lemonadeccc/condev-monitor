@@ -18,6 +18,7 @@ const MAX_REPORT_WINDOW_MS = 2 * 60 * 60 * 1000
 const MAX_TRACE_INPUT_EVENTS = 2_000_000
 const MAX_METRICS = 512
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,159}$/
+const SCENARIO_PROTOCOL_HASH = /^[a-f0-9]{64}$/
 const LIGHTHOUSE_METRIC_IDS = new Set([
     'lighthouse.performance.score',
     'lighthouse.accessibility.score',
@@ -84,13 +85,23 @@ export type ParsedAnimationReport = {
     runId: string
     compactSummary: LabRunSummary
     analysis: AnimationLabSemanticsV2 | null
+    /** Private server-side projection used for bounded Before/After evidence. */
+    measuredAttempts: Array<{
+        attemptId: string
+        metrics: AnimationLabMetricV2Projection[]
+        capabilities: Record<string, boolean | null>
+        limitations: string[]
+    }>
     context: {
         startedAt: string
         endedAt: string
         durationMs: number
+        routeKey: string
+        scenarioProtocolHash: string | null
         environment: string
         browser: string
         browserName: string
+        browserVersion: string | null
         browserHeadless: boolean
         viewport: { width: number; height: number; dpr: number }
         reducedMotion: 'no-preference' | 'reduce'
@@ -712,6 +723,7 @@ function scenario(value: unknown, semanticsV2: boolean) {
         [
             'name',
             'routeKey',
+            'protocolHash',
             'release',
             'dist',
             'environment',
@@ -794,9 +806,14 @@ function scenario(value: unknown, semanticsV2: boolean) {
     }
     const reducedMotion = enumeration(raw.reducedMotion, 'animation-report.scenario.reducedMotion', ['no-preference', 'reduce'] as const)
     const cacheMode = enumeration(raw.cacheMode, 'animation-report.scenario.cacheMode', ['cold', 'warm'] as const)
+    const protocolHash = raw.protocolHash === undefined ? null : string(raw.protocolHash, 'animation-report.scenario.protocolHash', 64)
+    if (protocolHash !== null && !SCENARIO_PROTOCOL_HASH.test(protocolHash)) {
+        throw new BadRequestException('Invalid animation-report.scenario.protocolHash')
+    }
     return {
         name: string(raw.name, 'animation-report.scenario.name', 120),
         routeKey: token(raw.routeKey, 'animation-report.scenario.routeKey', 160),
+        protocolHash,
         release: string(raw.release, 'animation-report.scenario.release', 120, true),
         dist: string(raw.dist, 'animation-report.scenario.dist', 120, true),
         environment: string(raw.environment, 'animation-report.scenario.environment', 120, true),
@@ -1151,18 +1168,32 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
             : {}),
         ...(mergedLimitations.length ? { limitations: mergedLimitations } : {}),
     }
+    const measuredAttempts = semanticsV2
+        ? parsedAttempts
+              .filter(item => item.phase === 'measured')
+              .map(item => ({
+                  attemptId: item.attemptId,
+                  metrics: item.metrics as AnimationLabMetricV2Projection[],
+                  capabilities: item.capabilities,
+                  limitations: item.limitations,
+              }))
+        : []
 
     return {
         runId: reportRunId,
         compactSummary,
         analysis,
+        measuredAttempts,
         context: {
             startedAt,
             endedAt,
             durationMs,
+            routeKey: parsedScenario.routeKey,
+            scenarioProtocolHash: parsedScenario.protocolHash,
             environment: parsedScenario.environment,
             browser: browserVersion ? `${browserName} ${browserVersion}` : browserName,
             browserName,
+            browserVersion,
             browserHeadless,
             viewport: parsedScenario.viewport,
             reducedMotion: parsedScenario.reducedMotion,

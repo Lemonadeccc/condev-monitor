@@ -417,6 +417,8 @@ export interface AnimationLabReport {
     scenario: {
         name: string
         routeKey: string
+        /** SHA-256 of the reviewed, privacy-safe local execution protocol. */
+        protocolHash?: string
         release: string
         dist: string
         environment: string

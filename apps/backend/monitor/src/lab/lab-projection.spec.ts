@@ -594,7 +594,9 @@ describe('lab platform artifact projections', () => {
     })
 
     it('strictly projects canonical v2 semantics and preserves expanded summary metric metadata', () => {
-        const parsed = parseAnimationReportArtifact(animationReportV2())
+        const report = animationReportV2()
+        Object.assign(report.scenario, { protocolHash: 'a'.repeat(64) })
+        const parsed = parseAnimationReportArtifact(report)
 
         expect(parsed.analysis).toEqual(
             expect.objectContaining({
@@ -623,6 +625,25 @@ describe('lab platform artifact projections', () => {
                 limitations: ['eligible-attempts-3'],
             })
         )
+        expect(parsed.context).toEqual(
+            expect.objectContaining({
+                routeKey: 'examples.hover-card',
+                scenarioProtocolHash: 'a'.repeat(64),
+                browserVersion: '140.0.0',
+            })
+        )
+        expect(parsed.measuredAttempts).toEqual([
+            expect.objectContaining({
+                attemptId: 'attempt_1',
+                metrics: [expect.objectContaining({ metricId: 'frame.duration.p95', scope: { level: 'attempt', attemptId: 'attempt_1' } })],
+                capabilities: expect.objectContaining({ longtask: true }),
+                limitations: [],
+            }),
+        ])
+
+        const forgedProtocol = animationReportV2()
+        Object.assign(forgedProtocol.scenario, { protocolHash: 'A'.repeat(64) })
+        expect(() => parseAnimationReportArtifact(forgedProtocol)).toThrow('Invalid animation-report.scenario.protocolHash')
     })
 
     it('accepts additive catalog v2 metrics while keeping the v1 catalog closed', () => {

@@ -27,6 +27,7 @@ import {
 import { browserProbeSource } from './browser-probe'
 import { buildLabLocalBudgetDisplayEvent, type LabLocalDisplayAttempt, type LabLocalDisplaySink, safePublish } from './local-display'
 import { decodePageProbeResult } from './probe-result'
+import { createScenarioProtocolHash } from './scenario-protocol'
 import {
     actionWindowFromProbe,
     buildAnimationLabSemantics,
@@ -607,6 +608,7 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
             scenario: {
                 name: scenario.name,
                 routeKey: scenario.routeKey,
+                protocolHash: createScenarioProtocolHash(scenario),
                 release: scenario.release ?? '',
                 dist: scenario.dist ?? '',
                 environment: scenario.environment ?? 'development',

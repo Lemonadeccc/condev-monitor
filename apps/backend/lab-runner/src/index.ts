@@ -36,6 +36,7 @@ export type {
 } from './local-display'
 export { lighthouseSkipReason, runAnimationLab } from './runner'
 export type { LabRunOptions, LabRunResult, LighthouseSkipReason } from './runner'
+export { createScenarioProtocolHash } from './scenario-protocol'
 export {
     actionWindowFromProbe,
     buildAnimationLabSemantics,
