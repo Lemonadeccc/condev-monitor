@@ -5,6 +5,7 @@ import { TypeOrmModule, TypeOrmModuleOptions } from '@nestjs/typeorm'
 
 import { AdminModule } from './admin/admin.module'
 import { AiModule } from './ai/ai.module'
+import { AnimationModule } from './animation/animation.module'
 import { AppController } from './app.controller'
 import { AppService } from './app.service'
 import { ApplicationModule } from './application/application.module'
@@ -13,6 +14,7 @@ import { ClickhouseModule } from './common/clickhouse/clickhouse.module'
 import { ConfigModule } from './common/config/config.module'
 import { LogsModule } from './common/logger/logs.module'
 import { MailModule } from './common/mail/mail.module'
+import { LabModule } from './lab/lab.module'
 import { SourcemapModule } from './sourcemap/sourcemap.module'
 
 @Module({
@@ -26,9 +28,11 @@ import { SourcemapModule } from './sourcemap/sourcemap.module'
         }),
         MailModule,
         ApplicationModule,
+        AnimationModule,
         AdminModule,
         AiModule,
         AuthModule,
+        LabModule,
         SourcemapModule,
         ClickhouseModule,
         TypeOrmModule.forRootAsync({
