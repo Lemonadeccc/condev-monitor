@@ -110,4 +110,4 @@ Explorer and Recorder proposals cannot prove that every animation was exercised.
 
 For an attached platform run, `--server` requires HTTPS unless its host is exactly `localhost`, `127.0.0.1`, or `[::1]`; embedded URL credentials and redirects are rejected. This rule protects the one-time runner grant in transit. It is separate from `--ignore-https-errors`, which applies only to the trusted target-page Playwright contexts and never weakens platform transport validation.
 
-The specialized `lemon-bureau.scenario.json` assumes that fixture is served at `http://127.0.0.1:5173`. Change the local scenario file—not platform environment configuration—when a standalone fixture runs on another port.
+The three fixture scenarios match `pnpm examples:animation-fixtures`: Lemon Bureau uses `http://127.0.0.1:43101`, Nico Palmer uses `http://127.0.0.1:43102`, and Salle Blanche uses `http://127.0.0.1:43103`. Change the reviewed local scenario—not platform environment configuration—when a fixture is intentionally served on another port.

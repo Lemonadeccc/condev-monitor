@@ -1,0 +1,199 @@
+{
+    "schemaVersion": 1,
+    "name": "nico-palmer-home-motion",
+    "url": "http://127.0.0.1:43102/",
+    "routeKey": "nico-palmer.home",
+    "environment": "development",
+    "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+    },
+    "reducedMotion": "no-preference",
+    "cacheMode": "warm",
+    "warmupRuns": 1,
+    "measuredRuns": 3,
+    "measurementContract": {
+        "contractVersion": 2,
+        "expectedHz": 60,
+        "targetFrameMs": 16.666667,
+        "source": "explicit",
+        "confidence": "explicit",
+        "budgetRef": {
+            "catalogVersion": 1,
+            "budgetId": "condev.animation.default",
+            "budgetVersion": 1
+        },
+        "metricCatalogVersion": 2
+    },
+    "actions": [
+        {
+            "kind": "wait",
+            "label": "initial-route-transition",
+            "actionId": "initial-route-transition",
+            "subject": { "scope": "route", "role": "entrance-transition", "surface": "dom" },
+            "trigger": { "source": "browser" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "motion-engine", "technologyKey": "framer-motion" },
+                { "axis": "renderer", "technologyKey": "dom" }
+            ],
+            "durationMs": 1800
+        },
+        {
+            "kind": "hover",
+            "label": "primary-navigation-control-hover",
+            "actionId": "primary-navigation-control-hover",
+            "subject": {
+                "scope": "subject",
+                "subjectKey": "primary-navigation-control",
+                "role": "hover-feedback",
+                "surface": "dom"
+            },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "motion-engine", "technologyKey": "css-transition" },
+                { "axis": "renderer", "technologyKey": "dom" }
+            ],
+            "selector": ".hamburger-icon",
+            "durationMs": 400
+        },
+        {
+            "kind": "click",
+            "label": "primary-navigation-open",
+            "actionId": "primary-navigation-open",
+            "subject": {
+                "scope": "subject",
+                "subjectKey": "primary-navigation",
+                "role": "menu-disclosure",
+                "surface": "dom"
+            },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "motion-engine", "technologyKey": "gsap" },
+                { "axis": "renderer", "technologyKey": "dom" }
+            ],
+            "selector": ".hamburger-icon",
+            "durationMs": 1800
+        },
+        {
+            "kind": "hover",
+            "label": "primary-navigation-item-hover",
+            "actionId": "primary-navigation-item-hover",
+            "subject": {
+                "scope": "subject",
+                "subjectKey": "primary-navigation-item",
+                "role": "hover-feedback",
+                "surface": "dom"
+            },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "motion-engine", "technologyKey": "css-transition" },
+                { "axis": "renderer", "technologyKey": "dom" }
+            ],
+            "selector": ".menu-link[href='/about']",
+            "durationMs": 400
+        },
+        {
+            "kind": "click",
+            "label": "primary-navigation-close",
+            "actionId": "primary-navigation-close",
+            "subject": {
+                "scope": "subject",
+                "subjectKey": "primary-navigation",
+                "role": "menu-disclosure",
+                "surface": "dom"
+            },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "motion-engine", "technologyKey": "gsap" },
+                { "axis": "renderer", "technologyKey": "dom" }
+            ],
+            "selector": ".hamburger-icon",
+            "durationMs": 1800
+        },
+        {
+            "kind": "scroll",
+            "label": "home-scroll-forward",
+            "actionId": "home-scroll-forward",
+            "subject": { "scope": "page", "role": "scroll-linked-motion", "surface": "dom" },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "motion-engine", "technologyKey": "gsap" },
+                { "axis": "motion-engine", "technologyKey": "lenis" },
+                { "axis": "renderer", "technologyKey": "dom" }
+            ],
+            "deltaY": 2700,
+            "durationMs": 3200
+        },
+        {
+            "kind": "wait",
+            "label": "forward-scroll-settle",
+            "actionId": "forward-scroll-settle",
+            "subject": { "scope": "page", "role": "scroll-settle", "surface": "dom" },
+            "trigger": { "source": "browser" },
+            "technologies": [
+                { "axis": "motion-engine", "technologyKey": "gsap" },
+                { "axis": "motion-engine", "technologyKey": "lenis" },
+                { "axis": "renderer", "technologyKey": "dom" }
+            ],
+            "durationMs": 600
+        },
+        {
+            "kind": "scroll",
+            "label": "home-scroll-reverse",
+            "actionId": "home-scroll-reverse",
+            "subject": { "scope": "page", "role": "scroll-linked-motion", "surface": "dom" },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "motion-engine", "technologyKey": "gsap" },
+                { "axis": "motion-engine", "technologyKey": "lenis" },
+                { "axis": "renderer", "technologyKey": "dom" }
+            ],
+            "deltaY": -2700,
+            "durationMs": 2800
+        },
+        {
+            "kind": "wait",
+            "label": "navigation-controls-settle",
+            "actionId": "navigation-controls-settle",
+            "subject": { "scope": "page", "role": "navigation-controls-settle", "surface": "dom" },
+            "trigger": { "source": "browser" },
+            "technologies": [
+                { "axis": "motion-engine", "technologyKey": "gsap" },
+                { "axis": "renderer", "technologyKey": "dom" }
+            ],
+            "durationMs": 900
+        },
+        {
+            "kind": "resize",
+            "label": "desktop-resize",
+            "actionId": "desktop-resize",
+            "subject": { "scope": "page", "role": "responsive-reflow", "surface": "dom" },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "motion-engine", "technologyKey": "gsap" },
+                { "axis": "renderer", "technologyKey": "dom" }
+            ],
+            "width": 1180,
+            "height": 760
+        }
+    ],
+    "trace": {
+        "enabled": true,
+        "screenshots": false,
+        "maxDurationMs": 60000
+    },
+    "lighthouse": {
+        "enabled": true,
+        "categories": ["performance", "accessibility", "best-practices"],
+        "formFactor": "desktop"
+    }
+}

@@ -1,7 +1,7 @@
 {
     "schemaVersion": 1,
     "name": "lemon-bureau-home-motion",
-    "url": "http://127.0.0.1:5173/",
+    "url": "http://127.0.0.1:43101/",
     "routeKey": "lemon-bureau.home",
     "environment": "development",
     "viewport": {
@@ -24,7 +24,7 @@
             "budgetId": "condev.animation.default",
             "budgetVersion": 1
         },
-        "metricCatalogVersion": 1
+        "metricCatalogVersion": 2
     },
     "actions": [
         {
@@ -58,6 +58,15 @@
             ],
             "deltaY": 1800,
             "durationMs": 2200
+        },
+        {
+            "kind": "press",
+            "label": "keyboard-scheduling",
+            "actionId": "keyboard-scheduling",
+            "subject": { "scope": "page", "role": "keyboard-scheduling", "surface": "unknown" },
+            "trigger": { "source": "scenario" },
+            "technologies": [{ "axis": "ui-framework", "technologyKey": "vanilla" }],
+            "key": "Escape"
         },
         {
             "kind": "resize",
