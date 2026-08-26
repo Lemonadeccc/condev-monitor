@@ -1,4 +1,5 @@
 import {
+    Activity,
     BookText,
     Bot,
     BrainCircuit,
@@ -9,6 +10,7 @@ import {
     FlaskConical,
     Home,
     MessagesSquare,
+    Microscope,
     Play,
     SquareTerminal,
     User2,
@@ -51,6 +53,16 @@ const items = [
         title: 'Metric',
         url: '/metric',
         icon: Zap,
+    },
+    {
+        title: 'Animations',
+        url: '/animations',
+        icon: Activity,
+    },
+    {
+        title: 'Labs',
+        url: '/labs',
+        icon: Microscope,
     },
     {
         title: 'Replays',
