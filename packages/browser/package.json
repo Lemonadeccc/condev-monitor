@@ -19,6 +19,16 @@
                 "types": "./build/types/index.d.ts",
                 "default": "./build/cjs/index.js"
             }
+        },
+        "./animation": {
+            "import": {
+                "types": "./build/types/animation.d.ts",
+                "default": "./build/esm/animation.mjs"
+            },
+            "require": {
+                "types": "./build/types/animation.d.ts",
+                "default": "./build/cjs/animation.js"
+            }
         }
     },
     "scripts": {
@@ -26,9 +36,10 @@
         "build:watch:transpile": "tsup --watch",
         "build:watch:types": "tsc -p tsconfig.types.json --watch",
         "clean": "rimraf build",
-        "build": "pnpm clean && pnpm build:transpile && pnpm build:types",
+        "build": "pnpm clean && pnpm build:transpile && pnpm build:types && pnpm verify:exports",
         "build:transpile": "tsup",
         "build:types": "tsc -p tsconfig.types.json",
+        "verify:exports": "node scripts/verify-package-exports.mjs",
         "test": "jest --config jest.config.cjs --runInBand"
     },
     "keywords": [],
@@ -36,6 +47,7 @@
     "license": "ISC",
     "description": "",
     "dependencies": {
+        "@condev-monitor/monitor-sdk-animation": "workspace:*",
         "@condev-monitor/monitor-sdk-browser-utils": "workspace:*",
         "@condev-monitor/monitor-sdk-core": "workspace:*",
         "idb": "^8.0.0",

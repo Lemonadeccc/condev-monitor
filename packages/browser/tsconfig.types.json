@@ -4,8 +4,15 @@
         "declaration": true,
         "declarationMap": true,
         "emitDeclarationOnly": true,
-        "outDir": "build/types"
+        "outDir": "build/types",
+        "rootDir": "src",
+        "stripInternal": true,
+        "paths": {
+            "@condev-monitor/monitor-sdk-browser": ["src/index.ts"],
+            "@condev-monitor/monitor-sdk-animation": ["../animation/build/types/index.d.ts"],
+            "@condev-monitor/monitor-sdk-animation/devtools": ["../animation/build/types/devtools.d.ts"]
+        }
     },
-    "include": ["src/index.ts"],
+    "include": ["src/index.ts", "src/animation.ts"],
     "exclude": ["src/**/*.spec.ts"]
 }
