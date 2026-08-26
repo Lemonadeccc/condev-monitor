@@ -25,7 +25,7 @@ import type {
     InteractionPerformanceSummary,
 } from './types'
 
-// cspell:ignore describedby Menlo Segoe
+// cspell:ignore describedby keyshortcuts Menlo Segoe
 
 declare const process: { env?: { NODE_ENV?: string } } | undefined
 
@@ -33,6 +33,10 @@ let overlaySequence = 0
 const MIN_REFRESH_INTERVAL_MS = 1_000
 const MAX_TIMER_DELAY_MS = 2_147_483_647
 const OVERLAY_STORAGE_KEY = 'condev-animation-overlay-v2'
+const OVERLAY_POSITION_VERSION = 1
+const OVERLAY_VIEWPORT_MARGIN_PX = 14
+const OVERLAY_DRAG_THRESHOLD_PX = 5
+const OVERLAY_KEYBOARD_MOVE_PX = 10
 const OVERLAY_TABS = ['overview', 'interactions', 'coverage', 'target'] as const
 const RESOURCE_CATEGORY_LABEL_KEYS = {
     script: 'resourceCategoryScript',
@@ -45,6 +49,52 @@ const RESOURCE_CATEGORY_LABEL_KEYS = {
 } as const
 type OverlayTab = (typeof OVERLAY_TABS)[number]
 type OverlayLayout = 'compact' | 'wide'
+type OverlaySurface = 'launcher' | 'panel'
+
+interface OverlayNormalizedPosition {
+    readonly xRatio: number
+    readonly yRatio: number
+}
+
+interface OverlayStoredPositions {
+    readonly version: typeof OVERLAY_POSITION_VERSION
+    readonly launcher?: OverlayNormalizedPosition
+    readonly panel?: OverlayNormalizedPosition
+}
+
+interface OverlayViewport {
+    readonly left: number
+    readonly top: number
+    readonly width: number
+    readonly height: number
+}
+
+function finiteRatio(value: unknown): value is number {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+}
+
+function normalizedPosition(value: unknown): OverlayNormalizedPosition | undefined {
+    if (!value || typeof value !== 'object') return undefined
+    const position = value as { xRatio?: unknown; yRatio?: unknown }
+    return finiteRatio(position.xRatio) && finiteRatio(position.yRatio) ? { xRatio: position.xRatio, yRatio: position.yRatio } : undefined
+}
+
+function storedPositions(value: unknown): OverlayStoredPositions | undefined {
+    if (!value || typeof value !== 'object') return undefined
+    const positions = value as { version?: unknown; launcher?: unknown; panel?: unknown }
+    if (positions.version !== OVERLAY_POSITION_VERSION) return undefined
+    const launcher = normalizedPosition(positions.launcher)
+    const panel = normalizedPosition(positions.panel)
+    return {
+        version: OVERLAY_POSITION_VERSION,
+        ...(launcher ? { launcher } : {}),
+        ...(panel ? { panel } : {}),
+    }
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+    return Math.min(Math.max(value, minimum), Math.max(minimum, maximum))
+}
 
 export interface AnimationOverlaySource {
     readonly state?: CollectorState
@@ -125,15 +175,17 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     let activeTab: OverlayTab = 'overview'
     let layout: OverlayLayout = 'wide'
     let locale: AnimationOverlayLocale = resolveOverlayLocale(options.locale, documentValue, timerOwner?.navigator?.language)
+    let restoredPositions: OverlayStoredPositions = { version: OVERLAY_POSITION_VERSION }
     try {
         const stored = timerOwner?.localStorage?.getItem(OVERLAY_STORAGE_KEY)
         if (stored) {
-            const parsed = JSON.parse(stored) as { tab?: unknown; layout?: unknown; locale?: unknown }
+            const parsed = JSON.parse(stored) as { tab?: unknown; layout?: unknown; locale?: unknown; positions?: unknown }
             if (OVERLAY_TABS.includes(parsed.tab as OverlayTab)) activeTab = parsed.tab as OverlayTab
             if (parsed.layout === 'compact' || parsed.layout === 'wide') layout = parsed.layout
             if ((options.locale === undefined || options.locale === 'auto') && (parsed.locale === 'en' || parsed.locale === 'zh-CN')) {
                 locale = parsed.locale
             }
+            restoredPositions = storedPositions(parsed.positions) ?? restoredPositions
         }
     } catch {
         // Storage is optional and may be blocked by the host document.
@@ -155,6 +207,10 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         }
         * { box-sizing: border-box; }
         button { font: inherit; }
+        .sr-only {
+            position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden;
+            clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+        }
         .dock {
             position: fixed; z-index: 2147483647;
             right: max(14px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom));
@@ -165,7 +221,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             position: absolute; inset: 0; width: 128px; min-height: 48px; padding: 5px 11px 5px 6px;
             border: 1px solid var(--border-strong); border-radius: 999px; color: var(--text);
             background: rgba(11,11,14,.96); box-shadow: 0 12px 34px rgba(0,0,0,.38), inset 0 1px rgba(255,255,255,.05);
-            appearance: none; cursor: pointer; pointer-events: auto; display: grid;
+            appearance: none; cursor: grab; pointer-events: auto; display: grid; touch-action: none; user-select: none;
             grid-template-columns: 36px 1fr auto; align-items: center; gap: 7px; text-align: left;
             transition: transform 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out;
         }
@@ -187,10 +243,12 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             font-variant-numeric: tabular-nums;
         }
         .trigger-badge[data-visible='false'] { display: none; }
+        .trigger[data-dragging='true'] { cursor: grabbing; transition: none; }
         .trigger:focus-visible, .panel:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
         .trigger:active, .icon-button:active, .tab:active, .issue-button:active, .interaction-button:active, .coverage-button:active { transform: scale(.97); }
         .panel {
-            position: absolute; right: 0; bottom: 58px; width: min(430px,calc(100vw - 28px));
+            position: fixed; right: max(14px,env(safe-area-inset-right));
+            bottom: max(72px,calc(58px + env(safe-area-inset-bottom))); width: min(430px,calc(100vw - 28px));
             height: min(640px,calc(100vh - 90px)); min-height: min(500px,calc(100vh - 90px)); overflow: hidden;
             border: 1px solid var(--border); border-radius: 14px; color: var(--text); background: rgba(11,11,14,.985);
             box-shadow: 0 28px 80px rgba(0,0,0,.48), inset 0 1px rgba(255,255,255,.045);
@@ -204,7 +262,11 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             transition: opacity 140ms cubic-bezier(.4,0,1,1), transform 140ms cubic-bezier(.4,0,1,1), visibility 0s linear 140ms;
         }
         .panel-header { min-height: 58px; padding: 10px 10px 9px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-        .product { min-width: 0; display: flex; align-items: center; gap: 9px; }
+        .product {
+            min-width: 0; display: flex; align-items: center; gap: 9px; cursor: grab;
+            touch-action: none; user-select: none; border-radius: 9px;
+        }
+        .product[data-dragging='true'] { cursor: grabbing; }
         .product-mark { width: 28px; height: 28px; flex: 0 0 auto; border-radius: 8px; display: grid; place-items: center; color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(155,135,245,.24); font: 750 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace; }
         .product-copy { min-width: 0; }
         .product-copy h2 { margin: 0; font-size: 13px; line-height: 1.25; font-weight: 680; letter-spacing: -.015em; }
@@ -364,11 +426,23 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     panel.setAttribute('role', 'region')
     panel.setAttribute('aria-label', overlayText(locale, 'panelAria'))
     panel.setAttribute('tabindex', '0')
+    const launcherMoveHelpId = `${panelId}-launcher-move-help`
+    const panelMoveHelpId = `${panelId}-panel-move-help`
+    const launcherMoveHelp = documentValue.createElement('span')
+    launcherMoveHelp.className = 'sr-only'
+    launcherMoveHelp.textContent = overlayText(locale, 'launcherMoveHelp')
+    launcherMoveHelp.setAttribute('id', launcherMoveHelpId)
+    const panelMoveHelp = documentValue.createElement('span')
+    panelMoveHelp.className = 'sr-only'
+    panelMoveHelp.textContent = overlayText(locale, 'panelMoveHelp')
+    panelMoveHelp.setAttribute('id', panelMoveHelpId)
 
     const trigger = documentValue.createElement('button')
     trigger.className = 'trigger'
     trigger.setAttribute('type', 'button')
     trigger.setAttribute('aria-controls', panelId)
+    trigger.setAttribute('aria-describedby', launcherMoveHelpId)
+    trigger.setAttribute('aria-keyshortcuts', 'Alt+ArrowUp Alt+ArrowDown Alt+ArrowLeft Alt+ArrowRight Alt+Home')
     const triggerBrand = appendTextElement(documentValue, trigger, 'span', 'trigger-brand', '∿')
     triggerBrand.setAttribute('aria-hidden', 'true')
     const triggerCopy = documentValue.createElement('span')
@@ -395,6 +469,12 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     panelHeader.className = 'panel-header'
     const product = documentValue.createElement('div')
     product.className = 'product'
+    product.setAttribute('data-overlay-panel-drag-handle', '')
+    product.setAttribute('tabindex', '0')
+    product.setAttribute('role', 'group')
+    product.setAttribute('aria-label', overlayText(locale, 'movePanel'))
+    product.setAttribute('aria-describedby', panelMoveHelpId)
+    product.setAttribute('aria-keyshortcuts', 'Alt+ArrowUp Alt+ArrowDown Alt+ArrowLeft Alt+ArrowRight Alt+Home')
     const productMark = appendTextElement(documentValue, product, 'span', 'product-mark', 'CM')
     productMark.setAttribute('aria-hidden', 'true')
     const productCopy = documentValue.createElement('div')
@@ -659,7 +739,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
 
     panel.append(panelHeader, diagnosis, metricGrid, tabs, content, footer)
     dock.append(trigger, panel)
-    shadow.append(style, dock)
+    shadow.append(style, dock, launcherMoveHelp, panelMoveHelp)
     mountTarget.appendChild(host)
 
     let destroyed = false
@@ -679,16 +759,205 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     let targetSnapshot: AnimationElementSelectionSnapshot | null = null
     let targetInteraction: InteractionHandle | null = null
     let restorePanelAfterPick = false
+    let launcherPosition = restoredPositions.launcher
+    let panelPosition = restoredPositions.panel
+    let suppressNextPointerClick = false
+    let activeDrag:
+        | {
+              surface: OverlaySurface
+              handle: HTMLElement
+              pointerId: number
+              startClientX: number
+              startClientY: number
+              startLeft: number
+              startTop: number
+              width: number
+              height: number
+              started: boolean
+              position?: OverlayNormalizedPosition
+          }
+        | undefined
     const rendererSurfaceInspector = createRendererSurfaceInspector({ document: documentValue })
     rendererSurfaceInspector.setEnabled(true)
     let rendererSurfaceSnapshot: RendererSurfaceInspectorSnapshot = rendererSurfaceInspector.snapshot()
 
     const persistViewPreference = (): void => {
         try {
-            timerOwner?.localStorage?.setItem(OVERLAY_STORAGE_KEY, JSON.stringify({ tab: activeTab, layout, locale }))
+            timerOwner?.localStorage?.setItem(
+                OVERLAY_STORAGE_KEY,
+                JSON.stringify({
+                    tab: activeTab,
+                    layout,
+                    locale,
+                    positions: {
+                        version: OVERLAY_POSITION_VERSION,
+                        ...(launcherPosition ? { launcher: launcherPosition } : {}),
+                        ...(panelPosition ? { panel: panelPosition } : {}),
+                    },
+                })
+            )
         } catch {
             // Storage can be unavailable in privacy modes or sandboxed documents.
         }
+    }
+
+    const viewport = (): OverlayViewport => {
+        const visualViewport = timerOwner?.visualViewport
+        const fallbackWidth = timerOwner?.innerWidth ?? documentValue.documentElement?.clientWidth ?? 0
+        const fallbackHeight = timerOwner?.innerHeight ?? documentValue.documentElement?.clientHeight ?? 0
+        const width = Number.isFinite(visualViewport?.width) && (visualViewport?.width ?? 0) > 0 ? visualViewport!.width : fallbackWidth
+        const height =
+            Number.isFinite(visualViewport?.height) && (visualViewport?.height ?? 0) > 0 ? visualViewport!.height : fallbackHeight
+        return {
+            left: Number.isFinite(visualViewport?.offsetLeft) ? visualViewport!.offsetLeft : 0,
+            top: Number.isFinite(visualViewport?.offsetTop) ? visualViewport!.offsetTop : 0,
+            width: Number.isFinite(width) && width > 0 ? width : 0,
+            height: Number.isFinite(height) && height > 0 ? height : 0,
+        }
+    }
+
+    const surfaceElement = (surface: OverlaySurface): HTMLElement => (surface === 'launcher' ? dock : panel)
+    const surfacePosition = (surface: OverlaySurface): OverlayNormalizedPosition | undefined =>
+        surface === 'launcher' ? launcherPosition : panelPosition
+    const setSurfacePosition = (surface: OverlaySurface, position: OverlayNormalizedPosition | undefined): void => {
+        if (surface === 'launcher') launcherPosition = position
+        else panelPosition = position
+    }
+    const surfaceBounds = (width: number, height: number): { minLeft: number; minTop: number; maxLeft: number; maxTop: number } => {
+        const currentViewport = viewport()
+        const minLeft = currentViewport.left + OVERLAY_VIEWPORT_MARGIN_PX
+        const minTop = currentViewport.top + OVERLAY_VIEWPORT_MARGIN_PX
+        return {
+            minLeft,
+            minTop,
+            maxLeft: Math.max(minLeft, currentViewport.left + currentViewport.width - OVERLAY_VIEWPORT_MARGIN_PX - width),
+            maxTop: Math.max(minTop, currentViewport.top + currentViewport.height - OVERLAY_VIEWPORT_MARGIN_PX - height),
+        }
+    }
+    const writeSurfacePixels = (
+        surface: OverlaySurface,
+        requestedLeft: number,
+        requestedTop: number,
+        dimensions?: { readonly width: number; readonly height: number }
+    ): OverlayNormalizedPosition => {
+        const element = surfaceElement(surface)
+        const rect = dimensions ?? element.getBoundingClientRect()
+        const bounds = surfaceBounds(rect.width, rect.height)
+        const left = clamp(requestedLeft, bounds.minLeft, bounds.maxLeft)
+        const top = clamp(requestedTop, bounds.minTop, bounds.maxTop)
+        element.style.left = `${Number(left.toFixed(3))}px`
+        element.style.top = `${Number(top.toFixed(3))}px`
+        element.style.right = 'auto'
+        element.style.bottom = 'auto'
+        return {
+            xRatio: bounds.maxLeft === bounds.minLeft ? 0 : (left - bounds.minLeft) / (bounds.maxLeft - bounds.minLeft),
+            yRatio: bounds.maxTop === bounds.minTop ? 0 : (top - bounds.minTop) / (bounds.maxTop - bounds.minTop),
+        }
+    }
+    const applySurfacePosition = (surface: OverlaySurface): void => {
+        const position = surfacePosition(surface)
+        if (!position) return
+        const element = surfaceElement(surface)
+        const rect = element.getBoundingClientRect()
+        const bounds = surfaceBounds(rect.width, rect.height)
+        writeSurfacePixels(
+            surface,
+            bounds.minLeft + position.xRatio * (bounds.maxLeft - bounds.minLeft),
+            bounds.minTop + position.yRatio * (bounds.maxTop - bounds.minTop)
+        )
+    }
+    const resetSurfacePosition = (surface: OverlaySurface): void => {
+        setSurfacePosition(surface, undefined)
+        const element = surfaceElement(surface)
+        element.style.left = ''
+        element.style.top = ''
+        element.style.right = ''
+        element.style.bottom = ''
+        persistViewPreference()
+    }
+    const updateActiveDrag = (event: PointerEvent): void => {
+        const drag = activeDrag
+        if (!drag || event.pointerId !== drag.pointerId) return
+        const deltaX = event.clientX - drag.startClientX
+        const deltaY = event.clientY - drag.startClientY
+        if (!drag.started && Math.hypot(deltaX, deltaY) < OVERLAY_DRAG_THRESHOLD_PX) return
+        if (!drag.started) {
+            drag.started = true
+            drag.handle.setAttribute('data-dragging', 'true')
+        }
+        event.preventDefault()
+        drag.position = writeSurfacePixels(drag.surface, drag.startLeft + deltaX, drag.startTop + deltaY, drag)
+    }
+    const finishActiveDrag = (event: PointerEvent, updateFinalPosition: boolean): void => {
+        const drag = activeDrag
+        if (!drag || event.pointerId !== drag.pointerId) return
+        if (updateFinalPosition) updateActiveDrag(event)
+        activeDrag = undefined
+        drag.handle.setAttribute('data-dragging', 'false')
+        try {
+            if (drag.handle.hasPointerCapture?.(drag.pointerId)) drag.handle.releasePointerCapture(drag.pointerId)
+        } catch {
+            // Pointer capture is optional in embedded and synthetic documents.
+        }
+        if (!drag.started || !drag.position) return
+        setSurfacePosition(drag.surface, drag.position)
+        if (drag.surface === 'launcher') suppressNextPointerClick = true
+        persistViewPreference()
+    }
+    const beginSurfaceDrag = (surface: OverlaySurface, handle: HTMLElement, event: PointerEvent): void => {
+        if (destroyed || activeDrag || event.isPrimary === false || event.button !== 0) return
+        if ((surface === 'launcher' && expanded) || (surface === 'panel' && !expanded)) return
+        if (!Number.isFinite(event.pointerId)) return
+        if (surface === 'launcher') suppressNextPointerClick = false
+        const rect = surfaceElement(surface).getBoundingClientRect()
+        activeDrag = {
+            surface,
+            handle,
+            pointerId: event.pointerId,
+            startClientX: event.clientX,
+            startClientY: event.clientY,
+            startLeft: rect.left,
+            startTop: rect.top,
+            width: rect.width,
+            height: rect.height,
+            started: false,
+        }
+        try {
+            handle.setPointerCapture?.(event.pointerId)
+        } catch {
+            // The pointer can still complete while it remains over the handle.
+        }
+    }
+    const onSurfaceKeyDown = (surface: OverlaySurface, event: KeyboardEvent): void => {
+        if (!event.altKey || event.ctrlKey || event.metaKey || event.currentTarget !== event.target) return
+        if (event.key === 'Home') {
+            event.preventDefault()
+            resetSurfacePosition(surface)
+            return
+        }
+        const direction: readonly [number, number] | undefined =
+            event.key === 'ArrowUp'
+                ? [0, -1]
+                : event.key === 'ArrowDown'
+                  ? [0, 1]
+                  : event.key === 'ArrowLeft'
+                    ? [-1, 0]
+                    : event.key === 'ArrowRight'
+                      ? [1, 0]
+                      : undefined
+        if (!direction) return
+        if ((surface === 'launcher' && expanded) || (surface === 'panel' && !expanded)) return
+        event.preventDefault()
+        const element = surfaceElement(surface)
+        const rect = element.getBoundingClientRect()
+        const step = event.shiftKey ? 1 : OVERLAY_KEYBOARD_MOVE_PX
+        const position = writeSurfacePixels(surface, rect.left + direction[0] * step, rect.top + direction[1] * step)
+        setSurfacePosition(surface, position)
+        persistViewPreference()
+    }
+    const onViewportChange = (): void => {
+        applySurfacePosition('launcher')
+        applySurfacePosition('panel')
     }
 
     const syncCollectorState = (state = readCollectorState(source)): void => {
@@ -704,6 +973,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         layoutButton.setAttribute('aria-label', overlayText(locale, layout === 'wide' ? 'useCompact' : 'openWorkbench'))
         layoutButton.setAttribute('title', overlayText(locale, 'toggleWorkbench'))
         layoutButton.textContent = layout === 'wide' ? '⤡' : '⤢'
+        applySurfacePosition('panel')
     }
 
     const setActiveTab = (nextTab: OverlayTab, moveFocus = false): void => {
@@ -2070,6 +2340,9 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         footerLocalLabel.textContent = overlayText(locale, 'localView')
         closeButton.setAttribute('aria-label', overlayText(locale, 'closeMonitor'))
         closeButton.setAttribute('title', overlayText(locale, 'close'))
+        product.setAttribute('aria-label', overlayText(locale, 'movePanel'))
+        launcherMoveHelp.textContent = overlayText(locale, 'launcherMoveHelp')
+        panelMoveHelp.textContent = overlayText(locale, 'panelMoveHelp')
         pickerButton.setAttribute('aria-label', overlayText(locale, 'selectTarget'))
         pickerButton.setAttribute(
             'title',
@@ -2120,11 +2393,13 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         expanded = nextExpanded
         syncExpandedState()
         if (expanded) {
+            applySurfacePosition('panel')
             previousFrameRateSnapshot = undefined
             lastLiveFrameRate = { status: 'collecting' }
             refresh()
             startRefreshLoop()
         } else {
+            applySurfacePosition('launcher')
             stopRefreshLoop()
             previousFrameRateSnapshot = undefined
             lastLiveFrameRate = { status: 'collecting' }
@@ -2132,7 +2407,16 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         }
     }
     const toggle = (): void => setExpanded(!expanded)
-    const onTriggerClick = (): void => toggle()
+    const onTriggerClick = (event: MouseEvent): void => {
+        if (suppressNextPointerClick && event.detail > 0) {
+            suppressNextPointerClick = false
+            event.preventDefault()
+            event.stopImmediatePropagation()
+            return
+        }
+        suppressNextPointerClick = false
+        toggle()
+    }
     const onCloseClick = (): void => setExpanded(false)
     const onLayoutClick = (): void => {
         layout = layout === 'compact' ? 'wide' : 'compact'
@@ -2237,7 +2521,29 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             trigger.focus()
         }
     }
+    const onLauncherPointerDown = (event: PointerEvent): void => beginSurfaceDrag('launcher', trigger, event)
+    const onLauncherPointerMove = (event: PointerEvent): void => updateActiveDrag(event)
+    const onLauncherPointerUp = (event: PointerEvent): void => finishActiveDrag(event, true)
+    const onLauncherPointerCancel = (event: PointerEvent): void => finishActiveDrag(event, false)
+    const onPanelPointerDown = (event: PointerEvent): void => beginSurfaceDrag('panel', product, event)
+    const onPanelPointerMove = (event: PointerEvent): void => updateActiveDrag(event)
+    const onPanelPointerUp = (event: PointerEvent): void => finishActiveDrag(event, true)
+    const onPanelPointerCancel = (event: PointerEvent): void => finishActiveDrag(event, false)
+    const onLauncherKeyDown = (event: KeyboardEvent): void => onSurfaceKeyDown('launcher', event)
+    const onPanelKeyDown = (event: KeyboardEvent): void => onSurfaceKeyDown('panel', event)
     trigger.addEventListener('click', onTriggerClick)
+    trigger.addEventListener('pointerdown', onLauncherPointerDown)
+    trigger.addEventListener('pointermove', onLauncherPointerMove)
+    trigger.addEventListener('pointerup', onLauncherPointerUp)
+    trigger.addEventListener('pointercancel', onLauncherPointerCancel)
+    trigger.addEventListener('lostpointercapture', onLauncherPointerCancel)
+    trigger.addEventListener('keydown', onLauncherKeyDown)
+    product.addEventListener('pointerdown', onPanelPointerDown)
+    product.addEventListener('pointermove', onPanelPointerMove)
+    product.addEventListener('pointerup', onPanelPointerUp)
+    product.addEventListener('pointercancel', onPanelPointerCancel)
+    product.addEventListener('lostpointercapture', onPanelPointerCancel)
+    product.addEventListener('keydown', onPanelKeyDown)
     pickerButton.addEventListener('click', onPickerClick)
     closeButton.addEventListener('click', onCloseClick)
     localeButton.addEventListener('click', onLocaleClick)
@@ -2247,6 +2553,10 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     for (const type of containedInputTypes) shadow.addEventListener(type, onContainedInput, { passive: true })
     shadow.addEventListener('keydown', onShadowKeyDown)
     shadow.addEventListener('keyup', onContainedInput)
+    timerOwner?.addEventListener('resize', onViewportChange)
+    timerOwner?.visualViewport?.addEventListener('resize', onViewportChange)
+    timerOwner?.visualViewport?.addEventListener('scroll', onViewportChange)
+    onViewportChange()
     setActiveTab(activeTab)
     applyLocaleCopy()
     if (expanded) {
@@ -2283,6 +2593,18 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             }
             targetSelection = null
             trigger.removeEventListener('click', onTriggerClick)
+            trigger.removeEventListener('pointerdown', onLauncherPointerDown)
+            trigger.removeEventListener('pointermove', onLauncherPointerMove)
+            trigger.removeEventListener('pointerup', onLauncherPointerUp)
+            trigger.removeEventListener('pointercancel', onLauncherPointerCancel)
+            trigger.removeEventListener('lostpointercapture', onLauncherPointerCancel)
+            trigger.removeEventListener('keydown', onLauncherKeyDown)
+            product.removeEventListener('pointerdown', onPanelPointerDown)
+            product.removeEventListener('pointermove', onPanelPointerMove)
+            product.removeEventListener('pointerup', onPanelPointerUp)
+            product.removeEventListener('pointercancel', onPanelPointerCancel)
+            product.removeEventListener('lostpointercapture', onPanelPointerCancel)
+            product.removeEventListener('keydown', onPanelKeyDown)
             pickerButton.removeEventListener('click', onPickerClick)
             closeButton.removeEventListener('click', onCloseClick)
             localeButton.removeEventListener('click', onLocaleClick)
@@ -2299,6 +2621,18 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             for (const type of containedInputTypes) shadow.removeEventListener(type, onContainedInput)
             shadow.removeEventListener('keydown', onShadowKeyDown)
             shadow.removeEventListener('keyup', onContainedInput)
+            timerOwner?.removeEventListener('resize', onViewportChange)
+            timerOwner?.visualViewport?.removeEventListener('resize', onViewportChange)
+            timerOwner?.visualViewport?.removeEventListener('scroll', onViewportChange)
+            const drag = activeDrag
+            activeDrag = undefined
+            if (drag) {
+                try {
+                    if (drag.handle.hasPointerCapture?.(drag.pointerId)) drag.handle.releasePointerCapture(drag.pointerId)
+                } catch {
+                    // Destruction must stay idempotent if capture already ended.
+                }
+            }
             host.remove()
         },
     }

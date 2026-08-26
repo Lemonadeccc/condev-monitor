@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-// cspell:ignore rawframes rvfc useremail
+// cspell:ignore describedby keyshortcuts rawframes rvfc useremail
 
 import {
     ANIMATION_RUM_MAX_WINDOW_DURATION_MS,
@@ -1978,6 +1978,7 @@ class FakeNode {
         this.isConnected = true
         this.scrollTop = 0
         this.scrollLeft = 0
+        this.capturedPointers = new Set()
     }
 
     append(...children) {
@@ -2018,13 +2019,14 @@ class FakeNode {
     }
 
     dispatchEvent(event) {
-        event.target = this
+        if (event.target == null) event.target = this
+        event.currentTarget = this
         for (const listener of [...(this.listeners.get(event.type) ?? [])]) listener(event)
         return true
     }
 
     click() {
-        this.dispatchEvent({ type: 'click' })
+        this.dispatchEvent({ type: 'click', detail: 0 })
     }
 
     focus() {
@@ -2049,7 +2051,23 @@ class FakeNode {
     }
 
     getBoundingClientRect() {
-        return { left: 0, top: 0, right: 100, bottom: 50, width: 100, height: 50 }
+        const left = Number.parseFloat(this.style.left) || 0
+        const top = Number.parseFloat(this.style.top) || 0
+        const width = this.rectWidth ?? 100
+        const height = this.rectHeight ?? 50
+        return { left, top, right: left + width, bottom: top + height, width, height }
+    }
+
+    setPointerCapture(pointerId) {
+        this.capturedPointers.add(pointerId)
+    }
+
+    releasePointerCapture(pointerId) {
+        this.capturedPointers.delete(pointerId)
+    }
+
+    hasPointerCapture(pointerId) {
+        return this.capturedPointers.has(pointerId)
     }
 
     attachShadow() {
@@ -2063,7 +2081,7 @@ class FakeNode {
 }
 
 class FakeDocument {
-    constructor() {
+    constructor(storage = new Map()) {
         this.body = new FakeNode('body')
         this.documentElement = new FakeNode('html')
         this.body.ownerDocument = this
@@ -2074,6 +2092,8 @@ class FakeDocument {
         this.intervalCallback = null
         this.intervals = new Map()
         this.nextIntervalId = 7
+        this.storage = storage
+        this.windowListeners = new Map()
         this.defaultView = {
             setInterval: (callback, ms) => {
                 this.intervalMs = ms
@@ -2090,6 +2110,16 @@ class FakeDocument {
             },
             innerWidth: 1_000,
             innerHeight: 800,
+            localStorage: {
+                getItem: key => this.storage.get(key) ?? null,
+                setItem: (key, value) => this.storage.set(key, value),
+            },
+            addEventListener: (type, listener) => {
+                const listeners = this.windowListeners.get(type) ?? new Set()
+                listeners.add(listener)
+                this.windowListeners.set(type, listeners)
+            },
+            removeEventListener: (type, listener) => this.windowListeners.get(type)?.delete(listener),
         }
     }
 
@@ -2131,6 +2161,10 @@ class FakeDocument {
         })
         return { prevented, stopped }
     }
+
+    dispatchWindow(type) {
+        for (const listener of [...(this.windowListeners.get(type) ?? [])]) listener({ type })
+    }
 }
 
 function findFakeNodes(node, predicate) {
@@ -2141,6 +2175,32 @@ function findFakeNodes(node, predicate) {
 
 function fakeNodeText(node) {
     return [node.textContent, ...node.children.map(fakeNodeText)].filter(Boolean).join(' ')
+}
+
+function dispatchFakePointer(node, type, values = {}) {
+    const state = { prevented: false, stopped: false }
+    node.dispatchEvent({
+        type,
+        button: 0,
+        buttons: type === 'pointerup' ? 0 : 1,
+        clientX: 0,
+        clientY: 0,
+        detail: type === 'click' ? 1 : 0,
+        isPrimary: true,
+        pointerId: 1,
+        pointerType: 'mouse',
+        preventDefault() {
+            state.prevented = true
+        },
+        stopPropagation() {
+            state.stopped = true
+        },
+        stopImmediatePropagation() {
+            state.stopped = true
+        },
+        ...values,
+    })
+    return state
 }
 
 test('one-shot element picker suppresses the inspected click, supports Escape, and cleans every listener', () => {
@@ -2410,6 +2470,103 @@ test('dev overlay is a collapsed Shadow DOM dock, refreshes only while expanded,
     production.toggle()
     const ssr = createAnimationDevOverlay(collector, { production: false })
     assert.equal(ssr.mounted, false)
+    collector.destroy()
+})
+
+test('dev overlay launcher and expanded panel are independently draggable, keyboard movable, bounded, and persisted', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    collectFrames(runtime, [16, 16, 16])
+    const storage = new Map()
+    const document = new FakeDocument(storage)
+    const overlay = createAnimationDevOverlay(collector, { document, production: false })
+    const shadow = document.body.children[0].shadowRoot
+    const dock = shadow.children[1]
+    const trigger = dock.children[0]
+    const panel = dock.children[1]
+    const product = findFakeNodes(panel, node => node.getAttribute('data-overlay-panel-drag-handle') !== null)[0]
+
+    assert.ok(product)
+    assert.match(trigger.getAttribute('aria-describedby'), /move-help/u)
+    assert.match(product.getAttribute('aria-keyshortcuts'), /Alt\+ArrowUp/u)
+
+    const launcherDown = dispatchFakePointer(trigger, 'pointerdown', { clientX: 20, clientY: 20 })
+    const launcherMove = dispatchFakePointer(trigger, 'pointermove', { clientX: 140, clientY: 100 })
+    dispatchFakePointer(trigger, 'pointerup', { clientX: 140, clientY: 100, buttons: 0 })
+    assert.equal(launcherDown.prevented, false)
+    assert.equal(launcherMove.prevented, true)
+    assert.equal(trigger.hasPointerCapture(1), false)
+    assert.equal(dock.style.left, '120px')
+    assert.equal(dock.style.top, '80px')
+
+    dispatchFakePointer(trigger, 'click', { detail: 1 })
+    assert.equal(overlay.expanded, false)
+    trigger.click()
+    assert.equal(overlay.expanded, true)
+
+    const panelDown = dispatchFakePointer(product, 'pointerdown', { clientX: 10, clientY: 10, pointerId: 2 })
+    const panelMove = dispatchFakePointer(product, 'pointermove', { clientX: 260, clientY: 170, pointerId: 2 })
+    dispatchFakePointer(product, 'pointerup', { clientX: 260, clientY: 170, pointerId: 2, buttons: 0 })
+    assert.equal(panelDown.prevented, false)
+    assert.equal(panelMove.prevented, true)
+    assert.equal(panel.style.left, '250px')
+    assert.equal(panel.style.top, '160px')
+    assert.equal(overlay.expanded, true)
+
+    let keyboardPrevented = false
+    product.dispatchEvent({
+        type: 'keydown',
+        key: 'ArrowRight',
+        altKey: true,
+        shiftKey: false,
+        ctrlKey: false,
+        metaKey: false,
+        preventDefault() {
+            keyboardPrevented = true
+        },
+        stopPropagation() {},
+    })
+    assert.equal(keyboardPrevented, true)
+    assert.equal(panel.style.left, '260px')
+
+    const stored = JSON.parse(storage.get('condev-animation-overlay-v2'))
+    assert.equal(stored.positions.version, 1)
+    assert.ok(stored.positions.launcher.xRatio > 0)
+    assert.ok(stored.positions.panel.xRatio > 0)
+
+    document.defaultView.innerWidth = 300
+    document.defaultView.innerHeight = 220
+    document.dispatchWindow('resize')
+    assert.equal(Number.parseFloat(panel.style.left) <= 186, true)
+    assert.equal(Number.parseFloat(panel.style.top) <= 156, true)
+
+    let resetPrevented = false
+    product.dispatchEvent({
+        type: 'keydown',
+        key: 'Home',
+        altKey: true,
+        shiftKey: false,
+        ctrlKey: false,
+        metaKey: false,
+        preventDefault() {
+            resetPrevented = true
+        },
+        stopPropagation() {},
+    })
+    assert.equal(resetPrevented, true)
+    assert.equal(panel.style.left, '')
+    assert.equal(panel.style.top, '')
+    assert.equal(JSON.parse(storage.get('condev-animation-overlay-v2')).positions.panel, undefined)
+
+    overlay.destroy()
+    assert.equal(document.windowListeners.get('resize')?.size ?? 0, 0)
+
+    const restoredDocument = new FakeDocument(storage)
+    const restoredOverlay = createAnimationDevOverlay(collector, { document: restoredDocument, production: false })
+    const restoredDock = restoredDocument.body.children[0].shadowRoot.children[1]
+    assert.notEqual(restoredDock.style.left, '')
+    assert.notEqual(restoredDock.style.top, '')
+    restoredOverlay.destroy()
     collector.destroy()
 })
 

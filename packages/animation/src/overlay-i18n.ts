@@ -111,6 +111,11 @@ const EN_MESSAGES = {
     closeMonitor: 'Close Condev animation monitor',
     openMonitorTitle: 'Open animation monitor',
     closeMonitorTitle: 'Close animation monitor',
+    movePanel: 'Move animation monitor panel',
+    launcherMoveHelp:
+        'When collapsed, drag this launcher to move it. Press Alt plus an arrow key to move it, Alt plus Shift plus an arrow key for one pixel, or Alt plus Home to reset.',
+    panelMoveHelp:
+        'Drag this title area to move the expanded panel. Press Alt plus an arrow key to move it, Alt plus Shift plus an arrow key for one pixel, or Alt plus Home to reset.',
     openWorkbench: 'Open wide animation workbench',
     useCompact: 'Use compact animation panel',
     toggleWorkbench: 'Toggle wide workbench',
@@ -379,6 +384,9 @@ const ZH_MESSAGES = {
     closeMonitor: '关闭 Condev 动画监控',
     openMonitorTitle: '打开动画监控',
     closeMonitorTitle: '关闭动画监控',
+    movePanel: '移动动画监控面板',
+    launcherMoveHelp: '收起时可拖动此入口。也可按 Alt 加方向键移动，Alt 加 Shift 加方向键精移 1 像素，或按 Alt 加 Home 复位。',
+    panelMoveHelp: '拖动此标题区域可移动展开的面板。也可按 Alt 加方向键移动，Alt 加 Shift 加方向键精移 1 像素，或按 Alt 加 Home 复位。',
     openWorkbench: '打开宽屏动画工作台',
     useCompact: '使用紧凑动画面板',
     toggleWorkbench: '切换宽屏工作台',
