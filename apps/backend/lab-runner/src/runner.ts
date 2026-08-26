@@ -13,7 +13,7 @@ import {
 import * as chromeLauncher from 'chrome-launcher'
 import lighthouse from 'lighthouse'
 
-import { type ProbeCommandState, runScenarioActions, scenarioActionId } from './actions'
+import { type ProbeCommandState, runScenarioActions, type ScenarioActionExecution, scenarioActionId } from './actions'
 import { aggregateMeasuredAttempts } from './aggregate'
 import {
     type BrowserDriver,
@@ -82,6 +82,30 @@ function driverContextOptions(options: Pick<LabRunOptions, 'storageState' | 'ign
     }
 }
 
+async function waitForObservationFloor(
+    page: Pick<import('./browser-driver').LabAutomationPage, 'wait'>,
+    startedAt: number,
+    durationMs: number | undefined
+): Promise<void> {
+    await page.wait(observationFloorWaitMs(startedAt, durationMs))
+}
+
+function observationFloorWaitMs(startedAt: number, durationMs: number | undefined): number {
+    const remaining = durationMs === undefined ? 500 : durationMs - (performance.now() - startedAt)
+    return Math.max(500, remaining)
+}
+
+function observationStartAfterCrossDocumentActions(
+    navigationCompletedAt: number,
+    attemptClockOrigin: number,
+    actions: readonly ScenarioActionExecution[]
+): number {
+    return actions.reduce(
+        (startedAt, action) => (action.crossDocument ? Math.max(startedAt, attemptClockOrigin + action.endedAtMs) : startedAt),
+        navigationCompletedAt
+    )
+}
+
 async function measuredAttempt(
     session: BrowserDriverSession,
     context: LabAutomationContext,
@@ -118,6 +142,7 @@ async function measuredAttempt(
         )
         await session.configurePage(page, scenario)
         await page.navigate(scenario.url, 60_000)
+        const navigationCompletedAt = performance.now()
         await page.wait(500)
         const actionExecutions = await runScenarioActions(page, scenario, {
             probeKey,
@@ -140,7 +165,8 @@ async function measuredAttempt(
                 })
             },
         })
-        await page.wait(500)
+        const observationStartedAt = observationStartAfterCrossDocumentActions(navigationCompletedAt, startedAt, actionExecutions)
+        await waitForObservationFloor(page, observationStartedAt, scenario.durationMs)
         const result = await page.collectProbeResult(probeKey, probeCapability, probeCommandState.nextSequence)
         const lastCrossDocumentOrder = actionExecutions.reduce(
             (latest, action) => (action.crossDocument ? Math.max(latest, action.order) : latest),
@@ -177,6 +203,7 @@ async function measuredAttempt(
                 )
             ),
         ]
+        const finishedAt = performance.now()
         const ended = new Date()
         return {
             attemptId,
@@ -184,7 +211,8 @@ async function measuredAttempt(
             index,
             startedAt: started.toISOString(),
             endedAt: ended.toISOString(),
-            durationMs: Math.max(0, performance.now() - startedAt),
+            durationMs: Math.max(0, finishedAt - startedAt),
+            observationDurationMs: Math.max(0, Math.min(finishedAt - observationStartedAt, probe.durationMs)),
             metrics,
             capabilities: probe.capabilities,
             limitations: [
@@ -226,6 +254,10 @@ async function traceAttempt(
             void stopTrace?.().catch(() => undefined)
         }, traceLimitMs)
         await page.navigate(scenario.url, 60_000)
+        const navigationCompletedAt = performance.now()
+        if (traceLimitMs - (navigationCompletedAt - monotonicStarted) < (scenario.durationMs ?? 500)) {
+            throw new Error('Trace duration cap cannot cover the post-navigation observation window')
+        }
         await page.wait(500)
         const actionExecutions = await runScenarioActions(page, scenario, {
             clockOriginMs: monotonicStarted,
@@ -245,8 +277,26 @@ async function traceAttempt(
                 })
             },
         })
-        await page.wait(500)
+        const observationStartedAt = observationStartAfterCrossDocumentActions(navigationCompletedAt, monotonicStarted, actionExecutions)
+        const requiredObservationWaitMs = observationFloorWaitMs(observationStartedAt, scenario.durationMs)
+        const traceRemainingMs = traceLimitMs - (performance.now() - monotonicStarted)
+        if (traceRemainingMs < requiredObservationWaitMs + 1) {
+            throw new Error('Trace duration cap cannot cover the post-action observation window')
+        }
+        await waitForObservationFloor(page, observationStartedAt, scenario.durationMs)
+        if (traceCapped && scenario.durationMs !== undefined) {
+            throw new Error('Trace reached its configured duration cap before the observation window completed')
+        }
         const trace = await stopTrace()
+        if (traceCapped && scenario.durationMs !== undefined) {
+            throw new Error('Trace reached its configured duration cap before the observation window completed')
+        }
+        const finishedAt = performance.now()
+        const ended = new Date()
+        const traceObservationDurationMs = Math.max(
+            0,
+            traceCapped ? traceLimitMs - (observationStartedAt - monotonicStarted) : finishedAt - observationStartedAt
+        )
         const timeline = normalizeTraceEvents(trace.events, { maxRetainedEvents: 4_000 })
         const screenshotsRequested = scenario.trace?.screenshots === true
         const screenshotsRetained =
@@ -258,7 +308,6 @@ async function traceAttempt(
                         .split(',')
                         .some(category => category.trim() === 'disabled-by-default-devtools.screenshot')
             )
-        const ended = new Date()
         const attemptId = `attempt_${randomUUID().replaceAll('-', '')}`
         const categoryMetrics: AnimationLabMetric[] = Object.entries(timeline.categoryDurationMs).map(([name, value]) =>
             decorateLabMetric(
@@ -295,12 +344,14 @@ async function traceAttempt(
                 index: 0,
                 startedAt: started.toISOString(),
                 endedAt: ended.toISOString(),
-                durationMs: Math.max(0, performance.now() - monotonicStarted),
+                durationMs: Math.max(0, finishedAt - monotonicStarted),
+                observationDurationMs: traceObservationDurationMs,
                 metrics: categoryMetrics,
                 capabilities: { cdpTrace: true, cpuProfile: true, screenshots: screenshotsRetained },
                 limitations: [
                     'Trace category durations may overlap and are not exclusive CPU accounting.',
                     'Generated stack locations require a matching source map before authored-source attribution.',
+                    'Trace uses an isolated browser context and does not inherit the warm-up/measured cache.',
                     ...(actionExecutions.some(action => action.crossDocument)
                         ? ['Cross-document action marks are partial; trace timing itself remains on the CDP clock.']
                         : []),
@@ -366,6 +417,7 @@ async function lighthouseAttempt(
                 capabilities: { lighthouse: true, chromium: true },
                 limitations: [
                     'Lighthouse is a separate Chromium navigation experiment and does not measure sustained hover, drag, or GPU timer queries.',
+                    'Lighthouse uses a separate browser process and does not inherit the warm-up/measured cache.',
                     ...(options.storageState
                         ? [
                               'Lighthouse does not reuse the local Playwright storage state; authenticated Lighthouse results are not available.',
@@ -552,6 +604,16 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
                 },
                 reducedMotion: scenario.reducedMotion ?? 'no-preference',
                 cacheMode: scenario.cacheMode ?? 'cold',
+                execution: {
+                    warmupRuns: scenario.warmupRuns,
+                    measuredRuns: scenario.measuredRuns,
+                    ...(scenario.durationMs === undefined ? {} : { durationMs: scenario.durationMs }),
+                    trace: scenario.trace?.enabled !== false,
+                    lighthouse: scenario.lighthouse?.enabled !== false,
+                    colorScheme: scenario.colorScheme ?? 'light',
+                    cpuThrottleRate: scenario.cpuThrottleRate ?? 1,
+                    network: scenario.network ?? null,
+                },
                 actionLabels: scenario.actions.map(action => action.label),
                 actions: reportScenarioActions(scenario),
             },

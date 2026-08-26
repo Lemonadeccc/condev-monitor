@@ -23,9 +23,9 @@ function metricForId(metricId) {
     }
 }
 
-function rawProbeResult(action) {
+function rawProbeResult(action, durationMs = 1_000) {
     return {
-        durationMs: 1_000,
+        durationMs,
         metrics: PAGE_PROBE_ROOT_METRIC_IDS.map(metricForId),
         actionResults: [
             {
@@ -63,8 +63,15 @@ class FakePage {
 
     async addInitScript() {}
     onPageError() {}
-    async navigate() {}
-    async wait() {}
+    async navigate() {
+        if (this.state.navigateDelayMs) await new Promise(resolve => setTimeout(resolve, this.state.navigateDelayMs))
+    }
+    async wait(durationMs) {
+        this.state.waitDurations.push(durationMs)
+        if (this.state.traceStarted && durationMs >= (this.state.delayTraceWaitAtLeast ?? Number.POSITIVE_INFINITY)) {
+            await new Promise(resolve => setTimeout(resolve, durationMs))
+        }
+    }
     async markAction() {}
     async documentTimeOrigin() {
         return 1_000
@@ -87,7 +94,7 @@ class FakePage {
         assert.equal(capability, this.#capability)
         assert.equal(sequence, this.#expectedSequence)
         assert.equal(this.#activeAction, null)
-        return rawProbeResult(this.action)
+        return rawProbeResult(this.action, this.state.probeDurationMs)
     }
     async click() {}
     async hover() {}
@@ -116,7 +123,16 @@ function fakeDriver(engine, options = {}) {
         ...options.capabilities,
     }
     const action = { actionId: 'settle', order: 0, label: 'settle', kind: 'wait' }
-    const state = { closed: false, traceCalls: 0, probeCapability: null }
+    const state = {
+        closed: false,
+        traceCalls: 0,
+        probeCapability: null,
+        waitDurations: [],
+        navigateDelayMs: options.navigateDelayMs ?? 0,
+        probeDurationMs: options.probeDurationMs ?? 1_000,
+        delayTraceWaitAtLeast: options.delayTraceWaitAtLeast,
+        traceStarted: false,
+    }
     const session = {
         engine,
         descriptor: { name: engine, version: 'test-1', headless: true },
@@ -129,6 +145,7 @@ function fakeDriver(engine, options = {}) {
         configurePage: async () => {},
         startTrace: async () => {
             state.traceCalls += 1
+            state.traceStarted = true
             if (!capabilities.cdpTrace) throw new Error('generic driver must not start CDP tracing')
             const events = options.traceEvents ?? []
             return async () => ({ raw: JSON.stringify({ traceEvents: events }), events })
@@ -191,6 +208,47 @@ test('retains the screenshot privacy flag only when the Chromium trace contains 
     assert.equal(retainedResult.report.privacy.screenshotsRetained, true)
     assert.equal(retainedAttempt?.capabilities.screenshots, true)
     assert.equal(retainedAttempt?.limitations.includes('trace-screenshots-requested-but-not-observed'), false)
+    assert.equal(retainedResult.report.scenario.execution.colorScheme, 'light')
+    assert.ok(
+        retainedAttempt?.limitations.includes('Trace uses an isolated browser context and does not inherit the warm-up/measured cache.')
+    )
+})
+
+test('starts the minimum observation floor after slow navigation completes', async () => {
+    const { driver, state } = fakeDriver('webkit', { navigateDelayMs: 300, probeDurationMs: 5_000 })
+    const result = await runAnimationLab(
+        {
+            ...scenario(),
+            durationMs: 5_000,
+            trace: { enabled: false },
+            lighthouse: { enabled: false },
+        },
+        { browser: 'webkit', driver }
+    )
+
+    const floorWaits = state.waitDurations.filter(durationMs => durationMs > 4_900)
+    assert.equal(floorWaits.length, 3)
+    assert.equal(result.report.attempts.filter(attempt => attempt.phase === 'measured').length, 3)
+})
+
+test('fails Trace after reviewed actions and before the floor wait when the hard cap cannot cover it', async () => {
+    const { driver, state } = fakeDriver('chromium', {
+        capabilities: { cdpTrace: true, lighthouse: false },
+        delayTraceWaitAtLeast: 1_600,
+    })
+    const currentScenario = {
+        ...scenario(),
+        actions: [{ kind: 'wait', label: 'settle', actionId: 'settle', durationMs: 1_600 }],
+        trace: { enabled: true, screenshots: false, maxDurationMs: 2_000 },
+        lighthouse: { enabled: false },
+    }
+
+    await assert.rejects(
+        runAnimationLab(currentScenario, { browser: 'chromium', driver }),
+        /Trace duration cap cannot cover the post-action observation window/u
+    )
+    assert.equal(state.traceCalls, 1)
+    assert.equal(state.closed, true)
 })
 
 function scenario() {

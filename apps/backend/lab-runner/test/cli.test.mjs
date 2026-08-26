@@ -4,7 +4,13 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { parseArgs, resolveClaimedBrowser, writeLocalArtifacts } from '../build/cli.js'
+import {
+    assertAttachedCliAuthority,
+    applyClaimedRunAuthority,
+    parseArgs,
+    resolveClaimedBrowser,
+    writeLocalArtifacts,
+} from '../build/cli.js'
 
 const runId = '123e4567-e89b-12d3-a456-426614174000'
 
@@ -50,6 +56,176 @@ test('uses the platform browser as authority and fails closed on a local mismatc
     assert.equal(resolveClaimedBrowser(undefined, 'webkit'), 'webkit')
     assert.equal(resolveClaimedBrowser('firefox', 'firefox'), 'firefox')
     assert.throws(() => resolveClaimedBrowser('chromium', 'firefox'), /does not match the platform run browser/u)
+})
+
+test('rejects attached execution modes and browser binaries that are absent from the platform contract', () => {
+    assert.doesNotThrow(() => assertAttachedCliAuthority({ headed: false }))
+    for (const options of [
+        { headed: true },
+        { headed: false, browserPath: '/custom/browser' },
+        { headed: false, chromePath: '/custom/chrome' },
+    ]) {
+        assert.throws(() => assertAttachedCliAuthority(options), /do not allow headed mode or a custom browser executable/u)
+    }
+})
+
+test('uses the closed platform execution config while preserving only local reviewed actions and diagnostics detail', () => {
+    const actions = [{ kind: 'click', label: 'open-menu', selector: '[data-lab="menu"]' }]
+    const localScenario = {
+        schemaVersion: 1,
+        name: 'reviewed-scenario',
+        url: 'http://localhost:9999/local-placeholder',
+        routeKey: 'reviewed.route',
+        viewport: { width: 800, height: 600, deviceScaleFactor: 1 },
+        reducedMotion: 'no-preference',
+        cacheMode: 'warm',
+        warmupRuns: 0,
+        measuredRuns: 3,
+        actions,
+        trace: { enabled: true, screenshots: true, maxDurationMs: 60_000 },
+        lighthouse: { enabled: false, categories: ['performance'], formFactor: 'mobile' },
+    }
+    const claim = {
+        runId,
+        targetUrl: 'http://localhost:5173/platform-target',
+        config: {
+            browser: 'webkit',
+            viewport: { width: 1440, height: 900 },
+            deviceScaleFactor: 2,
+            reducedMotion: 'reduce',
+            cacheState: 'cold',
+            warmupRuns: 2,
+            measuredRuns: 5,
+            durationMs: 20_000,
+            trace: false,
+            lighthouse: true,
+        },
+    }
+
+    const result = applyClaimedRunAuthority(localScenario, claim)
+
+    assert.equal(result.browser, 'webkit')
+    assert.deepEqual(result.scenario, {
+        ...localScenario,
+        url: claim.targetUrl,
+        viewport: { width: 1440, height: 900, deviceScaleFactor: 2 },
+        reducedMotion: 'reduce',
+        cacheMode: 'cold',
+        warmupRuns: 2,
+        measuredRuns: 5,
+        durationMs: 20_000,
+        trace: { enabled: false, screenshots: true, maxDurationMs: 60_000 },
+        lighthouse: { enabled: true, categories: ['performance'], formFactor: 'mobile' },
+    })
+    assert.strictEqual(result.scenario.actions, actions)
+    assert.equal(result.scenario.routeKey, 'reviewed.route')
+})
+
+test('fails before navigation when the local reviewed trace cap cannot cover the platform observation window', () => {
+    const localScenario = {
+        schemaVersion: 1,
+        name: 'reviewed-scenario',
+        url: 'http://localhost:9999/',
+        routeKey: 'reviewed.route',
+        viewport: { width: 800, height: 600 },
+        warmupRuns: 0,
+        measuredRuns: 3,
+        actions: [{ kind: 'wait', label: 'settle', durationMs: 10 }],
+        trace: { enabled: true, maxDurationMs: 10_000 },
+        lighthouse: { enabled: false },
+    }
+    const claim = {
+        runId,
+        targetUrl: 'http://localhost:5173/',
+        config: {
+            browser: 'chromium',
+            viewport: { width: 1280, height: 720 },
+            deviceScaleFactor: 1,
+            reducedMotion: 'no-preference',
+            cacheState: 'warm',
+            warmupRuns: 1,
+            measuredRuns: 3,
+            durationMs: 20_000,
+            trace: true,
+            lighthouse: false,
+        },
+    }
+
+    assert.throws(() => applyClaimedRunAuthority(localScenario, claim), /trace duration cap is shorter/u)
+})
+
+test('keeps the maximum platform observation duration executable with a bounded attached Trace hard cap', () => {
+    const localScenario = {
+        schemaVersion: 1,
+        name: 'maximum-platform-scenario',
+        url: 'http://localhost:9999/',
+        routeKey: 'maximum.platform',
+        viewport: { width: 800, height: 600 },
+        warmupRuns: 0,
+        measuredRuns: 3,
+        actions: [{ kind: 'wait', label: 'settle', durationMs: 10 }],
+        trace: { enabled: true },
+        lighthouse: { enabled: false },
+    }
+    const claim = {
+        runId,
+        targetUrl: 'http://localhost:5173/',
+        config: {
+            browser: 'chromium',
+            viewport: { width: 1280, height: 720 },
+            deviceScaleFactor: 1,
+            reducedMotion: 'no-preference',
+            cacheState: 'warm',
+            warmupRuns: 5,
+            measuredRuns: 20,
+            durationMs: 120_000,
+            trace: true,
+            lighthouse: true,
+        },
+    }
+
+    const result = applyClaimedRunAuthority(localScenario, claim)
+    assert.equal(result.scenario.trace.maxDurationMs, 360_000)
+    assert.equal(result.scenario.durationMs, 120_000)
+    assert.equal(result.scenario.warmupRuns + result.scenario.measuredRuns + 2, 27)
+})
+
+test('fails before navigation for controlled conditions absent from the platform contract', () => {
+    const baseScenario = {
+        schemaVersion: 1,
+        name: 'reviewed-scenario',
+        url: 'http://localhost:9999/',
+        routeKey: 'reviewed.route',
+        viewport: { width: 800, height: 600 },
+        warmupRuns: 0,
+        measuredRuns: 3,
+        actions: [{ kind: 'wait', label: 'settle', durationMs: 10 }],
+        trace: { enabled: false },
+        lighthouse: { enabled: false },
+    }
+    const claim = {
+        runId,
+        targetUrl: 'http://localhost:5173/',
+        config: {
+            browser: 'chromium',
+            viewport: { width: 1280, height: 720 },
+            deviceScaleFactor: 1,
+            reducedMotion: 'no-preference',
+            cacheState: 'warm',
+            warmupRuns: 1,
+            measuredRuns: 3,
+            durationMs: 10_000,
+            trace: false,
+            lighthouse: false,
+        },
+    }
+
+    for (const controlled of [{ colorScheme: 'dark' }, { cpuThrottleRate: 2 }, { network: { latencyMs: 100 } }]) {
+        assert.throws(
+            () => applyClaimedRunAuthority({ ...baseScenario, ...controlled }, claim),
+            /controlled conditions that are not declared/u
+        )
+    }
 })
 
 test('tightens an existing output directory and writes every local artifact privately', { skip: process.platform === 'win32' }, async t => {

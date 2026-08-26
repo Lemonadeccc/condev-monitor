@@ -21,6 +21,7 @@ const MAX_PLATFORM_ATTEMPT_LIMITATIONS = 64
 const WARMUP_DETAIL_OMITTED_LIMITATION = 'warmup-detail-omitted-from-report'
 const ATTEMPT_METRIC_PROJECTION_LIMITATION = 'attempt-metric-projection-truncated'
 const REPORT_BYTE_BUDGET_LIMITATION = 'report-upload-byte-budget-truncated-attempt-detail'
+export const LAB_RUNNER_CONTRACT_VERSION = 2 as const
 
 export interface RemoteLabConnectionOptions {
     server: string
@@ -44,16 +45,99 @@ interface RunnerUpdate {
 
 export interface RemoteClaimedLabRun {
     runId: string
-    targetUrl: string | null
-    browser: 'chromium' | 'firefox' | 'webkit' | null
+    targetUrl: string
+    config: RemoteClaimedLabRunConfig
+    runnerContractVersion: typeof LAB_RUNNER_CONTRACT_VERSION
 }
 
-function claimedBrowser(value: unknown): RemoteClaimedLabRun['browser'] {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-    const browser = (value as { browser?: unknown }).browser
-    if (browser === undefined || browser === null) return null
-    if (browser === 'chromium' || browser === 'firefox' || browser === 'webkit') return browser
-    throw new Error('Lab server returned an unsupported browser')
+export interface RemoteClaimedLabRunConfig {
+    browser: 'chromium' | 'firefox' | 'webkit'
+    viewport: { width: number; height: number }
+    deviceScaleFactor: number
+    reducedMotion: 'no-preference' | 'reduce'
+    cacheState: 'cold' | 'warm'
+    warmupRuns: number
+    measuredRuns: number
+    durationMs: number
+    trace: boolean
+    lighthouse: boolean
+}
+
+function claimedRecord(value: unknown, label: string): Record<string, unknown> {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`Lab server returned an invalid platform ${label}`)
+    return value as Record<string, unknown>
+}
+
+function claimedExactKeys(value: Record<string, unknown>, allowed: readonly string[], label: string): void {
+    const keys = Object.keys(value)
+    if (keys.length !== allowed.length || keys.some(key => !allowed.includes(key))) {
+        throw new Error(`Lab server returned an unsupported platform ${label}`)
+    }
+}
+
+function claimedInteger(value: unknown, minimum: number, maximum: number, label: string): number {
+    if (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+        throw new Error(`Lab server returned an invalid platform config ${label}`)
+    }
+    return value as number
+}
+
+function claimedFinite(value: unknown, minimum: number, maximum: number, label: string): number {
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < minimum || value > maximum) {
+        throw new Error(`Lab server returned an invalid platform config ${label}`)
+    }
+    return value
+}
+
+function claimedBoolean(value: unknown, label: string): boolean {
+    if (typeof value !== 'boolean') throw new Error(`Lab server returned an invalid platform config ${label}`)
+    return value
+}
+
+function claimedConfig(value: unknown): RemoteClaimedLabRunConfig {
+    const config = claimedRecord(value, 'config')
+    claimedExactKeys(
+        config,
+        [
+            'browser',
+            'viewport',
+            'deviceScaleFactor',
+            'reducedMotion',
+            'cacheState',
+            'warmupRuns',
+            'measuredRuns',
+            'durationMs',
+            'trace',
+            'lighthouse',
+        ],
+        'config'
+    )
+    if (!['chromium', 'firefox', 'webkit'].includes(String(config.browser))) {
+        throw new Error('Lab server returned an unsupported browser')
+    }
+    const viewport = claimedRecord(config.viewport, 'config viewport')
+    claimedExactKeys(viewport, ['width', 'height'], 'config viewport')
+    if (!['no-preference', 'reduce'].includes(String(config.reducedMotion))) {
+        throw new Error('Lab server returned an invalid platform config reducedMotion')
+    }
+    if (!['cold', 'warm'].includes(String(config.cacheState))) {
+        throw new Error('Lab server returned an invalid platform config cacheState')
+    }
+    return {
+        browser: config.browser as RemoteClaimedLabRunConfig['browser'],
+        viewport: {
+            width: claimedInteger(viewport.width, 320, 7_680, 'viewport.width'),
+            height: claimedInteger(viewport.height, 320, 4_320, 'viewport.height'),
+        },
+        deviceScaleFactor: claimedFinite(config.deviceScaleFactor, 0.5, 4, 'deviceScaleFactor'),
+        reducedMotion: config.reducedMotion as RemoteClaimedLabRunConfig['reducedMotion'],
+        cacheState: config.cacheState as RemoteClaimedLabRunConfig['cacheState'],
+        warmupRuns: claimedInteger(config.warmupRuns, 0, 5, 'warmupRuns'),
+        measuredRuns: claimedInteger(config.measuredRuns, 3, 20, 'measuredRuns'),
+        durationMs: claimedInteger(config.durationMs, 5_000, 120_000, 'durationMs'),
+        trace: claimedBoolean(config.trace, 'trace'),
+        lighthouse: claimedBoolean(config.lighthouse, 'lighthouse'),
+    }
 }
 
 function normalizedRunnerBase(server: string): URL {
@@ -199,6 +283,7 @@ function platformAttempt(
         startedAt: attempt.startedAt,
         endedAt: attempt.endedAt,
         durationMs: attempt.durationMs,
+        ...(attempt.observationDurationMs === undefined ? {} : { observationDurationMs: attempt.observationDurationMs }),
         metrics: warmup ? [] : attempt.metrics.slice(0, Math.min(MAX_PLATFORM_ATTEMPT_METRICS, metricLimit)),
         capabilities: attempt.capabilities,
         limitations: attemptLimitations(attempt.limitations, requiredLimitations, allowedOriginalLimitations),
@@ -355,7 +440,9 @@ function platformTimelineArtifact(timeline: LabTimelineChunk): Buffer {
 async function responseJson<T>(response: Response): Promise<T> {
     const body = (await response.json().catch(() => null)) as JsonResponse<T> | null
     if (!response.ok || !body?.success || body.data === undefined) {
-        throw new Error(body?.message || `Lab server request failed with HTTP ${response.status}`)
+        const error = new Error(body?.message || `Lab server request failed with HTTP ${response.status}`)
+        Object.defineProperty(error, 'httpStatus', { value: response.status })
+        throw error
     }
     return body.data
 }
@@ -372,13 +459,38 @@ export class RemoteLabClient {
     }
 
     async claim(): Promise<RemoteClaimedLabRun> {
-        const run = await this.jsonRequest<{ runId?: unknown; targetUrl?: unknown; config?: unknown }>(`runs/${this.runId}/claim`, {
+        let contract: { runId?: unknown; runnerContractVersion?: unknown }
+        try {
+            contract = await this.jsonRequest(`runs/${this.runId}/contract`, {
+                method: 'GET',
+                headers: this.contractHeader(),
+            })
+        } catch (error) {
+            if (error instanceof Error && (error as Error & { httpStatus?: number }).httpStatus === 404) {
+                throw new Error(
+                    `Lab Runner contract ${LAB_RUNNER_CONTRACT_VERSION} negotiation endpoint is unavailable; upgrade Monitor and the local Runner together`
+                )
+            }
+            throw error
+        }
+        this.assertContract(contract, 'negotiation')
+        const run = await this.jsonRequest<{
+            runId?: unknown
+            targetUrl?: unknown
+            config?: unknown
+            runnerContractVersion?: unknown
+        }>(`runs/${this.runId}/claim`, {
             method: 'POST',
+            headers: this.contractHeader(),
         })
+        this.assertContract(run, 'claim')
+        if (run.runId !== this.runId) throw new Error('Lab server returned a mismatched platform run id')
+        if (typeof run.targetUrl !== 'string' || !run.targetUrl) throw new Error('Lab server returned an invalid platform target URL')
         return {
-            runId: typeof run.runId === 'string' ? run.runId : this.runId,
-            targetUrl: typeof run.targetUrl === 'string' && run.targetUrl ? run.targetUrl : null,
-            browser: claimedBrowser(run.config),
+            runId: this.runId,
+            targetUrl: run.targetUrl,
+            config: claimedConfig(run.config),
+            runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION,
         }
     }
 
@@ -414,6 +526,18 @@ export class RemoteLabClient {
             return await responseJson<T>(response)
         } finally {
             clearTimeout(timeout)
+        }
+    }
+
+    private contractHeader(): Record<string, string> {
+        return { 'X-Lab-Runner-Contract': String(LAB_RUNNER_CONTRACT_VERSION) }
+    }
+
+    private assertContract(value: { runId?: unknown; runnerContractVersion?: unknown }, phase: string): void {
+        if (value.runId !== this.runId || value.runnerContractVersion !== LAB_RUNNER_CONTRACT_VERSION) {
+            throw new Error(
+                `Lab Runner contract ${LAB_RUNNER_CONTRACT_VERSION} ${phase} failed; upgrade Monitor and the local Runner together`
+            )
         }
     }
 

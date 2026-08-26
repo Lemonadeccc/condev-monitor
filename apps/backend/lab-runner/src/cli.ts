@@ -6,12 +6,12 @@ import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { gzip } from 'node:zlib'
 
-import { validateAnimationLabScenario } from '@condev-monitor/animation-lab'
+import { type AnimationLabScenario, validateAnimationLabScenario } from '@condev-monitor/animation-lab'
 
 import type { LabBrowserEngine } from './browser-driver'
 import { createTerminalLabLocalDisplaySink } from './local-display'
 import { ensurePrivateDirectory, writePrivateFile } from './private-files'
-import { remoteFailureCode, RemoteLabClient } from './remote'
+import { type RemoteClaimedLabRun, remoteFailureCode, RemoteLabClient } from './remote'
 import { runAnimationLab } from './runner'
 
 const gzipAsync = promisify(gzip)
@@ -113,6 +113,51 @@ export function resolveClaimedBrowser(requested: LabBrowserEngine | undefined, c
     return claimed ?? requested ?? 'chromium'
 }
 
+export function assertAttachedCliAuthority(options: Pick<CliOptions, 'headed' | 'browserPath' | 'chromePath'>): void {
+    if (options.headed || options.browserPath || options.chromePath) {
+        throw new Error('Attached runs do not allow headed mode or a custom browser executable because the platform does not declare them')
+    }
+}
+
+/** Applies the platform-owned execution envelope without accepting actions, selectors, or report identity from the control plane. */
+export function applyClaimedRunAuthority(
+    scenario: AnimationLabScenario,
+    claim: RemoteClaimedLabRun,
+    requestedBrowser?: LabBrowserEngine
+): { scenario: AnimationLabScenario; browser: LabBrowserEngine } {
+    const browser = resolveClaimedBrowser(requestedBrowser, claim.config.browser)
+    if (scenario.colorScheme !== undefined || scenario.cpuThrottleRate !== undefined || scenario.network !== undefined) {
+        throw new Error('Local scenario contains controlled conditions that are not declared by the platform run')
+    }
+    const traceMaxDurationMs = scenario.trace?.maxDurationMs ?? 360_000
+    if (claim.config.trace && traceMaxDurationMs < claim.config.durationMs + 500) {
+        throw new Error('Local reviewed trace duration cap is shorter than the platform observation duration')
+    }
+    const candidate = {
+        ...scenario,
+        url: claim.targetUrl,
+        viewport: {
+            width: claim.config.viewport.width,
+            height: claim.config.viewport.height,
+            deviceScaleFactor: claim.config.deviceScaleFactor,
+        },
+        reducedMotion: claim.config.reducedMotion,
+        cacheMode: claim.config.cacheState,
+        warmupRuns: claim.config.warmupRuns,
+        measuredRuns: claim.config.measuredRuns,
+        durationMs: claim.config.durationMs,
+        trace: {
+            ...scenario.trace,
+            enabled: claim.config.trace,
+            ...(claim.config.trace ? { maxDurationMs: traceMaxDurationMs } : {}),
+        },
+        lighthouse: { ...scenario.lighthouse, enabled: claim.config.lighthouse },
+    }
+    const validation = validateAnimationLabScenario(candidate)
+    if (!validation.ok) throw new Error(`Invalid platform execution config: ${validation.errors.join(', ')}`)
+    return { scenario: validation.value, browser }
+}
+
 function sha256(value: Uint8Array | string): string {
     return createHash('sha256').update(value).digest('hex')
 }
@@ -123,6 +168,7 @@ async function main(): Promise<void> {
         options.server && options.runId && options.token
             ? new RemoteLabClient(options as Required<Pick<CliOptions, 'server' | 'runId' | 'token'>>)
             : null
+    if (remote) assertAttachedCliAuthority(options)
     const configPath = path.resolve(options.config)
     const stat = await fs.stat(configPath)
     if (stat.size > 1024 * 1024) throw new Error('Scenario files are limited to 1 MiB')
@@ -146,12 +192,9 @@ async function main(): Promise<void> {
         if (remote) {
             const claimResult = await remote.claim()
             claimed = true
-            selectedBrowser = resolveClaimedBrowser(options.browser, claimResult.browser)
-            if (claimResult.targetUrl) {
-                const remoteScenario = validateAnimationLabScenario({ ...scenario, url: claimResult.targetUrl })
-                if (!remoteScenario.ok) throw new Error(`Invalid platform target URL: ${remoteScenario.errors.join(', ')}`)
-                scenario = remoteScenario.value
-            }
+            const claimedAuthority = applyClaimedRunAuthority(scenario, claimResult, options.browser)
+            selectedBrowser = claimedAuthority.browser
+            scenario = claimedAuthority.scenario
             await remote.update({ status: 'running', phase: 'preparing', progress: 2 })
         }
         const result = await runAnimationLab(scenario, {

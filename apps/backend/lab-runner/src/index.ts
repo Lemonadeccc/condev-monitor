@@ -1,4 +1,4 @@
-export { RemoteLabClient, remoteFailureCode } from './remote'
+export { LAB_RUNNER_CONTRACT_VERSION, RemoteLabClient, remoteFailureCode } from './remote'
 export type { RemoteLabConnectionOptions } from './remote'
 export { runScenarioActions, scenarioActionId } from './actions'
 export type { RunScenarioActionsOptions } from './actions'

@@ -5,13 +5,33 @@ import test from 'node:test'
 
 import { validateAnimationLabSemanticsV2 } from '@condev-monitor/animation-lab'
 
-import { RemoteLabClient, remoteFailureCode } from '../build/index.js'
+import { LAB_RUNNER_CONTRACT_VERSION, RemoteLabClient, remoteFailureCode } from '../build/index.js'
 
 const runId = '123e4567-e89b-12d3-a456-426614174000'
 const token = `labg_${'a'.repeat(43)}`
 const animationReportMaxBytes = 2 * 1024 * 1024
 const traceIndexMaxBytes = 4 * 1024 * 1024
 const reportByteBudgetLimitation = 'report-upload-byte-budget-truncated-attempt-detail'
+
+function claimedConfig(overrides = {}) {
+    return {
+        browser: 'firefox',
+        viewport: { width: 1440, height: 900 },
+        deviceScaleFactor: 2,
+        reducedMotion: 'reduce',
+        cacheState: 'cold',
+        warmupRuns: 2,
+        measuredRuns: 4,
+        durationMs: 15_000,
+        trace: false,
+        lighthouse: true,
+        ...overrides,
+    }
+}
+
+function contractData(overrides = {}) {
+    return { runId, runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION, ...overrides }
+}
 
 function verboseToken(prefix, index) {
     return `${prefix}-${index}-${'x'.repeat(100)}`
@@ -250,7 +270,11 @@ test('claims, updates, and uploads only redacted bounded platform artifacts', as
     const originalFetch = globalThis.fetch
     globalThis.fetch = async (url, init = {}) => {
         requests.push({ url: String(url), init })
-        const data = String(url).endsWith('/claim') ? { runId, targetUrl: 'http://localhost:5173/', config: { browser: 'firefox' } } : {}
+        const data = String(url).endsWith('/contract')
+            ? contractData()
+            : String(url).endsWith('/claim')
+              ? { ...contractData(), targetUrl: 'http://localhost:5173/', config: claimedConfig() }
+              : {}
         return new Response(JSON.stringify({ success: true, data }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -265,16 +289,24 @@ test('claims, updates, and uploads only redacted bounded platform artifacts', as
     assert.equal(compact.metrics[0].evidenceLevel, 'controlled-lab-measurement')
     assert.equal(compact.metrics[0].metricId, 'frame.duration.p95')
     assert.deepEqual(compact.metrics[0].scope, { level: 'run' })
-    assert.deepEqual(await client.claim(), { runId, targetUrl: 'http://localhost:5173/', browser: 'firefox' })
+    assert.deepEqual(await client.claim(), {
+        runId,
+        targetUrl: 'http://localhost:5173/',
+        config: claimedConfig(),
+        runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION,
+    })
     await client.update({ status: 'running', phase: 'measuring', progress: 30 })
     await client.uploadDerivedReport(report())
 
-    assert.equal(requests[0].url, `http://localhost:3000/api/labs/runner/runs/${runId}/claim`)
-    assert.equal(requests.length, 4)
+    assert.equal(requests[0].url, `http://localhost:3000/api/labs/runner/runs/${runId}/contract`)
+    assert.equal(requests[1].url, `http://localhost:3000/api/labs/runner/runs/${runId}/claim`)
+    assert.equal(requests.length, 5)
     for (const request of requests) {
         assert.equal(request.init.headers['X-Lab-Runner-Token'], token)
         assert.equal(request.init.redirect, 'error')
     }
+    assert.equal(requests[0].init.headers['X-Lab-Runner-Contract'], String(LAB_RUNNER_CONTRACT_VERSION))
+    assert.equal(requests[1].init.headers['X-Lab-Runner-Contract'], String(LAB_RUNNER_CONTRACT_VERSION))
 
     const reportUpload = requests.find(request => request.url.endsWith('/artifacts/animation-report'))
     const uploadedReport = JSON.parse(Buffer.from(reportUpload.init.body).toString('utf8'))
@@ -292,17 +324,108 @@ test('claims, updates, and uploads only redacted bounded platform artifacts', as
 
 test('rejects an unsupported browser returned by the platform claim', async t => {
     const originalFetch = globalThis.fetch
-    globalThis.fetch = async () =>
-        new Response(JSON.stringify({ success: true, data: { runId, targetUrl: null, config: { browser: 'safari' } } }), {
-            status: 200,
-            headers: { 'Content-Type': 'application/json' },
-        })
+    globalThis.fetch = async url =>
+        new Response(
+            JSON.stringify({
+                success: true,
+                data: String(url).endsWith('/contract')
+                    ? contractData()
+                    : { ...contractData(), targetUrl: 'http://localhost:5173/', config: claimedConfig({ browser: 'safari' }) },
+            }),
+            {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            }
+        )
     t.after(() => {
         globalThis.fetch = originalFetch
     })
 
     const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
     await assert.rejects(client.claim(), /unsupported browser/u)
+})
+
+test('fails closed when a platform claim omits, extends, or corrupts execution authority', async t => {
+    const originalFetch = globalThis.fetch
+    t.after(() => {
+        globalThis.fetch = originalFetch
+    })
+    const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
+
+    for (const data of [
+        { runId, targetUrl: null, config: claimedConfig() },
+        { runId, targetUrl: 'http://localhost:5173/', config: claimedConfig({ measuredRuns: 2 }) },
+        { runId, targetUrl: 'http://localhost:5173/', config: claimedConfig({ privateSelector: '#account' }) },
+        { runId, targetUrl: 'http://localhost:5173/', config: { browser: 'chromium' } },
+    ]) {
+        globalThis.fetch = async url =>
+            new Response(
+                JSON.stringify({
+                    success: true,
+                    data: String(url).endsWith('/contract') ? contractData() : { ...data, ...contractData() },
+                }),
+                {
+                    status: 200,
+                    headers: { 'Content-Type': 'application/json' },
+                }
+            )
+        await assert.rejects(client.claim(), /platform.*(?:target|config)|Lab server returned/iu)
+    }
+})
+
+test('fails before claim when Monitor contract negotiation is missing, old, or from the future', async t => {
+    const originalFetch = globalThis.fetch
+    t.after(() => {
+        globalThis.fetch = originalFetch
+    })
+    const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
+
+    for (const runnerContractVersion of [undefined, 1, 3]) {
+        const requests = []
+        globalThis.fetch = async (url, init = {}) => {
+            requests.push({ url: String(url), init })
+            return new Response(JSON.stringify({ success: true, data: { runId, runnerContractVersion } }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            })
+        }
+        await assert.rejects(client.claim(), /contract 2 negotiation failed.*upgrade Monitor and the local Runner together/iu)
+        assert.equal(requests.length, 1)
+        assert.ok(requests[0].url.endsWith('/contract'))
+    }
+
+    let requests = 0
+    globalThis.fetch = async () => {
+        requests += 1
+        return new Response(JSON.stringify({ success: false, message: 'Not Found' }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' },
+        })
+    }
+    await assert.rejects(client.claim(), /negotiation endpoint is unavailable.*upgrade Monitor and the local Runner together/iu)
+    assert.equal(requests, 1)
+})
+
+test('fails before navigation when the claim response drifts after successful contract negotiation', async t => {
+    const originalFetch = globalThis.fetch
+    let requests = 0
+    globalThis.fetch = async url => {
+        requests += 1
+        const data = String(url).endsWith('/contract')
+            ? contractData()
+            : { ...contractData({ runnerContractVersion: 3 }), targetUrl: 'http://localhost:5173/', config: claimedConfig() }
+        return new Response(JSON.stringify({ success: true, data }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })
+    }
+    t.after(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
+    await assert.rejects(client.claim(), /contract 2 claim failed.*upgrade Monitor and the local Runner together/iu)
+    assert.equal(requests, 2)
 })
 
 test('deterministically byte-budgets trace indexes while retaining high-value events and redacted bounded stacks', async t => {
