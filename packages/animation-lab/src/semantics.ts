@@ -12,6 +12,7 @@ import {
     type LabBudgetRuleRefV1,
     type LabMeasurementContractV2,
     type LabMetricAggregationV2,
+    type LabMetricCatalogVersion,
     type LabMetricScopeV2,
 } from './types'
 
@@ -260,7 +261,7 @@ function parseMeasurementContract(value: unknown, label: string, errors: string[
     if (typeof value.confidence !== 'string' || !CONFIDENCES.has(value.confidence)) add(errors, `${label}:invalid-confidence`)
     if (value.source === 'explicit' && value.confidence !== 'explicit') add(errors, `${label}:explicit-source-needs-explicit-confidence`)
     validateBudgetRef(value.budgetRef, `${label}.budgetRef`, errors, false)
-    if (value.metricCatalogVersion !== ANIMATION_LAB_METRIC_CATALOG_VERSION) add(errors, `${label}:invalid-metric-catalog-version`)
+    if (value.metricCatalogVersion !== 1 && value.metricCatalogVersion !== 2) add(errors, `${label}:invalid-metric-catalog-version`)
     if (finite(value.expectedHz, 1, 1_000) && finite(value.targetFrameMs, 1, 1_000)) {
         const expectedTarget = 1_000 / value.expectedHz
         if (Math.abs(value.targetFrameMs - expectedTarget) > Math.max(0.05, expectedTarget * 0.01)) {
@@ -339,7 +340,7 @@ function validateActionWindow(value: unknown, index: number, errors: string[]): 
     tokenArray(value.limitations, `${label}.limitations`, errors, MAX_LIMITATIONS)
 }
 
-function validateMetric(value: unknown, index: number, errors: string[]): void {
+function validateMetric(value: unknown, index: number, metricCatalogVersion: LabMetricCatalogVersion, errors: string[]): void {
     const label = `metrics[${index}]`
     if (!record(value)) {
         add(errors, `${label}:invalid`)
@@ -367,13 +368,24 @@ function validateMetric(value: unknown, index: number, errors: string[]): void {
         errors
     )
     if (!token(value.metricId, 160)) add(errors, `${label}:invalid-metric-id`)
-    const catalog = typeof value.metricId === 'string' ? getAnimationLabMetricCatalogEntry(value.metricId) : undefined
+    const catalog = typeof value.metricId === 'string' ? getAnimationLabMetricCatalogEntry(value.metricId, metricCatalogVersion) : undefined
     if (!catalog) add(errors, `${label}:unknown-metric-id`)
     else if (value.family !== catalog.family || value.name !== catalog.name || value.stat !== catalog.stat || value.unit !== catalog.unit) {
         add(errors, `${label}:catalog-tuple-mismatch`)
     }
     if (typeof value.status !== 'string' || !METRIC_STATUSES.has(value.status)) add(errors, `${label}:invalid-status`)
     if (typeof value.evidenceLevel !== 'string' || !EVIDENCE_LEVELS.has(value.evidenceLevel)) add(errors, `${label}:invalid-evidence-level`)
+    if (
+        typeof value.status === 'string' &&
+        METRIC_STATUSES.has(value.status) &&
+        typeof value.evidenceLevel === 'string' &&
+        EVIDENCE_LEVELS.has(value.evidenceLevel) &&
+        ((value.evidenceLevel === 'unsupported-or-unknown' && value.status !== 'unsupported' && value.status !== 'unknown') ||
+            (metricCatalogVersion === 2 &&
+                (value.status === 'unsupported' || value.status === 'unknown') !== (value.evidenceLevel === 'unsupported-or-unknown')))
+    ) {
+        add(errors, `${label}:status-evidence-mismatch`)
+    }
     if (value.value !== null && !finite(value.value, 0, Number.MAX_VALUE)) add(errors, `${label}:invalid-value`)
     if (value.samples !== null && !integer(value.samples, 0, 10_000_000)) add(errors, `${label}:invalid-samples`)
     if (['measured', 'partial'].includes(String(value.status)) && value.value === null) add(errors, `${label}:available-status-needs-value`)
@@ -485,6 +497,8 @@ export function validateAnimationLabSemanticsV2(value: unknown): LabContractVali
     )
     if (value.semanticsVersion !== ANIMATION_LAB_SEMANTICS_VERSION) add(errors, 'semantic-report:invalid-version')
     parseMeasurementContract(value.measurementContract, 'measurementContract', errors)
+    const metricCatalogVersion: LabMetricCatalogVersion =
+        record(value.measurementContract) && value.measurementContract.metricCatalogVersion === 2 ? 2 : ANIMATION_LAB_METRIC_CATALOG_VERSION
 
     if (!Array.isArray(value.scenarioActions) || value.scenarioActions.length === 0 || value.scenarioActions.length > MAX_ACTIONS) {
         add(errors, 'scenarioActions:invalid-count')
@@ -494,7 +508,7 @@ export function validateAnimationLabSemanticsV2(value: unknown): LabContractVali
     else value.actionWindows.forEach((window, index) => validateActionWindow(window, index, errors))
 
     if (!Array.isArray(value.metrics) || value.metrics.length > MAX_METRICS) add(errors, 'metrics:invalid-count')
-    else value.metrics.forEach((metric, index) => validateMetric(metric, index, errors))
+    else value.metrics.forEach((metric, index) => validateMetric(metric, index, metricCatalogVersion, errors))
 
     if (!Array.isArray(value.technologyEvidence) || value.technologyEvidence.length > MAX_EVIDENCE) {
         add(errors, 'technologyEvidence:invalid-count')

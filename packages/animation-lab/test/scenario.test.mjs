@@ -55,6 +55,20 @@ test('accepts privacy-safe v2 semantics without changing the v1 scenario version
     assert.equal(result.value.actions[0].technologies[0].technologyKey, 'react')
 })
 
+test('accepts metric catalog v2 as an explicit additive measurement contract', () => {
+    const input = scenario()
+    input.measurementContract = {
+        contractVersion: 2,
+        expectedHz: 60,
+        targetFrameMs: 16.666667,
+        source: 'explicit',
+        confidence: 'explicit',
+        budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
+        metricCatalogVersion: 2,
+    }
+    assert.equal(validateAnimationLabScenario(input).ok, true)
+})
+
 test('rejects credentials, unknown configuration, and invalid capability options', () => {
     const input = scenario()
     input.url = 'http://user:password@localhost:5173/'

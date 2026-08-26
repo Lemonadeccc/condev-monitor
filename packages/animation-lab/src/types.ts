@@ -1,7 +1,11 @@
 export const ANIMATION_LAB_SCHEMA_VERSION = 1 as const
 export const ANIMATION_LAB_SEMANTICS_VERSION = 2 as const
 export const ANIMATION_LAB_BUDGET_CATALOG_VERSION = 1 as const
+/** Compatibility default for scenarios that do not opt into a newer catalog. */
 export const ANIMATION_LAB_METRIC_CATALOG_VERSION = 1 as const
+export const ANIMATION_LAB_LATEST_METRIC_CATALOG_VERSION = 2 as const
+
+export type LabMetricCatalogVersion = 1 | 2
 
 export type LabActionKind = 'wait' | 'click' | 'hover' | 'pointer-path' | 'scroll' | 'resize' | 'drag' | 'press'
 
@@ -184,7 +188,7 @@ export interface LabMeasurementContractV2 {
     source: LabMeasurementSource
     confidence: LabEvidenceConfidence
     budgetRef: LabBudgetRefV1
-    metricCatalogVersion: 1
+    metricCatalogVersion: LabMetricCatalogVersion
 }
 
 export interface AnimationLabMetric {
@@ -225,6 +229,9 @@ export interface LabMetricCatalogEntryV1 {
     defaultAggregation: LabMetricAggregationV2
     defaultBudgetRuleIds: readonly string[]
 }
+
+/** Catalog v2 is additive and intentionally keeps the v1 entry tuple shape. */
+export type LabMetricCatalogEntryV2 = LabMetricCatalogEntryV1
 
 export type LabBudgetComparator = '<=' | '>=' | '<' | '>'
 export type LabBudgetTargetV1 =

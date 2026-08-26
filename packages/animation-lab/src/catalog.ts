@@ -1,10 +1,12 @@
 import {
     ANIMATION_LAB_BUDGET_CATALOG_VERSION,
+    ANIMATION_LAB_METRIC_CATALOG_VERSION,
     type LabBudgetDefinitionV1,
     type LabBudgetRefV1,
     type LabMetricAggregationMethod,
     type LabMetricAggregationPopulation,
     type LabMetricCatalogEntryV1,
+    type LabMetricCatalogVersion,
     type LabMetricFamily,
     type LabMetricScopeLevel,
     type LabMetricStat,
@@ -117,10 +119,121 @@ export const ANIMATION_LAB_METRIC_CATALOG_V1: readonly LabMetricCatalogEntryV1[]
     metric('lighthouse.tti.latest', 'lighthouse', 'timeToInteractive', 'latest', 'ms', 'latest', 'latest'),
 ])
 
-const METRIC_BY_ID = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [entry.metricId, entry] as const))
+const ANIMATION_LAB_METRIC_CATALOG_V2_ADDITIONS: readonly LabMetricCatalogEntryV1[] = Object.freeze([
+    metric(
+        'pipeline.loaf-render-start-to-paint.count',
+        'renderingPipeline',
+        'longAnimationFrameRenderStartToPaintCount',
+        'count',
+        'count',
+        'frames',
+        'count'
+    ),
+    metric(
+        'pipeline.loaf-render-start-to-paint.p95',
+        'renderingPipeline',
+        'longAnimationFrameRenderStartToPaintMs',
+        'p95',
+        'ms',
+        'frames',
+        'nearest-rank'
+    ),
+    metric(
+        'pipeline.loaf-paint-to-presentation.count',
+        'renderingPipeline',
+        'longAnimationFramePaintToPresentationCount',
+        'count',
+        'count',
+        'frames',
+        'count'
+    ),
+    metric(
+        'pipeline.loaf-paint-to-presentation.p95',
+        'renderingPipeline',
+        'longAnimationFramePaintToPresentationMs',
+        'p95',
+        'ms',
+        'frames',
+        'nearest-rank'
+    ),
+    metric(
+        'main.input-capture-to-next-raf-callback.count',
+        'mainThread',
+        'inputCaptureToNextRafCallbackCount',
+        'count',
+        'count',
+        'events',
+        'count'
+    ),
+    metric(
+        'main.input-capture-to-next-raf-callback.p95',
+        'mainThread',
+        'inputCaptureToNextRafCallbackMs',
+        'p95',
+        'ms',
+        'events',
+        'nearest-rank'
+    ),
+    metric(
+        'interaction.loaf-first-ui-event-to-frame-end.count',
+        'userOutcome',
+        'longAnimationFrameFirstUIEventToFrameEndCount',
+        'count',
+        'count',
+        'frames',
+        'count'
+    ),
+    metric(
+        'interaction.loaf-first-ui-event-to-frame-end.p95',
+        'userOutcome',
+        'longAnimationFrameFirstUIEventToFrameEndMs',
+        'p95',
+        'ms',
+        'frames',
+        'nearest-rank'
+    ),
+    metric(
+        'pipeline.loaf-attributed-forced-style-layout.count',
+        'renderingPipeline',
+        'longAnimationFrameAttributedForcedStyleAndLayoutCount',
+        'count',
+        'count',
+        'frames',
+        'count'
+    ),
+    metric(
+        'pipeline.loaf-attributed-forced-style-layout.p95',
+        'renderingPipeline',
+        'longAnimationFrameAttributedForcedStyleAndLayoutMs',
+        'p95',
+        'ms',
+        'frames',
+        'nearest-rank'
+    ),
+])
 
-export function getAnimationLabMetricCatalogEntry(metricId: string): LabMetricCatalogEntryV1 | undefined {
-    return METRIC_BY_ID.get(metricId)
+/** Additive catalog: every v1 identity remains byte-for-byte unchanged and in the same order. */
+export const ANIMATION_LAB_METRIC_CATALOG_V2: readonly LabMetricCatalogEntryV1[] = Object.freeze([
+    ...ANIMATION_LAB_METRIC_CATALOG_V1,
+    ...ANIMATION_LAB_METRIC_CATALOG_V2_ADDITIONS,
+])
+
+const METRIC_BY_ID_V1 = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [entry.metricId, entry] as const))
+const METRIC_BY_ID_V2 = new Map(ANIMATION_LAB_METRIC_CATALOG_V2.map(entry => [entry.metricId, entry] as const))
+
+export function getAnimationLabMetricCatalog(version: LabMetricCatalogVersion): readonly LabMetricCatalogEntryV1[] {
+    if (version === 1) return ANIMATION_LAB_METRIC_CATALOG_V1
+    if (version === 2) return ANIMATION_LAB_METRIC_CATALOG_V2
+    throw new RangeError(`Unsupported animation lab metric catalog version: ${String(version)}`)
+}
+
+export function getAnimationLabMetricCatalogEntry(
+    metricId: string,
+    version: LabMetricCatalogVersion = ANIMATION_LAB_METRIC_CATALOG_VERSION
+): LabMetricCatalogEntryV1 | undefined {
+    if (version === 1) return METRIC_BY_ID_V1.get(metricId)
+    if (version === 2) return METRIC_BY_ID_V2.get(metricId)
+    throw new RangeError(`Unsupported animation lab metric catalog version: ${String(version)}`)
 }
 
 export const DEFAULT_ANIMATION_LAB_BUDGET_REF_V1: Readonly<LabBudgetRefV1> = Object.freeze({

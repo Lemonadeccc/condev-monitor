@@ -1,9 +1,11 @@
 export {
     ANIMATION_LAB_BUDGET_CATALOG_V1,
     ANIMATION_LAB_METRIC_CATALOG_V1,
+    ANIMATION_LAB_METRIC_CATALOG_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_V1,
     getAnimationLabBudgetV1,
+    getAnimationLabMetricCatalog,
     getAnimationLabMetricCatalogEntry,
 } from './catalog'
 export { normalizeLighthouseResult } from './lighthouse'
