@@ -958,6 +958,33 @@ describe('lab platform artifact projections', () => {
         expect(() => parseAnimationReportArtifact(forged)).toThrow('conflicts with unsupported capabilities')
     })
 
+    it('requires every measured attempt to back action aggregates with the matching metric and capability', () => {
+        const report = animationReportV2()
+        report.measurementContract.metricCatalogVersion = 2
+        Object.assign(report.attempts[0]!.capabilities, { inputFrameScheduling: true })
+        const attemptMetric = additionalCatalogV2Metric(ADDITIONAL_CATALOG_V2_METRICS[1], {
+            scope: { level: 'action', attemptId: 'attempt_1', actionId: 'hero-hover-01' },
+            aggregation: { population: 'events', method: 'nearest-rank' },
+            limitations: [],
+        })
+        report.attempts[0]!.metrics = [attemptMetric]
+        const aggregateMetric = {
+            ...attemptMetric,
+            scope: { level: 'action', actionId: 'hero-hover-01' },
+            aggregation: { population: 'attempts', method: 'median-of-attempts' },
+        }
+        report.aggregateMetrics = [aggregateMetric]
+        report.findings = []
+        expect(parseAnimationReportArtifact(report).analysis?.metrics[0]?.metricId).toBe('main.input-capture-to-next-raf-callback.p95')
+
+        report.attempts[0]!.metrics = []
+        expect(() => parseAnimationReportArtifact(report)).toThrow('is missing measured-attempt evidence')
+
+        report.attempts[0]!.metrics = [attemptMetric]
+        delete (report.attempts[0]!.capabilities as Record<string, unknown>).inputFrameScheduling
+        expect(() => parseAnimationReportArtifact(report)).toThrow('is missing inputFrameScheduling capability')
+    })
+
     it('accepts capability-supported unknown metrics only when cross-document coverage is explicit', () => {
         const report = animationReportV2()
         report.measurementContract.metricCatalogVersion = 2

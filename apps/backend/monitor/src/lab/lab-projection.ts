@@ -30,6 +30,18 @@ const LIGHTHOUSE_METRIC_IDS = new Set([
     'lighthouse.total-blocking-time.latest',
     'lighthouse.tti.latest',
 ])
+const CAPABILITY_BACKED_METRIC_IDS_V2 = new Set([
+    'pipeline.loaf-render-start-to-paint.count',
+    'pipeline.loaf-render-start-to-paint.p95',
+    'pipeline.loaf-paint-to-presentation.count',
+    'pipeline.loaf-paint-to-presentation.p95',
+    'main.input-capture-to-next-raf-callback.count',
+    'main.input-capture-to-next-raf-callback.p95',
+    'interaction.loaf-first-ui-event-to-frame-end.count',
+    'interaction.loaf-first-ui-event-to-frame-end.p95',
+    'pipeline.loaf-attributed-forced-style-layout.count',
+    'pipeline.loaf-attributed-forced-style-layout.p95',
+])
 
 type RecordValue = Record<string, unknown>
 
@@ -454,7 +466,9 @@ function assertV2AggregateMetrics(
     for (const metricValue of aggregates) {
         const identity = aggregateScopeIdentity(metricValue)
         const sourceMetrics = sources.get(identity) ?? []
-        if (measuredAttempts.length >= 3 && metricValue.scope.level === 'run' && sourceMetrics.length !== measuredAttempts.length) {
+        const capabilityBacked = CAPABILITY_BACKED_METRIC_IDS_V2.has(metricValue.metricId)
+        const requiresCompleteSources = (measuredAttempts.length >= 3 && metricValue.scope.level === 'run') || capabilityBacked
+        if (requiresCompleteSources && (measuredAttempts.length === 0 || sourceMetrics.length !== measuredAttempts.length)) {
             throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} is missing measured-attempt evidence`)
         }
         if (measuredAttempts.length >= 3 && sourceMetrics.length === measuredAttempts.length) {
@@ -479,7 +493,7 @@ function assertV2AggregateMetrics(
         }
 
         const capabilityValues = measuredAttempts.map(item => aggregateCapabilityForMetric(metricValue.metricId, item.capabilities))
-        if (capabilityValues.every(value => value === undefined)) continue
+        if (!capabilityBacked) continue
         if (capabilityValues.some(value => value === undefined)) {
             throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} is missing capability evidence`)
         }
