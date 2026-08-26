@@ -102,6 +102,13 @@ test('accepts only standard CSS and capability-sequenced probe commands in a rea
         const result = await page.collectProbeResult(key, capability, 2)
         assert.equal(result.actionResults.length, 1)
         assert.equal(result.actionResults[0].actionId, 'secure-action')
+        assert.deepEqual(result.sampleDrops, {
+            frames: 0,
+            longTasks: 0,
+            longAnimationFrames: 0,
+            eventTimings: 0,
+            resources: 0,
+        })
         assert.equal(await page.collectProbeResult(key, capability, 3), null)
         await page.close()
 

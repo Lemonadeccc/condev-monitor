@@ -30,6 +30,75 @@ const PAGE_PROBE_LIMITATIONS = [
     'continuous-input-observation-is-sampled',
     'canvas-context-observation-starts-at-probe-install',
 ] as const
+const SAMPLE_DROP_KEYS = ['frames', 'longTasks', 'longAnimationFrames', 'eventTimings', 'resources'] as const
+type SampleDropKey = (typeof SAMPLE_DROP_KEYS)[number]
+type PageProbeSampleDrops = Record<SampleDropKey, number>
+const SAMPLE_TRUNCATION_CONTRACT: Readonly<
+    Record<
+        SampleDropKey,
+        {
+            limitation: string
+            capability?: string
+            rootMetricIds: ReadonlySet<string>
+            actionMetricIds: ReadonlySet<string>
+        }
+    >
+> = {
+    frames: {
+        limitation: 'page-probe-frame-samples-truncated',
+        rootMetricIds: new Set([
+            'frame.duration.p50',
+            'frame.duration.p95',
+            'frame.duration.p99',
+            'frame.refresh.inferred',
+            'frame.slow-rate',
+            'frame.jank-bursts',
+            'frame.longest-slow-run',
+            'frame.missed-opportunities',
+        ]),
+        actionMetricIds: new Set([
+            'frame.duration.p50',
+            'frame.duration.p95',
+            'frame.duration.p99',
+            'frame.slow-rate',
+            'frame.jank-bursts',
+        ]),
+    },
+    longTasks: {
+        limitation: 'page-probe-long-task-samples-truncated',
+        capability: 'longtask',
+        rootMetricIds: new Set(['main.long-task.duration.p95']),
+        actionMetricIds: new Set(['main.long-task.count', 'main.long-task.duration.p95']),
+    },
+    longAnimationFrames: {
+        limitation: 'page-probe-loaf-samples-truncated',
+        capability: 'loaf',
+        rootMetricIds: new Set(['main.loaf.duration.p95', 'main.loaf.blocking.p95', 'pipeline.loaf-style-layout-tail.p95']),
+        actionMetricIds: new Set(['main.loaf.count', 'main.loaf.duration.p95']),
+    },
+    eventTimings: {
+        limitation: 'page-probe-event-timing-samples-truncated',
+        capability: 'eventTiming',
+        rootMetricIds: new Set([
+            'interaction.event-duration.p95',
+            'interaction.input-delay.p95',
+            'interaction.processing.p95',
+            'interaction.presentation.p95',
+        ]),
+        actionMetricIds: new Set([
+            'interaction.event-duration.p95',
+            'interaction.input-delay.p95',
+            'interaction.processing.p95',
+            'interaction.presentation.p95',
+        ]),
+    },
+    resources: {
+        limitation: 'page-probe-resource-timing-samples-truncated',
+        capability: 'resourceTiming',
+        rootMetricIds: new Set(['resource.duration.p95']),
+        actionMetricIds: new Set(),
+    },
+}
 const CAPABILITY_METRIC_IDS: Readonly<Record<string, readonly string[]>> = {
     longtask: ['main.long-task.count', 'main.long-task.duration.p95', 'main.long-task.duration.sum'],
     loaf: ['main.loaf.count', 'main.loaf.duration.p95', 'main.loaf.blocking.p95', 'pipeline.loaf-style-layout-tail.p95'],
@@ -280,6 +349,40 @@ function decodeCapabilities(value: unknown): Record<string, boolean | null> {
     return output
 }
 
+function decodeSampleDrops(value: unknown): PageProbeSampleDrops {
+    const raw = record(value, 'sampleDrops')
+    exactKeys(raw, SAMPLE_DROP_KEYS, 'sampleDrops')
+    if (Object.keys(raw).length !== SAMPLE_DROP_KEYS.length) fail('sampleDrops count')
+    return Object.fromEntries(
+        SAMPLE_DROP_KEYS.map(key => [key, integer(raw[key], `sampleDrops.${key}`, 0, MAX_SAMPLES)])
+    ) as PageProbeSampleDrops
+}
+
+function downgradeTruncatedMetrics(
+    metrics: readonly AnimationLabMetric[],
+    catalog: ReadonlyMap<string, (typeof ANIMATION_LAB_METRIC_CATALOG_V1)[number]>,
+    sampleDrops: PageProbeSampleDrops,
+    actionScoped: boolean
+): AnimationLabMetric[] {
+    return metrics.map(metric => {
+        if (metric.status !== 'measured') return metric
+        const entry = catalog.get(metricKey(metric.family, metric.name, metric.stat, metric.unit))
+        if (!entry) fail('truncation metric identity')
+        const limitations = SAMPLE_DROP_KEYS.flatMap(stream => {
+            const contract = SAMPLE_TRUNCATION_CONTRACT[stream]
+            const affected = actionScoped ? contract.actionMetricIds : contract.rootMetricIds
+            return sampleDrops[stream] > 0 && affected.has(entry.metricId) ? [contract.limitation] : []
+        })
+        return limitations.length === 0
+            ? metric
+            : {
+                  ...metric,
+                  status: 'partial',
+                  limitations: [...new Set([...(metric.limitations ?? []), ...limitations])],
+              }
+    })
+}
+
 function assertCapabilityMetricCoherence(
     capabilities: Readonly<Record<string, boolean | null>>,
     metrics: readonly AnimationLabMetric[],
@@ -364,16 +467,26 @@ function decodeActionResults(
  */
 export function decodePageProbeResult(rawValue: unknown, expectedActionsValue: readonly ExpectedPageProbeAction[]): DecodedPageProbeResult {
     const raw = record(rawValue, 'root')
-    exactKeys(raw, ['durationMs', 'metrics', 'actionResults', 'capabilities', 'limitations'], 'root')
+    exactKeys(raw, ['durationMs', 'metrics', 'actionResults', 'capabilities', 'sampleDrops', 'limitations'], 'root')
     const durationMs = finite(raw.durationMs, 'duration', 0, MAX_DURATION_MS)
     const expectedActions = decodeExpectedActions(expectedActionsValue)
-    const metrics = decodeMetrics(raw.metrics, 'metrics', ROOT_PAGE_PROBE_METRICS)
+    const rawMetrics = decodeMetrics(raw.metrics, 'metrics', ROOT_PAGE_PROBE_METRICS)
     const capabilities = decodeCapabilities(raw.capabilities)
+    const sampleDrops = decodeSampleDrops(raw.sampleDrops)
     // Page prose is intentionally ignored. Only its bounded container shape is accepted.
     const ignoredLimitations = boundedArray(raw.limitations, 'limitations', MAX_LIMITATION_INPUTS)
     if (ignoredLimitations.some(item => typeof item !== 'string' || item.length > 200)) fail('limitations')
-    const droppedSamples = metrics.find(metric => metric.family === 'monitorOverhead' && metric.name === 'droppedProbeSamples')?.value
-    const actionResults = decodeActionResults(raw.actionResults, expectedActions, durationMs)
+    const droppedSamples = rawMetrics.find(metric => metric.family === 'monitorOverhead' && metric.name === 'droppedProbeSamples')?.value
+    if (droppedSamples !== SAMPLE_DROP_KEYS.reduce((total, key) => total + sampleDrops[key], 0)) fail('sampleDrops total coherence')
+    for (const stream of SAMPLE_DROP_KEYS) {
+        const capability = SAMPLE_TRUNCATION_CONTRACT[stream].capability
+        if (sampleDrops[stream] > 0 && capability && capabilities[capability] !== true) fail('sampleDrops capability coherence')
+    }
+    const metrics = downgradeTruncatedMetrics(rawMetrics, ROOT_PAGE_PROBE_METRICS, sampleDrops, false)
+    const actionResults = decodeActionResults(raw.actionResults, expectedActions, durationMs).map(action => ({
+        ...action,
+        metrics: downgradeTruncatedMetrics(action.metrics, ACTION_PAGE_PROBE_METRICS, sampleDrops, true),
+    }))
     assertCapabilityMetricCoherence(capabilities, metrics, ROOT_PAGE_PROBE_METRICS, 'metrics')
     for (const action of actionResults) {
         assertCapabilityMetricCoherence(capabilities, action.metrics, ACTION_PAGE_PROBE_METRICS, `actionResults[${action.order}].metrics`)

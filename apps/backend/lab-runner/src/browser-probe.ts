@@ -39,15 +39,31 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
     let nextCommandSequence = 0
     let activeActionId: string | null = null
     let droppedSamples = 0
+    const sampleDrops = {
+        frames: 0,
+        longTasks: 0,
+        longAnimationFrames: 0,
+        eventTimings: 0,
+        resources: 0,
+    }
+    const streamTotals = {
+        longTasks: { count: 0, duration: 0 },
+        longAnimationFrames: { count: 0 },
+        eventTimings: { count: 0 },
+        resources: { count: 0, transfer: 0, encoded: 0, decoded: 0 },
+    }
     let cls = 0
     let lcp: number | null = null
     let lastFrame: number | null = null
     let frameId = 0
     let stopped = false
 
-    const retain = <T>(values: T[], value: T): void => {
+    const retain = <T>(stream: keyof typeof sampleDrops, values: T[], value: T): void => {
         if (values.length < maximumSamples) values.push(value)
-        else droppedSamples += 1
+        else {
+            droppedSamples += 1
+            sampleDrops[stream] += 1
+        }
     }
     const observe = (type: string, callback: (entry: PerformanceEntry) => void, durationThreshold?: number): boolean => {
         try {
@@ -64,10 +80,15 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         }
     }
     const capabilities = {
-        longtask: observe('longtask', entry => retain(longTasks, { startTime: entry.startTime, duration: entry.duration })),
+        longtask: observe('longtask', entry => {
+            streamTotals.longTasks.count += 1
+            streamTotals.longTasks.duration += entry.duration
+            retain('longTasks', longTasks, { startTime: entry.startTime, duration: entry.duration })
+        }),
         loaf: observe('long-animation-frame', entry => {
             const value = entry as PerformanceEntry & { blockingDuration?: number; styleAndLayoutStart?: number }
-            retain(loafs, {
+            streamTotals.longAnimationFrames.count += 1
+            retain('longAnimationFrames', loafs, {
                 startTime: entry.startTime,
                 duration: entry.duration,
                 blocking: typeof value.blockingDuration === 'number' ? value.blockingDuration : 0,
@@ -83,7 +104,8 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                 const value = entry as PerformanceEventTiming
                 const inputDelay = Math.max(0, value.processingStart - value.startTime)
                 const processing = Math.max(0, value.processingEnd - value.processingStart)
-                retain(events, {
+                streamTotals.eventTimings.count += 1
+                retain('eventTimings', events, {
                     startTime: value.startTime,
                     duration: value.duration,
                     inputDelay,
@@ -95,12 +117,17 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         ),
         resourceTiming: observe('resource', entry => {
             const value = entry as PerformanceResourceTiming
-            retain(resources, {
+            const resource = {
                 duration: value.duration,
                 transfer: Number.isFinite(value.transferSize) ? value.transferSize : 0,
                 encoded: Number.isFinite(value.encodedBodySize) ? value.encodedBodySize : 0,
                 decoded: Number.isFinite(value.decodedBodySize) ? value.decodedBodySize : 0,
-            })
+            }
+            streamTotals.resources.count += 1
+            streamTotals.resources.transfer += resource.transfer
+            streamTotals.resources.encoded += resource.encoded
+            streamTotals.resources.decoded += resource.decoded
+            retain('resources', resources, resource)
         }),
         layoutShift: observe('layout-shift', entry => {
             const value = entry as PerformanceEntry & { value?: number; hadRecentInput?: boolean }
@@ -146,7 +173,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
     const onFrame = (timestamp: number): void => {
         if (stopped) return
         if (lastFrame !== null && document.visibilityState === 'visible') {
-            retain(frames, { startTime: lastFrame, duration: Math.max(0, timestamp - lastFrame) })
+            retain('frames', frames, { startTime: lastFrame, duration: Math.max(0, timestamp - lastFrame) })
         }
         lastFrame = timestamp
         frameId = requestAnimationFrame(onFrame)
@@ -469,8 +496,8 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     'longTaskCount',
                     'count',
                     'count',
-                    capabilities.longtask ? longTasks.length : null,
-                    longTasks.length,
+                    capabilities.longtask ? streamTotals.longTasks.count : null,
+                    streamTotals.longTasks.count,
                     capabilities.longtask ? 'measured' : 'unsupported'
                 ),
                 metric(
@@ -487,8 +514,8 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     'longTaskDurationMs',
                     'sum',
                     'ms',
-                    longTaskStats?.sum ?? null,
-                    longTaskStats?.count ?? null,
+                    capabilities.longtask ? streamTotals.longTasks.duration : null,
+                    streamTotals.longTasks.count,
                     capabilities.longtask ? undefined : 'unsupported'
                 ),
                 metric(
@@ -496,8 +523,8 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     'longAnimationFrameCount',
                     'count',
                     'count',
-                    capabilities.loaf ? loafs.length : null,
-                    loafs.length,
+                    capabilities.loaf ? streamTotals.longAnimationFrames.count : null,
+                    streamTotals.longAnimationFrames.count,
                     capabilities.loaf ? 'measured' : 'unsupported'
                 ),
                 metric(
@@ -568,8 +595,8 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     'interactionCount',
                     'count',
                     'count',
-                    capabilities.eventTiming ? events.length : null,
-                    events.length,
+                    capabilities.eventTiming ? streamTotals.eventTimings.count : null,
+                    streamTotals.eventTimings.count,
                     capabilities.eventTiming ? 'measured' : 'unsupported'
                 ),
                 metric(
@@ -587,8 +614,8 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     'resourceCount',
                     'count',
                     'count',
-                    capabilities.resourceTiming ? resources.length : null,
-                    resources.length,
+                    capabilities.resourceTiming ? streamTotals.resources.count : null,
+                    streamTotals.resources.count,
                     capabilities.resourceTiming ? 'measured' : 'unsupported'
                 ),
                 metric(
@@ -605,8 +632,8 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     'transferSizeBytes',
                     'sum',
                     'bytes',
-                    capabilities.resourceTiming ? resources.reduce((sum, value) => sum + value.transfer, 0) : null,
-                    resources.length,
+                    capabilities.resourceTiming ? streamTotals.resources.transfer : null,
+                    streamTotals.resources.count,
                     capabilities.resourceTiming ? 'measured' : 'unsupported'
                 ),
                 metric(
@@ -614,8 +641,8 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     'encodedBodySizeBytes',
                     'sum',
                     'bytes',
-                    capabilities.resourceTiming ? resources.reduce((sum, value) => sum + value.encoded, 0) : null,
-                    resources.length,
+                    capabilities.resourceTiming ? streamTotals.resources.encoded : null,
+                    streamTotals.resources.count,
                     capabilities.resourceTiming ? 'measured' : 'unsupported'
                 ),
                 metric(
@@ -623,8 +650,8 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     'decodedBodySizeBytes',
                     'sum',
                     'bytes',
-                    capabilities.resourceTiming ? resources.reduce((sum, value) => sum + value.decoded, 0) : null,
-                    resources.length,
+                    capabilities.resourceTiming ? streamTotals.resources.decoded : null,
+                    streamTotals.resources.count,
                     capabilities.resourceTiming ? 'measured' : 'unsupported'
                 ),
                 metric(
@@ -734,6 +761,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                 metrics,
                 actionResults,
                 capabilities,
+                sampleDrops,
                 limitations,
             }
             return result

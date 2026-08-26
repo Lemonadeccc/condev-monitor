@@ -27,6 +27,13 @@ function metric(overrides = {}) {
 }
 
 const catalogById = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [entry.metricId, entry]))
+const catalogIdByTuple = new Map(
+    ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [[entry.family, entry.name, entry.stat, entry.unit].join('|'), entry.metricId])
+)
+
+function metricId(metric) {
+    return catalogIdByTuple.get([metric.family, metric.name, metric.stat, metric.unit].join('|'))
+}
 
 function metricForId(metricId, overrides = {}) {
     const entry = catalogById.get(metricId)
@@ -47,7 +54,9 @@ function metricForId(metricId, overrides = {}) {
 function rawResult() {
     return {
         durationMs: 1_000,
-        metrics: PAGE_PROBE_ROOT_METRIC_IDS.map(metricId => metricForId(metricId)),
+        metrics: PAGE_PROBE_ROOT_METRIC_IDS.map(metricId =>
+            metricForId(metricId, metricId === 'probe.dropped-samples.count' ? { value: 0 } : {})
+        ),
         actionResults: [
             {
                 actionId: 'hero-hover',
@@ -61,6 +70,13 @@ function rawResult() {
             },
         ],
         capabilities: Object.fromEntries(PAGE_PROBE_CAPABILITY_KEYS.map(key => [key, true])),
+        sampleDrops: {
+            frames: 0,
+            longTasks: 0,
+            longAnimationFrames: 0,
+            eventTimings: 0,
+            resources: 0,
+        },
         limitations: ['private page prose must never cross the decoder'],
     }
 }
@@ -224,8 +240,110 @@ test('adds only a fixed truncation code when the closed dropped-sample metric is
     const raw = rawResult()
     const droppedIndex = raw.metrics.findIndex(item => item.name === 'droppedProbeSamples')
     raw.metrics[droppedIndex] = { ...raw.metrics[droppedIndex], value: 5 }
+    raw.sampleDrops.eventTimings = 5
 
     const decoded = decodePageProbeResult(raw, expectedActions)
     assert.ok(decoded.limitations.includes('page-probe-samples-truncated'))
     assert.equal(decoded.limitations.includes('5 probe samples exceeded'), false)
+})
+
+test('downgrades only sample-derived metrics for the truncated stream', () => {
+    const raw = rawResult()
+    const droppedIndex = raw.metrics.findIndex(item => item.name === 'droppedProbeSamples')
+    raw.metrics[droppedIndex] = { ...raw.metrics[droppedIndex], value: 5 }
+    raw.sampleDrops.eventTimings = 5
+
+    const decoded = decodePageProbeResult(raw, expectedActions)
+    const eventP95 = decoded.metrics.find(item => item.name === 'eventTimingDurationMs')
+    const eventCount = decoded.metrics.find(item => item.name === 'interactionCount')
+    const frameP95 = decoded.metrics.find(item => item.name === 'frameDurationMs' && item.stat === 'p95')
+    const actionInputDelay = decoded.actionResults[0].metrics.find(item => item.name === 'inputDelayMs')
+
+    assert.equal(eventP95.status, 'partial')
+    assert.ok(eventP95.limitations.includes('page-probe-event-timing-samples-truncated'))
+    assert.equal(actionInputDelay.status, 'partial')
+    assert.ok(actionInputDelay.limitations.includes('page-probe-event-timing-samples-truncated'))
+    assert.equal(eventCount.status, 'measured')
+    assert.equal(eventCount.limitations, undefined)
+    assert.equal(frameP95.status, 'measured')
+})
+
+test('preserves complete streaming totals while every truncated retained distribution becomes partial', () => {
+    const contracts = [
+        {
+            stream: 'frames',
+            partialRoot: [
+                'frame.duration.p50',
+                'frame.duration.p95',
+                'frame.duration.p99',
+                'frame.refresh.inferred',
+                'frame.slow-rate',
+                'frame.jank-bursts',
+                'frame.longest-slow-run',
+                'frame.missed-opportunities',
+            ],
+            measuredRoot: ['frame.target.latest'],
+            partialAction: ['frame.duration.p50', 'frame.duration.p95', 'frame.duration.p99', 'frame.slow-rate', 'frame.jank-bursts'],
+        },
+        {
+            stream: 'longTasks',
+            partialRoot: ['main.long-task.duration.p95'],
+            measuredRoot: ['main.long-task.count', 'main.long-task.duration.sum'],
+            partialAction: ['main.long-task.count', 'main.long-task.duration.p95'],
+        },
+        {
+            stream: 'longAnimationFrames',
+            partialRoot: ['main.loaf.duration.p95', 'main.loaf.blocking.p95', 'pipeline.loaf-style-layout-tail.p95'],
+            measuredRoot: ['main.loaf.count'],
+            partialAction: ['main.loaf.count', 'main.loaf.duration.p95'],
+        },
+        {
+            stream: 'eventTimings',
+            partialRoot: [
+                'interaction.event-duration.p95',
+                'interaction.input-delay.p95',
+                'interaction.processing.p95',
+                'interaction.presentation.p95',
+            ],
+            measuredRoot: ['interaction.count'],
+            partialAction: [
+                'interaction.event-duration.p95',
+                'interaction.input-delay.p95',
+                'interaction.processing.p95',
+                'interaction.presentation.p95',
+            ],
+        },
+        {
+            stream: 'resources',
+            partialRoot: ['resource.duration.p95'],
+            measuredRoot: ['resource.count', 'resource.transfer.sum', 'resource.encoded.sum', 'resource.decoded.sum'],
+            partialAction: [],
+        },
+    ]
+
+    for (const contract of contracts) {
+        const raw = rawResult()
+        const droppedIndex = raw.metrics.findIndex(item => item.name === 'droppedProbeSamples')
+        raw.metrics[droppedIndex] = { ...raw.metrics[droppedIndex], value: 7 }
+        raw.sampleDrops[contract.stream] = 7
+
+        const decoded = decodePageProbeResult(raw, expectedActions)
+        const rootById = new Map(decoded.metrics.map(item => [metricId(item), item]))
+        const actionById = new Map(decoded.actionResults[0].metrics.map(item => [metricId(item), item]))
+        for (const id of contract.partialRoot) assert.equal(rootById.get(id)?.status, 'partial', `${contract.stream}:${id}`)
+        for (const id of contract.measuredRoot) assert.equal(rootById.get(id)?.status, 'measured', `${contract.stream}:${id}`)
+        for (const id of contract.partialAction) assert.equal(actionById.get(id)?.status, 'partial', `${contract.stream}:${id}`)
+    }
+})
+
+test('rejects forged or incoherent per-stream truncation metadata', () => {
+    const mismatched = rawResult()
+    const droppedIndex = mismatched.metrics.findIndex(item => item.name === 'droppedProbeSamples')
+    mismatched.metrics[droppedIndex] = { ...mismatched.metrics[droppedIndex], value: 5 }
+    mismatched.sampleDrops.resources = 4
+    assert.throws(() => decodePageProbeResult(mismatched, expectedActions), TypeError)
+
+    const unsupportedStream = rawResult()
+    unsupportedStream.sampleDrops.privateDomEvents = 1
+    assert.throws(() => decodePageProbeResult(unsupportedStream, expectedActions), TypeError)
 })

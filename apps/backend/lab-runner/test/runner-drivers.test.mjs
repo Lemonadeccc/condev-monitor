@@ -16,7 +16,7 @@ function metricForId(metricId) {
         name: entry.name,
         stat: entry.stat,
         unit: entry.unit,
-        value: entry.unit === 'ratio' || entry.unit === 'score' ? 0.01 : 1,
+        value: metricId === 'probe.dropped-samples.count' ? 0 : entry.unit === 'ratio' || entry.unit === 'score' ? 0.01 : 1,
         samples: 120,
         status: 'measured',
         evidenceLevel: 'controlled-lab-measurement',
@@ -40,6 +40,13 @@ function rawProbeResult(action) {
             },
         ],
         capabilities: Object.fromEntries(PAGE_PROBE_CAPABILITY_KEYS.map(key => [key, true])),
+        sampleDrops: {
+            frames: 0,
+            longTasks: 0,
+            longAnimationFrames: 0,
+            eventTimings: 0,
+            resources: 0,
+        },
         limitations: [],
     }
 }

@@ -462,3 +462,41 @@ test('does not upgrade cross-document partial samples or their findings to obser
     assert.equal(semantics.findings[0].status, 'candidate')
     assert.ok(semantics.findings[0].limitations.includes('cross-document-sampling-partial'))
 })
+
+test('keeps a budget violation from a truncated page-probe distribution as a candidate', () => {
+    const attempts = Array.from({ length: 3 }, (_, index) => {
+        const attemptId = `truncated-probe-${index}`
+        return {
+            attemptId,
+            phase: 'measured',
+            index,
+            startedAt: '2026-08-26T00:00:00.000Z',
+            endedAt: '2026-08-26T00:00:01.000Z',
+            durationMs: 1_000,
+            metrics: [
+                decorateLabMetric(
+                    {
+                        ...frameMetric(30, 20_000),
+                        status: 'partial',
+                        limitations: ['page-probe-frame-samples-truncated'],
+                    },
+                    { level: 'attempt', attemptId }
+                ),
+            ],
+            capabilities: {},
+            limitations: ['page-probe-samples-truncated'],
+        }
+    })
+    const aggregateMetrics = aggregateMeasuredAttempts(attempts)
+    const semantics = buildAnimationLabSemantics({
+        scenario,
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts,
+        aggregateMetrics,
+    })
+
+    assert.equal(aggregateMetrics[0].status, 'partial')
+    assert.equal(semantics.findings[0].status, 'candidate')
+    assert.ok(semantics.findings[0].limitations.includes('page-probe-frame-samples-truncated'))
+    assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
+})
