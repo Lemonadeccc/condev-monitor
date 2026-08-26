@@ -1,0 +1,73 @@
+{
+    "schemaVersion": 1,
+    "name": "generic-page-motion",
+    "url": "http://127.0.0.1:5173/",
+    "routeKey": "generic.page",
+    "environment": "development",
+    "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+    },
+    "reducedMotion": "no-preference",
+    "cacheMode": "warm",
+    "warmupRuns": 1,
+    "measuredRuns": 3,
+    "measurementContract": {
+        "contractVersion": 2,
+        "expectedHz": 60,
+        "targetFrameMs": 16.666667,
+        "source": "explicit",
+        "confidence": "explicit",
+        "budgetRef": {
+            "catalogVersion": 1,
+            "budgetId": "condev.animation.default",
+            "budgetVersion": 1
+        },
+        "metricCatalogVersion": 1
+    },
+    "actions": [
+        {
+            "kind": "pointer-path",
+            "label": "page-pointer-follow",
+            "actionId": "page-pointer-follow",
+            "subject": { "scope": "page", "role": "pointer-follow", "surface": "unknown" },
+            "trigger": { "source": "scenario" },
+            "durationMs": 1600,
+            "points": [
+                { "xRatio": 0.2, "yRatio": 0.25 },
+                { "xRatio": 0.75, "yRatio": 0.3 },
+                { "xRatio": 0.65, "yRatio": 0.75 },
+                { "xRatio": 0.3, "yRatio": 0.6 }
+            ]
+        },
+        {
+            "kind": "scroll",
+            "label": "page-scroll",
+            "actionId": "page-scroll",
+            "subject": { "scope": "page", "role": "scroll", "surface": "unknown" },
+            "trigger": { "source": "scenario" },
+            "deltaY": 1800,
+            "durationMs": 2200
+        },
+        {
+            "kind": "resize",
+            "label": "desktop-resize",
+            "actionId": "desktop-resize",
+            "subject": { "scope": "page", "role": "resize", "surface": "unknown" },
+            "trigger": { "source": "scenario" },
+            "width": 1180,
+            "height": 760
+        }
+    ],
+    "trace": {
+        "enabled": true,
+        "screenshots": false,
+        "maxDurationMs": 30000
+    },
+    "lighthouse": {
+        "enabled": true,
+        "categories": ["performance", "accessibility", "best-practices"],
+        "formFactor": "desktop"
+    }
+}

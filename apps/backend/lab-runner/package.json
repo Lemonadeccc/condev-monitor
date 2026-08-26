@@ -1,0 +1,40 @@
+{
+    "name": "@condev-monitor/animation-lab-runner",
+    "version": "0.1.0",
+    "private": false,
+    "type": "module",
+    "description": "Reviewed animation lab execution, discovery, and Chrome Recorder import CLIs",
+    "bin": {
+        "condev-animation-lab": "build/cli.js",
+        "condev-animation-lab-explore": "build/explore-cli.js",
+        "condev-animation-lab-import-recorder": "build/import-recorder-cli.js"
+    },
+    "files": [
+        "build",
+        "README.md"
+    ],
+    "publishConfig": {
+        "access": "public"
+    },
+    "scripts": {
+        "clean": "rimraf build",
+        "build": "pnpm clean && tsup src/cli.ts src/explore-cli.ts src/import-recorder-cli.ts src/index.ts --format esm --out-dir build --platform node --sourcemap",
+        "typecheck": "tsc -p tsconfig.json --noEmit",
+        "test": "pnpm build && node --test test/*.test.mjs"
+    },
+    "dependencies": {
+        "@condev-monitor/animation-lab": "workspace:*",
+        "@condev-monitor/animation-lab-explorer": "workspace:*",
+        "chrome-launcher": "1.2.1",
+        "lighthouse": "13.4.1",
+        "playwright-core": "1.62.1"
+    },
+    "devDependencies": {
+        "@types/node": "22.15.0",
+        "typescript": "^5.9.3"
+    },
+    "engines": {
+        "node": ">=22"
+    },
+    "license": "Apache-2.0"
+}
