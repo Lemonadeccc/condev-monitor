@@ -42,7 +42,7 @@ const client = init({
 
 当前第一版是“浏览器标准核心”，不是宣称一次完成所有框架内部归因：
 
-- 已实现：可见 rAF frame tail、刷新率预算、慢帧、missed-display、burst、LoAF、Long Task、Event Timing 三阶段、语义 interaction、12-family coverage、监控自身回调开销、本地建议和 Shadow DOM overlay；
+- 已实现：可见 rAF frame tail、刷新率预算、慢帧、missed-display、burst、LoAF（含可选 PaintTimingMixin 的 render→paint / paint→presentation 本地证据）、Long Task、Event Timing 三阶段、语义 interaction、12-family coverage、监控自身回调开销、本地建议和 Shadow DOM overlay；
 - 已实现：`captureSufficiency` 的 5 秒可见窗口、30 个保留帧、低置信度与截断门槛，并分别记录 visible/hidden/other duration；
 - 已实现：共享的 document-lifetime CLS/INP/LCP 运行时、脱敏本地 latest snapshot，以及连续交互 `recordQuality` 的闭集字段、边界、丢样和拒绝统计；
 - 已实现：默认整页匿名 CSS/WAAPI 清单、video RVFC、SVG/Canvas/已观察 context family、hidden/offscreen/reduced-motion 候选；页面 collector 始终运行时的并行 DOM Picker/目标 sidecar；Target 的 Start/Stop/Reset/Clear；属性候选、连接/尺寸、Canvas 分轴 backing scale/resize，以及 renderer evidence/GPU fail-closed 公共契约；
@@ -211,6 +211,7 @@ frame budget 优先取受控设备的显式刷新率；否则只从可见状态�
 | 主线程   | Long Task 总时间                         | `<300 ms/min`                                          | `>1000 ms/min`                   | 已采 count/sum/p95/max；Dashboard 按有效 window 显式换算 `/min`            |
 | 交互     | input / processing / presentation p95    | `≤100 ms`                                              | `>300 ms`                        | 已实现支持范围内的三阶段；最终 field gate 仍看 INP p75                     |
 | 渲染管线 | LoAF style/layout-start → frame-end tail | `<200 ms/min`                                          | `>800 ms/min`                    | 已采 tail p95 候选；不是纯 layout CPU 时间，累计预算和 source 定位后续补全 |
+| 渲染管线 | LoAF render→paint / paint→presentation   | 不设通用阈值                                           | 不自动判失败                     | 已实现本地有界证据与能力状态；只覆盖 LoAF，presentation 可缺失且实现相关   |
 | 监控自身 | callback self-time / capture             | `<1%`                                                  | `>3%`                            | 已采监控自身开销；必须另做无探针对照                                       |
 | 动效质量 | 有限 UI 动效 `>300 ms`                   | 人工复核意图、可中断性和配对                           | 不自动判失败                     | motion adapter 后启用；100–150/150–250/200–300 ms 仅是起点                 |
 
@@ -488,7 +489,7 @@ Animation RUM 与其他监控表统一使用 `CLICKHOUSE_DATABASE` 指定的库�
 1. 完整 framework/motion adapters：React/Next owner/why-update/真实 commit、Vue/Angular/Svelte/Solid 自动更新归因，以及 GSAP/Lenis/ScrollTrigger ticker/自动 checkpoint/等价循环 analyzer；当前 core helper 只接显式 Profiler/manual/public inventory；
 2. 完整 renderer/media adapters：Three/R3F/Canvas2D/WebGL/WebGPU 的 pass/target/upload/readback/context/device 数据，以及 decode/upload/first-visible/visibility；当前 core helper 只覆盖 Three public counters/context 状态与 Video RVFC/playback-quality delta；
 3. 真实 GPU query：异步、稀疏、非重叠的 WebGL timer query 或 WebGPU timestamp query，并验证 availability、disjoint、context/device lost 和探针开销；当前 SDK 只做 fail-closed 合同校验；
-4. CDP/trace 深层归因：首版 Labs 已有有界 JS、style/layout、paint/composite、raster/GPU 类别时间线与脱敏生成源码栈；仍缺 source map 到 authored source、逐帧 layer/CPU profile 专门视图和跨浏览器等价实现。浏览器 SDK 的 LoAF tail 不能替代这些阶段；
+4. CDP/trace 深层归因：首版 Labs 已有有界 JS、style/layout、paint/composite、raster/GPU 类别时间线与脱敏生成源码栈；仍缺 source map 到 authored source、逐帧 layer/CPU profile 专门视图和跨浏览器等价实现。浏览器 SDK 的 LoAF tail 和可选 PaintTimingMixin 只覆盖长帧，不能替代全帧 trace、源码归因或真实 GPU timer；
 5. resource/media/lifecycle 深层证据：resource-to-first-visible、media decode/upload/first-visible、route/unmount 前后 listener/observer/ticker/resource/heap delta、hidden/offscreen work，以及代表设备至少十分钟 soak/post-GC plateau；
 6. soft-navigation Web Vitals、跨源 iframe/OffscreenCanvas Worker bridge、inner-scene hit-test，以及经过新版本数据合同授权的 target/quality RUM。
 
