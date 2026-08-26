@@ -11,6 +11,7 @@ import {
     resolveSpanPolicy,
     summarizeTraceStatuses,
 } from '../shared/ai-status'
+import { resolveClickhouseDatabase } from '../shared/clickhouse-utils'
 import { AIDatasetEntity } from './entity/ai-dataset.entity'
 import { AIDatasetItemEntity } from './entity/ai-dataset-item.entity'
 import { AIExperimentEntity } from './entity/ai-experiment.entity'
@@ -143,7 +144,7 @@ export class AiService {
         @InjectRepository(AIExperimentRunEntity)
         private readonly experimentRunRepository: Repository<AIExperimentRunEntity>
     ) {
-        this.database = config.get<string>('CLICKHOUSE_DATABASE') ?? 'lemonade'
+        this.database = resolveClickhouseDatabase(config)
         this.pricingConfig = config.get<string>('AI_MODEL_PRICING_JSON') ?? null
     }
 

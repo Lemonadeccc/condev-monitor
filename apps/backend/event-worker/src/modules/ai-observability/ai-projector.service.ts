@@ -2,6 +2,7 @@ import { ClickHouseClient, createClient } from '@clickhouse/client'
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 
+import { resolveClickhouseDatabase } from '../../shared/clickhouse-utils'
 import { parseDateTimeForCH } from '../../utils/datetime'
 import { estimateTraceCost } from './pricing'
 
@@ -60,7 +61,7 @@ export class AiProjectorService implements OnModuleInit, OnModuleDestroy {
     private readonly schemaInitRetryMs: number
 
     constructor(private readonly config: ConfigService) {
-        this.database = config.get<string>('CLICKHOUSE_DATABASE') ?? 'lemonade'
+        this.database = resolveClickhouseDatabase(config)
         this.pricingConfig = config.get<string>('AI_MODEL_PRICING_JSON') ?? null
         this.schemaInitMaxAttempts = Math.max(1, Number(config.get('CLICKHOUSE_SCHEMA_INIT_MAX_ATTEMPTS')) || 30)
         this.schemaInitRetryMs = Math.max(250, Number(config.get('CLICKHOUSE_SCHEMA_INIT_RETRY_MS')) || 2000)
