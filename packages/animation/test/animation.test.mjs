@@ -1976,6 +1976,8 @@ class FakeNode {
         this.focused = false
         this.style = {}
         this.isConnected = true
+        this.scrollTop = 0
+        this.scrollLeft = 0
     }
 
     append(...children) {
@@ -1990,6 +1992,10 @@ class FakeNode {
 
     replaceChildren(...children) {
         this.children = []
+        // Emptying a real scroll container clamps its offsets before the new
+        // children are appended. Keep that browser behavior in the fake DOM.
+        this.scrollTop = 0
+        this.scrollLeft = 0
         this.append(...children)
     }
 
@@ -2954,7 +2960,16 @@ test('dev overlay target recording is explicitly started, bounded, resettable, a
     const durationAtStop = collector.snapshot().interactions.recent.find(interaction => interaction.id === firstInteractionId).durationMs
 
     runtime.tick(80)
+    const targetDetail = findFakeNodes(
+        panel,
+        node => node.className === 'detail-pane' && /Direct element evidence/.test(fakeNodeText(node))
+    )[0]
+    assert.ok(targetDetail)
+    targetDetail.scrollTop = 160
+    targetDetail.scrollLeft = 12
     overlay.refresh()
+    assert.equal(targetDetail.scrollTop, 160)
+    assert.equal(targetDetail.scrollLeft, 12)
     assert.deepEqual(targetSelection.snapshot().correlated, correlatedAtStop)
     assert.equal(
         collector.snapshot().interactions.recent.find(interaction => interaction.id === firstInteractionId).durationMs,
@@ -2975,7 +2990,11 @@ test('dev overlay target recording is explicitly started, bounded, resettable, a
     const resetInteractionId = reset.activeInteractionId
     const clearButton = targetAction('clear')
     assert.ok(clearButton)
+    targetDetail.scrollTop = 100
+    targetDetail.scrollLeft = 8
     clearButton.click()
+    assert.equal(targetDetail.scrollTop, 0)
+    assert.equal(targetDetail.scrollLeft, 0)
     assert.equal(overlay.targetState, 'idle')
     assert.equal(targetSelection.state, 'cleared')
     assert.throws(() => targetSelection.snapshot(), /cleared element selection/)

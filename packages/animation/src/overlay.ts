@@ -1632,6 +1632,9 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     }
 
     function renderTarget(pageSnapshot: AnimationSnapshot | undefined): void {
+        const renderedSelection = targetSelection
+        const detailScrollTop = targetDetail.scrollTop
+        const detailScrollLeft = targetDetail.scrollLeft
         targetList.replaceChildren()
         targetDetail.replaceChildren()
         if (!targetSelection) {
@@ -1928,6 +1931,10 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         appendTextElement(documentValue, privacy, 'h4', '', overlayText(locale, 'targetPrivacy'))
         appendTextElement(documentValue, privacy, 'p', '', overlayText(locale, 'targetPrivacyHelp'))
         targetDetail.appendChild(privacy)
+        if (renderedSelection !== null && targetSelection === renderedSelection) {
+            targetDetail.scrollTop = detailScrollTop
+            targetDetail.scrollLeft = detailScrollLeft
+        }
     }
 
     const renderViewModel = (snapshot: AnimationSnapshot, viewModel: AnimationOverlayViewModel, recordHistory = true): void => {
