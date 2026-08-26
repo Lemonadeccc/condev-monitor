@@ -1947,6 +1947,9 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             card.setAttribute('data-tone', metric.tone)
             if (metric.id === 'live-fps') card.setAttribute('title', overlayText(locale, 'recentFpsBoundary'))
             if (metric.id === 'input-scheduling') card.setAttribute('title', overlayText(locale, 'inputFrameSchedulingBoundary'))
+            if (metric.id === 'loaf-render-paint' || metric.id === 'loaf-paint-presentation') {
+                card.setAttribute('title', overlayText(locale, 'loafPaintTimingBoundary'))
+            }
             appendTextElement(documentValue, card, 'div', 'metric-label', metric.label)
             appendTextElement(documentValue, card, 'div', 'metric-value', metric.value)
             appendTextElement(documentValue, card, 'div', 'metric-context', metric.context)

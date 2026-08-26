@@ -23,6 +23,7 @@ import type {
     AnimationRumFamily,
     AnimationRumMetric,
     AnimationSnapshot,
+    CapabilityState,
     InteractionMeasurement,
     RecommendationConfidence,
 } from './types'
@@ -114,7 +115,7 @@ export interface OverlayCoverageView {
 }
 
 export interface OverlayMetricView {
-    id: 'live-fps' | 'frame-tail' | 'bursts' | 'missed' | 'input-scheduling'
+    id: 'live-fps' | 'frame-tail' | 'bursts' | 'missed' | 'input-scheduling' | 'loaf-render-paint' | 'loaf-paint-presentation'
     label: string
     value: string
     context: string
@@ -160,6 +161,24 @@ function formatNumber(value: number): string {
     if (Math.abs(value) >= 100) return value.toFixed(0)
     if (Math.abs(value) >= 10) return value.toFixed(1)
     return value.toFixed(2)
+}
+
+function capabilityStateText(locale: AnimationOverlayLocale, state: CapabilityState): string {
+    return overlayText(
+        locale,
+        state === 'supported' ? 'capabilitySupported' : state === 'unsupported' ? 'capabilityUnsupported' : 'capabilityUnknown'
+    )
+}
+
+function loafPhaseStatusText(
+    locale: AnimationOverlayLocale,
+    capability: CapabilityState,
+    retainedCount: number,
+    totalObservedCount: number | null
+): string {
+    if (capability !== 'supported' || totalObservedCount === null) return capabilityStateText(locale, capability)
+    if (totalObservedCount === 0) return coverageStatusText(locale, 'not-observed')
+    return coverageStatusText(locale, retainedCount < totalObservedCount ? 'partial' : 'measured')
 }
 
 function recommendationBreachMultiple(recommendation: AnimationRecommendation): number {
@@ -424,6 +443,25 @@ export function buildAnimationOverlayViewModel(
     const frameTailTarget = snapshot.frameBudget.frameBudgetMs * 1.5
     const inputFrameScheduling = snapshot.inputFrameScheduling
     const inputFrameSchedulingStatus = coverageStatusText(locale, inputFrameScheduling?.status ?? 'not-instrumented')
+    const paintTiming = snapshot.longAnimationFrames.paintTiming
+    const renderToPaint = paintTiming?.renderStartToPaintDuration
+    const paintToPresentation = paintTiming?.paintToPresentationDuration
+    const renderToPaintTotal = paintTiming?.renderStartToPaintTotalObservedCount ?? null
+    const paintToPresentationTotal = paintTiming?.paintToPresentationTotalObservedCount ?? null
+    const renderToPaintCapability = paintTiming?.paintTimeCapability.state ?? 'unknown'
+    const paintToPresentationCapability =
+        paintTiming?.paintTimeCapability.state === 'supported' && paintTiming.presentationTimeCapability.state === 'supported'
+            ? 'supported'
+            : paintTiming?.paintTimeCapability.state === 'unsupported' || paintTiming?.presentationTimeCapability.state === 'unsupported'
+              ? 'unsupported'
+              : 'unknown'
+    const renderToPaintStatus = loafPhaseStatusText(locale, renderToPaintCapability, renderToPaint?.count ?? 0, renderToPaintTotal)
+    const paintToPresentationStatus = loafPhaseStatusText(
+        locale,
+        paintToPresentationCapability,
+        paintToPresentation?.count ?? 0,
+        paintToPresentationTotal
+    )
     const metrics: OverlayMetricView[] = [
         {
             id: 'live-fps',
@@ -475,6 +513,32 @@ export function buildAnimationOverlayViewModel(
                   })
                 : overlayText(locale, 'inputFrameSchedulingProxyUnavailable', { status: inputFrameSchedulingStatus }),
             tone: inputFrameScheduling?.status === 'measured' ? 'neutral' : 'unknown',
+        },
+        {
+            id: 'loaf-render-paint',
+            label: overlayText(locale, 'loafRenderToPaint'),
+            value: formatOverlayMeasurement(renderToPaint?.p95, 'ms', locale),
+            context: renderToPaint
+                ? overlayText(locale, 'loafPaintTimingContext', {
+                      retained: renderToPaint.count,
+                      total: renderToPaintTotal ?? renderToPaint.count,
+                      status: renderToPaintStatus,
+                  })
+                : overlayText(locale, 'loafPaintTimingUnavailable', { status: renderToPaintStatus }),
+            tone: renderToPaint ? 'neutral' : 'unknown',
+        },
+        {
+            id: 'loaf-paint-presentation',
+            label: overlayText(locale, 'loafPaintToPresentation'),
+            value: formatOverlayMeasurement(paintToPresentation?.p95, 'ms', locale),
+            context: paintToPresentation
+                ? overlayText(locale, 'loafPaintTimingContext', {
+                      retained: paintToPresentation.count,
+                      total: paintToPresentationTotal ?? paintToPresentation.count,
+                      status: paintToPresentationStatus,
+                  })
+                : overlayText(locale, 'loafPaintTimingUnavailable', { status: paintToPresentationStatus }),
+            tone: paintToPresentation ? 'neutral' : 'unknown',
         },
     ]
     const coverage = (
