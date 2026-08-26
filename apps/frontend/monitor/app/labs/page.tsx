@@ -77,7 +77,11 @@ export default function LabsPage() {
                 <AIStatCard label="任务总数" value={runsQuery.data?.data.count.toLocaleString() ?? '—'} description="当前应用" />
                 <AIStatCard label="运行中" value={summary.running.toLocaleString()} description="包括排队任务" />
                 <AIStatCard label="已完成" value={summary.completed.toLocaleString()} description={`${summary.failed} 个失败任务`} />
-                <AIStatCard label="最近性能得分" value={formatLabScore(summary.latestScore)} description="受控环境，不等同真实用户数据" />
+                <AIStatCard
+                    label="最近 Lighthouse 性能得分"
+                    value={formatLabScore(summary.latestScore)}
+                    description="受控导航结果，不是动画综合分"
+                />
             </div>
 
             <AIPanelCard
@@ -101,7 +105,7 @@ export default function LabsPage() {
                                     <th className="px-6 py-3 text-left">状态</th>
                                     <th className="px-6 py-3 text-left">来源</th>
                                     <th className="px-6 py-3 text-right">耗时</th>
-                                    <th className="px-6 py-3 text-right">性能得分</th>
+                                    <th className="px-6 py-3 text-right">Lighthouse 性能</th>
                                     <th className="px-6 py-3 text-left">创建时间</th>
                                     <th className="px-6 py-3 text-right">
                                         <span className="sr-only">打开</span>
