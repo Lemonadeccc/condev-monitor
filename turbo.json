@@ -16,7 +16,8 @@
         "start:dev": {
             "dependsOn": ["^start:dev"],
             "cache": false,
-            "persistent": true
+            "persistent": true,
+            "passThroughEnv": ["CONDEV_MONITOR_FRONTEND_PORT"]
         }
     },
     "ui": "tui",
