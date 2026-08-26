@@ -748,8 +748,11 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     let issueHistory: readonly OverlayIssueHistoryEntry[] = []
     let currentViewModel: AnimationOverlayViewModel | undefined
     let selectedIssueId: string | undefined
+    let renderedIssueId: string | undefined
     let selectedInteractionId: string | undefined
+    let renderedInteractionId: string | undefined
     let selectedCoverageFamily: AnimationRumFamily | undefined
+    let renderedCoverageFamily: AnimationRumFamily | undefined
     let previousFrameRateSnapshot: AnimationSnapshot | undefined
     let lastSnapshot: AnimationSnapshot | undefined
     let lastLiveFrameRate: LiveFrameRateResult = { status: 'collecting' }
@@ -1084,8 +1087,12 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     }
 
     const renderIssueDetail = (): void => {
+        const detailScrollTop = issueDetail.scrollTop
+        const detailScrollLeft = issueDetail.scrollLeft
         issueDetail.replaceChildren()
         const selected = issueHistory.find(issue => issue.recommendation.id === selectedIssueId) ?? issueHistory[0]
+        const preserveScroll = selected !== undefined && renderedIssueId === selected.recommendation.id
+        renderedIssueId = selected?.recommendation.id
         if (!selected) {
             const empty = documentValue.createElement('div')
             empty.className = 'empty'
@@ -1157,6 +1164,10 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         appendTextElement(documentValue, verification, 'h4', '', overlayText(locale, 'regressionChecks'))
         appendList(documentValue, verification, selected.regressionChecks)
         issueDetail.appendChild(verification)
+        if (preserveScroll) {
+            issueDetail.scrollTop = detailScrollTop
+            issueDetail.scrollLeft = detailScrollLeft
+        }
     }
 
     const renderIssueHistory = (): void => {
@@ -1222,8 +1233,12 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     }
 
     const renderInteractionDetail = (interactions: readonly OverlayInteractionView[]): void => {
+        const detailScrollTop = interactionDetail.scrollTop
+        const detailScrollLeft = interactionDetail.scrollLeft
         interactionDetail.replaceChildren()
         const selected = interactions.find(item => item.measurement.id === selectedInteractionId) ?? interactions[0]
+        const preserveScroll = selected !== undefined && renderedInteractionId === selected.measurement.id
+        renderedInteractionId = selected?.measurement.id
         if (!selected) {
             const empty = documentValue.createElement('div')
             empty.className = 'empty'
@@ -1301,6 +1316,10 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         appendTextElement(documentValue, boundary, 'h4', '', overlayText(locale, 'interpretationBoundary'))
         appendTextElement(documentValue, boundary, 'p', '', overlayText(locale, 'interactionBoundary'))
         interactionDetail.appendChild(boundary)
+        if (preserveScroll) {
+            interactionDetail.scrollTop = detailScrollTop
+            interactionDetail.scrollLeft = detailScrollLeft
+        }
     }
 
     const renderInteractions = (interactions: readonly OverlayInteractionView[]): void => {
@@ -1654,8 +1673,12 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     }
 
     const renderCoverageDetail = (viewModel: AnimationOverlayViewModel): void => {
+        const detailScrollTop = coverageDetail.scrollTop
+        const detailScrollLeft = coverageDetail.scrollLeft
         coverageDetail.replaceChildren()
         const selected = viewModel.coverage.find(item => item.family === selectedCoverageFamily) ?? viewModel.coverage[0]
+        const preserveScroll = selected !== undefined && renderedCoverageFamily === selected.family
+        renderedCoverageFamily = selected?.family
         if (!selected) {
             const empty = documentValue.createElement('div')
             empty.className = 'empty'
@@ -1684,6 +1707,10 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         appendTextElement(documentValue, boundary, 'h4', '', overlayText(locale, 'interpretationBoundary'))
         appendTextElement(documentValue, boundary, 'p', 'coverage-note', overlayText(locale, 'coverageBoundary'))
         coverageDetail.appendChild(boundary)
+        if (preserveScroll) {
+            coverageDetail.scrollTop = detailScrollTop
+            coverageDetail.scrollLeft = detailScrollLeft
+        }
     }
 
     const renderCoverage = (viewModel: AnimationOverlayViewModel): void => {

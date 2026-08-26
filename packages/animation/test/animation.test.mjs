@@ -2787,6 +2787,17 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     assert.match(fakeNodeText(panel), /What to change/)
     assert.match(fakeNodeText(panel), /Verify the change/)
     assert.match(fakeNodeText(panel), /Regression checks/)
+    const issueDetail = findFakeNodes(panel, node => node.className === 'detail-pane' && /What to change/.test(fakeNodeText(node)))[0]
+    assert.ok(issueDetail)
+    issueDetail.scrollTop = 140
+    issueDetail.scrollLeft = 9
+    overlay.refresh()
+    assert.equal(issueDetail.scrollTop, 140)
+    assert.equal(issueDetail.scrollLeft, 9)
+    const refreshedIssueButtons = findFakeNodes(panel, node => node.getAttribute('data-overlay-issue') !== null)
+    refreshedIssueButtons[1].click()
+    assert.equal(issueDetail.scrollTop, 0)
+    assert.equal(issueDetail.scrollLeft, 0)
     const captureEvidence = findFakeNodes(panel, node => node.getAttribute('data-overlay-capture-sufficiency') !== null)[0]
     assert.equal(captureEvidence.getAttribute('data-status'), 'insufficient')
     assert.match(fakeNodeText(captureEvidence), /Foreground 1.25 s/)
@@ -2847,6 +2858,13 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     assert.match(fakeNodeText(scheduling), /9 ms · Measured/)
     assert.match(fakeNodeText(scheduling), /4\/4 retained · 0 dropped · 0 cancelled · 0 pending/)
     assert.match(fakeNodeText(scheduling), /does not prove a visual update, paint, presentation, or GPU completion/)
+    const interactionDetail = findFakeNodes(panel, node => node.className === 'detail-pane' && /gallery drag/.test(fakeNodeText(node)))[0]
+    assert.ok(interactionDetail)
+    interactionDetail.scrollTop = 120
+    interactionDetail.scrollLeft = 7
+    overlay.refresh()
+    assert.equal(interactionDetail.scrollTop, 120)
+    assert.equal(interactionDetail.scrollLeft, 7)
 
     const coverageTab = findFakeNodes(panel, node => node.getAttribute('data-overlay-tab') === 'coverage')[0]
     assert.ok(coverageTab)
@@ -2877,9 +2895,21 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     assert.match(fakeNodeText(rendererHostDetail), /explicit host adapter · local only/i)
     assert.match(fakeNodeText(rendererHostDetail), /excluded from animation_rum v1/i)
     assert.match(fakeNodeText(panel), /Missing or unsupported evidence is never converted to zero/i)
+    const coverageDetail = findFakeNodes(
+        panel,
+        node => node.className === 'detail-pane' && /Renderer host evidence/.test(fakeNodeText(node))
+    )[0]
+    assert.ok(coverageDetail)
+    coverageDetail.scrollTop = 180
+    coverageDetail.scrollLeft = 11
+    overlay.refresh()
+    assert.equal(coverageDetail.scrollTop, 180)
+    assert.equal(coverageDetail.scrollLeft, 11)
 
     const resourcesCoverage = findFakeNodes(panel, node => node.getAttribute('data-coverage-family') === 'resourcesMedia')[0]
     resourcesCoverage.click()
+    assert.equal(coverageDetail.scrollTop, 0)
+    assert.equal(coverageDetail.scrollLeft, 0)
     const resourceDetail = findFakeNodes(panel, node => node.getAttribute('data-resource-timing') !== null)[0]
     assert.ok(resourceDetail)
     const resourceMetric = id => findFakeNodes(resourceDetail, node => node.getAttribute('data-resource-timing-metric') === id)[0]
