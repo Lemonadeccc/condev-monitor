@@ -2434,6 +2434,16 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     snapshot.frames.totalObservedCount = 100
     snapshot.longTasks.duration = statistics(120)
     snapshot.longAnimationFrames.styleAndLayoutTailDuration = statistics(40)
+    snapshot.longAnimationFrames.paintTiming = {
+        paintTimeCapability: { state: 'supported', observed: true, buffered: true },
+        presentationTimeCapability: { state: 'supported', observed: true, buffered: true },
+        paintTimeExposedCount: 4,
+        presentationTimeExposedCount: 4,
+        renderStartToPaintTotalObservedCount: 4,
+        paintToPresentationTotalObservedCount: 3,
+        renderStartToPaintDuration: statistics(12, 4),
+        paintToPresentationDuration: statistics(3, 3),
+    }
     snapshot.eventTiming.inputDelay = statistics(140)
     snapshot.eventTiming.processingDuration = statistics(150)
     snapshot.eventTiming.presentationDelay = statistics(160)
@@ -2644,6 +2654,12 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     assert.match(fakeNodeText(panel), /Live rAF cadence/)
     assert.match(fakeNodeText(panel), /Input → next rAF proxy p95/)
     assert.match(fakeNodeText(panel), /4\/4 retained · Measured · 0 lost\/cancelled/)
+    assert.match(fakeNodeText(panel), /LoAF render → paint p95/)
+    assert.match(fakeNodeText(panel), /4\/4 valid retained · Measured/)
+    assert.match(fakeNodeText(panel), /LoAF paint → presentation p95/)
+    assert.match(fakeNodeText(panel), /3\/3 valid retained · Measured/)
+    const loafPaintCard = findFakeNodes(panel, node => node.getAttribute('data-metric') === 'loaf-render-paint')[0]
+    assert.match(loafPaintCard.getAttribute('title'), /does not cover every frame/)
 
     const interactionsTab = findFakeNodes(panel, node => node.getAttribute('data-overlay-tab') === 'interactions')[0]
     assert.ok(interactionsTab)
@@ -2779,6 +2795,8 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     assert.match(fakeNodeText(chinesePanel), /整个文档周期/)
     assert.match(fakeNodeText(chinesePanel), /未观测到 未知/)
     assert.match(fakeNodeText(chinesePanel), /输入 → 下一次 rAF 代理 p95/)
+    assert.match(fakeNodeText(chinesePanel), /LoAF 渲染开始 → 绘制结束 p95/)
+    assert.match(fakeNodeText(chinesePanel), /LoAF 绘制结束 → 屏幕呈现 p95/)
     assert.match(fakeNodeText(chinesePanel), /不证明视觉更新、绘制、屏幕呈现或 GPU 已完成/)
     const chineseCoverageTab = findFakeNodes(chinesePanel, node => node.getAttribute('data-overlay-tab') === 'coverage')[0]
     chineseCoverageTab.click()
