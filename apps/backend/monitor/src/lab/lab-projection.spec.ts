@@ -76,6 +76,83 @@ function expandedMetric(overrides: Record<string, unknown> = {}) {
     }
 }
 
+function loafPaintMetric(overrides: Record<string, unknown> = {}) {
+    return expandedMetric({
+        family: 'renderingPipeline',
+        name: 'longAnimationFrameRenderStartToPaintMs',
+        stat: 'p95',
+        unit: 'ms',
+        metricId: 'pipeline.loaf-render-start-to-paint.p95',
+        budgetRefs: [],
+        ...overrides,
+    })
+}
+
+const ADDITIONAL_CATALOG_V2_METRICS = [
+    {
+        metricId: 'main.input-capture-to-next-raf-callback.count',
+        family: 'mainThread',
+        name: 'inputCaptureToNextRafCallbackCount',
+        stat: 'count',
+        unit: 'count',
+        capability: 'inputFrameScheduling',
+    },
+    {
+        metricId: 'main.input-capture-to-next-raf-callback.p95',
+        family: 'mainThread',
+        name: 'inputCaptureToNextRafCallbackMs',
+        stat: 'p95',
+        unit: 'ms',
+        capability: 'inputFrameScheduling',
+    },
+    {
+        metricId: 'interaction.loaf-first-ui-event-to-frame-end.count',
+        family: 'userOutcome',
+        name: 'longAnimationFrameFirstUIEventToFrameEndCount',
+        stat: 'count',
+        unit: 'count',
+        capability: 'loafFirstUIEventTimestamp',
+    },
+    {
+        metricId: 'interaction.loaf-first-ui-event-to-frame-end.p95',
+        family: 'userOutcome',
+        name: 'longAnimationFrameFirstUIEventToFrameEndMs',
+        stat: 'p95',
+        unit: 'ms',
+        capability: 'loafFirstUIEventTimestamp',
+    },
+    {
+        metricId: 'pipeline.loaf-attributed-forced-style-layout.count',
+        family: 'renderingPipeline',
+        name: 'longAnimationFrameAttributedForcedStyleAndLayoutCount',
+        stat: 'count',
+        unit: 'count',
+        capability: 'loafForcedStyleAndLayoutDuration',
+    },
+    {
+        metricId: 'pipeline.loaf-attributed-forced-style-layout.p95',
+        family: 'renderingPipeline',
+        name: 'longAnimationFrameAttributedForcedStyleAndLayoutMs',
+        stat: 'p95',
+        unit: 'ms',
+        capability: 'loafForcedStyleAndLayoutDuration',
+    },
+] as const
+
+function additionalCatalogV2Metric(definition: (typeof ADDITIONAL_CATALOG_V2_METRICS)[number], overrides: Record<string, unknown> = {}) {
+    return expandedMetric({
+        family: definition.family,
+        name: definition.name,
+        stat: definition.stat,
+        unit: definition.unit,
+        value: definition.stat === 'count' ? 2 : 12.5,
+        samples: 2,
+        metricId: definition.metricId,
+        budgetRefs: [],
+        ...overrides,
+    })
+}
+
 function actionWindow() {
     return {
         actionId: 'hero-hover-01',
@@ -169,6 +246,18 @@ function animationReportV2() {
     const legacy = animationReport()
     return {
         ...legacy,
+        lighthouse: {
+            ...legacy.lighthouse,
+            metrics: [
+                metric({
+                    family: 'lighthouse',
+                    name: 'LCP',
+                    stat: 'latest',
+                    value: 1_900,
+                    metricId: 'lighthouse.lcp.latest',
+                }),
+            ],
+        },
         scenario: {
             ...legacy.scenario,
             actions: [
@@ -184,6 +273,12 @@ function animationReportV2() {
         },
         attempts: legacy.attempts.map(attempt => ({
             ...attempt,
+            capabilities: {
+                ...attempt.capabilities,
+                loaf: true,
+                loafPaintTime: true,
+                loafPresentationTime: true,
+            },
             metrics: [
                 expandedMetric({
                     scope: { level: 'attempt', attemptId: 'attempt_1' },
@@ -528,6 +623,367 @@ describe('lab platform artifact projections', () => {
                 limitations: ['eligible-attempts-3'],
             })
         )
+    })
+
+    it('accepts additive catalog v2 metrics while keeping the v1 catalog closed', () => {
+        const report = animationReportV2()
+        report.measurementContract.metricCatalogVersion = 2
+        report.attempts[0]!.metrics = [
+            loafPaintMetric({
+                scope: { level: 'attempt', attemptId: 'attempt_1' },
+                aggregation: { population: 'frames', method: 'nearest-rank' },
+                limitations: [],
+            }),
+        ]
+        report.aggregateMetrics = [loafPaintMetric()]
+        report.findings = []
+
+        const parsed = parseAnimationReportArtifact(report)
+        expect(parsed.analysis?.measurementContract.metricCatalogVersion).toBe(2)
+        expect(parsed.analysis?.metrics).toEqual([
+            expect.objectContaining({
+                metricId: 'pipeline.loaf-render-start-to-paint.p95',
+                name: 'longAnimationFrameRenderStartToPaintMs',
+            }),
+        ])
+
+        const forgedV1 = animationReportV2()
+        forgedV1.attempts[0]!.metrics = [
+            loafPaintMetric({
+                scope: { level: 'attempt', attemptId: 'attempt_1' },
+                aggregation: { population: 'frames', method: 'nearest-rank' },
+                limitations: [],
+            }),
+        ]
+        forgedV1.aggregateMetrics = [loafPaintMetric()]
+        forgedV1.findings = []
+        expect(() => parseAnimationReportArtifact(forgedV1)).toThrow('requires metric catalog v2')
+    })
+
+    it('parses the input-frame and LoAF attribution metric families in catalog v2 without synthesizing unavailable values', () => {
+        const report = animationReportV2()
+        report.measurementContract.metricCatalogVersion = 2
+        Object.assign(report.attempts[0]!.capabilities, {
+            inputFrameScheduling: true,
+            loafFirstUIEventTimestamp: true,
+            loafForcedStyleAndLayoutDuration: true,
+        })
+        report.attempts[0]!.metrics = ADDITIONAL_CATALOG_V2_METRICS.map(definition =>
+            additionalCatalogV2Metric(definition, {
+                scope: { level: 'attempt', attemptId: 'attempt_1' },
+                aggregation: {
+                    population: definition.capability === 'inputFrameScheduling' ? 'events' : 'frames',
+                    method: definition.stat === 'count' ? 'count' : 'nearest-rank',
+                },
+                limitations: [],
+            })
+        )
+        report.aggregateMetrics = ADDITIONAL_CATALOG_V2_METRICS.map(definition => additionalCatalogV2Metric(definition))
+        report.findings = []
+
+        const parsed = parseAnimationReportArtifact(report)
+        expect(parsed.analysis?.metrics.map(item => item.metricId)).toEqual(
+            ADDITIONAL_CATALOG_V2_METRICS.map(definition => definition.metricId)
+        )
+        expect(parsed.compactSummary.metrics?.map(item => ('metricId' in item ? item.metricId : null))).toEqual(
+            ADDITIONAL_CATALOG_V2_METRICS.map(definition => definition.metricId)
+        )
+        expect(parsed.compactSummary.capabilities).toEqual(
+            expect.objectContaining({
+                inputFrameScheduling: true,
+                loafFirstUIEventTimestamp: true,
+                loafForcedStyleAndLayoutDuration: true,
+            })
+        )
+
+        const unavailable = animationReportV2()
+        unavailable.measurementContract.metricCatalogVersion = 2
+        Object.assign(unavailable.attempts[0]!.capabilities, {
+            inputFrameScheduling: false,
+            loafFirstUIEventTimestamp: null,
+            loafForcedStyleAndLayoutDuration: false,
+        })
+        unavailable.attempts[0]!.metrics = ADDITIONAL_CATALOG_V2_METRICS.map(definition =>
+            additionalCatalogV2Metric(definition, {
+                value: null,
+                samples: null,
+                status: definition.capability === 'loafFirstUIEventTimestamp' ? 'unknown' : 'unsupported',
+                evidenceLevel: 'unsupported-or-unknown',
+                scope: { level: 'attempt', attemptId: 'attempt_1' },
+                aggregation: {
+                    population: definition.capability === 'inputFrameScheduling' ? 'events' : 'frames',
+                    method: definition.stat === 'count' ? 'count' : 'nearest-rank',
+                },
+                limitations: ['capability-unavailable'],
+            })
+        )
+        unavailable.aggregateMetrics = ADDITIONAL_CATALOG_V2_METRICS.map(definition =>
+            additionalCatalogV2Metric(definition, {
+                value: null,
+                samples: null,
+                status: definition.capability === 'loafFirstUIEventTimestamp' ? 'unknown' : 'unsupported',
+                evidenceLevel: 'unsupported-or-unknown',
+                limitations: ['capability-unavailable'],
+            })
+        )
+        unavailable.findings = []
+
+        const parsedUnavailable = parseAnimationReportArtifact(unavailable)
+        expect(parsedUnavailable.analysis?.measurementContract.metricCatalogVersion).toBe(2)
+        expect(parsedUnavailable.compactSummary.metrics).toHaveLength(ADDITIONAL_CATALOG_V2_METRICS.length)
+        expect(parsedUnavailable.compactSummary.metrics?.every(metric => metric.value === null)).toBe(true)
+        expect(parsedUnavailable.compactSummary.capabilities).toEqual(
+            expect.objectContaining({
+                inputFrameScheduling: false,
+                loafFirstUIEventTimestamp: null,
+                loafForcedStyleAndLayoutDuration: false,
+            })
+        )
+    })
+
+    it.each(ADDITIONAL_CATALOG_V2_METRICS)('rejects $metricId when a report claims metric catalog v1', definition => {
+        const report = animationReportV2()
+        report.attempts[0]!.metrics = [
+            additionalCatalogV2Metric(definition, {
+                scope: { level: 'attempt', attemptId: 'attempt_1' },
+                aggregation: {
+                    population: definition.capability === 'inputFrameScheduling' ? 'events' : 'frames',
+                    method: definition.stat === 'count' ? 'count' : 'nearest-rank',
+                },
+                limitations: [],
+            }),
+        ]
+        report.aggregateMetrics = []
+        report.findings = []
+
+        expect(() => parseAnimationReportArtifact(report)).toThrow('requires metric catalog v2')
+    })
+
+    it.each(ADDITIONAL_CATALOG_V2_METRICS)('rejects $metricId when its capability contradicts the measured status', definition => {
+        const report = animationReportV2()
+        report.measurementContract.metricCatalogVersion = 2
+        ;(report.attempts[0]!.capabilities as Record<string, boolean | null>)[definition.capability] = false
+        report.attempts[0]!.metrics = [
+            additionalCatalogV2Metric(definition, {
+                scope: { level: 'attempt', attemptId: 'attempt_1' },
+                aggregation: {
+                    population: definition.capability === 'inputFrameScheduling' ? 'events' : 'frames',
+                    method: definition.stat === 'count' ? 'count' : 'nearest-rank',
+                },
+                limitations: [],
+            }),
+        ]
+        report.aggregateMetrics = []
+        report.findings = []
+
+        expect(() => parseAnimationReportArtifact(report)).toThrow(`${definition.capability} capability conflicts`)
+    })
+
+    it('rejects nullable input-frame scheduling and not-observed counts for a supported capability', () => {
+        const definition = ADDITIONAL_CATALOG_V2_METRICS[0]
+        const report = animationReportV2()
+        report.measurementContract.metricCatalogVersion = 2
+        const reportCapabilities = report.attempts[0]!.capabilities as Record<string, boolean | null>
+        reportCapabilities.inputFrameScheduling = null
+        report.attempts[0]!.metrics = [
+            additionalCatalogV2Metric(definition, {
+                value: null,
+                samples: 0,
+                status: 'unknown',
+                evidenceLevel: 'unsupported-or-unknown',
+                scope: { level: 'attempt', attemptId: 'attempt_1' },
+                aggregation: { population: 'events', method: 'count' },
+                limitations: ['input-frame-scheduling-unknown'],
+            }),
+        ]
+        report.aggregateMetrics = []
+        report.findings = []
+        expect(() => parseAnimationReportArtifact(report)).toThrow('inputFrameScheduling must be a boolean')
+
+        reportCapabilities.inputFrameScheduling = true
+        report.attempts[0]!.metrics[0]!.status = 'not-observed'
+        report.attempts[0]!.metrics[0]!.evidenceLevel = 'controlled-lab-measurement'
+        expect(() => parseAnimationReportArtifact(report)).toThrow('inputFrameScheduling capability conflicts')
+
+        report.attempts[0]!.metrics = [
+            additionalCatalogV2Metric(ADDITIONAL_CATALOG_V2_METRICS[1], {
+                value: null,
+                samples: 0,
+                status: 'not-observed',
+                scope: { level: 'attempt', attemptId: 'attempt_1' },
+                aggregation: { population: 'events', method: 'nearest-rank' },
+                limitations: ['no-retained-input-frame-samples'],
+            }),
+        ]
+        expect(parseAnimationReportArtifact(report).analysis?.measurementContract.metricCatalogVersion).toBe(2)
+    })
+
+    it('accepts compact cataloged Lighthouse metrics emitted by the runner and rejects forged tuples', () => {
+        const report = animationReportV2()
+        expect(parseAnimationReportArtifact(report).lighthouse?.metrics[0]).toEqual(
+            expect.objectContaining({ id: 'lighthouse.LCP.latest', value: 1_900 })
+        )
+
+        report.lighthouse.metrics[0]!.name = 'forgedLcp'
+        expect(() => parseAnimationReportArtifact(report)).toThrow('does not match the canonical metric catalog')
+    })
+
+    it('requires a closed Lighthouse metric id and rejects non-Lighthouse catalog entries', () => {
+        const missingId = animationReportV2()
+        delete (missingId.lighthouse.metrics[0] as Record<string, unknown>).metricId
+        expect(() => parseAnimationReportArtifact(missingId)).toThrow('metricId is required')
+
+        const foreignMetric = animationReportV2()
+        Object.assign(foreignMetric.lighthouse.metrics[0] as Record<string, unknown>, {
+            family: 'frameCadence',
+            name: 'frameDurationMs',
+            stat: 'p95',
+            unit: 'ms',
+            value: 18.4,
+            metricId: 'frame.duration.p95',
+        })
+        expect(() => parseAnimationReportArtifact(foreignMetric)).toThrow('is not a Lighthouse metric')
+    })
+
+    it('rejects expanded generic metrics in the compact Lighthouse section', () => {
+        const report = animationReportV2()
+        report.lighthouse.metrics = [
+            loafPaintMetric({
+                scope: { level: 'run' },
+                aggregation: { population: 'frames', method: 'nearest-rank' },
+                limitations: [],
+            }),
+        ]
+        expect(() => parseAnimationReportArtifact(report)).toThrow('must use the compact Lighthouse metric shape')
+    })
+
+    it('rejects LoAF paint metrics that contradict attempt capabilities', () => {
+        const report = animationReportV2()
+        report.measurementContract.metricCatalogVersion = 2
+        report.attempts[0]!.metrics = [
+            loafPaintMetric({
+                value: 0,
+                samples: 0,
+                scope: { level: 'attempt', attemptId: 'attempt_1' },
+                aggregation: { population: 'frames', method: 'nearest-rank' },
+                limitations: [],
+            }),
+        ]
+        report.aggregateMetrics = [loafPaintMetric({ value: 0, samples: 0 })]
+        report.findings = []
+        report.attempts[0]!.capabilities.loafPaintTime = false
+        report.attempts[0]!.capabilities.loafPresentationTime = false
+
+        expect(() => parseAnimationReportArtifact(report)).toThrow('loafPaintTime capability conflicts')
+
+        report.attempts[0]!.metrics[0]!.status = 'unsupported'
+        ;(report.attempts[0]!.metrics[0] as Record<string, unknown>).value = null
+        report.attempts[0]!.metrics[0]!.evidenceLevel = 'unsupported-or-unknown'
+        Object.assign(report.aggregateMetrics[0] as Record<string, unknown>, {
+            value: null,
+            samples: null,
+            status: 'unsupported',
+            evidenceLevel: 'unsupported-or-unknown',
+        })
+        expect(parseAnimationReportArtifact(report).analysis?.measurementContract.metricCatalogVersion).toBe(2)
+    })
+
+    it('rejects unavailable compact Lighthouse metrics with a numeric value', () => {
+        const report = animationReportV2()
+        report.lighthouse.metrics[0]!.status = 'unsupported'
+        expect(() => parseAnimationReportArtifact(report)).toThrow('unavailable status requires a null value')
+    })
+
+    it('rejects metric statuses that contradict their evidence level', () => {
+        const expanded = animationReportV2()
+        expanded.measurementContract.metricCatalogVersion = 2
+        expanded.attempts[0]!.metrics = [
+            loafPaintMetric({
+                value: null,
+                samples: null,
+                status: 'unsupported',
+                evidenceLevel: 'controlled-lab-measurement',
+                scope: { level: 'attempt', attemptId: 'attempt_1' },
+                aggregation: { population: 'frames', method: 'nearest-rank' },
+                limitations: ['capability-unavailable'],
+            }),
+        ]
+        expanded.aggregateMetrics = []
+        expanded.findings = []
+        expanded.attempts[0]!.capabilities.loafPaintTime = false
+        expanded.attempts[0]!.capabilities.loafPresentationTime = false
+        expect(() => parseAnimationReportArtifact(expanded)).toThrow('status conflicts with evidenceLevel')
+
+        const compact = animationReportV2()
+        compact.lighthouse.metrics[0]!.status = 'measured'
+        compact.lighthouse.metrics[0]!.evidenceLevel = 'unsupported-or-unknown'
+        expect(() => parseAnimationReportArtifact(compact)).toThrow('status conflicts with evidenceLevel')
+    })
+
+    it('accepts the legacy catalog v1 unsupported evidence shape', () => {
+        const report = animationReportV2()
+        Object.assign(report.attempts[0]!.metrics[0] as Record<string, unknown>, {
+            value: null,
+            samples: null,
+            status: 'unsupported',
+            evidenceLevel: 'controlled-lab-measurement',
+        })
+        report.aggregateMetrics = []
+        report.findings = []
+
+        expect(parseAnimationReportArtifact(report).analysis?.measurementContract.metricCatalogVersion).toBe(1)
+    })
+
+    it('rejects duplicate aggregate scope identities and aggregate capabilities forged above measured attempts', () => {
+        const duplicate = animationReportV2()
+        duplicate.aggregateMetrics.push({ ...duplicate.aggregateMetrics[0]! })
+        expect(() => parseAnimationReportArtifact(duplicate)).toThrow('duplicate scope identity')
+
+        const forged = animationReportV2()
+        forged.measurementContract.metricCatalogVersion = 2
+        Object.assign(forged.attempts[0]!.capabilities, { inputFrameScheduling: false })
+        forged.attempts[0]!.metrics = [
+            additionalCatalogV2Metric(ADDITIONAL_CATALOG_V2_METRICS[0], {
+                value: null,
+                samples: null,
+                status: 'unsupported',
+                evidenceLevel: 'unsupported-or-unknown',
+                scope: { level: 'attempt', attemptId: 'attempt_1' },
+                aggregation: { population: 'events', method: 'count' },
+                limitations: ['capability-unavailable'],
+            }),
+        ]
+        forged.aggregateMetrics = [additionalCatalogV2Metric(ADDITIONAL_CATALOG_V2_METRICS[0])]
+        forged.findings = []
+        expect(() => parseAnimationReportArtifact(forged)).toThrow('conflicts with unsupported capabilities')
+    })
+
+    it('accepts capability-supported unknown metrics only when cross-document coverage is explicit', () => {
+        const report = animationReportV2()
+        report.measurementContract.metricCatalogVersion = 2
+        Object.assign(report.attempts[0]!.capabilities, { inputFrameScheduling: true })
+        const unknownMetric = additionalCatalogV2Metric(ADDITIONAL_CATALOG_V2_METRICS[1], {
+            value: null,
+            samples: 0,
+            status: 'unknown',
+            evidenceLevel: 'unsupported-or-unknown',
+            scope: { level: 'attempt', attemptId: 'attempt_1' },
+            aggregation: { population: 'events', method: 'nearest-rank' },
+            limitations: ['cross-document-sampling-partial'],
+        })
+        report.attempts[0]!.metrics = [unknownMetric]
+        report.aggregateMetrics = [
+            {
+                ...unknownMetric,
+                scope: { level: 'run' },
+                aggregation: { population: 'attempts', method: 'median-of-attempts' },
+            },
+        ]
+        report.findings = []
+        expect(parseAnimationReportArtifact(report).analysis?.metrics[0]?.status).toBe('unknown')
+
+        report.attempts[0]!.metrics[0]!.limitations = []
+        expect(() => parseAnimationReportArtifact(report)).toThrow('inputFrameScheduling capability conflicts')
     })
 
     it.each(['selector', 'DOM', 'text', 'url', 'credentials'])('rejects nested v2 privacy field %s', field => {

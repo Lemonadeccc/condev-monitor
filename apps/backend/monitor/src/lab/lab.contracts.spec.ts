@@ -168,6 +168,32 @@ describe('animation lab contracts', () => {
                 evidenceRefs: ['runtime-browser'],
             })
         )
+        const parsedCatalogV2 = parseLabRunSummary({
+            metrics: [
+                {
+                    family: 'renderingPipeline',
+                    name: 'longAnimationFramePaintToPresentationMs',
+                    stat: 'p95',
+                    unit: 'ms',
+                    value: null,
+                    samples: 0,
+                    status: 'not-observed',
+                    evidenceLevel: 'controlled-lab-measurement',
+                    metricId: 'pipeline.loaf-paint-to-presentation.p95',
+                    scope: { level: 'run' },
+                    aggregation: { population: 'attempts', method: 'median-of-attempts' },
+                    budgetRefs: [],
+                    evidenceRefs: ['runtime-browser'],
+                    limitations: ['loaf-presentation-time-null'],
+                },
+            ],
+        })
+        expect(parsedCatalogV2.metrics?.[0]).toEqual(
+            expect.objectContaining({
+                metricId: 'pipeline.loaf-paint-to-presentation.p95',
+                status: 'not-observed',
+            })
+        )
         expect(() =>
             parseLabRunSummary({
                 metrics: [
@@ -186,6 +212,59 @@ describe('animation lab contracts', () => {
                 ],
             })
         ).toThrow(BadRequestException)
+    })
+
+    it('accepts only canonical tuples for the catalog-v2 input-frame and LoAF attribution summary metrics', () => {
+        const tuples = [
+            ['main.input-capture-to-next-raf-callback.count', 'mainThread', 'inputCaptureToNextRafCallbackCount', 'count', 'count'],
+            ['main.input-capture-to-next-raf-callback.p95', 'mainThread', 'inputCaptureToNextRafCallbackMs', 'p95', 'ms'],
+            [
+                'interaction.loaf-first-ui-event-to-frame-end.count',
+                'userOutcome',
+                'longAnimationFrameFirstUIEventToFrameEndCount',
+                'count',
+                'count',
+            ],
+            ['interaction.loaf-first-ui-event-to-frame-end.p95', 'userOutcome', 'longAnimationFrameFirstUIEventToFrameEndMs', 'p95', 'ms'],
+            [
+                'pipeline.loaf-attributed-forced-style-layout.count',
+                'renderingPipeline',
+                'longAnimationFrameAttributedForcedStyleAndLayoutCount',
+                'count',
+                'count',
+            ],
+            [
+                'pipeline.loaf-attributed-forced-style-layout.p95',
+                'renderingPipeline',
+                'longAnimationFrameAttributedForcedStyleAndLayoutMs',
+                'p95',
+                'ms',
+            ],
+        ] as const
+        const metrics = tuples.map(([metricId, family, name, stat, unit]) => ({
+            family,
+            name,
+            stat,
+            unit,
+            value: stat === 'count' ? 2 : 12.5,
+            samples: 2,
+            status: 'measured',
+            evidenceLevel: 'controlled-lab-measurement',
+            metricId,
+            scope: { level: 'run' },
+            aggregation: { population: 'attempts', method: 'median-of-attempts' },
+            budgetRefs: [],
+            evidenceRefs: ['runtime-browser'],
+            limitations: [],
+        }))
+
+        expect(parseLabRunSummary({ metrics }).metrics?.map(metric => ('metricId' in metric ? metric.metricId : null))).toEqual(
+            tuples.map(([metricId]) => metricId)
+        )
+
+        const forged: Array<Record<string, unknown>> = metrics.map(metric => ({ ...metric }))
+        forged[0]!.name = 'inputCaptureToNextAnimationFrameMs'
+        expect(() => parseLabRunSummary({ metrics: forged })).toThrow('does not match the canonical metric catalog')
     })
 
     it('requires raw streaming transport, an integrity digest and bounded idempotency metadata', () => {

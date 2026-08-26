@@ -128,6 +128,7 @@ type MetricStat = (typeof METRIC_STATS)[number]
 type MetricUnit = (typeof METRIC_UNITS)[number]
 type MetricStatus = (typeof METRIC_STATUSES)[number]
 type EvidenceLevel = (typeof EVIDENCE_LEVELS)[number]
+type MetricCatalogVersion = 1 | 2
 
 export type LabMetricScopeV2Projection = {
     level: MetricScopeLevel
@@ -224,7 +225,7 @@ export type AnimationLabSemanticsV2 = {
         source: (typeof MEASUREMENT_SOURCES)[number]
         confidence: EvidenceConfidence
         budgetRef: LabBudgetRefV1Projection
-        metricCatalogVersion: 1
+        metricCatalogVersion: MetricCatalogVersion
     }
     scenarioActions: ScenarioAction[]
     actionWindows: ActionWindow[]
@@ -387,7 +388,9 @@ function measurementContract(value: unknown): AnimationLabSemanticsV2['measureme
     const confidence = enumeration(raw.confidence, `${label}.confidence`, CONFIDENCES)
     if (source === 'explicit' && confidence !== 'explicit')
         throw new BadRequestException(`${label} explicit source requires explicit confidence`)
-    if (raw.metricCatalogVersion !== 1) throw new BadRequestException(`Invalid ${label}.metricCatalogVersion`)
+    if (raw.metricCatalogVersion !== 1 && raw.metricCatalogVersion !== 2) {
+        throw new BadRequestException(`Invalid ${label}.metricCatalogVersion`)
+    }
     return {
         contractVersion: 2,
         expectedHz,
@@ -395,7 +398,7 @@ function measurementContract(value: unknown): AnimationLabSemanticsV2['measureme
         source,
         confidence,
         budgetRef: budgetRef(raw.budgetRef, `${label}.budgetRef`, false),
-        metricCatalogVersion: 1,
+        metricCatalogVersion: raw.metricCatalogVersion,
     }
 }
 
@@ -463,9 +466,60 @@ const METRIC_CATALOG = new Map<string, readonly [MetricFamily, string, MetricSta
     ['lighthouse.speed-index.latest', ['lighthouse', 'speedIndex', 'latest', 'ms']],
     ['lighthouse.total-blocking-time.latest', ['lighthouse', 'totalBlockingTime', 'latest', 'ms']],
     ['lighthouse.tti.latest', ['lighthouse', 'timeToInteractive', 'latest', 'ms']],
+    ['pipeline.loaf-render-start-to-paint.count', ['renderingPipeline', 'longAnimationFrameRenderStartToPaintCount', 'count', 'count']],
+    ['pipeline.loaf-render-start-to-paint.p95', ['renderingPipeline', 'longAnimationFrameRenderStartToPaintMs', 'p95', 'ms']],
+    ['pipeline.loaf-paint-to-presentation.count', ['renderingPipeline', 'longAnimationFramePaintToPresentationCount', 'count', 'count']],
+    ['pipeline.loaf-paint-to-presentation.p95', ['renderingPipeline', 'longAnimationFramePaintToPresentationMs', 'p95', 'ms']],
+    ['main.input-capture-to-next-raf-callback.count', ['mainThread', 'inputCaptureToNextRafCallbackCount', 'count', 'count']],
+    ['main.input-capture-to-next-raf-callback.p95', ['mainThread', 'inputCaptureToNextRafCallbackMs', 'p95', 'ms']],
+    [
+        'interaction.loaf-first-ui-event-to-frame-end.count',
+        ['userOutcome', 'longAnimationFrameFirstUIEventToFrameEndCount', 'count', 'count'],
+    ],
+    ['interaction.loaf-first-ui-event-to-frame-end.p95', ['userOutcome', 'longAnimationFrameFirstUIEventToFrameEndMs', 'p95', 'ms']],
+    [
+        'pipeline.loaf-attributed-forced-style-layout.count',
+        ['renderingPipeline', 'longAnimationFrameAttributedForcedStyleAndLayoutCount', 'count', 'count'],
+    ],
+    [
+        'pipeline.loaf-attributed-forced-style-layout.p95',
+        ['renderingPipeline', 'longAnimationFrameAttributedForcedStyleAndLayoutMs', 'p95', 'ms'],
+    ],
 ])
 
-export function parseAnimationLabMetricV2(value: unknown, label: string): AnimationLabMetricV2Projection {
+const METRIC_CATALOG_V2_ONLY = new Set([
+    'pipeline.loaf-render-start-to-paint.count',
+    'pipeline.loaf-render-start-to-paint.p95',
+    'pipeline.loaf-paint-to-presentation.count',
+    'pipeline.loaf-paint-to-presentation.p95',
+    'main.input-capture-to-next-raf-callback.count',
+    'main.input-capture-to-next-raf-callback.p95',
+    'interaction.loaf-first-ui-event-to-frame-end.count',
+    'interaction.loaf-first-ui-event-to-frame-end.p95',
+    'pipeline.loaf-attributed-forced-style-layout.count',
+    'pipeline.loaf-attributed-forced-style-layout.p95',
+])
+
+export function assertAnimationLabMetricCatalogTupleV2(
+    value: { metricId: string; family: string; name: string; stat: string; unit: string },
+    label: string,
+    metricCatalogVersion: MetricCatalogVersion = 2
+): void {
+    const catalog = METRIC_CATALOG.get(value.metricId)
+    if (!catalog) throw new BadRequestException(`${label} references an unknown metricId`)
+    if (metricCatalogVersion === 1 && METRIC_CATALOG_V2_ONLY.has(value.metricId)) {
+        throw new BadRequestException(`${label} requires metric catalog v2`)
+    }
+    if (value.family !== catalog[0] || value.name !== catalog[1] || value.stat !== catalog[2] || value.unit !== catalog[3]) {
+        throw new BadRequestException(`${label} does not match the canonical metric catalog`)
+    }
+}
+
+export function parseAnimationLabMetricV2(
+    value: unknown,
+    label: string,
+    metricCatalogVersion: MetricCatalogVersion = 2
+): AnimationLabMetricV2Projection {
     const raw = record(value, label)
     exactKeys(
         raw,
@@ -488,15 +542,11 @@ export function parseAnimationLabMetricV2(value: unknown, label: string): Animat
         label
     )
     const metricId = stringToken(raw.metricId, `${label}.metricId`)
-    const catalog = METRIC_CATALOG.get(metricId)
-    if (!catalog) throw new BadRequestException(`${label} references an unknown metricId`)
     const family = enumeration(raw.family, `${label}.family`, METRIC_FAMILIES)
     const name = stringToken(raw.name, `${label}.name`)
     const stat = enumeration(raw.stat, `${label}.stat`, METRIC_STATS)
     const unit = enumeration(raw.unit, `${label}.unit`, METRIC_UNITS)
-    if (family !== catalog[0] || name !== catalog[1] || stat !== catalog[2] || unit !== catalog[3]) {
-        throw new BadRequestException(`${label} does not match the canonical metric catalog`)
-    }
+    assertAnimationLabMetricCatalogTupleV2({ metricId, family, name, stat, unit }, label, metricCatalogVersion)
     const status = enumeration(raw.status, `${label}.status`, METRIC_STATUSES)
     const valueNumber = nullableFinite(raw.value, `${label}.value`, 0, Number.MAX_VALUE)
     if ((status === 'measured' || status === 'partial') && valueNumber === null) {
@@ -504,6 +554,14 @@ export function parseAnimationLabMetricV2(value: unknown, label: string): Animat
     }
     if (status !== 'measured' && status !== 'partial' && valueNumber !== null) {
         throw new BadRequestException(`${label} unavailable status requires a null value`)
+    }
+    const evidenceLevel = enumeration(raw.evidenceLevel, `${label}.evidenceLevel`, EVIDENCE_LEVELS)
+    const unavailableEvidence = status === 'unsupported' || status === 'unknown'
+    if (
+        (!unavailableEvidence && evidenceLevel === 'unsupported-or-unknown') ||
+        (metricCatalogVersion === 2 && unavailableEvidence !== (evidenceLevel === 'unsupported-or-unknown'))
+    ) {
+        throw new BadRequestException(`${label} status conflicts with evidenceLevel`)
     }
     const aggregationRaw = record(raw.aggregation, `${label}.aggregation`)
     exactKeys(aggregationRaw, ['population', 'method'], `${label}.aggregation`)
@@ -535,7 +593,7 @@ export function parseAnimationLabMetricV2(value: unknown, label: string): Animat
         value: valueNumber,
         samples: raw.samples === null ? null : integer(raw.samples, `${label}.samples`, 0, 10_000_000),
         status,
-        evidenceLevel: enumeration(raw.evidenceLevel, `${label}.evidenceLevel`, EVIDENCE_LEVELS),
+        evidenceLevel,
         metricId,
         scope,
         aggregation,
@@ -671,6 +729,8 @@ export function parseAnimationLabSemanticsV2FromReport(reportValue: RecordValue)
         findings: reportValue.findings,
     }
     rejectForbiddenKeys(semanticSources)
+    const parsedMeasurementContract = measurementContract(reportValue.measurementContract)
+    const metricCatalogVersion = parsedMeasurementContract.metricCatalogVersion
 
     const actions = boundedArray(scenarioRaw.actions, 'animation-report.scenario.actions', MAX_ACTIONS).map(scenarioAction)
     if (actions.length === 0) throw new BadRequestException('animation-report.scenario.actions must not be empty')
@@ -704,7 +764,11 @@ export function parseAnimationLabSemanticsV2FromReport(reportValue: RecordValue)
                 const metricRaw = record(metric, `animation-report.attempts[${attemptIndex}].metrics[${metricIndex}]`)
                 if (!hasExpandedMetricFields(metricRaw)) return
                 attemptMetrics.push({
-                    metric: parseAnimationLabMetricV2(metricRaw, `animation-report.attempts[${attemptIndex}].metrics[${metricIndex}]`),
+                    metric: parseAnimationLabMetricV2(
+                        metricRaw,
+                        `animation-report.attempts[${attemptIndex}].metrics[${metricIndex}]`,
+                        metricCatalogVersion
+                    ),
                     attemptId,
                 })
             }
@@ -739,7 +803,9 @@ export function parseAnimationLabSemanticsV2FromReport(reportValue: RecordValue)
     const parsedMetrics = boundedArray(reportValue.aggregateMetrics, 'animation-report.aggregateMetrics', MAX_METRICS).flatMap(
         (item, index) => {
             const raw = record(item, `animation-report.aggregateMetrics[${index}]`)
-            return hasExpandedMetricFields(raw) ? [parseAnimationLabMetricV2(raw, `animation-report.aggregateMetrics[${index}]`)] : []
+            return hasExpandedMetricFields(raw)
+                ? [parseAnimationLabMetricV2(raw, `animation-report.aggregateMetrics[${index}]`, metricCatalogVersion)]
+                : []
         }
     )
     const technologies = boundedArray(reportValue.technologyEvidence, 'animation-report.technologyEvidence', MAX_EVIDENCE).map(
@@ -798,7 +864,7 @@ export function parseAnimationLabSemanticsV2FromReport(reportValue: RecordValue)
 
     return {
         semanticsVersion: 2,
-        measurementContract: measurementContract(reportValue.measurementContract),
+        measurementContract: parsedMeasurementContract,
         scenarioActions: actions,
         actionWindows: windows,
         metrics: parsedMetrics,
