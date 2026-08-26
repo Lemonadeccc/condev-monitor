@@ -2,8 +2,9 @@
  * Animation RUM wire contract v1.
  *
  * Keep this file dependency-free: the DSN edge and Kafka worker each carry the
- * same validator so an untrusted Kafka producer cannot bypass edge validation.
- * Changes must be mirrored in event-worker/src/shared/animation-rum-v1.ts.
+ * same validator semantics so an untrusted Kafka producer cannot bypass edge
+ * validation. Contract changes must keep the shared golden corpus in
+ * apps/backend/shared/animation-rum-v1.golden.ts green at both boundaries.
  */
 
 export const ANIMATION_RUM_EVENT_TYPE = 'animation_rum' as const

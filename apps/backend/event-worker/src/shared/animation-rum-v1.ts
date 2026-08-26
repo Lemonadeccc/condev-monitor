@@ -1,4 +1,8 @@
-/** Kafka trust-boundary validator for the Animation RUM v1 normalized report. */
+/**
+ * Kafka trust-boundary validator for the Animation RUM v1 normalized report.
+ * Keep its decisions aligned with the DSN validator through the shared golden
+ * corpus in apps/backend/shared/animation-rum-v1.golden.ts.
+ */
 
 export const ANIMATION_RUM_FAMILIES = [
     'userOutcome',

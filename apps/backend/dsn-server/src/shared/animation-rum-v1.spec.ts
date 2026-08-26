@@ -1,3 +1,4 @@
+import { ANIMATION_RUM_V1_GOLDEN_CASES } from '../../../shared/animation-rum-v1.golden'
 import { ANIMATION_RUM_FAMILIES, validateAnimationRumV1 } from './animation-rum-v1'
 
 function report(): Record<string, unknown> {
@@ -40,6 +41,10 @@ function report(): Record<string, unknown> {
 }
 
 describe('Animation RUM v1 validator', () => {
+    it.each(ANIMATION_RUM_V1_GOLDEN_CASES)('matches the shared golden decision for $name', ({ accepted, payload }) => {
+        expect(validateAnimationRumV1(payload()).ok).toBe(accepted)
+    })
+
     it('accepts a valid closed report and tracking wrapper with matching transport id', () => {
         expect(validateAnimationRumV1(report())).toEqual(expect.objectContaining({ ok: true }))
         expect(
