@@ -52,6 +52,8 @@ function sanitizedEntry(entry: PerformanceRuntimeEntry): SanitizedPerformanceEnt
             ...(entry.blockingDuration === null ? {} : { blockingDuration: entry.blockingDuration }),
             ...(entry.renderStart === null ? {} : { renderStart: entry.renderStart }),
             ...(entry.styleAndLayoutStart === null ? {} : { styleAndLayoutStart: entry.styleAndLayoutStart }),
+            ...('paintTime' in entry ? { paintTime: entry.paintTime ?? null } : {}),
+            ...('presentationTime' in entry ? { presentationTime: entry.presentationTime ?? null } : {}),
         }
     }
     if (entry.entryType === 'event') {

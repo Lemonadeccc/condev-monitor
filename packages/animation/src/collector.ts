@@ -132,6 +132,8 @@ interface LoafSample {
     duration: number
     blockingDuration?: number
     styleAndLayoutTailDuration?: number
+    renderStartToPaintDuration?: number
+    paintToPresentationDuration?: number
 }
 
 interface EventSample {
@@ -709,6 +711,8 @@ export class AnimationCollector {
     private reducedMotionChanges = 0
     private finalSnapshot: AnimationSnapshot | null = null
     private loafCapability = emptyCapability('collector not started')
+    private loafPaintTimeCapability = emptyCapability('collector not started')
+    private loafPresentationTimeCapability = emptyCapability('collector not started')
     private longTaskCapability = emptyCapability('collector not started')
     private eventCapability = emptyCapability('collector not started')
     private resourceCapability = emptyCapability('collector not started')
@@ -729,6 +733,10 @@ export class AnimationCollector {
     private continuousQualityRejectedCount = 0
     private interactionMotionQualitySampleCount = 0
     private loafTotalDuration = 0
+    private loafPaintTimeExposedCount = 0
+    private loafPresentationTimeExposedCount = 0
+    private loafRenderStartToPaintObservedCount = 0
+    private loafPaintToPresentationObservedCount = 0
     private longTaskTotalDuration = 0
     private eventTotalDuration = 0
     private readonly resourceCounters = emptyResourceCounters()
@@ -805,6 +813,14 @@ export class AnimationCollector {
                 })
             )
             this.loafCapability = this.registerObserver('long-animation-frame', entries => this.ingestLoaf(entries))
+            this.loafPaintTimeCapability =
+                this.loafCapability.state === 'unsupported'
+                    ? { ...this.loafCapability }
+                    : emptyCapability('LoAF paintTime field not observed')
+            this.loafPresentationTimeCapability =
+                this.loafCapability.state === 'unsupported'
+                    ? { ...this.loafCapability }
+                    : emptyCapability('LoAF presentationTime field not observed')
             this.longTaskCapability = this.registerObserver('longtask', entries => this.ingestLongTasks(entries))
             this.eventCapability = this.registerObserver('event', entries => this.ingestEventTiming(entries))
             this.resourceCapability = this.registerObserver('resource', entries => this.ingestResourceTiming(entries))
@@ -1165,6 +1181,7 @@ export class AnimationCollector {
             const windowEntry = this.captureWindowEntry(entry)
             if (!windowEntry) continue
             const { originalStartTime, startTime, endTime, duration, clippedAtStart } = windowEntry
+            this.observeLoafPaintTimingCapabilities(entry)
             const styleAndLayoutStart = entry.styleAndLayoutStart
             // The LoAF API uses zero when this phase boundary is unavailable.
             // Fail closed for zero/non-finite/out-of-entry values instead of
@@ -1177,6 +1194,23 @@ export class AnimationCollector {
                 styleAndLayoutStart < endTime
                     ? Math.max(0, endTime - Math.max(startTime, styleAndLayoutStart))
                     : undefined
+            const paintTime = entry.paintTime
+            const renderStart = entry.renderStart
+            const validPaintTime = finiteInRange(paintTime, 0, 1e15) && paintTime > 0 && paintTime >= startTime && paintTime <= endTime
+            const validRenderStart =
+                finiteInRange(renderStart, 0, 1e15) && renderStart > 0 && renderStart >= startTime && renderStart <= endTime
+            const renderStartToPaintDuration =
+                validPaintTime && validRenderStart && paintTime >= renderStart ? paintTime - renderStart : undefined
+            const presentationTime = entry.presentationTime
+            const validPresentationTime = finiteInRange(presentationTime, 0, 1e15) && presentationTime > 0 && presentationTime >= startTime
+            const paintToPresentationDuration =
+                validPaintTime && validPresentationTime && presentationTime >= paintTime ? presentationTime - paintTime : undefined
+            if (renderStartToPaintDuration !== undefined) {
+                this.loafRenderStartToPaintObservedCount = clampCount(this.loafRenderStartToPaintObservedCount)
+            }
+            if (paintToPresentationDuration !== undefined) {
+                this.loafPaintToPresentationObservedCount = clampCount(this.loafPaintToPresentationObservedCount)
+            }
             this.loafSamples.push({
                 startTime,
                 endTime,
@@ -1185,11 +1219,36 @@ export class AnimationCollector {
                     ? { blockingDuration: entry.blockingDuration }
                     : {}),
                 ...(styleAndLayoutTailDuration !== undefined ? { styleAndLayoutTailDuration } : {}),
+                ...(renderStartToPaintDuration !== undefined ? { renderStartToPaintDuration } : {}),
+                ...(paintToPresentationDuration !== undefined ? { paintToPresentationDuration } : {}),
             })
             this.loafTotalDuration = Math.min(1e15, this.loafTotalDuration + duration)
             if (this.loafCapability.state === 'unknown') this.loafCapability.state = 'supported'
             this.loafCapability.observed = true
         }
+    }
+
+    private observeLoafPaintTimingCapabilities(entry: SanitizedPerformanceEntry): void {
+        const observeField = (field: 'paintTime' | 'presentationTime', current: CapabilityEvidence): CapabilityEvidence => {
+            if (field in entry) {
+                if (field === 'paintTime') this.loafPaintTimeExposedCount = clampCount(this.loafPaintTimeExposedCount)
+                else this.loafPresentationTimeExposedCount = clampCount(this.loafPresentationTimeExposedCount)
+                return {
+                    state: 'supported',
+                    observed: true,
+                    buffered: this.loafCapability.buffered,
+                }
+            }
+            if (current.state === 'supported') return current
+            return {
+                state: 'unsupported',
+                observed: false,
+                buffered: this.loafCapability.buffered,
+                reason: `accepted LoAF entries do not expose ${field}`,
+            }
+        }
+        this.loafPaintTimeCapability = observeField('paintTime', this.loafPaintTimeCapability)
+        this.loafPresentationTimeCapability = observeField('presentationTime', this.loafPresentationTimeCapability)
     }
 
     private ingestLongTasks(entries: readonly SanitizedPerformanceEntry[]): void {
@@ -1461,6 +1520,28 @@ export class AnimationCollector {
             styleAndLayoutTailDuration: durationStatistics(
                 samples.flatMap(sample => (sample.styleAndLayoutTailDuration === undefined ? [] : [sample.styleAndLayoutTailDuration]))
             ),
+            paintTiming: {
+                paintTimeCapability: { ...this.loafPaintTimeCapability },
+                presentationTimeCapability: { ...this.loafPresentationTimeCapability },
+                paintTimeExposedCount:
+                    base.totalObservedCount === null || base.totalObservedCount === 0 ? null : this.loafPaintTimeExposedCount,
+                presentationTimeExposedCount:
+                    base.totalObservedCount === null || base.totalObservedCount === 0 ? null : this.loafPresentationTimeExposedCount,
+                renderStartToPaintTotalObservedCount:
+                    this.loafPaintTimeCapability.state === 'supported' ? this.loafRenderStartToPaintObservedCount : null,
+                paintToPresentationTotalObservedCount:
+                    this.loafPaintTimeCapability.state === 'supported' && this.loafPresentationTimeCapability.state === 'supported'
+                        ? this.loafPaintToPresentationObservedCount
+                        : null,
+                renderStartToPaintDuration: durationStatistics(
+                    samples.flatMap(sample => (sample.renderStartToPaintDuration === undefined ? [] : [sample.renderStartToPaintDuration]))
+                ),
+                paintToPresentationDuration: durationStatistics(
+                    samples.flatMap(sample =>
+                        sample.paintToPresentationDuration === undefined ? [] : [sample.paintToPresentationDuration]
+                    )
+                ),
+            },
         }
     }
 
@@ -1565,8 +1646,8 @@ export class AnimationCollector {
             reducedMotionPreference: this.reducedMotion === null ? null : true,
             documentAnimationsInspection: null,
             visibilityLifecycle: this.currentVisibility === 'unknown' ? null : true,
-            longAnimationFramePaintTime: null,
-            longAnimationFramePresentationTime: null,
+            longAnimationFramePaintTime: value(this.loafPaintTimeCapability),
+            longAnimationFramePresentationTime: value(this.loafPresentationTimeCapability),
         }
     }
 
@@ -1575,7 +1656,10 @@ export class AnimationCollector {
         const unavailable = { evidenceLevel: 'unsupported-or-unknown' as const }
         const mainThreadObserved = this.loafSamples.totalCount + this.longTaskSamples.totalCount > 0
         const mainThreadUnsupported = this.loafCapability.state === 'unsupported' && this.longTaskCapability.state === 'unsupported'
-        const renderingObserved = this.loafSamples.toArray().some(sample => sample.styleAndLayoutTailDuration !== undefined)
+        const renderingObserved =
+            this.loafRenderStartToPaintObservedCount > 0 ||
+            this.loafPaintToPresentationObservedCount > 0 ||
+            this.loafSamples.toArray().some(sample => sample.styleAndLayoutTailDuration !== undefined)
         const scrollGestureObserved =
             this.interactionKindCounts.scroll +
                 this.interactionKindCounts.drag +

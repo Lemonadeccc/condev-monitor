@@ -79,10 +79,31 @@ export interface BoundedSignalSummary {
     duration: DurationStatistics | null
 }
 
+export interface LongAnimationFramePaintTimingSummary {
+    /** Whether accepted LoAF entries expose PaintTimingMixin.paintTime. */
+    paintTimeCapability: CapabilityEvidence
+    /** Whether accepted LoAF entries expose nullable PaintTimingMixin.presentationTime. */
+    presentationTimeCapability: CapabilityEvidence
+    /** Accepted LoAF entries that expose paintTime; null when no entry could establish field support. */
+    paintTimeExposedCount: number | null
+    /** Accepted LoAF entries that expose presentationTime; null when no entry could establish field support. */
+    presentationTimeExposedCount: number | null
+    /** Complete renderStart → paintTime samples across the full bounded stream. */
+    renderStartToPaintTotalObservedCount: number | null
+    /** Complete paintTime → presentationTime samples across the full bounded stream. */
+    paintToPresentationTotalObservedCount: number | null
+    /** renderStart → paintTime for retained, complete LoAF entries only. */
+    renderStartToPaintDuration: DurationStatistics | null
+    /** paintTime → presentationTime for retained, complete LoAF entries only. */
+    paintToPresentationDuration: DurationStatistics | null
+}
+
 export interface LongAnimationFrameSummary extends BoundedSignalSummary {
     blockingDuration: DurationStatistics | null
     /** Interval from styleAndLayoutStart through the LoAF end; includes subsequent rendering work. */
     styleAndLayoutTailDuration: DurationStatistics | null
+    /** Additive local-only PaintTimingMixin evidence; never projected as animation_rum v1 metric tuples. */
+    paintTiming?: LongAnimationFramePaintTimingSummary
 }
 
 export interface EventTimingSummary extends BoundedSignalSummary {
@@ -486,6 +507,10 @@ export interface SanitizedPerformanceEntry {
     blockingDuration?: number
     renderStart?: number
     styleAndLayoutStart?: number
+    /** Missing means the LoAF entry did not expose the field; null means exposed without a usable timestamp. */
+    paintTime?: number | null
+    /** Missing means the LoAF entry did not expose the field; null is a valid unavailable value in the platform API. */
+    presentationTime?: number | null
     processingStart?: number
     processingEnd?: number
     interactionId?: number
