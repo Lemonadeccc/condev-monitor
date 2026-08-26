@@ -184,18 +184,18 @@ sequenceDiagram
     - `/api/*` -> `API_PROXY_TARGET` -> monitor backend
     - `/dsn-api/*` -> `DSN_API_PROXY_TARGET` -> dsn-server
 - Browser replay enablement is per application. The browser SDK calls `GET /app-config?appId=...` before turning replay on.
-- The monitor backend writes replay settings into ClickHouse `lemonade.app_settings`; the DSN server uses that as the fast path and falls back to the monitor API when needed.
+- The monitor backend writes replay settings into the configured ClickHouse database's `app_settings` table; the DSN server uses that as the fast path and falls back to the monitor API when needed.
 - The DSN server enforces per-app token-bucket rate limiting. When the limit is exceeded, it responds with `429` and `Retry-After` / `X-Rate-Limit-Reset` headers.
 - Inbound filtering on the DSN server rejects events based on payload size (`INBOUND_MAX_PAYLOAD_BYTES`), user-agent blacklist, and release blacklist.
-- The DSN ClickHouse schema creates:
-    - `lemonade.base_monitor_storage` (legacy, kept for backward compatibility)
-    - `lemonade.events` (new primary table with ReplacingMergeTree)
-    - `lemonade.events_to_legacy_mv` (compatibility materialized view)
-    - `lemonade.base_monitor_view`
-    - `lemonade.app_settings`
-    - `lemonade.issues` (semantic issue grouping)
-    - `lemonade.issue_embeddings` (embedding vectors for dedup)
-    - `lemonade.cron_locks` (distributed lock for scheduled tasks)
+- In the configured database (`lemonade` by default), the DSN ClickHouse schema creates:
+    - `base_monitor_storage` (legacy, kept for backward compatibility)
+    - `events` (new primary table with ReplacingMergeTree)
+    - `events_to_legacy_mv` (compatibility materialized view)
+    - `base_monitor_view`
+    - `app_settings`
+    - `issues` (semantic issue grouping)
+    - `issue_embeddings` (embedding vectors for dedup)
+    - `cron_locks` (distributed lock for scheduled tasks)
 - Non-replay events have a 90-day TTL. Replay rows have a 30-day TTL. The Event Worker performs embedding-based deduplication before writing, using configurable similarity thresholds.
 - The frontend auth flow stores the monitor backend JWT in an HTTP-only cookie named `session_token` through Next route handlers under `app/auth-session/*`.
 
@@ -395,7 +395,7 @@ Both backend apps explicitly search for env files in this order:
 | `DB_AUTOLOAD`, `DB_SYNC`                                                                                                    | TypeORM behavior. Keep `DB_SYNC=false` in production                                                   |
 | `JWT_SECRET`                                                                                                                | Required for login, auth guards, reset-password tokens, and email verification tokens                  |
 | `CORS`                                                                                                                      | Enables Nest CORS when set to `true`                                                                   |
-| `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`                                                              | Required. Used to sync application replay settings into ClickHouse                                     |
+| `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`                                       | Required connection settings and shared database name for ClickHouse                                   |
 | `MAIL_ON`                                                                                                                   | Master switch for monitor email behavior                                                               |
 | `RESEND_API_KEY`, `RESEND_FROM`                                                                                             | Enables Resend mail mode when `MAIL_ON=true`                                                           |
 | `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                                                                                     | Enables SMTP mail mode when `MAIL_ON=true` and Resend is not configured                                |
@@ -410,32 +410,32 @@ Important note: `apps/backend/monitor/src/main.ts` currently binds the monitor A
 
 ### DSN Server (`apps/backend/dsn-server/.env`)
 
-| Variable                                                          | Purpose                                                                                                     |
-| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| `PORT`                                                            | DSN server listen port. Defaults to `8082`                                                                  |
-| `DSN_BODY_LIMIT`                                                  | Express JSON / URL encoded / text body limit. Increase this for larger replay payloads                      |
-| `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`    | Required. Used for ingest and query workloads                                                               |
-| `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE` | Postgres lookup for owner email and sourcemap metadata                                                      |
-| `MONITOR_API_URL`                                                 | Fallback URL for `GET /api/application/public/config` when replay config is not yet available in ClickHouse |
-| `ALERT_EMAIL_FALLBACK`                                            | Fallback recipient when app owner email cannot be resolved                                                  |
-| `APP_OWNER_EMAIL_CACHE_TTL_MS`                                    | Cache TTL for `appId -> owner email` lookups                                                                |
-| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`                   | In-memory sourcemap cache controls for stack trace resolution                                               |
-| `RESEND_API_KEY`, `RESEND_FROM`                                   | Resend mode for alert emails                                                                                |
-| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                           | SMTP mode for alert emails                                                                                  |
-| `EMAIL_PASS`, `EMAIL_PASSWORD`                                    | Legacy aliases that are also accepted by the DSN email module                                               |
-| `INGEST_MODE`                                                     | `kafka` (default in deploy) or `direct` (writes straight to ClickHouse)                                     |
-| `KAFKA_ENABLED`                                                   | Master switch for Kafka producer. Set to `true` when `INGEST_MODE=kafka`                                    |
-| `KAFKA_BROKERS`                                                   | Comma-separated Kafka broker addresses                                                                      |
-| `KAFKA_CLIENT_ID`                                                 | Kafka producer client identifier                                                                            |
-| `KAFKA_EVENTS_TOPIC`                                              | Topic for SDK events. Default: `monitor.sdk.events.v1`                                                      |
-| `KAFKA_REPLAYS_TOPIC`                                             | Topic for replay uploads. Default: `monitor.sdk.replays.v1`                                                 |
-| `KAFKA_FALLBACK_TO_CLICKHOUSE`                                    | When `true`, falls back to direct ClickHouse write if Kafka publish fails                                   |
-| `INBOUND_MAX_PAYLOAD_BYTES`                                       | Maximum accepted payload size per request (pre-deserialization)                                             |
-| `INBOUND_UA_BLACKLIST`                                            | Comma-separated user-agent substrings to reject                                                             |
-| `INBOUND_RELEASE_BLACKLIST`                                       | Comma-separated release identifiers to reject                                                               |
-| `RATE_LIMIT_EVENTS_PER_SEC`                                       | Per-app token bucket refill rate (events/second)                                                            |
-| `RATE_LIMIT_BURST`                                                | Per-app token bucket burst capacity                                                                         |
-| `RATE_LIMIT_MAX_APPS`                                             | Maximum number of tracked apps for rate limiting                                                            |
+| Variable                                                                              | Purpose                                                                                                     |
+| ------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `PORT`                                                                                | DSN server listen port. Defaults to `8082`                                                                  |
+| `DSN_BODY_LIMIT`                                                                      | Express JSON / URL encoded / text body limit. Increase this for larger replay payloads                      |
+| `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE` | Required connection settings and shared database name for ingest and query workloads                        |
+| `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                     | Postgres lookup for owner email and sourcemap metadata                                                      |
+| `MONITOR_API_URL`                                                                     | Fallback URL for `GET /api/application/public/config` when replay config is not yet available in ClickHouse |
+| `ALERT_EMAIL_FALLBACK`                                                                | Fallback recipient when app owner email cannot be resolved                                                  |
+| `APP_OWNER_EMAIL_CACHE_TTL_MS`                                                        | Cache TTL for `appId -> owner email` lookups                                                                |
+| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`                                       | In-memory sourcemap cache controls for stack trace resolution                                               |
+| `RESEND_API_KEY`, `RESEND_FROM`                                                       | Resend mode for alert emails                                                                                |
+| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                                               | SMTP mode for alert emails                                                                                  |
+| `EMAIL_PASS`, `EMAIL_PASSWORD`                                                        | Legacy aliases that are also accepted by the DSN email module                                               |
+| `INGEST_MODE`                                                                         | `kafka` (default in deploy) or `direct` (writes straight to ClickHouse)                                     |
+| `KAFKA_ENABLED`                                                                       | Master switch for Kafka producer. Set to `true` when `INGEST_MODE=kafka`                                    |
+| `KAFKA_BROKERS`                                                                       | Comma-separated Kafka broker addresses                                                                      |
+| `KAFKA_CLIENT_ID`                                                                     | Kafka producer client identifier                                                                            |
+| `KAFKA_EVENTS_TOPIC`                                                                  | Topic for SDK events. Default: `monitor.sdk.events.v1`                                                      |
+| `KAFKA_REPLAYS_TOPIC`                                                                 | Topic for replay uploads. Default: `monitor.sdk.replays.v1`                                                 |
+| `KAFKA_FALLBACK_TO_CLICKHOUSE`                                                        | When `true`, falls back to direct ClickHouse write if Kafka publish fails                                   |
+| `INBOUND_MAX_PAYLOAD_BYTES`                                                           | Maximum accepted payload size per request (pre-deserialization)                                             |
+| `INBOUND_UA_BLACKLIST`                                                                | Comma-separated user-agent substrings to reject                                                             |
+| `INBOUND_RELEASE_BLACKLIST`                                                           | Comma-separated release identifiers to reject                                                               |
+| `RATE_LIMIT_EVENTS_PER_SEC`                                                           | Per-app token bucket refill rate (events/second)                                                            |
+| `RATE_LIMIT_BURST`                                                                    | Per-app token bucket burst capacity                                                                         |
+| `RATE_LIMIT_MAX_APPS`                                                                 | Maximum number of tracked apps for rate limiting                                                            |
 
 ### Frontend / Rewrite Env
 
@@ -454,6 +454,7 @@ The dashboard does not ship its own `.env.example` in this repository. The main 
 | `CLICKHOUSE_URL`                 | ClickHouse HTTP endpoint for batch inserts                                 |
 | `CLICKHOUSE_USERNAME`            | ClickHouse auth username                                                   |
 | `CLICKHOUSE_PASSWORD`            | ClickHouse auth password                                                   |
+| `CLICKHOUSE_DATABASE`            | Shared ClickHouse database name. Default: `lemonade`                       |
 | `KAFKA_BROKERS`                  | Comma-separated Kafka broker addresses                                     |
 | `KAFKA_CLIENT_ID`                | Kafka consumer client identifier                                           |
 | `KAFKA_CONSUMER_GROUP`           | Consumer group ID. Default: `monitor-clickhouse-writer-v1`                 |
@@ -479,7 +480,7 @@ The dashboard does not ship its own `.env.example` in this repository. The main 
 | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | `POSTGRES_PORT`                                                                                                                 | Host port for Postgres in local infra compose                             |
 | `CLICKHOUSE_HTTP_PORT`, `CLICKHOUSE_NATIVE_PORT`                                                                                | Host ports for ClickHouse                                                 |
-| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB`                                                                   | ClickHouse bootstrap credentials and database name                        |
+| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`                                                             | ClickHouse bootstrap credentials and canonical database name              |
 | `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                                                                                                 | ClickHouse HTTP write limit                                               |
 | `KAFKA_EXTERNAL_PORT`                                                                                                           | Host port for Kafka external listener. Default: `9094`                    |
 | `KAFKA_BROKERS`                                                                                                                 | Broker addresses for DSN server and event worker                          |
@@ -490,6 +491,8 @@ The dashboard does not ship its own `.env.example` in this repository. The main 
 | `MAIL_ON`, `AUTH_REQUIRE_EMAIL_VERIFICATION`, `FRONTEND_URL`, `DSN_BODY_LIMIT`, `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS` | Shared deployment-time app settings passed into the containers            |
 | `EMBEDDING_MODEL_ID`, `ISSUE_EMBEDDING_HIGH_THRESHOLD`, `ISSUE_EMBEDDING_LOW_THRESHOLD`, `ISSUE_TFIDF_THRESHOLD`                | Event worker issue dedup tuning                                           |
 | `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_MAX_TOKENS`, `LLM_TEMPERATURE`                                 | Event worker LLM integration                                              |
+
+`CLICKHOUSE_DATABASE` defaults to `lemonade` and is shared by bootstrap, schema replay, Monitor, DSN, and Event Worker. `CLICKHOUSE_DB` remains a backward-compatible fallback. Use only ASCII letters, digits, and underscores, and do not start the name with a digit.
 
 ### Mail Provider Selection Logic
 

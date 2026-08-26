@@ -184,18 +184,18 @@ sequenceDiagram
     - `/api/*` -> `API_PROXY_TARGET` -> monitor backend
     - `/dsn-api/*` -> `DSN_API_PROXY_TARGET` -> dsn-server
 - 浏览器 Replay 是否开启是按应用控制的。SDK 会先调用 `GET /app-config?appId=...` 再决定是否录制回放。
-- Monitor backend 会把 Replay 开关同步到 ClickHouse 的 `lemonade.app_settings`；DSN server 先查 ClickHouse，查不到再回源 monitor API。
+- Monitor backend 会把 Replay 开关同步到所配置 ClickHouse 数据库的 `app_settings` 表；DSN server 先查 ClickHouse，查不到再回源 monitor API。
 - DSN server 对每个应用实施令牌桶限流。超限后返回 `429` 和 `Retry-After` / `X-Rate-Limit-Reset` 响应头。
 - DSN server 的入站过滤会根据 payload 大小（`INBOUND_MAX_PAYLOAD_BYTES`）、user-agent 黑名单和 release 黑名单拒绝事件。
-- DSN ClickHouse schema 会创建：
-    - `lemonade.base_monitor_storage`（旧主表，保留兼容）
-    - `lemonade.events`（新主表，ReplacingMergeTree）
-    - `lemonade.events_to_legacy_mv`（兼容物化视图）
-    - `lemonade.base_monitor_view`
-    - `lemonade.app_settings`
-    - `lemonade.issues`（语义 Issue 分组）
-    - `lemonade.issue_embeddings`（去重用嵌入向量）
-    - `lemonade.cron_locks`（定时任务分布式锁）
+- 在配置的数据库（默认 `lemonade`）中，DSN ClickHouse schema 会创建：
+    - `base_monitor_storage`（旧主表，保留兼容）
+    - `events`（新主表，ReplacingMergeTree）
+    - `events_to_legacy_mv`（兼容物化视图）
+    - `base_monitor_view`
+    - `app_settings`
+    - `issues`（语义 Issue 分组）
+    - `issue_embeddings`（去重用嵌入向量）
+    - `cron_locks`（定时任务分布式锁）
 - 非 Replay 事件默认 90 天 TTL；Replay 事件默认 30 天 TTL。Event Worker 在写入前会做基于嵌入向量的去重，相似度阈值可配。
 - 前端鉴权通过 `app/auth-session/*` 路由把 monitor backend 的 JWT 放进 HTTP-only cookie `session_token`。
 
@@ -395,7 +395,7 @@ pnpm --filter aisdk-rag-chatbox dev
 | `DB_AUTOLOAD`, `DB_SYNC`                                                                                                    | TypeORM 行为控制。生产环境建议 `DB_SYNC=false`                     |
 | `JWT_SECRET`                                                                                                                | 登录鉴权、重置密码、邮箱验证、修改邮箱 token 都依赖它              |
 | `CORS`                                                                                                                      | 为 `true` 时开启 Nest CORS                                         |
-| `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`                                                              | 必填。用于把应用的 Replay 开关同步到 ClickHouse                    |
+| `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`                                       | ClickHouse 必填连接配置和各服务共用的数据库名                      |
 | `MAIL_ON`                                                                                                                   | Monitor 邮件总开关                                                 |
 | `RESEND_API_KEY`, `RESEND_FROM`                                                                                             | `MAIL_ON=true` 时启用 Resend 模式                                  |
 | `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                                                                                     | `MAIL_ON=true` 且未配置 Resend 时启用 SMTP                         |
@@ -409,32 +409,32 @@ pnpm --filter aisdk-rag-chatbox dev
 
 ### DSN Server（`apps/backend/dsn-server/.env`）
 
-| 变量                                                              | 作用                                                                           |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `PORT`                                                            | DSN server 监听端口，默认 `8082`                                               |
-| `DSN_BODY_LIMIT`                                                  | Express JSON / URL encoded / text body 限制。Replay 包大时要调大               |
-| `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`    | 必填。负责写入和查询监控数据                                                   |
-| `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE` | Postgres 查负责人邮箱与 sourcemap 元数据                                       |
-| `MONITOR_API_URL`                                                 | ClickHouse 里没有 Replay 配置时，回源调用 `GET /api/application/public/config` |
-| `ALERT_EMAIL_FALLBACK`                                            | 找不到应用负责人邮箱时的兜底收件人                                             |
-| `APP_OWNER_EMAIL_CACHE_TTL_MS`                                    | `appId -> owner email` 缓存 TTL                                                |
-| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`                   | Sourcemap 内存缓存大小和 TTL                                                   |
-| `RESEND_API_KEY`, `RESEND_FROM`                                   | 告警邮件使用 Resend                                                            |
-| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                           | 告警邮件使用 SMTP                                                              |
-| `EMAIL_PASS`, `EMAIL_PASSWORD`                                    | dsn-server 邮件模块兼容读取的旧变量名                                          |
-| `INGEST_MODE`                                                     | `kafka`（部署默认）或 `direct`（直写 ClickHouse）                              |
-| `KAFKA_ENABLED`                                                   | Kafka 生产者总开关。`INGEST_MODE=kafka` 时设为 `true`                          |
-| `KAFKA_BROKERS`                                                   | Kafka broker 地址，逗号分隔                                                    |
-| `KAFKA_CLIENT_ID`                                                 | Kafka 生产者 client 标识                                                       |
-| `KAFKA_EVENTS_TOPIC`                                              | SDK 事件 topic，默认 `monitor.sdk.events.v1`                                   |
-| `KAFKA_REPLAYS_TOPIC`                                             | Replay 上传 topic，默认 `monitor.sdk.replays.v1`                               |
-| `KAFKA_FALLBACK_TO_CLICKHOUSE`                                    | 为 `true` 时，Kafka 发布失败会兜底直写 ClickHouse                              |
-| `INBOUND_MAX_PAYLOAD_BYTES`                                       | 每个请求允许的最大 payload 大小（反序列化前）                                  |
-| `INBOUND_UA_BLACKLIST`                                            | 需拒绝的 user-agent 子串，逗号分隔                                             |
-| `INBOUND_RELEASE_BLACKLIST`                                       | 需拒绝的 release 标识，逗号分隔                                                |
-| `RATE_LIMIT_EVENTS_PER_SEC`                                       | 每应用令牌桶补充速率（事件/秒）                                                |
-| `RATE_LIMIT_BURST`                                                | 每应用令牌桶突发容量                                                           |
-| `RATE_LIMIT_MAX_APPS`                                             | 限流追踪的最大应用数                                                           |
+| 变量                                                                                  | 作用                                                                           |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `PORT`                                                                                | DSN server 监听端口，默认 `8082`                                               |
+| `DSN_BODY_LIMIT`                                                                      | Express JSON / URL encoded / text body 限制。Replay 包大时要调大               |
+| `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE` | 必填。负责写入、查询监控数据并统一数据库名                                     |
+| `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                     | Postgres 查负责人邮箱与 sourcemap 元数据                                       |
+| `MONITOR_API_URL`                                                                     | ClickHouse 里没有 Replay 配置时，回源调用 `GET /api/application/public/config` |
+| `ALERT_EMAIL_FALLBACK`                                                                | 找不到应用负责人邮箱时的兜底收件人                                             |
+| `APP_OWNER_EMAIL_CACHE_TTL_MS`                                                        | `appId -> owner email` 缓存 TTL                                                |
+| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`                                       | Sourcemap 内存缓存大小和 TTL                                                   |
+| `RESEND_API_KEY`, `RESEND_FROM`                                                       | 告警邮件使用 Resend                                                            |
+| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                                               | 告警邮件使用 SMTP                                                              |
+| `EMAIL_PASS`, `EMAIL_PASSWORD`                                                        | dsn-server 邮件模块兼容读取的旧变量名                                          |
+| `INGEST_MODE`                                                                         | `kafka`（部署默认）或 `direct`（直写 ClickHouse）                              |
+| `KAFKA_ENABLED`                                                                       | Kafka 生产者总开关。`INGEST_MODE=kafka` 时设为 `true`                          |
+| `KAFKA_BROKERS`                                                                       | Kafka broker 地址，逗号分隔                                                    |
+| `KAFKA_CLIENT_ID`                                                                     | Kafka 生产者 client 标识                                                       |
+| `KAFKA_EVENTS_TOPIC`                                                                  | SDK 事件 topic，默认 `monitor.sdk.events.v1`                                   |
+| `KAFKA_REPLAYS_TOPIC`                                                                 | Replay 上传 topic，默认 `monitor.sdk.replays.v1`                               |
+| `KAFKA_FALLBACK_TO_CLICKHOUSE`                                                        | 为 `true` 时，Kafka 发布失败会兜底直写 ClickHouse                              |
+| `INBOUND_MAX_PAYLOAD_BYTES`                                                           | 每个请求允许的最大 payload 大小（反序列化前）                                  |
+| `INBOUND_UA_BLACKLIST`                                                                | 需拒绝的 user-agent 子串，逗号分隔                                             |
+| `INBOUND_RELEASE_BLACKLIST`                                                           | 需拒绝的 release 标识，逗号分隔                                                |
+| `RATE_LIMIT_EVENTS_PER_SEC`                                                           | 每应用令牌桶补充速率（事件/秒）                                                |
+| `RATE_LIMIT_BURST`                                                                    | 每应用令牌桶突发容量                                                           |
+| `RATE_LIMIT_MAX_APPS`                                                                 | 限流追踪的最大应用数                                                           |
 
 ### 前端 / Rewrite 相关变量
 
@@ -453,6 +453,7 @@ pnpm --filter aisdk-rag-chatbox dev
 | `CLICKHOUSE_URL`                 | ClickHouse HTTP 端点，用于批量写入                         |
 | `CLICKHOUSE_USERNAME`            | ClickHouse 用户名                                          |
 | `CLICKHOUSE_PASSWORD`            | ClickHouse 密码                                            |
+| `CLICKHOUSE_DATABASE`            | 各服务共用的 ClickHouse 数据库名，默认 `lemonade`          |
 | `KAFKA_BROKERS`                  | Kafka broker 地址，逗号分隔                                |
 | `KAFKA_CLIENT_ID`                | Kafka 消费者 client 标识                                   |
 | `KAFKA_CONSUMER_GROUP`           | 消费组 ID，默认 `monitor-clickhouse-writer-v1`             |
@@ -478,7 +479,7 @@ pnpm --filter aisdk-rag-chatbox dev
 | ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | `POSTGRES_PORT`                                                                                                                 | 本地基础设施 compose 的 Postgres 宿主机端口                   |
 | `CLICKHOUSE_HTTP_PORT`, `CLICKHOUSE_NATIVE_PORT`                                                                                | ClickHouse 宿主机端口                                         |
-| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB`                                                                   | ClickHouse 初始化用户名、密码和库名                           |
+| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`                                                             | ClickHouse 初始化用户名、密码和规范库名                       |
 | `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                                                                                                 | ClickHouse HTTP 写入上限                                      |
 | `KAFKA_EXTERNAL_PORT`                                                                                                           | Kafka 外部监听宿主机端口，默认 `9094`                         |
 | `KAFKA_BROKERS`                                                                                                                 | DSN server 和 event worker 使用的 broker 地址                 |
@@ -489,6 +490,8 @@ pnpm --filter aisdk-rag-chatbox dev
 | `MAIL_ON`, `AUTH_REQUIRE_EMAIL_VERIFICATION`, `FRONTEND_URL`, `DSN_BODY_LIMIT`, `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS` | 整栈部署时传入容器的共享业务配置                              |
 | `EMBEDDING_MODEL_ID`, `ISSUE_EMBEDDING_HIGH_THRESHOLD`, `ISSUE_EMBEDDING_LOW_THRESHOLD`, `ISSUE_TFIDF_THRESHOLD`                | Event worker Issue 去重调参                                   |
 | `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_MAX_TOKENS`, `LLM_TEMPERATURE`                                 | Event worker LLM 集成                                         |
+
+`CLICKHOUSE_DATABASE` 默认仍为 `lemonade`，由 ClickHouse 初始化、schema 重放、Monitor、DSN 与 Event Worker 共用；旧 `CLICKHOUSE_DB` 继续作为兼容回退。库名只能包含 ASCII 字母、数字和下划线，且不能以数字开头。
 
 ### 邮件模式选择逻辑
 

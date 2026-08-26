@@ -84,25 +84,25 @@ The deployment compose injects variables from `.devcontainer/.env` into ClickHou
 
 ### Variables You Should Always Review
 
-| Variable                                                      | Why it matters                                    |
-| ------------------------------------------------------------- | ------------------------------------------------- |
-| `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                   | Postgres bootstrap and backend connection         |
-| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB` | ClickHouse bootstrap and backend connection       |
-| `FRONTEND_URL`                                                | Email links and frontend base URL                 |
-| `MAIL_ON`                                                     | Enables or disables actual email flow             |
-| `RESEND_API_KEY`, `RESEND_FROM`                               | Resend mail mode                                  |
-| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                       | SMTP mail mode                                    |
-| `AUTH_REQUIRE_EMAIL_VERIFICATION`                             | Controls whether login requires verified email    |
-| `DSN_BODY_LIMIT`                                              | dsn-server request size limit                     |
-| `CADDY_DSN_MAX_BODY_SIZE`                                     | reverse-proxy request size limit                  |
-| `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                               | ClickHouse write limit                            |
-| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`               | sourcemap resolution cache controls               |
-| `INGEST_MODE`                                                 | `kafka` or `direct`, controls DSN ingest pipeline |
-| `KAFKA_BROKERS`                                               | Broker addresses for DSN and event worker         |
-| `KAFKA_CONSUMER_GROUP`                                        | Consumer group for event worker                   |
-| `KAFKA_EVENTS_TOPIC`, `KAFKA_REPLAYS_TOPIC`, `KAFKA_AI_TOPIC` | Topic names used by DSN and event worker          |
-| `EMBEDDING_MODEL_ID`                                          | HuggingFace model for issue embeddings            |
-| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`    | LLM integration for issue analysis                |
+| Variable                                                            | Why it matters                                    |
+| ------------------------------------------------------------------- | ------------------------------------------------- |
+| `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                         | Postgres bootstrap and backend connection         |
+| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE` | ClickHouse bootstrap and backend connection       |
+| `FRONTEND_URL`                                                      | Email links and frontend base URL                 |
+| `MAIL_ON`                                                           | Enables or disables actual email flow             |
+| `RESEND_API_KEY`, `RESEND_FROM`                                     | Resend mail mode                                  |
+| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                             | SMTP mail mode                                    |
+| `AUTH_REQUIRE_EMAIL_VERIFICATION`                                   | Controls whether login requires verified email    |
+| `DSN_BODY_LIMIT`                                                    | dsn-server request size limit                     |
+| `CADDY_DSN_MAX_BODY_SIZE`                                           | reverse-proxy request size limit                  |
+| `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                                     | ClickHouse write limit                            |
+| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`                     | sourcemap resolution cache controls               |
+| `INGEST_MODE`                                                       | `kafka` or `direct`, controls DSN ingest pipeline |
+| `KAFKA_BROKERS`                                                     | Broker addresses for DSN and event worker         |
+| `KAFKA_CONSUMER_GROUP`                                              | Consumer group for event worker                   |
+| `KAFKA_EVENTS_TOPIC`, `KAFKA_REPLAYS_TOPIC`, `KAFKA_AI_TOPIC`       | Topic names used by DSN and event worker          |
+| `EMBEDDING_MODEL_ID`                                                | HuggingFace model for issue embeddings            |
+| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`          | LLM integration for issue analysis                |
 
 ### Postgres migration mode
 
@@ -158,6 +158,8 @@ This command:
 Important note: the file name in the repository is literally `docker-compose.deply.yml`. The root script already uses that exact path.
 
 `pnpm docker:deploy` and `pnpm docker:start` both re-run the idempotent ClickHouse schema files, so an existing volume receives new files such as `004_animation_rum_v1.sql`. If you deploy application containers separately instead of using these supported scripts, run `pnpm docker:init-clickhouse` against the target compose project before enabling animation RUM writers or queries.
+
+`CLICKHOUSE_DATABASE` is the canonical database setting for ClickHouse bootstrap, schema replay, Monitor, DSN, and Event Worker. It defaults to `lemonade`; the legacy `CLICKHOUSE_DB` name is still accepted as a fallback. Database names are restricted to ASCII letters, digits, and underscores and cannot start with a digit because they are used as SQL identifiers.
 
 ### 2. Stop the stack
 
@@ -241,7 +243,7 @@ What they store:
 - `kafka_data` -> Kafka broker data and topic partitions
 - `caddy_data`, `caddy_config` -> Caddy state and TLS data
 
-The shipped ClickHouse schema also:
+In the default `lemonade` database, the shipped ClickHouse schema also:
 
 - creates `lemonade.base_monitor_storage`
 - creates `lemonade.base_monitor_view`

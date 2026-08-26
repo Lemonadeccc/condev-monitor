@@ -479,6 +479,8 @@ Lemon Bureau 在五个页面共用的 `js/lenis-scroll.js` 初始化，Nico Palm
 
 部署时，仓库的 `pnpm docker:deploy` / `pnpm docker:start` 会幂等重放 ClickHouse schema，因此已有 volume 也能得到 `004_animation_rum_v1.sql`。如果绕开这些脚本单独升级服务，必须先执行 `pnpm docker:init-clickhouse`，再开放 animation RUM 写入或查询。
 
+Animation RUM 与其他监控表统一使用 `CLICKHOUSE_DATABASE` 指定的库；默认值是 `lemonade`，旧 `CLICKHOUSE_DB` 仅作为兼容回退。初始化脚本会在执行未限定库名的 schema 前校验并选择该数据库，Monitor、DSN 与 Event Worker 使用同一解析和标识符校验规则。
+
 ## 仍未实现的证据层
 
 当前的 `not-instrumented`/`unsupported` 不是遗漏的 0。下列能力还需要单独实现和验证：

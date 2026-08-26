@@ -83,25 +83,25 @@ cp .devcontainer/.env.example .devcontainer/.env
 
 ### 一定要检查的变量
 
-| 变量                                                          | 为什么重要                               |
-| ------------------------------------------------------------- | ---------------------------------------- |
-| `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                   | Postgres 初始化和后端连接都依赖它        |
-| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DB` | ClickHouse 初始化和后端连接都依赖它      |
-| `FRONTEND_URL`                                                | 邮件里的链接和前端公网地址               |
-| `MAIL_ON`                                                     | 控制是否真的发邮件                       |
-| `RESEND_API_KEY`, `RESEND_FROM`                               | Resend 邮件模式                          |
-| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                       | SMTP 邮件模式                            |
-| `AUTH_REQUIRE_EMAIL_VERIFICATION`                             | 控制登录前是否必须验证邮箱               |
-| `DSN_BODY_LIMIT`                                              | dsn-server 请求体上限                    |
-| `CADDY_DSN_MAX_BODY_SIZE`                                     | 反向代理层请求体上限                     |
-| `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                               | ClickHouse 写入上限                      |
-| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`               | sourcemap 解析缓存控制                   |
-| `INGEST_MODE`                                                 | `kafka` 或 `direct`，控制 DSN 写入管道   |
-| `KAFKA_BROKERS`                                               | DSN 和 event worker 的 Kafka broker 地址 |
-| `KAFKA_CONSUMER_GROUP`                                        | event worker 的消费者组                  |
-| `KAFKA_EVENTS_TOPIC`, `KAFKA_REPLAYS_TOPIC`, `KAFKA_AI_TOPIC` | DSN 与 event worker 使用的 topic 名称    |
-| `EMBEDDING_MODEL_ID`                                          | Issue 嵌入向量使用的 HuggingFace 模型    |
-| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`    | Issue 分析 LLM 集成                      |
+| 变量                                                                | 为什么重要                               |
+| ------------------------------------------------------------------- | ---------------------------------------- |
+| `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                         | Postgres 初始化和后端连接都依赖它        |
+| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE` | ClickHouse 初始化和后端连接都依赖它      |
+| `FRONTEND_URL`                                                      | 邮件里的链接和前端公网地址               |
+| `MAIL_ON`                                                           | 控制是否真的发邮件                       |
+| `RESEND_API_KEY`, `RESEND_FROM`                                     | Resend 邮件模式                          |
+| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                             | SMTP 邮件模式                            |
+| `AUTH_REQUIRE_EMAIL_VERIFICATION`                                   | 控制登录前是否必须验证邮箱               |
+| `DSN_BODY_LIMIT`                                                    | dsn-server 请求体上限                    |
+| `CADDY_DSN_MAX_BODY_SIZE`                                           | 反向代理层请求体上限                     |
+| `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                                     | ClickHouse 写入上限                      |
+| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`                     | sourcemap 解析缓存控制                   |
+| `INGEST_MODE`                                                       | `kafka` 或 `direct`，控制 DSN 写入管道   |
+| `KAFKA_BROKERS`                                                     | DSN 和 event worker 的 Kafka broker 地址 |
+| `KAFKA_CONSUMER_GROUP`                                              | event worker 的消费者组                  |
+| `KAFKA_EVENTS_TOPIC`, `KAFKA_REPLAYS_TOPIC`, `KAFKA_AI_TOPIC`       | DSN 与 event worker 使用的 topic 名称    |
+| `EMBEDDING_MODEL_ID`                                                | Issue 嵌入向量使用的 HuggingFace 模型    |
+| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`          | Issue 分析 LLM 集成                      |
 
 ### Postgres 迁移模式
 
@@ -157,6 +157,8 @@ pnpm docker:deploy
 注意：仓库里的文件名就是 `docker-compose.deply.yml`，虽然看起来像拼写错误，但根脚本已经按这个名字写死了。
 
 `pnpm docker:deploy` 和 `pnpm docker:start` 都会重新执行幂等的 ClickHouse schema，因此已有 volume 也会应用 `004_animation_rum_v1.sql` 等新增文件。如果没有走这两个受支持脚本，而是单独部署应用容器，必须先针对目标 compose project 执行 `pnpm docker:init-clickhouse`，再启用 animation RUM 写入和查询。
+
+`CLICKHOUSE_DATABASE` 是 ClickHouse 初始化、schema 重放、Monitor、DSN 与 Event Worker 共用的规范库名配置，默认仍为 `lemonade`；旧 `CLICKHOUSE_DB` 继续作为兼容别名。由于该值会作为 SQL 标识符使用，只允许 ASCII 字母、数字和下划线，且不能以数字开头。
 
 ### 2. 停止整栈
 
@@ -240,7 +242,7 @@ pnpm docker:stop
 - `caddy_data`、`caddy_config` -> Caddy 状态和 TLS 数据
 - `kafka_data` -> Kafka 日志数据
 
-默认 ClickHouse 初始化脚本还会：
+在默认的 `lemonade` 数据库中，ClickHouse 初始化脚本还会：
 
 - 创建 `lemonade.base_monitor_storage`
 - 创建 `lemonade.base_monitor_view`
