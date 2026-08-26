@@ -26,6 +26,10 @@ export interface RuntimeLongAnimationFrameEntry {
     blockingDuration: number | null
     renderStart: number | null
     styleAndLayoutStart: number | null
+    /** Present only when the observed LoAF entry exposes PaintTimingMixin.paintTime. */
+    paintTime?: number | null
+    /** Present only when the observed LoAF entry exposes PaintTimingMixin.presentationTime. */
+    presentationTime?: number | null
 }
 
 export interface RuntimeEventTimingEntry {
@@ -472,6 +476,8 @@ function snapshotEntry<T extends PerformanceRuntimeEntryType>(entryType: T, entr
             blockingDuration?: number
             renderStart?: number
             styleAndLayoutStart?: number
+            paintTime?: number
+            presentationTime?: number | null
         }
         return {
             ...common,
@@ -479,6 +485,8 @@ function snapshotEntry<T extends PerformanceRuntimeEntryType>(entryType: T, entr
             blockingDuration: finiteNumber(loaf.blockingDuration),
             renderStart: finiteNumber(loaf.renderStart),
             styleAndLayoutStart: finiteNumber(loaf.styleAndLayoutStart),
+            ...('paintTime' in loaf ? { paintTime: finiteNumber(loaf.paintTime) } : {}),
+            ...('presentationTime' in loaf ? { presentationTime: finiteNumber(loaf.presentationTime) } : {}),
         } as PerformanceRuntimeEntryMap[T]
     }
 

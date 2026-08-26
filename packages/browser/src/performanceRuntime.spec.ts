@@ -598,6 +598,8 @@ describe('shared performance runtime', () => {
                     blockingDuration: 30,
                     renderStart: 140,
                     styleAndLayoutStart: 150,
+                    paintTime: 170,
+                    presentationTime: null,
                     scripts: [{ sourceURL: 'https://private.test/app.js' }],
                     toJSON: () => ({}),
                 } as PerformanceEntry,
@@ -611,6 +613,8 @@ describe('shared performance runtime', () => {
             blockingDuration: 30,
             renderStart: 140,
             styleAndLayoutStart: 150,
+            paintTime: 170,
+            presentationTime: null,
         })
         expect(deferredThrow).not.toHaveBeenCalled()
         deferredThrow.mockRestore()

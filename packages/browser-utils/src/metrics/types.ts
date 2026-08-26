@@ -91,5 +91,7 @@ declare global {
     interface PerformanceLongAnimationFrameTiming extends PerformanceEntry {
         renderStart: DOMHighResTimeStamp
         duration: DOMHighResTimeStamp
+        paintTime?: DOMHighResTimeStamp
+        presentationTime?: DOMHighResTimeStamp | null
     }
 }
