@@ -227,6 +227,7 @@ The full stack compose defines these named volumes:
 - `clickhouse_data`
 - `postgres_data`
 - `sourcemap_data`
+- `animation_lab_data`
 - `kafka_data`
 - `caddy_data`
 - `caddy_config`
@@ -236,6 +237,7 @@ What they store:
 - `clickhouse_data` -> ClickHouse event data
 - `postgres_data` -> users, applications, sourcemap metadata, sourcemap tokens
 - `sourcemap_data` -> actual sourcemap files shared by monitor backend and dsn-server
+- `animation_lab_data` -> uploaded Animation Lab artifacts stored by the monitor backend
 - `kafka_data` -> Kafka broker data and topic partitions
 - `caddy_data`, `caddy_config` -> Caddy state and TLS data
 
@@ -316,6 +318,10 @@ Runtime mail behavior is:
 ### Shared sourcemap path
 
 The full stack compose mounts `SOURCEMAP_STORAGE_DIR` into both backends using the same `sourcemap_data` volume. If one service can see sourcemaps but the other cannot, check that shared mount first.
+
+### Animation Lab artifact path
+
+The full stack compose sets `ANIMATION_LAB_STORAGE_DIR=/data/animation-lab` for the monitor backend and mounts the dedicated `animation_lab_data` volume there. Keep that volume when recreating or upgrading the container; Postgres stores artifact metadata, but the uploaded artifact bytes live in this volume.
 
 ---
 

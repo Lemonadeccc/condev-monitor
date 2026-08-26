@@ -106,8 +106,10 @@ services:
             - MAIL_ON=${MAIL_ON:-false}
             - AUTH_REQUIRE_EMAIL_VERIFICATION=${AUTH_REQUIRE_EMAIL_VERIFICATION:-false}
             - SOURCEMAP_STORAGE_DIR=${SOURCEMAP_STORAGE_DIR:-/data/sourcemaps}
+            - ANIMATION_LAB_STORAGE_DIR=/data/animation-lab
         volumes:
             - sourcemap_data:/data/sourcemaps
+            - animation_lab_data:/data/animation-lab
         depends_on:
             condev-monitor-postgres:
                 condition: service_healthy
@@ -285,4 +287,5 @@ volumes:
     caddy_data:
     caddy_config:
     sourcemap_data:
+    animation_lab_data:
     kafka_data:

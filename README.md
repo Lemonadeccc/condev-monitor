@@ -403,6 +403,7 @@ Both backend apps explicitly search for env files in this order:
 | `AUTH_REQUIRE_EMAIL_VERIFICATION`                                                                                           | Optional override. If omitted, email verification is required when SMTP or Resend is active            |
 | `FRONTEND_URL`                                                                                                              | Used to build links for verify-email, reset-password, and email-change flows                           |
 | `SOURCEMAP_STORAGE_DIR`                                                                                                     | Shared sourcemap file storage directory. Defaults to `data/sourcemaps` under the package root if unset |
+| `ANIMATION_LAB_STORAGE_DIR`                                                                                                 | Dedicated Animation Lab artifact directory. Deploy default: `/data/animation-lab`                      |
 | `ERROR_FILTER`                                                                                                              | Enables the global Nest exception filter when set                                                      |
 
 Important note: `apps/backend/monitor/src/main.ts` currently binds the monitor API to fixed port `8081`. The commented `PORT` config is not active in the current code path.

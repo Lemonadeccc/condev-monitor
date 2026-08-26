@@ -226,6 +226,7 @@ pnpm docker:stop
 - `clickhouse_data`
 - `postgres_data`
 - `sourcemap_data`
+- `animation_lab_data`
 - `caddy_data`
 - `caddy_config`
 - `kafka_data`
@@ -235,6 +236,7 @@ pnpm docker:stop
 - `clickhouse_data` -> ClickHouse 事件数据
 - `postgres_data` -> 用户、应用、sourcemap 元数据、sourcemap token
 - `sourcemap_data` -> sourcemap 文件本体，供两个后端共享
+- `animation_lab_data` -> Monitor 后端保存的 Animation Lab 上传产物
 - `caddy_data`、`caddy_config` -> Caddy 状态和 TLS 数据
 - `kafka_data` -> Kafka 日志数据
 
@@ -314,6 +316,10 @@ Replay 上传会同时受 3 层限制：
 ### Sourcemap 共享路径
 
 整栈 compose 用同一个 `sourcemap_data` volume 挂载 `SOURCEMAP_STORAGE_DIR` 到两个后端。如果一个服务能看到 sourcemap、另一个看不到，优先检查这个共享挂载。
+
+### Animation Lab 产物路径
+
+整栈 compose 为 Monitor 后端设置 `ANIMATION_LAB_STORAGE_DIR=/data/animation-lab`，并把独立的 `animation_lab_data` volume 挂载到该目录。重建或升级容器时应保留这个 volume；Postgres 只保存产物元数据，上传文件本体保存在该 volume 中。
 
 ---
 
