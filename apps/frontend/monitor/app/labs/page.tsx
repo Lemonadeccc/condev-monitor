@@ -1,7 +1,7 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { ArrowUpRight, FlaskConical, PlayCircle } from 'lucide-react'
+import { ArrowUpRight, FlaskConical, GitCompareArrows, PlayCircle } from 'lucide-react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { useMemo } from 'react'
@@ -10,6 +10,7 @@ import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions, AIPanelCard, AIS
 import { LabRunActions } from '@/components/lab/lab-run-actions'
 import { LabStatusBadge } from '@/components/lab/lab-status-badge'
 import { useAuth } from '@/components/providers'
+import { Button } from '@/components/ui/button'
 import { useApplications } from '@/hooks/use-applications'
 import { buildMonitorScopeHref, resolveMonitorAppId, useMonitorScope } from '@/hooks/use-monitor-scope'
 import { formatDateTime } from '@/lib/datetime'
@@ -24,6 +25,7 @@ export default function LabsPage() {
     const { listQuery } = useApplications({ enabled })
     const applications = useMemo(() => listQuery.data?.data?.applications ?? [], [listQuery.data?.data?.applications])
     const effectiveAppId = resolveMonitorAppId(applications, selectedAppId)
+    const comparisonHref = buildMonitorScopeHref('/labs/compare', searchParams)
 
     const runsQuery = useQuery({
         queryKey: ['lab-runs', effectiveAppId],
@@ -68,7 +70,16 @@ export default function LabsPage() {
                         applications={applications}
                         appId={effectiveAppId}
                         onAppChange={setSelectedAppId}
-                        extraActions={<LabRunActions appId={effectiveAppId} />}
+                        extraActions={
+                            <>
+                                <Button asChild variant="outline" size="sm">
+                                    <Link href={comparisonHref}>
+                                        <GitCompareArrows aria-hidden="true" /> 对比实验
+                                    </Link>
+                                </Button>
+                                <LabRunActions appId={effectiveAppId} />
+                            </>
+                        }
                     />
                 }
             />

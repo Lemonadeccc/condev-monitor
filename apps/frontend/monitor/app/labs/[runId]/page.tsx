@@ -1,7 +1,7 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, Box, Download, FlaskConical, Gauge, Lightbulb, PackageOpen } from 'lucide-react'
+import { ArrowLeft, Box, Download, FlaskConical, Gauge, GitCompareArrows, Lightbulb, PackageOpen } from 'lucide-react'
 import dynamic from 'next/dynamic'
 import Link from 'next/link'
 import { useParams, useSearchParams } from 'next/navigation'
@@ -113,6 +113,7 @@ export default function LabRunPage() {
     const tabHref = (target: LabTab) =>
         buildMonitorScopeHref(`/labs/${encodeURIComponent(runId)}?tab=${encodeURIComponent(target)}`, searchParams)
     const backHref = buildMonitorScopeHref('/labs', searchParams)
+    const comparisonHref = buildMonitorScopeHref(`/labs/compare?before=${encodeURIComponent(runId)}`, searchParams)
 
     if (loading) return <div className="text-sm text-muted-foreground">正在加载…</div>
     if (!user) return null
@@ -131,6 +132,13 @@ export default function LabRunPage() {
                                 指标目录 / Metric catalog{' '}
                                 {analysis?.measurementContract ? `v${analysis.measurementContract.metricCatalogVersion}` : '未知 / Unknown'}
                             </Badge>
+                        ) : null}
+                        {run?.status === 'completed' ? (
+                            <Button asChild variant="outline" size="sm">
+                                <Link href={comparisonHref}>
+                                    <GitCompareArrows aria-hidden="true" /> 以此为基线
+                                </Link>
+                            </Button>
                         ) : null}
                         <Button asChild variant="outline" size="sm">
                             <Link href={backHref}>

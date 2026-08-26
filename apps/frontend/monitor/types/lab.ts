@@ -328,3 +328,179 @@ export type LabArtifactsApiResponse = LabApiResponse<{
     runId: string
     artifacts: LabArtifact[]
 }>
+
+export type LabComparisonScope = {
+    level: 'run' | 'action' | 'subject'
+    actionId?: string
+    subjectKey?: string
+}
+
+export type LabComparisonDistribution = {
+    n: number
+    min: number
+    median: number
+    p75: number
+    p95: number
+    max: number
+    underlyingSamples: {
+        knownAttempts: number
+        total: number
+        min: number | null
+        max: number | null
+    }
+}
+
+export type LabComparisonMetric = {
+    metricId: string
+    family: string
+    name: string
+    stat: string
+    unit: string
+    scope: LabComparisonScope
+    sourceAggregation: { population: string; method: string }
+    comparisonAggregation: { population: 'measured-attempts'; method: 'median' }
+    budgetRefs: LabBudgetRuleRef[]
+    evidenceRefs: string[]
+    evidenceLevel: Exclude<LabEvidenceLevel, 'unsupported-or-unknown'>
+    evidenceStatus: 'measured'
+    before: LabComparisonDistribution
+    after: LabComparisonDistribution
+    delta: number
+    percentChange: number | null
+    direction: 'increase' | 'decrease' | 'unchanged'
+}
+
+export type LabComparisonExclusionReason =
+    | 'before-missing-attempt'
+    | 'after-missing-attempt'
+    | 'before-partial-status'
+    | 'after-partial-status'
+    | 'before-unavailable-status'
+    | 'after-unavailable-status'
+    | 'metric-evidence-mismatch'
+
+export type LabComparisonExcludedMetric = {
+    metricId: string
+    scope: LabComparisonScope
+    reasons: LabComparisonExclusionReason[]
+}
+
+export type LabComparisonCaveat =
+    | 'host-environment-unverified'
+    | 'caller-attested-scenario-protocol'
+    | 'attempt-distribution-is-descriptive'
+    | 'no-statistical-significance-inference'
+    | 'zero-baseline-percent-change-unavailable'
+    | 'percent-change-overflow-unavailable'
+
+export type LabComparisonMismatchField =
+    | 'candidate'
+    | 'run-status'
+    | 'measured-attempts'
+    | 'metrics'
+    | 'capabilities'
+    | 'app-id'
+    | 'scenario-key'
+    | 'route-key'
+    | 'scenario-protocol'
+    | 'environment'
+    | 'browser-name'
+    | 'browser-version'
+    | 'browser-headless'
+    | 'viewport-width'
+    | 'viewport-height'
+    | 'device-scale-factor'
+    | 'reduced-motion'
+    | 'cache-mode'
+    | 'warmup-runs'
+    | 'measured-runs'
+    | 'observation-duration'
+    | 'trace-mode'
+    | 'lighthouse-mode'
+    | 'color-scheme'
+    | 'cpu-throttle-rate'
+    | 'network-profile'
+    | 'measurement-contract-version'
+    | 'expected-refresh-rate'
+    | 'target-frame-duration'
+    | 'measurement-source'
+    | 'measurement-confidence'
+    | 'metric-catalog-version'
+    | 'budget-reference'
+
+export type LabComparisonUnavailableField = 'animation-report-missing' | 'animation-report-expired'
+
+export type LabComparisonReasonField = LabComparisonMismatchField | LabComparisonUnavailableField
+
+export type LabComparisonRejectionReason =
+    | {
+          code: 'invalid-candidate' | 'condition-mismatch'
+          side: 'before' | 'after' | 'both'
+          field: LabComparisonMismatchField
+      }
+    | {
+          code: 'evidence-unavailable'
+          side: 'before' | 'after' | 'both'
+          field: LabComparisonUnavailableField
+      }
+
+export type LabComparisonConditions = {
+    routeKey: string
+    scenarioProtocolHash: string
+    environment: string
+    browser: { name: string; version: string; headless: boolean }
+    viewport: { width: number; height: number; dpr: number }
+    reducedMotion: 'no-preference' | 'reduce'
+    cacheMode: 'cold' | 'warm'
+    execution: {
+        warmupRuns: number
+        measuredRuns: number
+        durationMs: number | null
+        trace: boolean
+        lighthouse: boolean
+        colorScheme: 'light' | 'dark' | null
+        cpuThrottleRate: number
+        network: {
+            offline?: boolean
+            latencyMs?: number
+            downloadBytesPerSecond?: number
+            uploadBytesPerSecond?: number
+        } | null
+    }
+    measurementContract: LabMeasurementContract
+}
+
+export type ComparableAnimationLabResult = {
+    schemaVersion: 1
+    kind: 'animation-lab-before-after'
+    comparable: true
+    trust: 'caller-attested'
+    beforeRunId: string
+    afterRunId: string
+    scenarioKey: string
+    routeKey: string
+    conditions: LabComparisonConditions
+    caveats: LabComparisonCaveat[]
+    coverage: {
+        beforeAttempts: number
+        afterAttempts: number
+        candidateMetricTuples: number
+        comparedMetrics: number
+        excludedMetrics: number
+        retainedExcludedMetrics: number
+        droppedExcludedMetrics: number
+    }
+    metrics: LabComparisonMetric[]
+    excluded: LabComparisonExcludedMetric[]
+}
+
+export type IncomparableAnimationLabResult = {
+    schemaVersion: 1
+    kind: 'animation-lab-before-after'
+    comparable: false
+    reasons: LabComparisonRejectionReason[]
+}
+
+export type AnimationLabComparisonResult = ComparableAnimationLabResult | IncomparableAnimationLabResult
+
+export type LabComparisonApiResponse = LabApiResponse<AnimationLabComparisonResult>
