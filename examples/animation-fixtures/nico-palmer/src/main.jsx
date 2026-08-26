@@ -13,7 +13,11 @@ init({
     autoStart: import.meta.env.DEV || Boolean(dsn),
     devtools: import.meta.env.DEV,
     rum: dsn ? { sampleRate: 1 } : false,
-    context: { routeKey: "nico-palmer", runtimeFamily: "react" },
+    context: {
+      routeKey: "nico-palmer",
+      environment: import.meta.env.MODE,
+      runtimeFamily: "react",
+    },
   },
 });
 

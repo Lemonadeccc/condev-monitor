@@ -11,7 +11,11 @@ init({
     autoStart: import.meta.env.DEV || Boolean(dsn),
     devtools: import.meta.env.DEV,
     rum: dsn ? { sampleRate: 1 } : false,
-    context: { routeKey: "lemon-bureau", runtimeFamily: "vanilla" },
+    context: {
+      routeKey: "lemon-bureau",
+      environment: import.meta.env.MODE,
+      runtimeFamily: "vanilla",
+    },
   },
 });
 

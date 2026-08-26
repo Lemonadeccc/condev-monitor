@@ -9,6 +9,10 @@ init({
     autoStart: development || Boolean(dsn),
     devtools: development,
     rum: dsn ? { sampleRate: 1 } : false,
-    context: { routeKey: "salle-blanche", runtimeFamily: "react" },
+    context: {
+      routeKey: "salle-blanche",
+      environment: development ? "development" : "production",
+      runtimeFamily: "react",
+    },
   },
 });
