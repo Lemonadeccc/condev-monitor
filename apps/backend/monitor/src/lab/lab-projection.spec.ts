@@ -1,6 +1,13 @@
 import { BadRequestException, PayloadTooLargeException } from '@nestjs/common'
 
-import { LAB_PLATFORM_TIMELINE_EVENT_LIMIT, parseAnimationReportArtifact, parseTraceIndexArtifact } from './lab-projection'
+import { LAB_RUN_SUMMARY_MAX_BYTES, parseLabRunSummary } from './lab.contracts'
+import {
+    LAB_COMPACT_SUMMARY_METRICS_TRUNCATED,
+    LAB_COMPACT_SUMMARY_SCOPED_METRICS_OMITTED,
+    LAB_PLATFORM_TIMELINE_EVENT_LIMIT,
+    parseAnimationReportArtifact,
+    parseTraceIndexArtifact,
+} from './lab-projection'
 
 function traceEvent(index = 0) {
     return {
@@ -330,6 +337,103 @@ function animationReportV2() {
     }
 }
 
+function slowFrameMetric(overrides: Record<string, unknown> = {}) {
+    return expandedMetric({
+        family: 'frameCadence',
+        name: 'slowFrameRate',
+        stat: 'ratio',
+        unit: 'ratio',
+        value: 0.2,
+        metricId: 'frame.slow-rate',
+        budgetRefs: [],
+        ...overrides,
+    })
+}
+
+function realisticLargeAnimationReportV2() {
+    const report = animationReportV2()
+    const actions = Array.from({ length: 72 }, (_, index) => ({
+        actionId: `action-${index.toString().padStart(3, '0')}`,
+        order: index,
+        kind: 'wait',
+        label: `action-label-${index.toString().padStart(3, '0')}`,
+        subject: {
+            scope: 'subject',
+            subjectKey: `subject-${index.toString().padStart(3, '0')}`,
+            role: 'region',
+            surface: 'dom',
+        },
+        trigger: { source: 'scenario' },
+    }))
+    const windows = actions.map((action, index) => ({
+        actionId: action.actionId,
+        order: index,
+        kind: 'wait',
+        trigger: { source: 'scenario' },
+        subject: action.subject,
+        outcome: { status: 'completed' },
+        timestamps: {
+            clock: 'attempt-monotonic',
+            startedAtMs: 100 + index * 10,
+            endedAtMs: 105 + index * 10,
+            durationMs: 5,
+        },
+        evidenceRefs: ['runtime-browser'],
+        limitations: [],
+    }))
+    const actionLimitations = ['eligible-attempts-1', 'total-attempts-1', 'action-window-overlap-is-correlative']
+    const attemptActionMetrics = actions.flatMap(action => [
+        expandedMetric({
+            scope: { level: 'action', attemptId: 'attempt_1', actionId: action.actionId },
+            aggregation: { population: 'frames', method: 'nearest-rank' },
+            budgetRefs: [],
+            limitations: [],
+        }),
+        slowFrameMetric({
+            scope: { level: 'action', attemptId: 'attempt_1', actionId: action.actionId },
+            aggregation: { population: 'frames', method: 'ratio' },
+            limitations: [],
+        }),
+    ])
+    const aggregateActionMetrics = actions.flatMap(action => [
+        expandedMetric({
+            scope: { level: 'action', actionId: action.actionId },
+            budgetRefs: [],
+            limitations: actionLimitations,
+        }),
+        slowFrameMetric({
+            scope: { level: 'action', actionId: action.actionId },
+            limitations: actionLimitations,
+        }),
+    ])
+    report.scenario.actions = actions
+    report.scenario.actionLabels = actions.map(action => action.label)
+    report.attempts[0]!.metrics = [
+        expandedMetric({
+            scope: { level: 'attempt', attemptId: 'attempt_1' },
+            aggregation: { population: 'frames', method: 'nearest-rank' },
+            limitations: [],
+        }),
+        ...attemptActionMetrics,
+    ]
+    report.attempts[0]!.actionWindows = windows
+    report.aggregateMetrics = [expandedMetric(), ...aggregateActionMetrics]
+    report.actionWindows = windows
+    report.findings = []
+    return report
+}
+
+function oversizedLegacySummaryReport() {
+    const report = animationReport()
+    report.aggregateMetrics = Array.from({ length: 256 }, (_, index) =>
+        metric({
+            family: `family${index.toString().padStart(3, '0')}${'f'.repeat(68)}`,
+            name: `metric${index.toString().padStart(3, '0')}${'m'.repeat(68)}`,
+        })
+    )
+    return report
+}
+
 describe('lab platform artifact projections', () => {
     it('maps a bounded redacted trace-index to the frontend timeline contract', () => {
         expect(parseTraceIndexArtifact(traceIndex())).toEqual(
@@ -593,7 +697,7 @@ describe('lab platform artifact projections', () => {
         expect(() => parseAnimationReportArtifact(beyondGrant)).toThrow('duration is too large')
     })
 
-    it('strictly projects canonical v2 semantics and preserves expanded summary metric metadata', () => {
+    it('keeps canonical v2 evidence in raw analysis while persisting only the base run summary shape', () => {
         const report = animationReportV2()
         Object.assign(report.scenario, { protocolHash: 'a'.repeat(64) })
         const parsed = parseAnimationReportArtifact(report)
@@ -615,16 +719,17 @@ describe('lab platform artifact projections', () => {
                 findings: [expect.objectContaining({ findingId: 'frame-tail-warning' })],
             })
         )
-        expect(parsed.compactSummary.metrics?.[0]).toEqual(
-            expect.objectContaining({
-                metricId: 'frame.duration.p95',
-                evidenceLevel: 'controlled-lab-measurement',
-                scope: { level: 'run' },
-                budgetRefs: [expect.objectContaining({ ruleId: 'frame-tail' })],
-                evidenceRefs: ['runtime-browser'],
-                limitations: ['eligible-attempts-3'],
-            })
-        )
+        expect(parsed.compactSummary.metrics?.[0]).toEqual({
+            family: 'frameCadence',
+            name: 'frameDurationMs',
+            stat: 'p95',
+            unit: 'ms',
+            value: 18.4,
+            samples: 120,
+            status: 'measured',
+            evidenceLevel: 'controlled-lab-measurement',
+        })
+        expect(parsed.compactSummary.metrics?.[0]).not.toHaveProperty('metricId')
         expect(parsed.context).toEqual(
             expect.objectContaining({
                 routeKey: 'examples.hover-card',
@@ -644,6 +749,41 @@ describe('lab platform artifact projections', () => {
         const forgedProtocol = animationReportV2()
         Object.assign(forgedProtocol.scenario, { protocolHash: 'A'.repeat(64) })
         expect(() => parseAnimationReportArtifact(forgedProtocol)).toThrow('Invalid animation-report.scenario.protocolHash')
+    })
+
+    it('keeps a real-scale action catalog in raw analysis without overflowing the persisted summary', () => {
+        const report = realisticLargeAnimationReportV2()
+        expect(report.aggregateMetrics).toHaveLength(145)
+        expect(Buffer.byteLength(JSON.stringify({ metrics: report.aggregateMetrics }), 'utf8')).toBeGreaterThan(LAB_RUN_SUMMARY_MAX_BYTES)
+
+        const first = parseAnimationReportArtifact(report)
+        const second = parseAnimationReportArtifact(realisticLargeAnimationReportV2())
+
+        expect(first.analysis?.metrics).toHaveLength(145)
+        expect(first.analysis?.metrics.filter(item => item.scope.level === 'action')).toHaveLength(144)
+        expect(first.compactSummary.metrics).toHaveLength(1)
+        expect(first.compactSummary.metrics?.[0]).not.toHaveProperty('metricId')
+        expect(first.compactSummary.limitations).toContain(LAB_COMPACT_SUMMARY_SCOPED_METRICS_OMITTED)
+        expect(first.compactSummary.limitations).not.toContain(LAB_COMPACT_SUMMARY_METRICS_TRUNCATED)
+        expect(Buffer.byteLength(JSON.stringify(first.compactSummary), 'utf8')).toBeLessThanOrEqual(LAB_RUN_SUMMARY_MAX_BYTES)
+        expect(() => parseLabRunSummary(first.compactSummary)).not.toThrow()
+        expect(second.compactSummary).toEqual(first.compactSummary)
+    })
+
+    it('deterministically truncates an oversized legacy summary at whole-metric boundaries', () => {
+        const report = oversizedLegacySummaryReport()
+        expect(Buffer.byteLength(JSON.stringify({ metrics: report.aggregateMetrics }), 'utf8')).toBeGreaterThan(LAB_RUN_SUMMARY_MAX_BYTES)
+
+        const first = parseAnimationReportArtifact(report).compactSummary
+        const second = parseAnimationReportArtifact(structuredClone(report)).compactSummary
+
+        expect(first.metrics?.length).toBeGreaterThan(0)
+        expect(first.metrics?.length).toBeLessThan(256)
+        expect(first.limitations).toContain(LAB_COMPACT_SUMMARY_METRICS_TRUNCATED)
+        expect(first.limitations).not.toContain(LAB_COMPACT_SUMMARY_SCOPED_METRICS_OMITTED)
+        expect(Buffer.byteLength(JSON.stringify(first), 'utf8')).toBeLessThanOrEqual(LAB_RUN_SUMMARY_MAX_BYTES)
+        expect(() => parseLabRunSummary(first)).not.toThrow()
+        expect(second).toEqual(first)
     })
 
     it('accepts additive catalog v2 metrics while keeping the v1 catalog closed', () => {
@@ -706,9 +846,10 @@ describe('lab platform artifact projections', () => {
         expect(parsed.analysis?.metrics.map(item => item.metricId)).toEqual(
             ADDITIONAL_CATALOG_V2_METRICS.map(definition => definition.metricId)
         )
-        expect(parsed.compactSummary.metrics?.map(item => ('metricId' in item ? item.metricId : null))).toEqual(
-            ADDITIONAL_CATALOG_V2_METRICS.map(definition => definition.metricId)
+        expect(parsed.compactSummary.metrics?.map(item => item.name)).toEqual(
+            ADDITIONAL_CATALOG_V2_METRICS.map(definition => definition.name)
         )
+        expect(parsed.compactSummary.metrics?.every(item => !('metricId' in item))).toBe(true)
         expect(parsed.compactSummary.capabilities).toEqual(
             expect.objectContaining({
                 inputFrameScheduling: true,

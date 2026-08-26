@@ -235,7 +235,10 @@ async function main(): Promise<void> {
         if (remote) {
             await remote.update({ status: 'running', phase: 'uploading', progress: 90 })
             await remote.uploadDerivedReport(result.report)
-            await remote.update({ status: 'completed', phase: 'done', progress: 100, summary: remote.summary(result.report) })
+            // The Monitor derives the bounded persisted summary from the
+            // validated report upload. Do not send a second caller-authored
+            // copy that can drift from the server projection.
+            await remote.update({ status: 'completed', phase: 'done', progress: 100 })
         }
     } catch (error) {
         await remoteProgress.catch(() => undefined)

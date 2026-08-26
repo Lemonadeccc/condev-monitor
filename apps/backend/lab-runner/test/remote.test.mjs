@@ -12,6 +12,7 @@ const token = `labg_${'a'.repeat(43)}`
 const animationReportMaxBytes = 2 * 1024 * 1024
 const traceIndexMaxBytes = 4 * 1024 * 1024
 const reportByteBudgetLimitation = 'report-upload-byte-budget-truncated-attempt-detail'
+const actionScopedCompactSummaryLimitation = 'action-scoped-metrics-retained-only-in-animation-report'
 
 function claimedConfig(overrides = {}) {
     return {
@@ -286,9 +287,16 @@ test('claims, updates, and uploads only redacted bounded platform artifacts', as
 
     const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
     const compact = client.summary(report())
-    assert.equal(compact.metrics[0].evidenceLevel, 'controlled-lab-measurement')
-    assert.equal(compact.metrics[0].metricId, 'frame.duration.p95')
-    assert.deepEqual(compact.metrics[0].scope, { level: 'run' })
+    assert.deepEqual(compact.metrics[0], {
+        family: 'frameCadence',
+        name: 'frameDurationMs',
+        stat: 'p95',
+        unit: 'ms',
+        value: 20,
+        samples: 3,
+        status: 'measured',
+        evidenceLevel: 'controlled-lab-measurement',
+    })
     assert.deepEqual(await client.claim(), {
         runId,
         targetUrl: 'http://localhost:5173/',
@@ -320,6 +328,26 @@ test('claims, updates, and uploads only redacted bounded platform artifacts', as
         true
     )
     assert.equal(uploadedTimeline.droppedEvents, 1)
+})
+
+test('keeps compatibility summaries run-scoped while retaining action evidence in the report artifact', () => {
+    const fixture = report()
+    delete fixture.timeline
+    fixture.aggregateMetrics.push(
+        ...Array.from({ length: 100 }, (_, index) => ({
+            ...reportMetric(null, index, true),
+            scope: { level: 'action', actionId: `action-${index.toString().padStart(3, '0')}` },
+        }))
+    )
+
+    const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
+    const compact = client.summary(fixture)
+
+    assert.equal(compact.metrics.length, 1)
+    assert.equal('metricId' in compact.metrics[0], false)
+    assert.ok(compact.limitations.includes(actionScopedCompactSummaryLimitation))
+    assert.ok(Buffer.byteLength(JSON.stringify(compact), 'utf8') < 64 * 1024)
+    assert.equal(fixture.aggregateMetrics.length, 101)
 })
 
 test('rejects an unsupported browser returned by the platform claim', async t => {

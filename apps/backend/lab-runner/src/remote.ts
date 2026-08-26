@@ -21,6 +21,7 @@ const MAX_PLATFORM_ATTEMPT_LIMITATIONS = 64
 const WARMUP_DETAIL_OMITTED_LIMITATION = 'warmup-detail-omitted-from-report'
 const ATTEMPT_METRIC_PROJECTION_LIMITATION = 'attempt-metric-projection-truncated'
 const REPORT_BYTE_BUDGET_LIMITATION = 'report-upload-byte-budget-truncated-attempt-detail'
+const ACTION_SCOPED_COMPACT_SUMMARY_LIMITATION = 'action-scoped-metrics-retained-only-in-animation-report'
 export const LAB_RUNNER_CONTRACT_VERSION = 2 as const
 
 export interface RemoteLabConnectionOptions {
@@ -211,9 +212,19 @@ function platformSummary(report: AnimationLabReport) {
             else if (!(name in capabilities)) capabilities[name] = value === false ? false : null
         }
     }
-    const limitations = [...new Set(report.attempts.flatMap(attempt => attempt.limitations))].slice(0, 64).map(value => value.slice(0, 200))
+    const aggregateMetrics = report.aggregateMetrics.slice(0, 256)
+    const runMetrics = aggregateMetrics.filter(metric => !metric.scope || metric.scope.level === 'run')
+    const omittedActionMetrics = runMetrics.length !== aggregateMetrics.length
+    const requiredLimitations = omittedActionMetrics ? [ACTION_SCOPED_COMPACT_SUMMARY_LIMITATION] : []
+    const limitations = [
+        ...[...new Set(report.attempts.flatMap(attempt => attempt.limitations))]
+            .filter(value => !requiredLimitations.includes(value))
+            .slice(0, 64 - requiredLimitations.length)
+            .map(value => value.slice(0, 200)),
+        ...requiredLimitations,
+    ]
     return {
-        metrics: report.aggregateMetrics.slice(0, 256).map(metric => ({
+        metrics: runMetrics.map(metric => ({
             family: metric.family,
             name: metric.name,
             stat: metric.stat,
@@ -222,16 +233,6 @@ function platformSummary(report: AnimationLabReport) {
             samples: metric.samples,
             status: metric.status,
             evidenceLevel: metric.evidenceLevel,
-            ...(metric.metricId && metric.scope && metric.aggregation && metric.budgetRefs && metric.evidenceRefs && metric.limitations
-                ? {
-                      metricId: metric.metricId,
-                      scope: metric.scope,
-                      aggregation: metric.aggregation,
-                      budgetRefs: metric.budgetRefs,
-                      evidenceRefs: metric.evidenceRefs,
-                      limitations: metric.limitations,
-                  }
-                : {}),
         })),
         capabilities,
         ...(report.lighthouse ? { lighthouse: lighthouseSummary(report.lighthouse) } : {}),

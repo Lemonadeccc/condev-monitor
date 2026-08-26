@@ -1,6 +1,6 @@
 import { BadRequestException, PayloadTooLargeException } from '@nestjs/common'
 
-import type { LabRunSummary, LabSummaryMetric } from './lab.contracts'
+import { LAB_RUN_SUMMARY_MAX_BYTES, type LabRunSummary, type LabSummaryMetric } from './lab.contracts'
 import {
     type AnimationLabMetricV2Projection,
     type AnimationLabSemanticsV2,
@@ -12,11 +12,14 @@ import {
 export const LAB_PLATFORM_TIMELINE_EVENT_LIMIT = 4_000
 export const LAB_ANIMATION_REPORT_DECODED_MAX_BYTES = 2 * 1024 * 1024
 export const LAB_TRACE_INDEX_DECODED_MAX_BYTES = 4 * 1024 * 1024
+export const LAB_COMPACT_SUMMARY_SCOPED_METRICS_OMITTED = 'action-scoped-metrics-retained-only-in-animation-report'
+export const LAB_COMPACT_SUMMARY_METRICS_TRUNCATED = 'summary-metrics-truncated-to-byte-budget'
 
 const MAX_DURATION_MS = 60 * 60 * 1000
 const MAX_REPORT_WINDOW_MS = 2 * 60 * 60 * 1000
 const MAX_TRACE_INPUT_EVENTS = 2_000_000
 const MAX_METRICS = 512
+const MAX_COMPACT_SUMMARY_LIMITATIONS = 64
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,159}$/
 const SCENARIO_PROTOCOL_HASH = /^[a-f0-9]{64}$/
 const LIGHTHOUSE_METRIC_IDS = new Set([
@@ -560,7 +563,7 @@ function metrics(
 }
 
 function summaryMetric(item: ParsedMetric): LabSummaryMetric {
-    const base = {
+    return {
         family: item.family,
         name: item.name,
         stat: item.stat,
@@ -570,24 +573,56 @@ function summaryMetric(item: ParsedMetric): LabSummaryMetric {
         status: item.status,
         evidenceLevel: item.evidenceLevel as AnimationLabMetricV2Projection['evidenceLevel'],
     }
-    if (!('metricId' in item)) return base
-    const expanded = item as AnimationLabMetricV2Projection
-    return {
-        family: expanded.family,
-        name: expanded.name,
-        stat: expanded.stat,
-        unit: expanded.unit,
-        value: expanded.value,
-        samples: expanded.samples,
-        status: expanded.status,
-        evidenceLevel: expanded.evidenceLevel,
-        metricId: expanded.metricId,
-        scope: expanded.scope,
-        aggregation: expanded.aggregation,
-        budgetRefs: expanded.budgetRefs,
-        evidenceRefs: expanded.evidenceRefs,
-        limitations: expanded.limitations,
+}
+
+function compactSummaryLimitations(original: readonly string[], required: readonly string[]): string[] {
+    const markers = [...new Set(required)]
+    const originals = original.filter(item => !markers.includes(item))
+    return [...originals.slice(0, Math.max(0, MAX_COMPACT_SUMMARY_LIMITATIONS - markers.length)), ...markers]
+}
+
+function compactSummaryBytes(value: LabRunSummary): number {
+    return Buffer.byteLength(JSON.stringify(value), 'utf8')
+}
+
+function boundedCompactSummary(params: {
+    metrics: readonly LabSummaryMetric[]
+    capabilities: LabRunSummary['capabilities']
+    lighthouse: LabRunSummary['lighthouse']
+    limitations: readonly string[]
+    requiredLimitations: readonly string[]
+}): LabRunSummary {
+    const project = (metricCount: number, requiredLimitations: readonly string[]): LabRunSummary => {
+        const limitations = compactSummaryLimitations(params.limitations, requiredLimitations)
+        return {
+            metrics: params.metrics.slice(0, metricCount),
+            ...(params.capabilities && Object.keys(params.capabilities).length ? { capabilities: params.capabilities } : {}),
+            ...(params.lighthouse ? { lighthouse: params.lighthouse } : {}),
+            ...(limitations.length ? { limitations } : {}),
+        }
     }
+
+    const complete = project(params.metrics.length, params.requiredLimitations)
+    if (compactSummaryBytes(complete) <= LAB_RUN_SUMMARY_MAX_BYTES) return complete
+
+    const truncatedLimitations = [...params.requiredLimitations, LAB_COMPACT_SUMMARY_METRICS_TRUNCATED]
+    let lower = 0
+    let upper = params.metrics.length - 1
+    let best = project(0, truncatedLimitations)
+    if (compactSummaryBytes(best) > LAB_RUN_SUMMARY_MAX_BYTES) {
+        throw new PayloadTooLargeException('animation-report compact summary fixed fields exceed the byte budget')
+    }
+    while (lower <= upper) {
+        const middle = Math.floor((lower + upper) / 2)
+        const candidate = project(middle, truncatedLimitations)
+        if (compactSummaryBytes(candidate) <= LAB_RUN_SUMMARY_MAX_BYTES) {
+            best = candidate
+            lower = middle + 1
+        } else {
+            upper = middle - 1
+        }
+    }
+    return best
 }
 
 function capabilities(value: unknown, label: string): Record<string, boolean | null> {
@@ -1155,19 +1190,22 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
               })
           )
         : undefined
-    const compactSummary: LabRunSummary = {
-        metrics: aggregateMetrics.map(item => summaryMetric(item)),
-        ...(Object.keys(mergedCapabilities).length ? { capabilities: mergedCapabilities } : {}),
-        ...(parsedLighthouse
+    const scopedMetricsOmitted = semanticsV2 && aggregateMetrics.some(item => expandedMetric(item) && item.scope.level !== 'run')
+    const summaryMetrics = (
+        semanticsV2 ? aggregateMetrics.filter(item => expandedMetric(item) && item.scope.level === 'run') : aggregateMetrics
+    ).map(item => summaryMetric(item))
+    const compactSummary = boundedCompactSummary({
+        metrics: summaryMetrics,
+        capabilities: Object.keys(mergedCapabilities).length ? mergedCapabilities : undefined,
+        lighthouse: parsedLighthouse
             ? {
-                  lighthouse: {
-                      scores: lighthouseScores,
-                      metrics: lighthouseMetrics,
-                  },
+                  scores: lighthouseScores,
+                  metrics: lighthouseMetrics,
               }
-            : {}),
-        ...(mergedLimitations.length ? { limitations: mergedLimitations } : {}),
-    }
+            : undefined,
+        limitations: mergedLimitations,
+        requiredLimitations: scopedMetricsOmitted ? [LAB_COMPACT_SUMMARY_SCOPED_METRICS_OMITTED] : [],
+    })
     const measuredAttempts = semanticsV2
         ? parsedAttempts
               .filter(item => item.phase === 'measured')
