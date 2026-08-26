@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 
+import { isAnimationRumV1Candidate, validateAnimationRumV1 } from '../../shared/animation-rum-v1'
+
 export type FilterResult = {
     accepted: Record<string, unknown>[]
     rejected: number
@@ -37,6 +39,15 @@ export class InboundFilterService {
                 rejected++
                 reasons.push('invalid_event_type')
                 continue
+            }
+
+            if (isAnimationRumV1Candidate(item)) {
+                const validation = validateAnimationRumV1(item, { trackingWrapper: true })
+                if ('errors' in validation) {
+                    rejected++
+                    reasons.push(...validation.errors.map(reason => `animation_rum:${reason}`))
+                    continue
+                }
             }
 
             const ua = typeof item.user_agent === 'string' ? item.user_agent : ''

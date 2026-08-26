@@ -3,14 +3,18 @@ import { randomUUID } from 'node:crypto'
 import { Injectable, Logger } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 
+import { AnimationRumV1Report, isAnimationRumV1Candidate, validateAnimationRumV1 } from '../../shared/animation-rum-v1'
 import { EventRow, KafkaEventEnvelope } from '../../shared/ingest-types'
 import { AIClickhouseFallbackService } from './ai-clickhouse-fallback.service'
+import { AnimationRumClickhouseService } from './animation-rum-clickhouse.service'
 import { ClickhouseFallbackService } from './clickhouse-fallback.service'
 import { KafkaProducerService } from './kafka-producer.service'
 
 export type PersistResult = {
     persistedVia: 'clickhouse' | 'kafka' | 'clickhouse-fallback'
 }
+
+export type AnimationRumPersistResult = PersistResult & { receivedAt: string }
 
 @Injectable()
 export class IngestWriterService {
@@ -26,6 +30,7 @@ export class IngestWriterService {
         private readonly kafkaProducer: KafkaProducerService,
         private readonly clickhouseFallback: ClickhouseFallbackService,
         private readonly aiClickhouseFallback: AIClickhouseFallbackService,
+        private readonly animationRumClickhouse: AnimationRumClickhouseService,
         private readonly config: ConfigService
     ) {
         this.ingestMode = this.config.get<string>('INGEST_MODE') ?? 'direct'
@@ -50,8 +55,24 @@ export class IngestWriterService {
     }
 
     async writeTrackingBatch(appId: string, items: Record<string, unknown>[]): Promise<PersistResult> {
-        const aiItems = items.filter(item => this.classifyDomain(item) === 'ai')
-        const frontendItems = items.filter(item => this.classifyDomain(item) === 'frontend')
+        const animationItems = items.filter(isAnimationRumV1Candidate)
+        // Keep the negative branch typed as the generic legacy payload. Without
+        // the explicit boolean return, TypeScript treats the complement of the
+        // Record type guard as `never`, even though this branch deliberately
+        // contains all non-protocol custom events.
+        const nonAnimationItems = items.filter((item): boolean => !isAnimationRumV1Candidate(item))
+        let animationResult: PersistResult | null = null
+        if (animationItems.length > 0) {
+            const reports = animationItems.map(item => {
+                const parsed = validateAnimationRumV1(item, { trackingWrapper: true })
+                if ('errors' in parsed) throw new Error(`Invalid animation RUM item: ${parsed.errors.join(',')}`)
+                return parsed.value
+            })
+            animationResult = await this.writeAnimationRumBatch(appId, reports)
+        }
+
+        const aiItems = nonAnimationItems.filter(item => this.classifyDomain(item) === 'ai')
+        const frontendItems = nonAnimationItems.filter(item => this.classifyDomain(item) === 'frontend')
 
         if (aiItems.length > 0) {
             if (this.ingestMode === 'direct') {
@@ -62,6 +83,7 @@ export class IngestWriterService {
         }
 
         if (frontendItems.length === 0) {
+            if (aiItems.length === 0 && animationResult) return animationResult
             return { persistedVia: this.ingestMode === 'direct' ? 'clickhouse' : 'kafka' }
         }
 
@@ -125,6 +147,49 @@ export class IngestWriterService {
                 return { persistedVia: 'clickhouse-fallback' }
             }
             throw err
+        }
+    }
+
+    async writeAnimationRum(appId: string, report: AnimationRumV1Report): Promise<AnimationRumPersistResult> {
+        return this.writeAnimationRumBatch(appId, [report])
+    }
+
+    private async writeAnimationRumBatch(appId: string, reports: AnimationRumV1Report[]): Promise<AnimationRumPersistResult> {
+        const receivedAt = new Date().toISOString()
+        const inserts = reports.map(report => ({ appId, report, receivedAt }))
+
+        if (this.ingestMode === 'direct') {
+            await this.animationRumClickhouse.insertBatch(inserts)
+            return { persistedVia: 'clickhouse', receivedAt }
+        }
+
+        const envelopes: KafkaEventEnvelope[] = reports.map(report => ({
+            schemaVersion: 1,
+            eventId: report.eventId,
+            appId,
+            eventType: 'animation_rum',
+            message: '',
+            info: { animationRum: report },
+            sdkVersion: report.sdkVersion,
+            environment: report.environment,
+            release: report.release,
+            receivedAt,
+            source: 'animation-rum-v1',
+        }))
+
+        try {
+            await this.kafkaProducer.publishBatch({
+                topic: this.eventsTopic,
+                messages: envelopes.map(envelope => ({ key: appId, value: JSON.stringify(envelope) })),
+            })
+            return { persistedVia: 'kafka', receivedAt }
+        } catch (err) {
+            this.logger.warn(
+                `Kafka animation RUM publish failed, fallback=${this.kafkaFallback}: ${err instanceof Error ? err.message : String(err)}`
+            )
+            if (!this.kafkaFallback) throw err
+            await this.animationRumClickhouse.insertBatch(inserts)
+            return { persistedVia: 'clickhouse-fallback', receivedAt }
         }
     }
 

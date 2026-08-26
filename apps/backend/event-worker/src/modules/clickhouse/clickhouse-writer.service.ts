@@ -2,6 +2,7 @@ import { ClickHouseClient, createClient } from '@clickhouse/client'
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 
+import { AnimationRumV1Report } from '../../shared/animation-rum-v1'
 import { resolveClickhouseDatabase } from '../../shared/clickhouse-utils'
 import { EventRow } from '../../shared/ingest-types'
 import { formatDateTimeForCH } from '../../utils/datetime'
@@ -62,6 +63,64 @@ export class ClickhouseWriterService implements OnModuleDestroy {
         })
 
         this.logger.debug(`Inserted ${rows.length} rows into ClickHouse`)
+    }
+
+    async insertAnimationRum(appId: string, report: AnimationRumV1Report, receivedAt: string): Promise<void> {
+        const capturedAt = formatDateTimeForCH(new Date(report.capturedAt))
+        const received = formatDateTimeForCH(new Date(receivedAt))
+        await this.client.insert({
+            table: `${this.database}.animation_rum_metrics_v1`,
+            format: 'JSONEachRow',
+            values: report.metrics.map(metric => ({
+                event_id: report.eventId,
+                capture_id: report.captureId,
+                app_id: appId,
+                captured_at: capturedAt,
+                received_at: received,
+                release: report.release,
+                dist: report.dist,
+                environment: report.environment,
+                sample_rate: report.sampleRate,
+                sampling_policy_version: report.samplingPolicyVersion,
+                route_key: String(report.context.routeKey ?? ''),
+                runtime_family: String(report.context.runtimeFamily ?? 'unknown'),
+                family: metric.family,
+                name: metric.name,
+                stat: metric.stat,
+                unit: metric.unit,
+                value: metric.value,
+                samples: metric.samples,
+                status: metric.status,
+            })),
+        })
+        await this.client.insert({
+            table: `${this.database}.animation_rum_captures_v1`,
+            format: 'JSONEachRow',
+            values: [
+                {
+                    event_id: report.eventId,
+                    capture_id: report.captureId,
+                    app_id: appId,
+                    contract_version: report.contractVersion,
+                    snapshot_schema_version: report.snapshotSchemaVersion,
+                    captured_at: capturedAt,
+                    received_at: received,
+                    release: report.release,
+                    dist: report.dist,
+                    environment: report.environment,
+                    sdk_version: report.sdkVersion,
+                    monitor_version: report.monitorVersion,
+                    sample_rate: report.sampleRate,
+                    sampling_policy_version: report.samplingPolicyVersion,
+                    route_key: String(report.context.routeKey ?? ''),
+                    runtime_family: String(report.context.runtimeFamily ?? 'unknown'),
+                    context_json: JSON.stringify(report.context),
+                    capabilities_json: JSON.stringify(report.capabilities),
+                    coverage_json: JSON.stringify(report.coverage),
+                    metric_count: report.metrics.length,
+                },
+            ],
+        })
     }
 
     async queryJson<T>(query: string, query_params?: Record<string, unknown>): Promise<T[]> {

@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common'
 
 import { AIClickhouseFallbackService } from './ai-clickhouse-fallback.service'
+import { AnimationRumClickhouseService } from './animation-rum-clickhouse.service'
 import { ClickhouseFallbackService } from './clickhouse-fallback.service'
 import { InboundFilterService } from './inbound-filter.service'
 import { IngestWriterService } from './ingest-writer.service'
@@ -12,6 +13,7 @@ import { RateLimiterService } from './rate-limiter.service'
         KafkaProducerService,
         ClickhouseFallbackService,
         AIClickhouseFallbackService,
+        AnimationRumClickhouseService,
         IngestWriterService,
         InboundFilterService,
         RateLimiterService,

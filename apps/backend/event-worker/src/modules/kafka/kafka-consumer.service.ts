@@ -8,6 +8,7 @@ import { resolveClickhouseDatabase } from '../../shared/clickhouse-utils'
 import { EventRow, KafkaEventEnvelope } from '../../shared/ingest-types'
 import { formatDateTimeForCH } from '../../utils/datetime'
 import { AiEventPayload, AiProjectorService } from '../ai-observability/ai-projector.service'
+import { AnimationRumProjectorService, AnimationRumValidationError } from '../animation-rum/animation-rum-projector.service'
 import { ClickhouseWriterService, IssueRow } from '../clickhouse/clickhouse-writer.service'
 import { DlqProducerService } from '../dlq/dlq-producer.service'
 import { EmbeddingService } from '../fingerprint/embedding.service'
@@ -18,6 +19,27 @@ import { BatchBufferManager, LaneName } from './batch-buffer-manager.service'
 type LaneRetryPolicy = {
     maxRetries: number
     maxBackoffMs: number
+}
+
+type LegacyEnvelopeFallback = {
+    topic: string
+    partition: number
+    offset: string
+    timestamp?: string
+}
+
+/**
+ * Preserve the legacy DLQ raw body for malformed generic events, but fail
+ * closed for anything that could be a privacy-reviewed animation envelope.
+ * An invalid envelope cannot always be inspected structurally, so decode its
+ * JSON Unicode escapes and scan the complete body (without a prefix limit).
+ * This also covers arrays and nested markers without recursive traversal.
+ */
+function shouldRedactInvalidEnvelope(value: Buffer | null): boolean {
+    if (!value) return false
+    const raw = value.toString()
+    const unicodeDecoded = raw.replace(/\\u([0-9a-fA-F]{4})/gu, (_match, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
+    return unicodeDecoded.includes('animation_rum') || unicodeDecoded.includes('animation-rum-v1')
 }
 
 @Injectable()
@@ -44,7 +66,8 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
         private readonly embeddingService: EmbeddingService,
         private readonly tfidfService: TfIdfService,
         private readonly bufferManager: BatchBufferManager,
-        private readonly aiProjector: AiProjectorService
+        private readonly aiProjector: AiProjectorService,
+        private readonly animationRumProjector: AnimationRumProjectorService
     ) {
         this.eventsTopic = this.config.get<string>('KAFKA_EVENTS_TOPIC') ?? 'monitor.sdk.events.v1'
         this.replaysTopic = this.config.get<string>('KAFKA_REPLAYS_TOPIC') ?? 'monitor.sdk.replays.v1'
@@ -127,20 +150,52 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
         await this.dlqProducer.disconnect()
     }
 
-    private safeParseEnvelope(value: Buffer | null): { ok: true; value: KafkaEventEnvelope } | { ok: false } {
+    private safeParseEnvelope(
+        value: Buffer | null,
+        fallback?: LegacyEnvelopeFallback
+    ): { ok: true; value: KafkaEventEnvelope } | { ok: false } {
         if (!value) return { ok: false }
         try {
-            const parsed = JSON.parse(value.toString()) as KafkaEventEnvelope
-            if (!parsed.appId || !parsed.eventType) return { ok: false }
+            const raw = value.toString()
+            const parsed = JSON.parse(raw) as Partial<KafkaEventEnvelope> | null
+            if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false }
+            if (typeof parsed.appId !== 'string' || !parsed.appId || typeof parsed.eventType !== 'string' || !parsed.eventType) {
+                return { ok: false }
+            }
+            if (parsed.source !== undefined && typeof parsed.source !== 'string') return { ok: false }
+
+            const isAnimationEnvelope = parsed.source === 'animation-rum-v1'
+            if (isAnimationEnvelope && (parsed.schemaVersion !== 1 || typeof parsed.eventId !== 'string' || !parsed.eventId)) {
+                return { ok: false }
+            }
+
+            const legacyKey = fallback ? `${fallback.topic}:${fallback.partition}:${fallback.offset}:${raw}` : raw
+            const eventId =
+                typeof parsed.eventId === 'string' && parsed.eventId
+                    ? parsed.eventId
+                    : `legacy_${createHash('sha256').update(legacyKey).digest('hex').slice(0, 32)}`
+            const timestampMs = Number(fallback?.timestamp)
+            const receivedAt =
+                typeof parsed.receivedAt === 'string' && parsed.receivedAt
+                    ? parsed.receivedAt
+                    : Number.isFinite(timestampMs)
+                      ? new Date(timestampMs).toISOString()
+                      : new Date(0).toISOString()
             return {
                 ok: true,
                 value: {
                     ...parsed,
+                    schemaVersion: parsed.schemaVersion ?? 1,
+                    eventId,
+                    appId: parsed.appId,
+                    eventType: parsed.eventType,
                     message: typeof parsed.message === 'string' ? parsed.message : '',
                     info: parsed.info && typeof parsed.info === 'object' && !Array.isArray(parsed.info) ? parsed.info : {},
                     sdkVersion: typeof parsed.sdkVersion === 'string' ? parsed.sdkVersion : '',
                     environment: typeof parsed.environment === 'string' ? parsed.environment : '',
                     release: typeof parsed.release === 'string' ? parsed.release : '',
+                    receivedAt,
+                    source: typeof parsed.source === 'string' ? parsed.source : 'legacy-kafka',
                 },
             }
         } catch {
@@ -206,16 +261,25 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
         for (const message of batch.messages) {
             if (!isRunning() || isStale()) break
 
-            const parsed = this.safeParseEnvelope(message.value)
+            const parsed = this.safeParseEnvelope(message.value, {
+                topic: batch.topic,
+                partition: batch.partition,
+                offset: message.offset,
+                timestamp: message.timestamp,
+            })
 
             if (!parsed.ok) {
                 try {
+                    const redactRawValue = shouldRedactInvalidEnvelope(message.value)
                     await this.dlqProducer.publish({
                         originalTopic: batch.topic,
                         originalOffset: message.offset,
                         key: message.key?.toString() ?? null,
                         reason: 'INVALID_JSON',
-                        rawValue: message.value?.toString() ?? null,
+                        // Animation candidates can contain arbitrary PII, even when their marker is
+                        // Unicode-escaped or the JSON is truncated. Generic malformed events keep the
+                        // pre-animation DLQ behavior for backwards-compatible diagnostics.
+                        rawValue: redactRawValue ? null : (message.value?.toString() ?? null),
                     })
                     resolveOffset(message.offset)
                 } catch (dlqErr) {
@@ -224,6 +288,38 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
                         dlqErr instanceof Error ? dlqErr.stack : String(dlqErr)
                     )
                     break
+                }
+                continue
+            }
+
+            if (parsed.value.source === 'animation-rum-v1') {
+                try {
+                    await this.animationRumProjector.handleEnvelope(parsed.value)
+                    resolveOffset(message.offset)
+                } catch (err) {
+                    if (!(err instanceof AnimationRumValidationError)) throw err
+                    try {
+                        await this.dlqProducer.publish({
+                            originalTopic: batch.topic,
+                            originalOffset: message.offset,
+                            key: message.key?.toString() ?? null,
+                            reason: `INVALID_ANIMATION_RUM:${err.codes.join(',')}`.slice(0, 240),
+                            // Invalid RUM may contain PII; never copy it into the DLQ.
+                            rawValue: null,
+                        })
+                        resolveOffset(message.offset)
+                    } catch (dlqErr) {
+                        this.logger.error(
+                            `DLQ publish failed for invalid animation RUM at offset=${message.offset}, stopping batch`,
+                            dlqErr instanceof Error ? dlqErr.stack : String(dlqErr)
+                        )
+                        break
+                    }
+                }
+                processedSinceHeartbeat += 1
+                if (processedSinceHeartbeat >= 100) {
+                    await heartbeat()
+                    processedSinceHeartbeat = 0
                 }
                 continue
             }
