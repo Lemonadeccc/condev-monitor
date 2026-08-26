@@ -27,6 +27,8 @@ function fakePage() {
         pointerDown: async () => calls.push(['down']),
         pointerUp: async () => calls.push(['up']),
         pressKey: async key => calls.push(['press', key]),
+        abort: reason => calls.push(['abort', reason]),
+        close: async () => {},
     }
 }
 
@@ -116,6 +118,71 @@ test('closes a failed action window before rethrowing', async () => {
             ['probe', 'action-000-broken', 'end', 'failed', 1],
         ]
     )
+})
+
+test('fails closed at the whole-action deadline without querying a stuck page during cleanup', async () => {
+    const page = fakePage()
+    const events = []
+    let releasePointerMove
+    page.pointerMove = async () =>
+        new Promise(resolve => {
+            releasePointerMove = resolve
+        })
+
+    const startedAt = performance.now()
+    await assert.rejects(
+        runScenarioActions(
+            page,
+            scenario([
+                {
+                    kind: 'pointer-path',
+                    label: 'PRIVATE_POINTER_LABEL',
+                    selector: '[data-private="surface"]',
+                    durationMs: 1,
+                    timeoutMs: 50,
+                    points: [
+                        { xRatio: 0, yRatio: 0 },
+                        { xRatio: 1, yRatio: 1 },
+                    ],
+                },
+            ]),
+            {
+                ...probeOptions(),
+                onActionLifecycle(event) {
+                    events.push(event)
+                },
+            }
+        ),
+        error => {
+            assert.equal(error.name, 'LabActionTimeoutError')
+            assert.match(error.message, /pointer-path action at order 0 exceeded its 50 ms timeout/)
+            assert.equal(error.message.includes('PRIVATE_POINTER_LABEL'), false)
+            assert.equal(error.message.includes('data-private'), false)
+            return true
+        }
+    )
+    const elapsedMs = performance.now() - startedAt
+    releasePointerMove?.()
+
+    assert.ok(elapsedMs < 1_000, `expected a bounded timeout, observed ${elapsedMs} ms`)
+    assert.deepEqual(
+        page.calls.filter(call => call[0] === 'abort'),
+        [['abort', 'lab-action-timeout']]
+    )
+    assert.deepEqual(
+        page.calls.filter(call => call[0] === 'mark'),
+        [['mark', 'PRIVATE_POINTER_LABEL', 'start']]
+    )
+    assert.deepEqual(
+        page.calls.filter(call => call[0] === 'probe'),
+        [['probe', 'action-000-PRIVATE_POINTER_LABEL', 'start', 'completed', 0]]
+    )
+    assert.deepEqual(events, [
+        { phase: 'started', order: 0, total: 1, kind: 'pointer-path', trigger: 'scenario' },
+        { phase: 'finished', order: 0, total: 1, kind: 'pointer-path', trigger: 'scenario', outcome: 'failed' },
+    ])
+    assert.equal(JSON.stringify(events).includes('PRIVATE_POINTER_LABEL'), false)
+    assert.equal(JSON.stringify(events).includes('data-private'), false)
 })
 
 test('keeps runner-owned windows when an action crosses documents', async () => {

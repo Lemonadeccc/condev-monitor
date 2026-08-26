@@ -63,6 +63,12 @@ export interface LabAutomationPage {
     pointerUp(): Promise<void>
     pressKey(key: string): Promise<void>
     setViewportSize(width: number, height: number): Promise<void>
+    /**
+     * Fail-closed termination for a page whose automation channel exceeded a
+     * runner-owned deadline. This must initiate disposal without waiting for
+     * the stuck channel and makes a later `close()` a no-op.
+     */
+    abort(reason: 'lab-action-timeout'): void
     close(): Promise<void>
 }
 
@@ -136,6 +142,8 @@ export function validateBrowserDriverScenario(engine: LabBrowserEngine, scenario
 }
 
 class PlaywrightAutomationPage implements LabAutomationPage {
+    private terminationRequested = false
+
     constructor(readonly rawPage: Page) {}
 
     async addInitScript(content: string): Promise<void> {
@@ -276,8 +284,16 @@ class PlaywrightAutomationPage implements LabAutomationPage {
         await this.rawPage.setViewportSize({ width, height })
     }
 
+    abort(reason: 'lab-action-timeout'): void {
+        if (this.terminationRequested) return
+        this.terminationRequested = true
+        void this.rawPage.close({ reason, runBeforeUnload: false }).catch(() => undefined)
+    }
+
     async close(): Promise<void> {
-        await this.rawPage.close()
+        if (this.terminationRequested) return
+        this.terminationRequested = true
+        await this.rawPage.close({ runBeforeUnload: false })
     }
 }
 

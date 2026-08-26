@@ -104,6 +104,11 @@ test('accepts only standard CSS and capability-sequenced probe commands in a rea
         assert.equal(result.actionResults[0].actionId, 'secure-action')
         assert.equal(await page.collectProbeResult(key, capability, 3), null)
         await page.close()
+
+        const abortedPage = await context.newPage()
+        abortedPage.abort('lab-action-timeout')
+        abortedPage.abort('lab-action-timeout')
+        await abortedPage.close()
     } finally {
         await context.close().catch(() => undefined)
         await session.close().catch(() => undefined)

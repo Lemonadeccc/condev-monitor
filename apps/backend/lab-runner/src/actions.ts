@@ -113,6 +113,30 @@ async function documentTimeOrigin(page: LabAutomationPage): Promise<number | nul
     return page.documentTimeOrigin()
 }
 
+function documentChanged(start: number | null, end: number | null): boolean {
+    return start !== null && end !== null && Math.abs(end - start) > 0.01
+}
+
+class LabActionTimeoutError extends Error {
+    constructor(kind: LabActionKind, order: number, timeoutMs: number) {
+        super(`${kind} action at order ${order} exceeded its ${timeoutMs} ms timeout`)
+        this.name = 'LabActionTimeoutError'
+    }
+}
+
+async function withinActionDeadline(action: LabScenarioAction, order: number, operation: () => Promise<void>): Promise<void> {
+    const timeoutMs = action.timeoutMs ?? 30_000
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new LabActionTimeoutError(action.kind, order, timeoutMs)), timeoutMs)
+    })
+    try {
+        await Promise.race([Promise.resolve().then(operation), timeout])
+    } finally {
+        if (timer) clearTimeout(timer)
+    }
+}
+
 async function execute(page: LabAutomationPage, action: LabScenarioAction): Promise<void> {
     const timeout = action.timeoutMs ?? 30_000
     switch (action.kind) {
@@ -222,21 +246,35 @@ export async function runScenarioActions(
         }
         publishActionLifecycle(options, { phase: 'started', ...lifecycleBase })
         const startedAtMs = Math.max(0, performance.now() - clockOriginMs)
-        const timeOriginAtStart = await documentTimeOrigin(page)
-        await mark(page, action, 'start')
-        await notifyProbe(page, options.probeKey, options.probeCapability, options.probeCommandState, actionId, 'start')
+        let timeOriginAtStart: number | null = null
         let outcome: 'completed' | 'failed' | 'unknown' = 'completed'
+        let timedOut = false
         try {
-            await execute(page, action)
+            await withinActionDeadline(action, index, async () => {
+                timeOriginAtStart = await documentTimeOrigin(page)
+                await mark(page, action, 'start')
+                await notifyProbe(page, options.probeKey, options.probeCapability, options.probeCommandState, actionId, 'start')
+                await execute(page, action)
+            })
         } catch (error) {
             outcome = 'failed'
+            timedOut = error instanceof LabActionTimeoutError
+            if (timedOut) page.abort('lab-action-timeout')
             throw error
         } finally {
-            const timeOriginAtEnd = await documentTimeOrigin(page)
+            // A timed-out automation command may have wedged the browser
+            // channel. Do not issue follow-up evaluate/mark/probe commands to
+            // that page: terminate it and let runner-owned lifecycle evidence
+            // report the failed action instead.
+            const timeOriginAtEnd = timedOut ? null : await documentTimeOrigin(page)
             const continuityUnknown = timeOriginAtStart === null || timeOriginAtEnd === null
-            const crossDocument = !continuityUnknown && Math.abs((timeOriginAtEnd as number) - (timeOriginAtStart as number)) > 0.01
+            const crossDocument = documentChanged(timeOriginAtStart, timeOriginAtEnd)
             if (crossDocument && outcome === 'completed') outcome = 'unknown'
-            if (crossDocument && options.probeCommandState) {
+            if (timedOut) {
+                // The page-side probe is intentionally abandoned with the
+                // terminated page. Synthesizing an end command would imply a
+                // browser acknowledgement that did not happen.
+            } else if (crossDocument && options.probeCommandState) {
                 // A fresh document receives a fresh init-script closure. Never
                 // send the previous document's unmatched end command into it.
                 options.probeCommandState.nextSequence = 0
@@ -252,7 +290,7 @@ export async function runScenarioActions(
                     outcome === 'unknown' ? 'completed' : outcome
                 )
             }
-            await mark(page, action, 'end').catch(() => undefined)
+            if (!timedOut) await mark(page, action, 'end').catch(() => undefined)
             const endedAtMs = Math.max(startedAtMs, performance.now() - clockOriginMs)
             const execution: ScenarioActionExecution = {
                 actionId,
@@ -263,11 +301,13 @@ export async function runScenarioActions(
                 endedAtMs,
                 durationMs: endedAtMs - startedAtMs,
                 crossDocument,
-                limitations: crossDocument
-                    ? ['cross-document-measurement-partial']
-                    : continuityUnknown
-                      ? ['document-continuity-unknown']
-                      : [],
+                limitations: timedOut
+                    ? ['action-timeout-page-terminated']
+                    : crossDocument
+                      ? ['cross-document-measurement-partial']
+                      : continuityUnknown
+                        ? ['document-continuity-unknown']
+                        : [],
             }
             results.push(execution)
             publishActionLifecycle(options, { phase: 'finished', ...lifecycleBase, outcome })
