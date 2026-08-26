@@ -1,0 +1,2870 @@
+import assert from 'node:assert/strict'
+import test from 'node:test'
+
+// cspell:ignore rawframes rvfc useremail
+
+import {
+    ANIMATION_RUM_MAX_WINDOW_DURATION_MS,
+    AnimationCollector,
+    AnimationIntegration,
+    AnimationStateError,
+    AnimationUnsupportedError,
+    createBrowserAnimationRuntime,
+    createAnimationDevOverlay,
+    createAnimationElementPicker,
+    createAnimationTargetAdapterRegistry,
+    createFrameworkCommitProbe,
+    deterministicAnimationRumSample,
+    recommendAnimationImprovements,
+    toAnimationRumSummary,
+} from '../build/esm/index.mjs'
+
+class FakeRuntime {
+    constructor({
+        browser = true,
+        visibility = 'visible',
+        reducedMotion = false,
+        capabilities = {},
+        frameCapability,
+        drainError = false,
+    } = {}) {
+        this.isBrowser = browser
+        this.frameCapability = frameCapability ?? (browser ? 'supported' : 'unsupported')
+        this.time = 0
+        this.epoch = 1_750_000_000_000
+        this.visibility = visibility
+        this.reducedMotion = reducedMotion
+        this.capabilities = {
+            'long-animation-frame': 'supported',
+            longtask: 'supported',
+            event: 'supported',
+            ...capabilities,
+        }
+        this.frames = new Set()
+        this.visibilityListeners = new Set()
+        this.motionListeners = new Set()
+        this.lifecycleListeners = new Set()
+        this.observers = new Map()
+        this.pendingEntries = new Map()
+        this.drainError = drainError
+        this.disconnectCount = 0
+    }
+
+    now() {
+        return this.time
+    }
+
+    wallNow() {
+        return this.epoch + this.time
+    }
+
+    subscribeFrames(callback) {
+        this.frames.add(callback)
+        return () => this.frames.delete(callback)
+    }
+
+    getVisibilityState() {
+        return this.visibility
+    }
+
+    onVisibilityChange(callback) {
+        this.visibilityListeners.add(callback)
+        return () => this.visibilityListeners.delete(callback)
+    }
+
+    getReducedMotion() {
+        return this.reducedMotion
+    }
+
+    onReducedMotionChange(callback) {
+        this.motionListeners.add(callback)
+        return () => this.motionListeners.delete(callback)
+    }
+
+    onPageLifecycle(callback, options = {}) {
+        const subscriber = { callback, priority: options.priority ?? 0 }
+        this.lifecycleListeners.add(subscriber)
+        return () => this.lifecycleListeners.delete(subscriber)
+    }
+
+    observePerformance(type, callback) {
+        const state = this.capabilities[type] ?? 'unknown'
+        if (state === 'supported') {
+            const callbacks = this.observers.get(type) ?? new Set()
+            callbacks.add(callback)
+            this.observers.set(type, callbacks)
+        }
+        let disconnected = false
+        return {
+            state,
+            buffered: state === 'supported',
+            ...(state === 'supported' ? {} : { reason: `${type} ${state}` }),
+            disconnect: () => {
+                if (disconnected) return
+                disconnected = true
+                this.disconnectCount += 1
+                this.observers.get(type)?.delete(callback)
+            },
+        }
+    }
+
+    tick(delta) {
+        this.time += delta
+        if (this.visibility === 'visible') {
+            for (const callback of [...this.frames]) callback(this.time)
+        }
+    }
+
+    advance(delta) {
+        this.time += delta
+    }
+
+    setVisibility(state) {
+        this.visibility = state
+        for (const callback of [...this.visibilityListeners]) callback(state)
+    }
+
+    setReducedMotion(reduced) {
+        this.reducedMotion = reduced
+        for (const callback of [...this.motionListeners]) callback(reduced)
+    }
+
+    emit(type, entries) {
+        for (const callback of [...(this.observers.get(type) ?? [])]) callback(entries)
+    }
+
+    queue(type, entries) {
+        const pending = this.pendingEntries.get(type) ?? []
+        pending.push(...entries)
+        this.pendingEntries.set(type, pending)
+    }
+
+    drainPendingPerformanceEntries() {
+        if (this.drainError) throw new Error('synthetic drain failure')
+        const pending = [...this.pendingEntries.entries()]
+        this.pendingEntries.clear()
+        for (const [type, entries] of pending) this.emit(type, entries)
+    }
+
+    emitLifecycle(event) {
+        const subscribers = [...this.lifecycleListeners].sort((left, right) => right.priority - left.priority)
+        for (const subscriber of subscribers) subscriber.callback(event)
+    }
+
+    get observerCount() {
+        return [...this.observers.values()].reduce((sum, callbacks) => sum + callbacks.size, 0)
+    }
+}
+
+function collectFrames(runtime, deltas) {
+    runtime.tick(0)
+    for (const delta of deltas) runtime.tick(delta)
+}
+
+function assertSupportedZeroSignalRum(report) {
+    const findMetric = (name, stat) => report.metrics.find(metric => metric.name === name && metric.stat === stat)
+    for (const [name, stat] of [
+        ['longAnimationFrameCount', 'count'],
+        ['longAnimationFrameDurationMs', 'sum'],
+        ['longTaskCount', 'count'],
+        ['longTaskDurationMs', 'sum'],
+    ]) {
+        const aggregate = findMetric(name, stat)
+        assert.deepEqual([aggregate.value, aggregate.samples, aggregate.status], [0, 0, 'measured'])
+    }
+    for (const [name, stat] of [
+        ['longAnimationFrameDurationMs', 'p95'],
+        ['longAnimationFrameBlockingMs', 'p95'],
+        ['longAnimationFrameStyleLayoutTailMs', 'p95'],
+        ['longTaskDurationMs', 'p95'],
+        ['longTaskDurationMs', 'max'],
+    ]) {
+        const distribution = findMetric(name, stat)
+        assert.deepEqual([distribution.value, distribution.samples, distribution.status], [null, null, 'not-observed'])
+    }
+}
+
+test('visible rAF capture reports percentiles, slow ratio, missed opportunities, and contiguous bursts', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime, explicitRefreshHz: 60, maxFrames: 16 }).start()
+    collectFrames(runtime, [16, 17, 30, 31, 16, 50])
+
+    const snapshot = collector.stop()
+    assert.equal(snapshot.frameBudget.source, 'explicit')
+    assert.equal(snapshot.frameBudget.expectedRefreshHz, 60)
+    assert.equal(snapshot.frames.retainedCount, 6)
+    assert.equal(snapshot.frames.duration.count, 6)
+    assert.equal(snapshot.frames.duration.max, 50)
+    assert.equal(snapshot.frames.slowFrameCount, 3)
+    assert.equal(snapshot.frames.slowFrameRatio, 0.5)
+    assert.equal(snapshot.bursts.count, 2)
+    assert.equal(snapshot.bursts.longestFrameCount, 2)
+    assert.ok(snapshot.frames.missedFrameOpportunities >= 4)
+})
+
+test('bounded frame ring exposes dropped coverage and never normalizes a degraded 30fps stream as healthy', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({
+        runtime,
+        maxFrames: 4,
+        inferenceMinimumSamples: 4,
+    }).start()
+    collectFrames(runtime, [33.333, 33.333, 33.333, 33.333, 33.333, 33.333])
+
+    const snapshot = collector.stop()
+    assert.equal(snapshot.frames.retainedCount, 4)
+    assert.equal(snapshot.frames.totalObservedCount, 6)
+    assert.equal(snapshot.frames.droppedSampleCount, 2)
+    assert.equal(snapshot.frameBudget.expectedRefreshHz, 60)
+    assert.equal(snapshot.frameBudget.confidence, 'low')
+    assert.equal(snapshot.frames.slowFrameRatio, 1)
+})
+
+test('conservative inference recognizes a stable high-refresh stream', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime, inferenceMinimumSamples: 4 }).start()
+    collectFrames(runtime, [8.333, 8.333, 8.333, 8.333, 8.333])
+    const snapshot = collector.stop()
+    assert.equal(snapshot.frameBudget.expectedRefreshHz, 120)
+    assert.equal(snapshot.frameBudget.source, 'inferred')
+    assert.equal(snapshot.frameBudget.confidence, 'medium')
+})
+
+test('hidden periods cancel rAF and reset the timestamp so background gaps are not frames', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime, explicitRefreshHz: 60 }).start()
+    runtime.tick(0)
+    runtime.tick(16)
+    runtime.setVisibility('hidden')
+    runtime.advance(2_000)
+    assert.equal(runtime.frames.size, 1)
+    runtime.setVisibility('visible')
+    runtime.tick(0)
+    runtime.tick(16)
+
+    const snapshot = collector.stop()
+    assert.equal(snapshot.frames.retainedCount, 2)
+    assert.equal(snapshot.frames.duration.max, 16)
+    assert.equal(snapshot.visibility.hiddenTransitionCount, 1)
+    assert.equal(snapshot.visibility.visibleTransitionCount, 1)
+})
+
+test('bounded local signals retain presentation delay and interaction overlap, marking truncation partial', () => {
+    const runtime = new FakeRuntime({ reducedMotion: true })
+    const collector = new AnimationCollector({
+        runtime,
+        explicitRefreshHz: 60,
+        maxFrames: 1,
+        maxSignalEntries: 1,
+    }).start()
+    const interaction = collector.beginInteraction('drag', 'private .card[data-user="42"]')
+    collectFrames(runtime, [16, 32])
+    runtime.emit('long-animation-frame', [
+        { startTime: 2, duration: 54, blockingDuration: 12, styleAndLayoutStart: 30 },
+        { startTime: 40, duration: 70, blockingDuration: 20, styleAndLayoutStart: 70 },
+    ])
+    runtime.emit('longtask', [
+        { startTime: 3, duration: 60 },
+        { startTime: 55, duration: 58 },
+    ])
+    runtime.emit('event', [
+        { startTime: 4, duration: 40, processingStart: 10, processingEnd: 25 },
+        { startTime: 40, duration: 80, processingStart: 70, processingEnd: 100 },
+    ])
+    const live = collector.snapshot()
+    assert.equal(live.interactions.active.length, 1)
+    assert.equal(live.interactions.active[0].performance.frames.status, 'partial')
+    runtime.advance(100)
+    const ended = interaction.end()
+    const snapshot = collector.stop()
+    const recent = snapshot.interactions.recent[0]
+
+    assert.equal(ended.outcome, 'completed')
+    assert.equal(recent.label, 'private .card[data-user="42"]')
+    assert.equal(recent.performance.frames.status, 'partial')
+    assert.equal(recent.performance.longAnimationFrames.status, 'partial')
+    assert.equal(recent.performance.longTasks.status, 'partial')
+    assert.equal(recent.performance.eventTiming.status, 'partial')
+    assert.equal(recent.performance.longTasks.overlapCount, 1)
+    assert.equal(snapshot.eventTiming.presentationDelay.p95, 20)
+    assert.equal(snapshot.eventTiming.presentationDelayCapability.state, 'supported')
+    assert.equal(snapshot.longTasks.droppedSampleCount, 1)
+    assert.equal(snapshot.longAnimationFrames.styleAndLayoutTailDuration.p95, 40)
+    assert.equal('styleAndLayoutDuration' in snapshot.longAnimationFrames, false)
+})
+
+test('LoAF rendering tail omits zero and out-of-interval styleAndLayoutStart values', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    runtime.emit('long-animation-frame', [
+        { startTime: 10, duration: 60, styleAndLayoutStart: 0 },
+        { startTime: 100, duration: 60, styleAndLayoutStart: 90 },
+        { startTime: 200, duration: 60, styleAndLayoutStart: 261 },
+    ])
+    runtime.advance(300)
+    const snapshot = collector.stop()
+    const summary = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    const renderingTail = summary.metrics.find(metric => metric.name === 'longAnimationFrameStyleLayoutTailMs')
+
+    assert.equal(snapshot.longAnimationFrames.totalObservedCount, 3)
+    assert.equal(snapshot.longAnimationFrames.styleAndLayoutTailDuration, null)
+    assert.equal(snapshot.coverage.renderingPipeline.status, 'not-observed')
+    assert.equal(renderingTail.value, null)
+    assert.equal(renderingTail.samples, null)
+    assert.equal(renderingTail.status, 'not-observed')
+})
+
+test('RUM percentile samples count only entries that expose each optional LoAF and Event Timing phase', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    runtime.emit('long-animation-frame', [
+        { startTime: 10, duration: 80, blockingDuration: 10, styleAndLayoutStart: 50 },
+        { startTime: 100, duration: 80, blockingDuration: 20 },
+        { startTime: 200, duration: 80, styleAndLayoutStart: 240 },
+        { startTime: 300, duration: 80 },
+    ])
+    runtime.emit('event', [
+        { startTime: 10, duration: 80, processingStart: 20, processingEnd: 40 },
+        { startTime: 100, duration: 80, processingStart: 120 },
+        { startTime: 200, duration: 80, processingEnd: 240 },
+        { startTime: 300, duration: 80 },
+    ])
+    runtime.advance(400)
+    const snapshot = collector.stop()
+    const summary = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    const samplesFor = (name, family) => summary.metrics.find(metric => metric.name === name && metric.family === family)?.samples
+
+    assert.equal(snapshot.longAnimationFrames.duration.count, 4)
+    assert.equal(snapshot.longAnimationFrames.blockingDuration.count, 2)
+    assert.equal(snapshot.longAnimationFrames.styleAndLayoutTailDuration.count, 2)
+    assert.equal(snapshot.eventTiming.duration.count, 4)
+    assert.equal(snapshot.eventTiming.inputDelay.count, 2)
+    assert.equal(snapshot.eventTiming.processingDuration.count, 1)
+    assert.equal(snapshot.eventTiming.presentationDelay.count, 2)
+
+    assert.equal(samplesFor('longAnimationFrameDurationMs', 'mainThread'), 4)
+    assert.equal(samplesFor('longAnimationFrameBlockingMs', 'mainThread'), 2)
+    assert.equal(samplesFor('longAnimationFrameStyleLayoutTailMs', 'renderingPipeline'), 2)
+    assert.equal(samplesFor('eventTimingDurationMs', 'userOutcome'), 4)
+    assert.equal(samplesFor('inputDelayMs', 'userOutcome'), 2)
+    assert.equal(samplesFor('processingDurationMs', 'userOutcome'), 1)
+    assert.equal(samplesFor('presentationDelayMs', 'renderingPipeline'), 2)
+})
+
+test('Resource Timing stays privacy-safe, capture-scoped, bounded, and local-only', () => {
+    const runtime = new FakeRuntime({ capabilities: { resource: 'supported' } })
+    const bufferCallbacks = new Set()
+    runtime.onResourceTimingBufferFull = callback => {
+        bufferCallbacks.add(callback)
+        let disconnected = false
+        return {
+            state: 'supported',
+            buffered: false,
+            disconnect() {
+                if (disconnected) return
+                disconnected = true
+                bufferCallbacks.delete(callback)
+            },
+        }
+    }
+    runtime.advance(100)
+    const collector = new AnimationCollector({ runtime, maxResourceEntries: 2 }).start()
+
+    runtime.emit('resource', [
+        {
+            startTime: 90,
+            duration: 30,
+            resourceInitiatorType: 'fetch',
+            transferSize: 50,
+            encodedBodySize: 40,
+            decodedBodySize: 80,
+            name: 'https://private.example/pre-capture?token=secret',
+        },
+        {
+            startTime: 110,
+            duration: 10,
+            resourceInitiatorType: 'script',
+            transferSize: 100,
+            encodedBodySize: 90,
+            decodedBodySize: 90,
+            name: 'https://private.example/app.js?token=secret',
+        },
+        {
+            startTime: 120,
+            duration: 20,
+            resourceInitiatorType: 'img',
+            transferSize: 0,
+            encodedBodySize: 200,
+            decodedBodySize: 1_000,
+            name: 'https://private.example/avatar.png?user=42',
+        },
+        {
+            startTime: 140,
+            duration: 30,
+            resourceInitiatorType: 'video',
+            transferSize: 300,
+            encodedBodySize: 250,
+            decodedBodySize: 500,
+            name: 'https://private.example/movie.mp4',
+        },
+        { startTime: Number.NaN, duration: 5, resourceInitiatorType: 'script' },
+    ])
+    for (const callback of [...bufferCallbacks]) callback()
+    runtime.advance(100)
+
+    const snapshot = collector.stop()
+    const resources = snapshot.resourceTiming
+    assert.equal(resources.scope, 'capture-window')
+    assert.equal(resources.capability.state, 'supported')
+    assert.equal(resources.bufferEventCapability.state, 'supported')
+    assert.equal(resources.totalObservedCount, 3)
+    assert.equal(resources.retainedCount, 2)
+    assert.equal(resources.droppedSampleCount, 1)
+    assert.equal(resources.rejectedEntryCount, 1)
+    assert.equal(resources.excludedPreCaptureCount, 1)
+    assert.equal(resources.bufferFullEventCount, 1)
+    assert.equal(resources.transferSizeBytes, 400)
+    assert.equal(resources.encodedBodySizeBytes, 540)
+    assert.equal(resources.decodedBodySizeBytes, 1_590)
+    assert.equal(resources.zeroTransferSizeCount, 1)
+    assert.equal(resources.duration.p95, 29.5)
+    assert.equal(resources.categories.script.totalObservedCount, 1)
+    assert.equal(resources.categories.image.zeroTransferSizeCount, 1)
+    assert.equal(resources.categories.media.totalObservedCount, 1)
+    assert.equal(snapshot.coverage.resourcesMedia.status, 'partial')
+
+    const localJson = JSON.stringify(resources)
+    assert.doesNotMatch(localJson, /private\.example|token=|avatar|movie\.mp4/)
+
+    const rum = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    assert.equal('resourceTiming' in rum, false)
+    assert.equal(
+        rum.metrics.some(metric => metric.family === 'resourcesMedia' || metric.unit === 'bytes'),
+        false
+    )
+})
+
+test('explicit host evidence is bounded, capture-clocked, coverage-aware, and excluded from RUM v1', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime, maxHostEvidenceSamples: 2 })
+    assert.equal(
+        collector.recordFrameworkStats({
+            source: 'manual',
+            framework: 'react',
+            phase: 'mount',
+            renderMs: 1,
+            timestampMs: 999_999,
+        }),
+        false
+    )
+    collector.start()
+    const frameworkProbe = createFrameworkCommitProbe({ framework: 'react', sink: collector, now: () => 999_999 })
+    assert.equal(frameworkProbe.recordCommit({ phase: 'mount', renderMs: 1 }), true)
+    runtime.advance(10)
+    assert.equal(frameworkProbe.recordCommit({ phase: 'update', renderMs: 2, commitMs: 1 }), true)
+    runtime.advance(10)
+    assert.equal(frameworkProbe.recordCommit({ phase: 'update', renderMs: 3 }), true)
+    assert.equal(
+        collector.recordFrameworkStats({
+            source: 'manual',
+            framework: 'react',
+            phase: 'update',
+            renderMs: Number.NaN,
+            timestampMs: 0,
+        }),
+        false
+    )
+    assert.equal(
+        collector.recordRenderStats({
+            source: 'three-renderer-info',
+            backend: 'webgl2',
+            timestampMs: 0,
+            drawCalls: 4,
+            gpu: {
+                status: 'measured',
+                timeMs: 2.5,
+                source: 'webgl-disjoint-timer-query',
+                valid: false,
+                disjoint: true,
+                contextLost: false,
+            },
+        }),
+        false
+    )
+    assert.equal(
+        collector.recordRenderStats({
+            source: 'three-renderer-info',
+            backend: 'webgl2',
+            timestampMs: 999_999,
+            drawCalls: 4,
+            triangles: 120,
+            gpu: {
+                status: 'measured',
+                timeMs: 2.5,
+                source: 'webgl-disjoint-timer-query',
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+            },
+        }),
+        true
+    )
+    assert.equal(
+        collector.recordLifecycleStats({
+            source: 'gsap-public-api',
+            checkpoint: 'unmount',
+            timestampMs: 0,
+            animations: { status: 'measured', total: 2, active: 1, rejectedActiveChecks: 3 },
+            scrollTriggers: { status: 'measured', total: 0 },
+        }),
+        false
+    )
+    assert.equal(
+        collector.recordLifecycleStats({
+            source: 'gsap-public-api',
+            checkpoint: 'unmount',
+            timestampMs: 999_999,
+            animations: { status: 'measured', total: 2, active: 0 },
+            scrollTriggers: { status: 'measured', total: 0 },
+        }),
+        true
+    )
+    assert.equal(collector.recordWorkStats({ source: 'host', timestampMs: 999_999, workMs: 4, category: 'layout' }), true)
+    assert.equal(
+        collector.recordMediaStats({
+            source: 'video-rvfc',
+            timestampMs: 999_999,
+            callbackIntervalMs: 16,
+            presentedFramesDelta: 1,
+            playbackQuality: {
+                status: 'measured',
+                totalVideoFramesDelta: 2,
+                droppedVideoFramesDelta: 1,
+                corruptedVideoFramesDelta: 0,
+            },
+        }),
+        true
+    )
+
+    const snapshot = collector.stop()
+    assert.equal(snapshot.hostEvidence.scope, 'capture-window-local')
+    assert.deepEqual(
+        [
+            snapshot.hostEvidence.framework.acceptedSampleCount,
+            snapshot.hostEvidence.framework.retainedSampleCount,
+            snapshot.hostEvidence.framework.droppedSampleCount,
+            snapshot.hostEvidence.framework.rejectedSampleCount,
+        ],
+        [3, 2, 1, 1]
+    )
+    assert.equal(snapshot.hostEvidence.framework.detailScope, 'retained-samples')
+    assert.equal(snapshot.hostEvidence.framework.acceptedWindow.startedAt, 0)
+    assert.equal(snapshot.hostEvidence.framework.acceptedWindow.endedAt, 20)
+    assert.equal(snapshot.hostEvidence.framework.window.startedAt, 10)
+    assert.equal(snapshot.hostEvidence.framework.window.endedAt, 20)
+    assert.equal(snapshot.hostEvidence.framework.renderMs.p95, 2.95)
+    assert.equal(snapshot.hostEvidence.renderer.gpuFrameMs.p95, 2.5)
+    assert.equal(snapshot.hostEvidence.lifecycle.latestAnimationTotal, 2)
+    assert.equal(snapshot.hostEvidence.lifecycle.growthCandidate, null)
+    assert.equal(snapshot.hostEvidence.work.categories.layout, 1)
+    assert.equal(snapshot.hostEvidence.media.playbackDropRatio, 0.5)
+    assert.equal(snapshot.coverage.renderer.status, 'partial')
+    assert.equal(snapshot.coverage.resourcesMedia.status, 'partial')
+    assert.equal(snapshot.coverage.memoryLifecycle.status, 'partial')
+    assert.equal(snapshot.coverage.workAvoidance.status, 'not-instrumented')
+    assert.equal(frameworkProbe.recordCommit({ renderMs: 1 }), false)
+    assert.equal(collector.recordWorkStats({ source: 'host', timestampMs: 0, workMs: 1, category: 'script' }), false)
+
+    const rum = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    assert.equal('hostEvidence' in rum, false)
+    assert.doesNotMatch(JSON.stringify(rum.metrics), /gpuFrameMs|drawCalls|playbackDropRatio|renderMs/)
+    assert.equal(rum.coverage.renderer.status, 'not-instrumented')
+    assert.equal(rum.coverage.resourcesMedia.status, 'not-observed')
+    assert.equal(rum.coverage.memoryLifecycle.status, 'not-instrumented')
+    assert.equal(rum.coverage.workAvoidance.status, 'not-instrumented')
+
+    const emptyRuntime = new FakeRuntime()
+    const emptyMedia = new AnimationCollector({ runtime: emptyRuntime }).start().stop().hostEvidence.media
+    assert.equal(emptyMedia.playbackQualityMeasuredSampleCount, 0)
+    assert.equal(emptyMedia.totalVideoFramesDelta, null)
+    assert.equal(emptyMedia.droppedVideoFramesDelta, null)
+    assert.equal(emptyMedia.corruptedVideoFramesDelta, null)
+    assert.equal(emptyMedia.playbackDropRatio, null)
+
+    const missingCorruptedRuntime = new FakeRuntime()
+    const missingCorruptedCollector = new AnimationCollector({ runtime: missingCorruptedRuntime }).start()
+    assert.equal(
+        missingCorruptedCollector.recordMediaStats({
+            source: 'video-rvfc',
+            timestampMs: 0,
+            callbackIntervalMs: 16,
+            playbackQuality: { status: 'measured', totalVideoFramesDelta: 2, droppedVideoFramesDelta: 0 },
+        }),
+        true
+    )
+    const missingCorrupted = missingCorruptedCollector.stop().hostEvidence.media
+    assert.equal(missingCorrupted.totalVideoFramesDelta, 2)
+    assert.equal(missingCorrupted.droppedVideoFramesDelta, 0)
+    assert.equal(missingCorrupted.corruptedVideoFramesDelta, null)
+
+    const unsupportedMediaRuntime = new FakeRuntime()
+    const unsupportedMediaCollector = new AnimationCollector({ runtime: unsupportedMediaRuntime }).start()
+    assert.equal(
+        unsupportedMediaCollector.recordMediaStats({
+            source: 'video-rvfc',
+            timestampMs: 0,
+            callbackIntervalMs: 16,
+            playbackQuality: { status: 'unsupported' },
+        }),
+        true
+    )
+    const unsupportedMedia = unsupportedMediaCollector.stop().hostEvidence.media
+    assert.equal(unsupportedMedia.playbackQualityMeasuredSampleCount, 0)
+    assert.equal(unsupportedMedia.totalVideoFramesDelta, null)
+    assert.equal(unsupportedMedia.droppedVideoFramesDelta, null)
+    assert.equal(unsupportedMedia.corruptedVideoFramesDelta, null)
+})
+
+test('unsupported observers remain unknown evidence, not numeric zero', () => {
+    const runtime = new FakeRuntime({
+        capabilities: {
+            'long-animation-frame': 'unsupported',
+            longtask: 'unknown',
+            event: 'unknown',
+        },
+    })
+    const collector = new AnimationCollector({ runtime }).start()
+    runtime.tick(0)
+    const snapshot = collector.stop()
+    const summary = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+
+    assert.equal(snapshot.longAnimationFrames.capability.state, 'unsupported')
+    assert.equal(snapshot.longTasks.capability.state, 'unknown')
+    assert.equal(snapshot.longAnimationFrames.totalObservedCount, null)
+    assert.equal(snapshot.longTasks.totalObservedCount, null)
+    assert.equal(snapshot.eventTiming.totalObservedCount, null)
+    assert.equal(snapshot.eventTiming.presentationDelay, null)
+    assert.equal(snapshot.capabilities.longtask, null)
+    assert.equal(snapshot.capabilities.event, null)
+    assert.equal(Object.keys(snapshot.coverage).length, 12)
+
+    for (const metricName of ['longAnimationFrameCount', 'longAnimationFrameDurationMs']) {
+        const metrics = summary.metrics.filter(metric => metric.name === metricName)
+        assert.ok(metrics.length > 0)
+        for (const metric of metrics) {
+            assert.equal(metric.value, null)
+            assert.equal(metric.samples, null)
+            assert.equal(metric.status, 'unsupported')
+        }
+    }
+    for (const metricName of ['longTaskCount', 'longTaskDurationMs']) {
+        const metrics = summary.metrics.filter(metric => metric.name === metricName)
+        assert.ok(metrics.length > 0)
+        for (const metric of metrics) {
+            assert.equal(metric.value, null)
+            assert.equal(metric.samples, null)
+            assert.equal(metric.status, 'unknown')
+        }
+    }
+})
+
+test('every completed RUM window projects supported-zero LoAF and Long Task aggregates without distributions', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    runtime.advance(1_000)
+
+    const running = toAnimationRumSummary(collector.snapshot(), {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    const snapshot = collector.stop()
+    const completed = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    const findMetric = (summary, name, stat) => summary.metrics.find(metric => metric.name === name && metric.stat === stat)
+
+    for (const [name, stat] of [
+        ['longAnimationFrameCount', 'count'],
+        ['longAnimationFrameDurationMs', 'sum'],
+        ['longTaskCount', 'count'],
+        ['longTaskDurationMs', 'sum'],
+    ]) {
+        assert.deepEqual(
+            [findMetric(running, name, stat).value, findMetric(running, name, stat).samples, findMetric(running, name, stat).status],
+            [0, 0, 'measured']
+        )
+        assert.deepEqual(
+            [findMetric(completed, name, stat).value, findMetric(completed, name, stat).samples, findMetric(completed, name, stat).status],
+            [0, 0, 'measured']
+        )
+    }
+
+    for (const [name, stat] of [
+        ['longAnimationFrameDurationMs', 'p95'],
+        ['longAnimationFrameBlockingMs', 'p95'],
+        ['longAnimationFrameStyleLayoutTailMs', 'p95'],
+        ['longTaskDurationMs', 'p95'],
+        ['longTaskDurationMs', 'max'],
+    ]) {
+        const distribution = findMetric(completed, name, stat)
+        assert.deepEqual([distribution.value, distribution.samples, distribution.status], [null, null, 'not-observed'])
+    }
+})
+
+test('late-start buffered replay excludes pre-capture entries and clips entries crossing capture start', () => {
+    const runtime = new FakeRuntime()
+    runtime.time = 100
+    const collector = new AnimationCollector({ runtime, maxSignalEntries: 8 }).start()
+    const entries = [
+        { startTime: 0, duration: 50 },
+        { startTime: 80, duration: 40 },
+        { startTime: 110, duration: 30 },
+    ]
+    runtime.emit('long-animation-frame', [
+        { ...entries[0], blockingDuration: 10, styleAndLayoutStart: 20 },
+        { ...entries[1], blockingDuration: 12, styleAndLayoutStart: 105 },
+        { ...entries[2], blockingDuration: 8, styleAndLayoutStart: 125 },
+    ])
+    runtime.emit('longtask', entries)
+    runtime.emit('event', [
+        { ...entries[0], processingStart: 10, processingEnd: 30 },
+        { ...entries[1], processingStart: 90, processingEnd: 110 },
+        { ...entries[2], processingStart: 115, processingEnd: 125 },
+    ])
+    const snapshot = collector.stop()
+
+    for (const signal of [snapshot.longAnimationFrames, snapshot.longTasks, snapshot.eventTiming]) {
+        assert.equal(signal.totalObservedCount, 2)
+        assert.equal(signal.totalDurationMs, 50)
+        assert.equal(signal.duration.total, 50)
+        assert.equal(signal.duration.p50, 25)
+    }
+    assert.equal(snapshot.longAnimationFrames.blockingDuration.count, 1)
+    assert.equal(snapshot.longAnimationFrames.styleAndLayoutTailDuration.count, 2)
+    assert.equal(snapshot.longAnimationFrames.styleAndLayoutTailDuration.total, 30)
+    assert.equal(snapshot.eventTiming.inputDelay.total, 5)
+    assert.equal(snapshot.eventTiming.processingDuration.total, 20)
+    assert.equal(snapshot.eventTiming.presentationDelay.total, 25)
+})
+
+test('snapshot and stop drain queued performance entries before reporting and interaction finalization', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    collector.beginInteraction('drag', 'queued-signals')
+    runtime.queue('long-animation-frame', [{ startTime: 10, duration: 60, blockingDuration: 10, styleAndLayoutStart: 40 }])
+    runtime.queue('longtask', [{ startTime: 10, duration: 60 }])
+    runtime.queue('event', [{ startTime: 10, duration: 60, processingStart: 20, processingEnd: 40 }])
+    runtime.advance(100)
+
+    const live = collector.snapshot()
+    assert.equal(runtime.pendingEntries.size, 0)
+    assert.equal(live.longAnimationFrames.totalObservedCount, 1)
+    assert.equal(live.longTasks.totalObservedCount, 1)
+    assert.equal(live.eventTiming.totalObservedCount, 1)
+    assert.equal(live.interactions.active[0].performance.longAnimationFrames.overlapCount, 1)
+    assert.equal(live.interactions.active[0].performance.longTasks.overlapCount, 1)
+    assert.equal(live.interactions.active[0].performance.eventTiming.overlapCount, 1)
+
+    runtime.queue('long-animation-frame', [{ startTime: 110, duration: 60, blockingDuration: 12, styleAndLayoutStart: 140 }])
+    runtime.queue('longtask', [{ startTime: 110, duration: 60 }])
+    runtime.queue('event', [{ startTime: 110, duration: 60, processingStart: 120, processingEnd: 145 }])
+    runtime.advance(100)
+    const final = collector.stop()
+    assert.equal(runtime.pendingEntries.size, 0)
+    assert.equal(final.longAnimationFrames.totalObservedCount, 2)
+    assert.equal(final.longTasks.totalObservedCount, 2)
+    assert.equal(final.eventTiming.totalObservedCount, 2)
+    assert.equal(final.interactions.recent[0].outcome, 'abandoned')
+    assert.equal(final.interactions.recent[0].performance.longAnimationFrames.overlapCount, 2)
+    assert.equal(final.interactions.recent[0].performance.longTasks.overlapCount, 2)
+    assert.equal(final.interactions.recent[0].performance.eventTiming.overlapCount, 2)
+})
+
+test('collector isolates host drain failures at snapshot and stop boundaries', () => {
+    const collector = new AnimationCollector({ runtime: new FakeRuntime({ drainError: true }) }).start()
+    assert.doesNotThrow(() => collector.snapshot())
+    assert.doesNotThrow(() => collector.stop())
+})
+
+test('state transitions are strict while stop and cleanup are idempotent', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime })
+    assert.throws(() => collector.snapshot(), AnimationStateError)
+    collector.start()
+    assert.throws(() => collector.start(), AnimationStateError)
+    const active = collector.beginInteraction('lifecycle', 'mount')
+    const first = collector.stop()
+    const second = collector.stop()
+
+    assert.notStrictEqual(first, second)
+    assert.deepEqual(first, second)
+    assert.equal(first.monitorOverhead.reportBuildDuration.count, 1)
+    assert.equal(first.interactions.abandonedCount, 1)
+    assert.equal(active.end().outcome, 'abandoned')
+    first.coverage.userOutcome.status = 'unsupported'
+    first.hostEvidence.framework.phases.mount = 999
+    const third = collector.snapshot()
+    assert.equal(third.coverage.userOutcome.status, second.coverage.userOutcome.status)
+    assert.equal(third.hostEvidence.framework.phases.mount, second.hostEvidence.framework.phases.mount)
+    assert.equal(runtime.frames.size, 0)
+    assert.equal(runtime.observerCount, 0)
+    assert.equal(runtime.visibilityListeners.size, 0)
+    assert.equal(runtime.motionListeners.size, 0)
+    collector.destroy()
+    collector.destroy()
+    assert.equal(collector.state, 'destroyed')
+    assert.throws(() => collector.snapshot(), AnimationStateError)
+})
+
+test('report-build coverage reflects the first sample and same-snapshot ring truncation', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime, maxSignalEntries: 1 }).start()
+    const first = collector.snapshot()
+    assert.equal(first.monitorOverhead.reportBuildRetainedCount, 1)
+    assert.equal(first.monitorOverhead.reportBuildDroppedSampleCount, 0)
+    assert.equal(first.coverage.monitorOverhead.status, 'measured')
+
+    const second = collector.snapshot()
+    assert.equal(second.monitorOverhead.reportBuildRetainedCount, 1)
+    assert.equal(second.monitorOverhead.reportBuildDroppedSampleCount, 1)
+    assert.equal(second.coverage.monitorOverhead.status, 'partial')
+    collector.destroy()
+})
+
+test('capture IDs remain collision-resistant across collectors with the same monotonic clock', () => {
+    const first = new AnimationCollector({ runtime: new FakeRuntime() }).start().stop().captureId
+    const second = new AnimationCollector({ runtime: new FakeRuntime() }).start().stop().captureId
+    assert.notEqual(first, second)
+    assert.match(first, /^[A-Za-z0-9][A-Za-z0-9_-]{7,79}$/)
+    assert.match(second, /^[A-Za-z0-9][A-Za-z0-9_-]{7,79}$/)
+})
+
+test('default integration is local-only; opted-in sticky RUM emits one closed redacted report', () => {
+    const localRuntime = new FakeRuntime()
+    const localTransport = {
+        reports: [],
+        send(report) {
+            this.reports.push(report)
+        },
+    }
+    const local = new AnimationIntegration({ runtime: localRuntime })
+    local.setup(localTransport)
+    collectFrames(localRuntime, [16, 16])
+    local.stop()
+    local.destroy()
+    assert.equal(localTransport.reports.length, 0)
+
+    const runtime = new FakeRuntime()
+    const transport = {
+        reports: [],
+        send(report) {
+            this.reports.push(report)
+        },
+    }
+    const integration = new AnimationIntegration({
+        runtime,
+        explicitRefreshHz: 60,
+        rum: { enabled: true, sampleRate: 1, sampleKey: 'stable-device-bucket', policyVersion: 3 },
+        context: {
+            routeKey: 'home.feed',
+            release: '2026.08.24',
+            dist: 'web',
+            environment: 'production',
+            sdkVersion: '1.0.0',
+            runtimeFamily: 'react',
+        },
+    })
+    const teardown = integration.setup(transport)
+    const interaction = integration.beginInteraction('scroll', 'https://private.example/users/42#card')
+    collectFrames(runtime, [16, 40])
+    runtime.emit('longtask', [{ startTime: 10, duration: 80 }])
+    runtime.advance(50)
+    interaction.end()
+    integration.stop()
+    integration.flush()
+    teardown()
+
+    assert.equal(transport.reports.length, 1)
+    const report = transport.reports[0]
+    const rootKeys = [
+        'event_type',
+        'message',
+        'contractVersion',
+        'snapshotSchemaVersion',
+        'eventId',
+        'captureId',
+        'capturedAt',
+        'release',
+        'dist',
+        'environment',
+        'sdkVersion',
+        'monitorVersion',
+        'sampleRate',
+        'samplingPolicyVersion',
+        'context',
+        'capabilities',
+        'coverage',
+        'metrics',
+    ].sort()
+    assert.deepEqual(Object.keys(report).sort(), rootKeys)
+    assert.equal(report.event_type, 'animation_rum')
+    assert.equal(report.message, '')
+    assert.equal(report.contractVersion, 1)
+    assert.equal(report.snapshotSchemaVersion, 1)
+    assert.equal(report.samplingPolicyVersion, 3)
+    assert.match(report.capturedAt, /^\d{4}-\d{2}-\d{2}T.*Z$/)
+    assert.match(report.eventId, /^[A-Za-z0-9][A-Za-z0-9_-]{7,79}$/)
+    assert.equal(Object.keys(report.coverage).length, 12)
+    assert.equal(Object.keys(report.capabilities).length, 13)
+    assert.equal(report.context.windowDurationMs, 106)
+    assert.equal(report.context.windowDurationCapped, false)
+    assert.ok(report.metrics.length > 0 && report.metrics.length <= 128)
+    assert.ok(report.metrics.some(metric => metric.name === 'longTaskDurationMs' && metric.stat === 'sum' && metric.value === 80))
+    assert.ok(report.metrics.some(metric => metric.name === 'longAnimationFrameStyleLayoutTailMs' && metric.stat === 'p95'))
+    assert.equal(
+        report.metrics.some(metric => metric.name === 'longAnimationFrameStyleLayoutMs'),
+        false
+    )
+    assert.ok(report.metrics.some(metric => metric.name === 'reportBuildSelfTimeMs' && metric.stat === 'p95'))
+    for (const item of report.metrics) {
+        assert.deepEqual(Object.keys(item).sort(), ['family', 'name', 'samples', 'stat', 'status', 'unit', 'value'])
+    }
+    const forbidden = new Set([
+        'user',
+        'userid',
+        'useremail',
+        'email',
+        'url',
+        'href',
+        'selector',
+        'frames',
+        'rawframes',
+        'entries',
+        'scripts',
+        'metadata',
+        'snapshot',
+        'events',
+    ])
+    const visit = value => {
+        if (!value || typeof value !== 'object') return
+        for (const [key, child] of Object.entries(value)) {
+            assert.equal(forbidden.has(key.toLowerCase()), false, `forbidden key ${key}`)
+            visit(child)
+        }
+    }
+    visit(report)
+    assert.equal(JSON.stringify(report).includes('private.example'), false)
+    assert.equal(JSON.stringify(report).includes('data-user'), false)
+})
+
+test('optional integration remains idle and no-ops when browser frame collection is unsupported', () => {
+    const runtime = new FakeRuntime({ frameCapability: 'unsupported' })
+    const transport = {
+        reports: [],
+        send(report) {
+            this.reports.push(report)
+        },
+    }
+    const integration = new AnimationIntegration({
+        runtime,
+        rum: { enabled: true, sampleRate: 1, sampleKey: 'unsupported-frame-page' },
+    })
+
+    assert.doesNotThrow(() => integration.setup(transport))
+    assert.equal(integration.collector.state, 'idle')
+    assert.equal(integration.start(), false)
+    assert.doesNotThrow(() => integration.flush())
+    assert.equal(integration.stop(), null)
+    assert.doesNotThrow(() => integration.destroy())
+    assert.equal(integration.collector.state, 'destroyed')
+    assert.equal(transport.reports.length, 0)
+})
+
+test('integration setup attaches pre-started and pre-stopped collectors without a second start', () => {
+    const runningRuntime = new FakeRuntime()
+    const runningTransport = {
+        reports: [],
+        send(report) {
+            this.reports.push(report)
+        },
+    }
+    const running = new AnimationIntegration({
+        runtime: runningRuntime,
+        rum: { enabled: true, sampleRate: 1, sampleKey: 'pre-started-page' },
+    })
+    assert.equal(running.start(), true)
+    assert.equal(running.start(), true)
+    collectFrames(runningRuntime, [16])
+    assert.doesNotThrow(() => running.setup(runningTransport))
+    assert.equal(running.collector.state, 'running')
+    assert.ok(running.stop())
+    assert.equal(runningTransport.reports.length, 1)
+    assert.equal(running.start(), false)
+    running.destroy()
+
+    const stoppedRuntime = new FakeRuntime()
+    const stoppedTransport = {
+        reports: [],
+        send(report) {
+            this.reports.push(report)
+        },
+    }
+    const stopped = new AnimationIntegration({
+        runtime: stoppedRuntime,
+        rum: { enabled: true, sampleRate: 1, sampleKey: 'pre-stopped-page' },
+    })
+    assert.equal(stopped.start(), true)
+    collectFrames(stoppedRuntime, [16])
+    const stoppedSnapshot = stopped.stop()
+    assert.equal(stoppedTransport.reports.length, 0)
+    assert.doesNotThrow(() => stopped.setup(stoppedTransport))
+    assert.equal(stopped.collector.state, 'stopped')
+    assert.equal(stoppedTransport.reports.length, 1)
+    assert.equal(stoppedTransport.reports[0].captureId, stoppedSnapshot.captureId)
+    stopped.destroy()
+})
+
+test('deterministic sampling is sticky and projection validates explicit sampling metadata', () => {
+    const first = deterministicAnimationRumSample('same-key', 0.37, 'v1')
+    assert.equal(deterministicAnimationRumSample('same-key', 0.37, 'v1'), first)
+    assert.equal(deterministicAnimationRumSample('same-key', 0, 'v1'), false)
+    assert.equal(deterministicAnimationRumSample('same-key', 1, 'v1'), true)
+
+    const runtime = new FakeRuntime()
+    const snapshot = new AnimationCollector({ runtime }).start().stop()
+    assert.throws(
+        () => toAnimationRumSummary(snapshot, { capturedAtEpochMs: runtime.wallNow(), sampleRate: 0, samplingPolicyVersion: 1 }),
+        /sampleRate/
+    )
+})
+
+test('RUM projection rebuilds nested allowlists and rejects runtime-family escape values', () => {
+    const runtime = new FakeRuntime()
+    const snapshot = new AnimationCollector({ runtime }).start().stop()
+    snapshot.capabilities.privateUrl = 'https://private.example/capability'
+    snapshot.capabilities.longtask = 'https://private.example/not-a-boolean'
+    snapshot.coverage.privateUrl = {
+        status: 'measured',
+        evidenceLevel: 'runtime-observation',
+        secret: 'https://private.example/coverage',
+    }
+    snapshot.coverage.userOutcome.privateUrl = 'https://private.example/nested'
+    snapshot.visibility.current = 'https://private.example/visibility'
+
+    const report = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    assert.equal(Object.keys(report.capabilities).length, 13)
+    assert.equal(Object.keys(report.coverage).length, 12)
+    assert.deepEqual(Object.keys(report.coverage.userOutcome).sort(), ['evidenceLevel', 'status'])
+    assert.equal(report.capabilities.longtask, null)
+    assert.equal(report.context.visibilityState, 'unknown')
+    assert.doesNotMatch(JSON.stringify(report), /private\.example|privateUrl|secret/)
+    assert.throws(
+        () =>
+            toAnimationRumSummary(snapshot, {
+                capturedAtEpochMs: runtime.wallNow(),
+                sampleRate: 1,
+                samplingPolicyVersion: 1,
+                runtimeFamily: 'https://private.example/runtime',
+            }),
+        /runtimeFamily/
+    )
+})
+
+test('RUM percentile sample counts and report-build status reflect their retained bounded rings', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({
+        runtime,
+        explicitRefreshHz: 60,
+        maxInteractions: 1,
+        maxSignalEntries: 1,
+    }).start()
+    const first = collector.beginInteraction('pointer', 'first')
+    runtime.advance(10)
+    first.end()
+    const second = collector.beginInteraction('pointer', 'second')
+    runtime.advance(20)
+    second.end()
+    collector.snapshot()
+    const snapshot = collector.snapshot()
+    const summary = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    const interactionP95 = summary.metrics.find(metric => metric.name === 'interactionDurationMs' && metric.stat === 'p95')
+    const interactionCount = summary.metrics.find(metric => metric.name === 'interactionCount')
+    const reportBuild = summary.metrics.find(metric => metric.name === 'reportBuildSelfTimeMs')
+    assert.equal(interactionCount.value, 2)
+    assert.equal(interactionP95.samples, 1)
+    assert.equal(interactionP95.status, 'partial')
+    assert.equal(reportBuild.samples, 1)
+    assert.equal(reportBuild.status, 'partial')
+    collector.destroy()
+})
+
+test('RUM keeps streaming totals measured while truncated ring distributions remain partial', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({
+        runtime,
+        explicitRefreshHz: 60,
+        maxFrames: 1,
+        maxInteractions: 1,
+        maxSignalEntries: 1,
+    }).start()
+    collectFrames(runtime, [40, 45])
+    const completed = collector.beginInteraction('pointer', 'completed')
+    runtime.advance(10)
+    completed.end()
+    const cancelled = collector.beginInteraction('pointer', 'cancelled')
+    runtime.advance(20)
+    cancelled.cancel()
+    runtime.emit('long-animation-frame', [
+        { startTime: 5, duration: 60, blockingDuration: 10, styleAndLayoutStart: 30 },
+        { startTime: 50, duration: 60, blockingDuration: 12, styleAndLayoutStart: 80 },
+    ])
+    runtime.emit('longtask', [
+        { startTime: 5, duration: 60 },
+        { startTime: 45, duration: 70 },
+    ])
+    const snapshot = collector.stop()
+    const summary = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    const findMetric = (name, stat) => summary.metrics.find(metric => metric.name === name && metric.stat === stat)
+
+    assert.equal(findMetric('jankBurstCount', 'count').status, 'partial')
+    assert.equal(findMetric('missedFrameOpportunities', 'sum').status, 'partial')
+
+    assert.deepEqual(
+        [findMetric('longAnimationFrameCount', 'count').value, findMetric('longAnimationFrameCount', 'count').status],
+        [2, 'measured']
+    )
+    assert.deepEqual(
+        [findMetric('longAnimationFrameDurationMs', 'sum').value, findMetric('longAnimationFrameDurationMs', 'sum').status],
+        [120, 'measured']
+    )
+    assert.equal(findMetric('longAnimationFrameDurationMs', 'p95').status, 'partial')
+    assert.equal(findMetric('longAnimationFrameDurationMs', 'p95').samples, 1)
+
+    assert.deepEqual([findMetric('longTaskCount', 'count').value, findMetric('longTaskCount', 'count').status], [2, 'measured'])
+    assert.deepEqual([findMetric('longTaskDurationMs', 'sum').value, findMetric('longTaskDurationMs', 'sum').status], [130, 'measured'])
+    assert.equal(findMetric('longTaskDurationMs', 'p95').status, 'partial')
+    assert.equal(findMetric('longTaskDurationMs', 'max').status, 'partial')
+
+    assert.deepEqual([findMetric('interactionCount', 'count').value, findMetric('interactionCount', 'count').status], [2, 'measured'])
+    assert.deepEqual(
+        [findMetric('completedInteractions', 'count').value, findMetric('completedInteractions', 'count').status],
+        [1, 'measured']
+    )
+    assert.deepEqual(
+        [findMetric('cancelledInteractions', 'count').value, findMetric('cancelledInteractions', 'count').status],
+        [1, 'measured']
+    )
+    assert.deepEqual(
+        [findMetric('abandonedInteractions', 'count').value, findMetric('abandonedInteractions', 'count').status],
+        [0, 'measured']
+    )
+    assert.equal(findMetric('interactionDurationMs', 'p95').status, 'partial')
+    assert.equal(findMetric('interactionDurationMs', 'p95').samples, 1)
+})
+
+test('RUM window duration is bounded and callback self-time ratio uses the complete capture aggregate', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    runtime.emit('long-animation-frame', [{ startTime: 0, duration: 80 }])
+    runtime.emit('longtask', [{ startTime: 0, duration: 80 }])
+    runtime.advance(1_000)
+    const snapshot = collector.stop()
+    snapshot.monitorOverhead.callbackCount = 10
+    snapshot.monitorOverhead.retainedCount = 1
+    snapshot.monitorOverhead.droppedSampleCount = 9
+    snapshot.monitorOverhead.totalCallbackDurationMs = 25
+
+    const uncapped = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    const callbackRatio = uncapped.metrics.find(metric => metric.name === 'callbackSelfTimeRatio')
+    assert.equal(uncapped.context.windowDurationMs, 1_000)
+    assert.equal(uncapped.context.windowDurationCapped, false)
+    assert.equal(callbackRatio.stat, 'ratio')
+    assert.equal(callbackRatio.value, 0.025)
+    assert.equal(callbackRatio.samples, 10)
+    assert.equal(callbackRatio.status, 'measured')
+
+    snapshot.elapsedMs = ANIMATION_RUM_MAX_WINDOW_DURATION_MS + 1_000
+    const capped = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    const cappedCallbackRatio = capped.metrics.find(metric => metric.name === 'callbackSelfTimeRatio')
+    const cappedLoafSum = capped.metrics.find(metric => metric.name === 'longAnimationFrameDurationMs' && metric.stat === 'sum')
+    const cappedLongTaskSum = capped.metrics.find(metric => metric.name === 'longTaskDurationMs' && metric.stat === 'sum')
+    assert.equal(capped.context.windowDurationMs, ANIMATION_RUM_MAX_WINDOW_DURATION_MS)
+    assert.equal(capped.context.windowDurationCapped, true)
+    assert.equal(cappedCallbackRatio.status, 'partial')
+    assert.equal(cappedLoafSum.status, 'partial')
+    assert.equal(cappedLongTaskSum.status, 'partial')
+
+    snapshot.elapsedMs = Number.POSITIVE_INFINITY
+    assert.throws(
+        () =>
+            toAnimationRumSummary(snapshot, {
+                capturedAtEpochMs: runtime.wallNow(),
+                sampleRate: 1,
+                samplingPolicyVersion: 1,
+            }),
+        /elapsedMs/
+    )
+})
+
+test('collector keeps total callback self time when its diagnostic sample ring truncates', () => {
+    class CostRuntime extends FakeRuntime {
+        now() {
+            const value = this.time
+            this.time += 1
+            return value
+        }
+    }
+
+    const runtime = new CostRuntime()
+    const collector = new AnimationCollector({ runtime, maxSignalEntries: 1 }).start()
+    collectFrames(runtime, [16, 16])
+    const snapshot = collector.stop()
+    assert.ok(snapshot.monitorOverhead.droppedSampleCount > 0)
+    assert.ok(snapshot.monitorOverhead.totalCallbackDurationMs > snapshot.monitorOverhead.duration.total)
+})
+
+test('hidden/pagehide enqueues once before lifecycle flush without stopping BFCache-capable local capture', () => {
+    const runtime = new FakeRuntime()
+    const transport = {
+        reports: [],
+        send(report) {
+            this.reports.push(report)
+        },
+    }
+    const integration = new AnimationIntegration({
+        runtime,
+        rum: { enabled: true, sampleRate: 1, sampleKey: 'lifecycle-page' },
+    })
+    integration.setup(transport)
+    collectFrames(runtime, [16, 24])
+    runtime.emitLifecycle({ type: 'hidden' })
+    assert.equal(transport.reports.length, 1)
+    assertSupportedZeroSignalRum(transport.reports[0])
+    assert.equal(integration.collector.state, 'running')
+    runtime.emitLifecycle({ type: 'pagehide', persisted: true })
+    assert.equal(transport.reports.length, 1)
+    assert.equal(integration.collector.state, 'running')
+    integration.destroy()
+
+    const directRuntime = new FakeRuntime()
+    const directTransport = {
+        reports: [],
+        send(report) {
+            this.reports.push(report)
+        },
+    }
+    const direct = new AnimationIntegration({
+        runtime: directRuntime,
+        rum: { enabled: true, sampleRate: 1, sampleKey: 'direct-pagehide' },
+    })
+    direct.setup(directTransport)
+    collectFrames(directRuntime, [16])
+    directRuntime.emitLifecycle({ type: 'pagehide', persisted: false })
+    assert.equal(directTransport.reports.length, 1)
+    assertSupportedZeroSignalRum(directTransport.reports[0])
+    assert.equal(direct.collector.state, 'running')
+    direct.destroy()
+})
+
+test('integration flush waits for a finalized snapshot and emits once after stop', () => {
+    const runtime = new FakeRuntime()
+    const transport = {
+        reports: [],
+        send(report) {
+            this.reports.push(report)
+        },
+    }
+    const integration = new AnimationIntegration({
+        runtime,
+        rum: { enabled: true, sampleRate: 1, sampleKey: 'manual-flush' },
+    })
+    integration.setup(transport)
+    collectFrames(runtime, [16, 24])
+    integration.flush()
+    assert.equal(transport.reports.length, 0)
+    assert.equal(integration.collector.state, 'running')
+    runtime.tick(32)
+    assert.equal(integration.snapshot().frames.totalObservedCount, 3)
+    integration.stop()
+    assert.equal(transport.reports.length, 1)
+    assertSupportedZeroSignalRum(transport.reports[0])
+    integration.flush()
+    assert.equal(transport.reports.length, 1)
+    assert.equal(integration.collector.state, 'stopped')
+    integration.destroy()
+})
+
+test('recommendations are evidence-specific, have no score, and require adapters for hidden/reduced-motion violations', () => {
+    const runtime = new FakeRuntime({ reducedMotion: true })
+    const collector = new AnimationCollector({ runtime, explicitRefreshHz: 60 }).start()
+    collectFrames(runtime, [16, 40, 45])
+    runtime.emit('longtask', [{ startTime: 10, duration: 80 }])
+    runtime.emit('long-animation-frame', [{ startTime: 10, duration: 70, blockingDuration: 20, styleAndLayoutStart: 50 }])
+    runtime.emit('event', [{ startTime: 20, duration: 90, processingStart: 50, processingEnd: 80 }])
+    const snapshot = collector.stop()
+
+    const withoutAdapters = recommendAnimationImprovements(snapshot)
+    assert.equal(
+        withoutAdapters.some(item => item.id.includes('hidden')),
+        false
+    )
+    assert.equal(
+        withoutAdapters.some(item => item.id.includes('reduced-motion')),
+        false
+    )
+    assert.equal(
+        withoutAdapters.some(item => item.id.startsWith('event-')),
+        false,
+        'the default Event Timing phase investigation budget is 100ms'
+    )
+    snapshot.monitorOverhead.callbackCount = 50
+    snapshot.monitorOverhead.totalCallbackDurationMs = snapshot.elapsedMs * 0.02
+    const recommendations = recommendAnimationImprovements(snapshot, {
+        eventPhaseBudgetMs: 10,
+        adapterEvidence: {
+            hiddenWorkSamples: { value: 2, samples: 10 },
+            reducedMotionViolations: { value: 1, samples: 4 },
+        },
+    })
+    const ids = recommendations.map(item => item.id)
+    assert.ok(ids.includes('frame-tail-and-bursts'))
+    assert.ok(ids.includes('long-task-main-thread'))
+    assert.ok(ids.includes('loaf-rendering-tail'))
+    assert.ok(ids.includes('event-input-delay'))
+    assert.ok(ids.includes('event-processing-delay'))
+    assert.ok(ids.includes('event-presentation-delay'))
+    assert.ok(ids.includes('hidden-work'))
+    assert.ok(ids.includes('reduced-motion-violations'))
+    assert.ok(ids.includes('monitor-callback-overhead'))
+    assert.equal(recommendations.find(item => item.id === 'frame-tail-and-bursts').target.kind, 'project-budget')
+    assert.equal(recommendations.find(item => item.id === 'frame-tail-and-bursts').confidence, 'low')
+    assert.equal(recommendations.find(item => item.id === 'loaf-rendering-tail').metric.name, 'longAnimationFrameStyleLayoutTailMs.p95')
+    assert.match(recommendations.find(item => item.id === 'loaf-rendering-tail').why, /subsequent rendering work/)
+    assert.equal(recommendations.find(item => item.id === 'hidden-work').target.kind, 'project-budget')
+    assert.equal(recommendations.find(item => item.id === 'monitor-callback-overhead').target.value, 0.01)
+    assert.equal(recommendations.find(item => item.id === 'monitor-callback-overhead').target.kind, 'project-budget')
+    for (const item of recommendations) {
+        assert.equal(item.After, 'proposed')
+        assert.equal('score' in item, false)
+        assert.ok(item.rerunProtocol.length > 0)
+        assert.ok(item.regressionChecks.length > 0)
+    }
+})
+
+test('element selection is a parallel native sidecar with bounded direct evidence and optional multi-adapter enrichment', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    collectFrames(runtime, [16, 16, 24])
+    const listeners = new Map()
+    const animation = {
+        playState: 'running',
+        pending: false,
+        playbackRate: 1,
+        effect: {
+            getTiming: () => ({ duration: 240, delay: 20, iterations: 1 }),
+            getKeyframes: () => [{ transform: 'translateX(20px)', opacity: 0.5, width: '20px' }],
+        },
+    }
+    Object.defineProperty(animation, 'constructor', { value: { name: 'CSSAnimation' } })
+    const target = {
+        tagName: 'CANVAS',
+        namespaceURI: 'http://www.w3.org/1999/xhtml',
+        isConnected: true,
+        width: 800,
+        height: 400,
+        ownerDocument: { defaultView: { innerWidth: 1_000, innerHeight: 800 } },
+        getAttribute: name => (name === 'role' ? 'img' : name === 'id' ? 'private-id' : null),
+        getAnimations: options => {
+            assert.deepEqual(options, { subtree: true })
+            return [animation]
+        },
+        getBoundingClientRect: () => ({ left: 20, top: 30, right: 420, bottom: 230, width: 400, height: 200 }),
+        addEventListener(type, listener) {
+            const entries = listeners.get(type) ?? new Set()
+            entries.add(listener)
+            listeners.set(type, entries)
+        },
+        removeEventListener(type, listener) {
+            listeners.get(type)?.delete(listener)
+        },
+    }
+    const registry = createAnimationTargetAdapterRegistry('react-three', '1.2.0')
+    const unregisterAdapter = registry.register(target, () => ({
+        inventory: { uiFrameworks: ['react'], metaRuntimes: ['next'], renderers: ['webgl'], motionEngines: ['gsap'] },
+        owners: [
+            {
+                relation: 'framework-owner',
+                framework: 'react',
+                label: 'HeroCanvas',
+                source: { file: 'src/HeroCanvas.tsx', line: 42 },
+            },
+        ],
+        renderer: {
+            family: 'webgl',
+            capability: { state: 'supported', observed: true, buffered: false },
+            metrics: { drawCallsP95: 12, trianglesP95: 2_000, gpuFrameMsP95: -1 },
+        },
+    }))
+
+    const before = collector.snapshot()
+    const selection = collector.selectElement(target, { mode: 'subtree', adapters: [registry.adapter] })
+    const direct = selection.snapshot()
+    assert.equal(direct.state, 'selected')
+    assert.equal(direct.localDescriptor.tagName, 'canvas')
+    assert.equal(direct.localDescriptor.role, 'img')
+    assert.equal(direct.direct.totalCount, 1)
+    assert.equal(direct.direct.inspectedCount, 1)
+    assert.equal(direct.direct.droppedAnimationCount, 0)
+    assert.equal(direct.direct.propertyTruncated, false)
+    assert.equal(direct.direct.cssAnimationCount, 1)
+    assert.deepEqual(direct.direct.properties.compositorCandidate, ['opacity', 'transform'])
+    assert.deepEqual(direct.direct.properties.layoutCandidate, ['width'])
+    assert.equal(direct.geometry.backingPixelArea, 320_000)
+    assert.equal(direct.geometry.backingScaleX, 2)
+    assert.equal(direct.geometry.backingScaleY, 2)
+    assert.equal(direct.geometry.backingAspectRatioMismatch, false)
+    assert.equal(direct.geometry.effectivePixelRatio, 2)
+    assert.equal(direct.geometry.resizeCount, 0)
+    assert.equal(direct.geometry.cssResizeCount, 0)
+    assert.equal(direct.geometry.backingResizeCount, 0)
+    assert.deepEqual(direct.inventory.uiFrameworks, ['vanilla', 'react'])
+    assert.deepEqual(direct.inventory.renderers, ['canvas', 'webgl'])
+    assert.deepEqual(direct.inventory.motionEngines, ['css', 'gsap'])
+    assert.equal(direct.owners[0].label, 'HeroCanvas')
+    assert.equal(direct.renderers[0].metrics.drawCallsP95, 12)
+    assert.equal(direct.renderers[0].metrics.gpuFrameMsP95, null)
+    assert.deepEqual(direct.renderers[0].evidence.window, { startedAt: null, endedAt: null, durationMs: null })
+    assert.equal(direct.renderers[0].evidence.acceptedSampleCount, null)
+    assert.equal(direct.renderers[0].evidence.gpu.source, 'unknown')
+    assert.equal(direct.renderers[0].evidence.gpu.rejectionReason, 'metric-invalid')
+    assert.doesNotMatch(JSON.stringify(direct), /private-id/)
+
+    target.getAnimations = () => Array.from({ length: 300 }, () => animation)
+    const bounded = selection.snapshot()
+    assert.equal(bounded.direct.totalCount, 300)
+    assert.equal(bounded.direct.inspectedCount, 256)
+    assert.equal(bounded.direct.droppedAnimationCount, 44)
+    target.getAnimations = () => [animation]
+
+    const scoped = selection.beginInteraction('transition', 'selected hero')
+    assert.throws(() => selection.beginInteraction('custom', 'overlap'), /already has an active interaction/)
+    runtime.tick(25)
+    runtime.emit('longtask', [{ startTime: runtime.time - 20, duration: 20 }])
+    const measurement = scoped.end()
+    const completed = selection.snapshot()
+    assert.equal(completed.activeInteractionId, null)
+    assert.deepEqual(completed.correlated, measurement.performance)
+    assert.equal(completed.correlationRelation, 'temporal-overlap')
+
+    collectFrames(runtime, [20])
+    const after = collector.snapshot()
+    assert.equal(after.captureId, before.captureId)
+    assert.ok(after.frames.totalObservedCount > before.frames.totalObservedCount)
+    const rum = toAnimationRumSummary(after, {
+        capturedAtEpochMs: 1_750_000_000_000,
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    assert.equal('selectionId' in rum, false)
+    assert.doesNotMatch(JSON.stringify(rum), /HeroCanvas|src\/HeroCanvas|selected hero/)
+
+    target.isConnected = false
+    assert.equal(selection.snapshot().state, 'disconnected')
+    selection.clear()
+    selection.clear()
+    assert.equal(selection.state, 'cleared')
+    assert.throws(() => selection.snapshot(), /cleared element selection/)
+    assert.ok([...listeners.values()].every(entries => entries.size === 0))
+    unregisterAdapter()
+    unregisterAdapter()
+    assert.equal(registry.adapter.canInspect(target), false)
+    collector.destroy()
+})
+
+test('renderer adapters normalize bounded evidence and keep GPU timing fail-closed', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    const target = {
+        tagName: 'CANVAS',
+        namespaceURI: 'http://www.w3.org/1999/xhtml',
+        isConnected: true,
+        width: 600,
+        height: 300,
+        ownerDocument: { defaultView: { innerWidth: 1_000, innerHeight: 800 } },
+        getAttribute: () => null,
+        getAnimations: () => [],
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 300, bottom: 150, width: 300, height: 150 }),
+        addEventListener() {},
+        removeEventListener() {},
+    }
+    let renderer = {
+        family: 'webgl',
+        capability: { state: 'supported', observed: true, buffered: false },
+        metrics: { cpuFrameMsP95: 2.5, gpuFrameMsP95: 4.25, drawCallsP95: 18 },
+        evidence: {
+            window: { startedAt: 100, endedAt: 160 },
+            acceptedSampleCount: 8,
+            retainedSampleCount: 6,
+            droppedSampleCount: 2,
+            rejectedSampleCount: 1,
+            truncated: false,
+            gpu: { valid: true, disjoint: false, contextLost: false, source: 'webgl-timer-query' },
+        },
+    }
+    const adapter = {
+        id: 'renderer-contract',
+        version: '1.0.0',
+        canInspect: element => element === target,
+        inspect: () => ({ renderer }),
+    }
+    const selection = collector.selectElement(target, { adapters: [adapter] })
+
+    let snapshot = selection.snapshot().renderers[0]
+    assert.equal(snapshot.metrics.cpuFrameMsP95, 2.5)
+    assert.equal(snapshot.metrics.gpuFrameMsP95, 4.25)
+    assert.deepEqual(snapshot.evidence.window, { startedAt: 100, endedAt: 160, durationMs: 60 })
+    assert.equal(snapshot.evidence.acceptedSampleCount, 8)
+    assert.equal(snapshot.evidence.retainedSampleCount, 6)
+    assert.equal(snapshot.evidence.droppedSampleCount, 2)
+    assert.equal(snapshot.evidence.rejectedSampleCount, 1)
+    assert.equal(snapshot.evidence.truncated, true)
+    assert.deepEqual(snapshot.evidence.gpu, {
+        valid: true,
+        disjoint: false,
+        contextLost: false,
+        source: 'webgl-timer-query',
+        rejectionReason: null,
+    })
+
+    renderer = {
+        ...renderer,
+        evidence: undefined,
+    }
+    snapshot = selection.snapshot().renderers[0]
+    assert.equal(snapshot.metrics.gpuFrameMsP95, null)
+    assert.deepEqual(snapshot.evidence.window, { startedAt: null, endedAt: null, durationMs: null })
+    assert.equal(snapshot.evidence.acceptedSampleCount, null)
+    assert.equal(snapshot.evidence.retainedSampleCount, null)
+    assert.equal(snapshot.evidence.droppedSampleCount, null)
+    assert.equal(snapshot.evidence.rejectedSampleCount, null)
+    assert.equal(snapshot.evidence.truncated, null)
+    assert.deepEqual(snapshot.evidence.gpu, {
+        valid: null,
+        disjoint: null,
+        contextLost: null,
+        source: 'unknown',
+        rejectionReason: 'validity-unknown',
+    })
+
+    renderer = {
+        ...renderer,
+        evidence: {
+            window: { startedAt: 200, endedAt: 100 },
+            acceptedSampleCount: 4,
+            retainedSampleCount: 5,
+            droppedSampleCount: 0,
+            rejectedSampleCount: -1,
+            truncated: 'yes',
+            gpu: { valid: true, disjoint: true, contextLost: false, source: 'webgl-timer-query' },
+        },
+    }
+    snapshot = selection.snapshot().renderers[0]
+    assert.equal(snapshot.metrics.gpuFrameMsP95, null)
+    assert.deepEqual(snapshot.evidence.window, { startedAt: null, endedAt: null, durationMs: null })
+    assert.equal(snapshot.evidence.acceptedSampleCount, null)
+    assert.equal(snapshot.evidence.retainedSampleCount, null)
+    assert.equal(snapshot.evidence.droppedSampleCount, null)
+    assert.equal(snapshot.evidence.rejectedSampleCount, null)
+    assert.equal(snapshot.evidence.truncated, null)
+    assert.equal(snapshot.evidence.gpu.rejectionReason, 'timer-disjoint')
+
+    renderer = {
+        ...renderer,
+        evidence: {
+            gpu: { valid: true, disjoint: false, contextLost: true, source: 'host-summary' },
+        },
+    }
+    snapshot = selection.snapshot().renderers[0]
+    assert.equal(snapshot.metrics.gpuFrameMsP95, null)
+    assert.equal(snapshot.evidence.gpu.rejectionReason, 'context-lost')
+
+    renderer = {
+        ...renderer,
+        evidence: {
+            gpu: { valid: true, disjoint: false, contextLost: false, source: 'untrusted-clock' },
+        },
+    }
+    snapshot = selection.snapshot().renderers[0]
+    assert.equal(snapshot.metrics.gpuFrameMsP95, null)
+    assert.equal(snapshot.evidence.gpu.source, 'unknown')
+    assert.equal(snapshot.evidence.gpu.rejectionReason, 'source-unknown')
+
+    renderer = {
+        family: 'webgl',
+        capability: { state: 'unsupported', observed: false, buffered: false, reason: 'timer unavailable' },
+        metrics: { cpuFrameMsP95: 2, gpuFrameMsP95: 3, drawCallsP95: 10 },
+        evidence: {
+            acceptedSampleCount: 4,
+            retainedSampleCount: 4,
+            droppedSampleCount: 0,
+            gpu: { valid: true, disjoint: false, contextLost: false, source: 'host-summary' },
+        },
+    }
+    const contradictory = selection.snapshot()
+    snapshot = contradictory.renderers[0]
+    assert.ok(Object.values(snapshot.metrics).every(value => value === null))
+    assert.equal(snapshot.evidence.acceptedSampleCount, null)
+    assert.equal(snapshot.evidence.gpu.rejectionReason, 'not-reported')
+    assert.deepEqual(contradictory.adapterErrors, ['renderer-contract:renderer-capability-conflict'])
+
+    selection.clear()
+    collector.destroy()
+})
+
+test('Canvas geometry separates CSS and backing resizes without counting ResizeObserver baseline delivery', () => {
+    const observers = []
+    class FakeResizeObserver {
+        constructor(callback) {
+            this.callback = callback
+            this.disconnected = false
+            observers.push(this)
+        }
+
+        observe(element) {
+            this.element = element
+        }
+
+        disconnect() {
+            this.disconnected = true
+        }
+
+        emit() {
+            this.callback([], this)
+        }
+    }
+
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    const cssBox = { width: 400, height: 200 }
+    const target = {
+        tagName: 'CANVAS',
+        namespaceURI: 'http://www.w3.org/1999/xhtml',
+        isConnected: true,
+        width: 800,
+        height: 400,
+        ownerDocument: {
+            defaultView: { innerWidth: 1_000, innerHeight: 800, ResizeObserver: FakeResizeObserver },
+        },
+        getAttribute: () => null,
+        getAnimations: () => [],
+        getBoundingClientRect: () => ({
+            left: 0,
+            top: 0,
+            right: cssBox.width,
+            bottom: cssBox.height,
+            width: cssBox.width,
+            height: cssBox.height,
+        }),
+        addEventListener() {},
+        removeEventListener() {},
+    }
+    const selection = collector.selectElement(target)
+    assert.equal(observers.length, 1)
+
+    observers[0].emit()
+    let geometry = selection.snapshot().geometry
+    assert.equal(geometry.resizeCount, 0)
+    assert.equal(geometry.cssResizeCount, 0)
+    assert.equal(geometry.backingResizeCount, 0)
+    assert.equal(geometry.backingScaleX, 2)
+    assert.equal(geometry.backingScaleY, 2)
+    assert.equal(geometry.backingAspectRatioMismatch, false)
+    assert.equal(geometry.effectivePixelRatio, 2)
+
+    cssBox.width = 500
+    observers[0].emit()
+    geometry = selection.snapshot().geometry
+    assert.equal(geometry.resizeCount, 1)
+    assert.equal(geometry.cssResizeCount, 1)
+    assert.equal(geometry.backingResizeCount, 0)
+    assert.equal(geometry.backingScaleX, 1.6)
+    assert.equal(geometry.backingScaleY, 2)
+    assert.equal(geometry.backingAspectRatioMismatch, true)
+    assert.equal(geometry.effectivePixelRatio, 1.789)
+
+    target.width = 1_000
+    target.height = 500
+    geometry = selection.snapshot().geometry
+    assert.equal(geometry.resizeCount, 2)
+    assert.equal(geometry.cssResizeCount, 1)
+    assert.equal(geometry.backingResizeCount, 1)
+    assert.equal(geometry.backingScaleX, 2)
+    assert.equal(geometry.backingScaleY, 2.5)
+    assert.equal(geometry.backingAspectRatioMismatch, true)
+    assert.equal(geometry.effectivePixelRatio, 2.236)
+
+    selection.clear()
+    assert.equal(observers[0].disconnected, true)
+    collector.destroy()
+})
+
+class FakeNode {
+    constructor(tag = '') {
+        this.tag = tag
+        this.tagName = tag.startsWith('#') ? '' : tag.toUpperCase()
+        this.children = []
+        this.attributes = new Map()
+        this.textContent = ''
+        this.className = ''
+        this.parent = null
+        this.listeners = new Map()
+        this.focused = false
+        this.style = {}
+        this.isConnected = true
+    }
+
+    append(...children) {
+        for (const child of children) this.appendChild(child)
+    }
+
+    appendChild(child) {
+        child.parent = this
+        this.children.push(child)
+        return child
+    }
+
+    replaceChildren(...children) {
+        this.children = []
+        this.append(...children)
+    }
+
+    setAttribute(name, value) {
+        this.attributes.set(name, value)
+    }
+
+    getAttribute(name) {
+        return this.attributes.get(name) ?? null
+    }
+
+    addEventListener(type, listener) {
+        const listeners = this.listeners.get(type) ?? new Set()
+        listeners.add(listener)
+        this.listeners.set(type, listeners)
+    }
+
+    removeEventListener(type, listener) {
+        this.listeners.get(type)?.delete(listener)
+    }
+
+    dispatchEvent(event) {
+        event.target = this
+        for (const listener of [...(this.listeners.get(event.type) ?? [])]) listener(event)
+        return true
+    }
+
+    click() {
+        this.dispatchEvent({ type: 'click' })
+    }
+
+    focus() {
+        this.focused = true
+        let current = this.parent
+        while (current) {
+            if (current.tag === '#shadow-root') {
+                current.activeElement = this
+                break
+            }
+            current = current.parent
+        }
+    }
+
+    contains(node) {
+        if (node === this) return true
+        return this.children.some(child => child.contains(node))
+    }
+
+    closest(selector) {
+        return [...this.attributes.keys()].some(name => selector.includes(name)) ? this : null
+    }
+
+    getBoundingClientRect() {
+        return { left: 0, top: 0, right: 100, bottom: 50, width: 100, height: 50 }
+    }
+
+    attachShadow() {
+        this.shadowRoot = new FakeNode('#shadow-root')
+        return this.shadowRoot
+    }
+
+    remove() {
+        if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this)
+    }
+}
+
+class FakeDocument {
+    constructor() {
+        this.body = new FakeNode('body')
+        this.documentElement = new FakeNode('html')
+        this.body.ownerDocument = this
+        this.documentElement.ownerDocument = this
+        this.listeners = new Map()
+        this.intervalMs = null
+        this.cleared = false
+        this.intervalCallback = null
+        this.intervals = new Map()
+        this.nextIntervalId = 7
+        this.defaultView = {
+            setInterval: (callback, ms) => {
+                this.intervalMs = ms
+                this.intervalCallback = callback
+                const id = this.nextIntervalId++
+                this.intervals.set(id, { callback, ms })
+                return id
+            },
+            clearInterval: id => {
+                if (this.intervals.delete(id)) this.cleared = true
+                const latest = [...this.intervals.values()].at(-1)
+                this.intervalMs = latest?.ms ?? null
+                this.intervalCallback = latest?.callback ?? null
+            },
+            innerWidth: 1_000,
+            innerHeight: 800,
+        }
+    }
+
+    hasInterval(ms) {
+        return [...this.intervals.values()].some(interval => interval.ms === ms)
+    }
+
+    createElement(tag) {
+        const node = new FakeNode(tag)
+        node.ownerDocument = this
+        return node
+    }
+
+    elementFromPoint() {
+        return this.hit ?? null
+    }
+
+    addEventListener(type, listener) {
+        this.listeners.set(type, listener)
+    }
+
+    removeEventListener(type, listener) {
+        if (this.listeners.get(type) === listener) this.listeners.delete(type)
+    }
+
+    dispatchCaptured(type, values = {}) {
+        let prevented = false
+        let stopped = false
+        this.listeners.get(type)?.({
+            type,
+            button: 0,
+            clientX: 10,
+            clientY: 10,
+            composedPath: () => [this.hit],
+            preventDefault: () => (prevented = true),
+            stopPropagation: () => (stopped = true),
+            stopImmediatePropagation() {},
+            ...values,
+        })
+        return { prevented, stopped }
+    }
+}
+
+function findFakeNodes(node, predicate) {
+    const matches = predicate(node) ? [node] : []
+    for (const child of node.children) matches.push(...findFakeNodes(child, predicate))
+    return matches
+}
+
+function fakeNodeText(node) {
+    return [node.textContent, ...node.children.map(fakeNodeText)].filter(Boolean).join(' ')
+}
+
+test('one-shot element picker suppresses the inspected click, supports Escape, and cleans every listener', () => {
+    class PickerNode {
+        constructor(tag) {
+            this.tagName = tag.toUpperCase()
+            this.children = []
+            this.attributes = new Map()
+            this.style = {}
+        }
+        setAttribute(name, value) {
+            this.attributes.set(name, value)
+        }
+        append(...nodes) {
+            this.children.push(...nodes)
+        }
+        appendChild(node) {
+            this.children.push(node)
+            return node
+        }
+        attachShadow() {
+            this.shadowRoot = new PickerNode('shadow')
+            return this.shadowRoot
+        }
+        contains(node) {
+            return node === this || this.children.some(child => child.contains?.(node))
+        }
+        closest(selector) {
+            return selector.includes('data-condev-animation') && [...this.attributes.keys()].some(name => selector.includes(name))
+                ? this
+                : null
+        }
+        getBoundingClientRect() {
+            return { left: 10, top: 20, right: 110, bottom: 70, width: 100, height: 50 }
+        }
+        remove() {
+            this.removed = true
+        }
+    }
+    class PickerDocument {
+        constructor() {
+            this.body = new PickerNode('body')
+            this.documentElement = new PickerNode('html')
+            this.listeners = new Map()
+            this.windowListeners = new Map()
+            this.defaultView = {
+                addEventListener: (type, listener) => this.windowListeners.set(type, listener),
+                removeEventListener: type => this.windowListeners.delete(type),
+            }
+        }
+        createElement(tag) {
+            return new PickerNode(tag)
+        }
+        elementFromPoint() {
+            return this.hit
+        }
+        addEventListener(type, listener) {
+            this.listeners.set(type, listener)
+        }
+        removeEventListener(type, listener) {
+            if (this.listeners.get(type) === listener) this.listeners.delete(type)
+        }
+        dispatch(type, values = {}) {
+            let prevented = false
+            let stopped = false
+            this.listeners.get(type)?.({
+                type,
+                button: 0,
+                clientX: 20,
+                clientY: 30,
+                composedPath: () => [this.hit],
+                preventDefault: () => (prevented = true),
+                stopPropagation: () => (stopped = true),
+                stopImmediatePropagation() {},
+                ...values,
+            })
+            return { prevented, stopped }
+        }
+    }
+
+    const document = new PickerDocument()
+    const target = new PickerNode('canvas')
+    document.hit = target
+    let selected = null
+    let cancelled = 0
+    const picker = createAnimationElementPicker({
+        document,
+        onSelect: element => (selected = element),
+        onCancel: () => (cancelled += 1),
+    })
+    assert.equal(picker.start(), true)
+    assert.equal(picker.state, 'picking')
+    const down = document.dispatch('pointerdown')
+    const click = document.dispatch('click')
+    assert.equal(down.prevented, true)
+    assert.equal(click.stopped, true)
+    assert.equal(selected, target)
+    assert.equal(picker.state, 'selected')
+    assert.equal(document.listeners.size, 0)
+
+    assert.equal(picker.start(), true)
+    const escape = document.dispatch('keydown', { key: 'Escape' })
+    assert.equal(escape.prevented, true)
+    assert.equal(picker.state, 'idle')
+    assert.equal(cancelled, 1)
+    picker.destroy()
+    picker.destroy()
+    assert.equal(picker.state, 'destroyed')
+    assert.equal(document.listeners.size, 0)
+})
+
+test('dev overlay is a collapsed Shadow DOM dock, refreshes only while expanded, and no-ops in SSR/production', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    collectFrames(runtime, [16, 30])
+    const document = new FakeDocument()
+    let snapshots = 0
+    const source = {
+        get state() {
+            return collector.state
+        },
+        snapshot() {
+            snapshots += 1
+            return collector.snapshot()
+        },
+    }
+    const overlay = createAnimationDevOverlay(source, {
+        document,
+        production: false,
+        refreshIntervalMs: 10,
+    })
+    assert.equal(overlay.mounted, true)
+    assert.equal(overlay.refreshIntervalMs, 1_000)
+    assert.equal(overlay.expanded, false)
+    assert.equal(document.hasInterval(2_000), true)
+    assert.equal(document.hasInterval(1_000), false)
+    assert.equal(snapshots, 0)
+    assert.equal(document.body.children.length, 1)
+    const shadow = document.body.children[0].shadowRoot
+    assert.ok(shadow)
+    assert.match(shadow.children[0].textContent, /prefers-reduced-motion: reduce/)
+    assert.match(shadow.children[0].textContent, /hover: hover.*pointer: fine/s)
+    assert.doesNotMatch(shadow.children[0].textContent, /transition:\s*all/)
+    const dock = shadow.children[1]
+    const trigger = dock.children[0]
+    const panel = dock.children[1]
+    const rendererSurfaceToggle = findFakeNodes(panel, node => node.getAttribute('data-renderer-surface-toggle') !== null)[0]
+    assert.ok(rendererSurfaceToggle)
+    assert.equal(rendererSurfaceToggle.getAttribute('data-enabled'), 'true')
+    assert.equal(rendererSurfaceToggle.getAttribute('aria-pressed'), 'true')
+    assert.equal(rendererSurfaceToggle.textContent, 'Hide page markers')
+    assert.equal(dock.getAttribute('data-expanded'), 'false')
+    assert.equal(panel.getAttribute('role'), 'region')
+    assert.equal(panel.getAttribute('aria-hidden'), 'true')
+    assert.equal(panel.getAttribute('tabindex'), '0')
+    assert.equal(trigger.getAttribute('aria-expanded'), 'false')
+    assert.equal(trigger.getAttribute('aria-label'), 'Open Condev animation monitor')
+
+    overlay.refresh()
+    assert.equal(snapshots, 0)
+    trigger.click()
+    assert.equal(overlay.expanded, true)
+    assert.equal(dock.getAttribute('data-expanded'), 'true')
+    assert.equal(panel.getAttribute('aria-hidden'), 'false')
+    assert.equal(trigger.getAttribute('aria-expanded'), 'true')
+    assert.equal(trigger.getAttribute('aria-label'), 'Close Condev animation monitor')
+    assert.equal(document.hasInterval(1_000), true)
+    assert.equal(snapshots, 1)
+    const stablePanelShell = [...panel.children]
+    overlay.refresh()
+    assert.equal(snapshots, 2)
+    assert.deepEqual(panel.children, stablePanelShell)
+
+    let escapePrevented = false
+    let escapePropagationStopped = false
+    shadow.dispatchEvent({
+        type: 'keydown',
+        key: 'Escape',
+        preventDefault() {
+            escapePrevented = true
+        },
+        stopPropagation() {
+            escapePropagationStopped = true
+        },
+    })
+    assert.equal(overlay.expanded, false)
+    assert.equal(trigger.focused, true)
+    assert.equal(escapePrevented, true)
+    assert.equal(escapePropagationStopped, true)
+    assert.equal(document.cleared, true)
+    assert.equal(document.hasInterval(1_000), false)
+    assert.equal(document.hasInterval(2_000), true)
+    overlay.refresh()
+    assert.equal(snapshots, 2)
+
+    let enterPropagationStopped = false
+    let keyUpPropagationStopped = false
+    shadow.dispatchEvent({
+        type: 'keydown',
+        key: 'Enter',
+        stopPropagation() {
+            enterPropagationStopped = true
+        },
+    })
+    shadow.dispatchEvent({
+        type: 'keyup',
+        key: 'Enter',
+        stopPropagation() {
+            keyUpPropagationStopped = true
+        },
+    })
+    assert.equal(enterPropagationStopped, true)
+    assert.equal(keyUpPropagationStopped, true)
+
+    overlay.setExpanded(true)
+    assert.equal(overlay.expanded, true)
+    assert.equal(snapshots, 3)
+    trigger.focused = false
+    panel.focus()
+    overlay.toggle()
+    assert.equal(overlay.expanded, false)
+    assert.equal(trigger.focused, true)
+    overlay.destroy()
+    overlay.destroy()
+    assert.equal(document.body.children.length, 0)
+
+    const containedInputStopped = new Set()
+    const containmentDocument = new FakeDocument()
+    const containmentOverlay = createAnimationDevOverlay(source, { document: containmentDocument, production: false })
+    const containmentShadow = containmentDocument.body.children[0].shadowRoot
+    for (const type of ['pointerdown', 'pointermove', 'mousedown', 'mouseup', 'mousemove', 'touchstart', 'touchmove']) {
+        containmentShadow.dispatchEvent({
+            type,
+            stopPropagation() {
+                containedInputStopped.add(type)
+            },
+        })
+    }
+    assert.deepEqual(
+        [...containedInputStopped],
+        ['pointerdown', 'pointermove', 'mousedown', 'mouseup', 'mousemove', 'touchstart', 'touchmove']
+    )
+    containmentOverlay.destroy()
+
+    for (const [requested, expected] of [
+        [Number.NaN, 1_000],
+        [Number.POSITIVE_INFINITY, 1_000],
+        [Number.NEGATIVE_INFINITY, 1_000],
+        [3_000_000_000, 2_147_483_647],
+    ]) {
+        const intervalDocument = new FakeDocument()
+        const intervalOverlay = createAnimationDevOverlay(source, {
+            document: intervalDocument,
+            production: false,
+            initiallyOpen: true,
+            refreshIntervalMs: requested,
+        })
+        assert.equal(intervalOverlay.refreshIntervalMs, expected)
+        assert.equal(intervalDocument.hasInterval(expected), true)
+        intervalOverlay.destroy()
+    }
+
+    const production = createAnimationDevOverlay(collector, { document, production: true })
+    assert.equal(production.mounted, false)
+    assert.equal(production.expanded, false)
+    production.setExpanded(true)
+    production.toggle()
+    const ssr = createAnimationDevOverlay(collector, { production: false })
+    assert.equal(ssr.mounted, false)
+    collector.destroy()
+})
+
+test('dev overlay ranks every measured finding and exposes workbench, interaction, and explicit coverage views', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    collectFrames(runtime, [16, 32, 48])
+    const interaction = collector.beginInteraction('drag', 'gallery drag')
+    runtime.tick(160)
+    interaction.end()
+    const snapshot = collector.snapshot()
+    const statistics = (value, count = 100) => ({
+        count,
+        p50: value,
+        p75: value,
+        p95: value,
+        p99: value,
+        max: value,
+        total: value * count,
+    })
+    snapshot.elapsedMs = 10_000
+    snapshot.capturedAt = 10_000
+    snapshot.frameBudget.confidence = 'high'
+    snapshot.frameBudget.sampleCount = 100
+    snapshot.frameBudget.expectedRefreshHz = 60
+    snapshot.frames.duration = statistics(40)
+    snapshot.frames.retainedCount = 100
+    snapshot.frames.totalObservedCount = 100
+    snapshot.longTasks.duration = statistics(120)
+    snapshot.longAnimationFrames.styleAndLayoutTailDuration = statistics(40)
+    snapshot.eventTiming.inputDelay = statistics(140)
+    snapshot.eventTiming.processingDuration = statistics(150)
+    snapshot.eventTiming.presentationDelay = statistics(160)
+    snapshot.monitorOverhead.callbackCount = 100
+    snapshot.monitorOverhead.totalCallbackDurationMs = 300
+    Object.assign(snapshot.captureSufficiency, {
+        status: 'insufficient',
+        reasons: ['visible-window-too-short', 'insufficient-frame-samples'],
+        visibleDurationMs: 1_250,
+        hiddenDurationMs: 500,
+        otherDurationMs: 0,
+    })
+    snapshot.webVitals.latest.LCP = {
+        name: 'LCP',
+        value: 1_250,
+        delta: 1_250,
+        rating: 'good',
+        navigationType: 'navigate',
+        attribution: {},
+    }
+    snapshot.webVitals.latest.INP = null
+    snapshot.webVitals.latest.CLS = {
+        name: 'CLS',
+        value: 0.08,
+        delta: 0.08,
+        rating: 'needs-improvement',
+        navigationType: 'navigate',
+        attribution: {},
+    }
+    const resourceCategory = (count, duration, transferSize) => ({
+        totalObservedCount: count,
+        totalDurationMs: duration * count,
+        transferSizeBytes: transferSize,
+        encodedBodySizeBytes: transferSize,
+        decodedBodySizeBytes: transferSize * 2,
+        zeroTransferSizeCount: transferSize === 0 ? count : 0,
+        duration: statistics(duration, count),
+    })
+    Object.assign(snapshot.resourceTiming, {
+        retainedCount: 12,
+        totalObservedCount: 17,
+        droppedSampleCount: 5,
+        rejectedEntryCount: 2,
+        bufferFullEventCount: 1,
+        excludedPreCaptureCount: 3,
+        totalDurationMs: 714,
+        transferSizeBytes: 8_192,
+        encodedBodySizeBytes: 4_096,
+        decodedBodySizeBytes: null,
+        zeroTransferSizeCount: 2,
+        duration: statistics(42, 17),
+        categories: {
+            script: resourceCategory(4, 18, 2_048),
+            image: resourceCategory(6, 30, 4_096),
+            media: resourceCategory(2, 120, 0),
+            'fetch-xhr': resourceCategory(3, 24, 1_024),
+            'link-css': resourceCategory(1, 16, 512),
+            frame: resourceCategory(1, 36, 512),
+            other: {
+                totalObservedCount: null,
+                totalDurationMs: null,
+                transferSizeBytes: null,
+                encodedBodySizeBytes: null,
+                decodedBodySizeBytes: null,
+                zeroTransferSizeCount: null,
+                duration: null,
+            },
+        },
+    })
+    const hostFamily = ({ accepted = 4, retained = accepted, dropped = 0, rejected = 0, evidence = accepted } = {}) => ({
+        acceptedSampleCount: accepted,
+        retainedSampleCount: retained,
+        droppedSampleCount: dropped,
+        rejectedSampleCount: rejected,
+        evidenceSampleCount: evidence,
+        capacity: 64,
+        truncated: dropped > 0,
+        window: { startedAt: 0, endedAt: 10_000, durationMs: 10_000 },
+    })
+    Object.assign(snapshot.hostEvidence.renderer, {
+        ...hostFamily({ accepted: 5, retained: 4, dropped: 1, rejected: 2 }),
+        backends: ['webgl2'],
+        drawCalls: statistics(17, 4),
+        triangles: null,
+        gpuFrameMs: statistics(2.5, 3),
+        gpuMeasuredSampleCount: 3,
+        gpuRejectedSampleCount: 1,
+    })
+    Object.assign(snapshot.hostEvidence.media, {
+        ...hostFamily({ accepted: 8, retained: 8, evidence: 8 }),
+        callbackIntervalMs: statistics(16.7, 8),
+        presentedFramesDelta: statistics(1, 7),
+        totalVideoFramesDelta: 200,
+        droppedVideoFramesDelta: 6,
+        playbackDropRatio: 0.03,
+        playbackQualityMeasuredSampleCount: 7,
+    })
+    Object.assign(snapshot.hostEvidence.lifecycle, {
+        ...hostFamily({ accepted: 4, retained: 4, evidence: 4 }),
+        checkpoints: { mount: 1, 'after-interaction': 1, unmount: 1, manual: 1 },
+        latestAnimationTotal: 12,
+        latestActiveAnimationCount: 3,
+        latestScrollTriggerTotal: 5,
+        growthCandidate: null,
+    })
+    Object.assign(snapshot.hostEvidence.framework, {
+        ...hostFamily({ accepted: 6, retained: 6, evidence: 6 }),
+        frameworks: ['react'],
+        renderMs: statistics(3.2, 6),
+        commitMs: statistics(1.4, 6),
+    })
+    Object.assign(snapshot.hostEvidence.work, {
+        ...hostFamily({ accepted: 7, retained: 7, evidence: 7 }),
+        workMs: statistics(2, 7),
+        categories: { script: 2, layout: 2, paint: 1, composite: 1, other: 1 },
+    })
+    snapshot.coverage.renderer = { status: 'partial', evidenceLevel: 'runtime-observation' }
+    snapshot.coverage.resourcesMedia = { status: 'partial', evidenceLevel: 'runtime-observation' }
+    snapshot.coverage.memoryLifecycle = { status: 'partial', evidenceLevel: 'runtime-observation' }
+    snapshot.coverage.workAvoidance = { status: 'partial', evidenceLevel: 'runtime-observation' }
+    Object.assign(snapshot.interactions.recent[0].performance.quality, {
+        status: 'measured',
+        acceptedSampleCount: 4,
+        retainedSampleCount: 4,
+        inputToVisual: statistics(22, 4),
+        pointerSampleAge: statistics(7, 4),
+        progressError: statistics(0.01, 4),
+        domWebglAlignmentError: statistics(2, 4),
+        controlWritersPerFrame: statistics(1, 4),
+        controllerConflictSampleCount: 0,
+        settleTime: statistics(120, 4),
+        overshootRatio: statistics(0.1, 4),
+        coalescedEventsAvailable: 4,
+        coalescedEventsConsumed: 3,
+        coalescedEventUtilization: 0.75,
+    })
+
+    const document = new FakeDocument()
+    let overlaySnapshotIndex = 0
+    const overlay = createAnimationDevOverlay(
+        {
+            state: 'running',
+            snapshot() {
+                const current = structuredClone(snapshot)
+                current.capturedAt += overlaySnapshotIndex * 1_000
+                current.frames.totalObservedCount += overlaySnapshotIndex * 30
+                overlaySnapshotIndex += 1
+                return current
+            },
+        },
+        { document, production: false, initiallyOpen: true }
+    )
+    const shadow = document.body.children[0].shadowRoot
+    const dock = shadow.children[1]
+    const panel = dock.children[1]
+    const issueButtons = findFakeNodes(panel, node => node.getAttribute('data-overlay-issue') !== null)
+
+    assert.equal(issueButtons.length, 8)
+    assert.equal(issueButtons[0].getAttribute('data-overlay-issue'), 'long-task-main-thread')
+    assert.match(fakeNodeText(panel), /Motion Console/)
+    assert.match(fakeNodeText(panel), /What to change/)
+    assert.match(fakeNodeText(panel), /Verify the change/)
+    assert.match(fakeNodeText(panel), /Regression checks/)
+    const captureEvidence = findFakeNodes(panel, node => node.getAttribute('data-overlay-capture-sufficiency') !== null)[0]
+    assert.equal(captureEvidence.getAttribute('data-status'), 'insufficient')
+    assert.match(fakeNodeText(captureEvidence), /Foreground 1.25 s/)
+    assert.match(fakeNodeText(captureEvidence), /Background 500 ms/)
+    assert.match(fakeNodeText(captureEvidence), /foreground window is shorter than 5 s/)
+    assert.match(fakeNodeText(captureEvidence), /fewer than 30 retained frame samples/)
+    const lcp = findFakeNodes(panel, node => node.getAttribute('data-web-vital') === 'LCP')[0]
+    const inp = findFakeNodes(panel, node => node.getAttribute('data-web-vital') === 'INP')[0]
+    const cls = findFakeNodes(panel, node => node.getAttribute('data-web-vital') === 'CLS')[0]
+    assert.match(fakeNodeText(lcp), /good 1250 ms/)
+    assert.equal(inp.getAttribute('data-observed'), 'false')
+    assert.match(fakeNodeText(inp), /not observed unknown/)
+    assert.doesNotMatch(fakeNodeText(inp), /\b0(?:\.0+)?\b/)
+    assert.match(fakeNodeText(cls), /needs improvement 0\.08/)
+    assert.match(fakeNodeText(panel), /document-lifetime · may predate this capture/)
+
+    assert.equal(dock.getAttribute('data-layout'), 'wide')
+    const layoutButton = findFakeNodes(panel, node => node.getAttribute('aria-label') === 'Use compact animation panel')[0]
+    assert.ok(layoutButton)
+    layoutButton.click()
+    assert.equal(dock.getAttribute('data-layout'), 'compact')
+    assert.equal(layoutButton.getAttribute('aria-pressed'), 'false')
+    layoutButton.click()
+    assert.equal(dock.getAttribute('data-layout'), 'wide')
+    overlay.refresh()
+    assert.match(fakeNodeText(panel), /30 FPS/)
+    assert.match(fakeNodeText(panel), /60 Hz/)
+    assert.match(fakeNodeText(panel), /Live rAF cadence/)
+
+    const interactionsTab = findFakeNodes(panel, node => node.getAttribute('data-overlay-tab') === 'interactions')[0]
+    assert.ok(interactionsTab)
+    interactionsTab.click()
+    assert.equal(interactionsTab.getAttribute('aria-selected'), 'true')
+    assert.match(fakeNodeText(panel), /gallery drag/)
+    assert.match(fakeNodeText(panel), /Interpretation boundary/)
+    const qualityFacts = findFakeNodes(panel, node => node.getAttribute('data-interaction-quality-metric') !== null)
+    assert.equal(qualityFacts.length, 8)
+    assert.match(fakeNodeText(panel), /Continuous interaction quality/)
+    assert.match(fakeNodeText(panel), /Input → visual p95 22 ms/)
+    assert.match(fakeNodeText(panel), /Pointer sample age p95 7 ms/)
+    assert.match(fakeNodeText(panel), /Progress error p95 1%/)
+    assert.match(fakeNodeText(panel), /DOM\/WebGL alignment p95 2 px/)
+    assert.match(fakeNodeText(panel), /Control conflicts 0 conflict samples · max 1 writers/)
+    assert.match(fakeNodeText(panel), /Settle time p95 120 ms/)
+    assert.match(fakeNodeText(panel), /Overshoot p95 10%/)
+    assert.match(fakeNodeText(panel), /Coalesced utilization 75% · 3\/4 events/)
+
+    const coverageTab = findFakeNodes(panel, node => node.getAttribute('data-overlay-tab') === 'coverage')[0]
+    assert.ok(coverageTab)
+    coverageTab.click()
+    assert.equal(coverageTab.getAttribute('aria-selected'), 'true')
+    const coverageRows = findFakeNodes(panel, node => node.getAttribute('data-coverage-family') !== null)
+    assert.equal(coverageRows.length, 12)
+    const rendererCoverage = coverageRows.find(node => node.getAttribute('data-coverage-family') === 'renderer')
+    assert.ok(rendererCoverage)
+    rendererCoverage.click()
+    assert.equal(rendererCoverage.getAttribute('data-selected'), 'false')
+    const selectedRendererCoverage = findFakeNodes(
+        panel,
+        node => node.getAttribute('data-coverage-family') === 'renderer' && node.getAttribute('data-selected') === 'true'
+    )[0]
+    assert.ok(selectedRendererCoverage)
+    const rendererHostDetail = findFakeNodes(panel, node => node.getAttribute('data-host-evidence') === 'renderer')[0]
+    assert.ok(rendererHostDetail)
+    const rendererHostMetric = id => findFakeNodes(rendererHostDetail, node => node.getAttribute('data-host-evidence-metric') === id)[0]
+    assert.match(fakeNodeText(rendererHostMetric('backend')), /Backend WebGL 2/)
+    assert.match(fakeNodeText(rendererHostMetric('draw-calls-p95')), /Draw calls p95 17/)
+    assert.match(fakeNodeText(rendererHostMetric('triangles-p95')), /Triangles p95 unknown/)
+    assert.doesNotMatch(fakeNodeText(rendererHostMetric('triangles-p95')), /\b0(?:\.0+)?\b/)
+    assert.match(fakeNodeText(rendererHostMetric('gpu-frame-p95')), /GPU frame p95 2\.50 ms/)
+    assert.match(fakeNodeText(rendererHostMetric('accepted')), /Accepted samples 5/)
+    assert.match(fakeNodeText(rendererHostMetric('dropped')), /Dropped samples 1/)
+    assert.match(fakeNodeText(rendererHostMetric('rejected')), /Rejected samples 2/)
+    assert.match(fakeNodeText(rendererHostDetail), /explicit host adapter · local only/i)
+    assert.match(fakeNodeText(rendererHostDetail), /excluded from animation_rum v1/i)
+    assert.match(fakeNodeText(panel), /Missing or unsupported evidence is never converted to zero/i)
+
+    const resourcesCoverage = findFakeNodes(panel, node => node.getAttribute('data-coverage-family') === 'resourcesMedia')[0]
+    resourcesCoverage.click()
+    const resourceDetail = findFakeNodes(panel, node => node.getAttribute('data-resource-timing') !== null)[0]
+    assert.ok(resourceDetail)
+    const resourceMetric = id => findFakeNodes(resourceDetail, node => node.getAttribute('data-resource-timing-metric') === id)[0]
+    assert.match(fakeNodeText(resourceMetric('total-observed')), /Resource entries 17/)
+    assert.match(fakeNodeText(resourceMetric('retained')), /Retained entries 12/)
+    assert.match(fakeNodeText(resourceMetric('dropped')), /Dropped entries 5/)
+    assert.match(fakeNodeText(resourceMetric('rejected')), /Rejected entries 2/)
+    assert.match(fakeNodeText(resourceMetric('excluded-pre-capture')), /Excluded before capture 3/)
+    assert.match(fakeNodeText(resourceMetric('duration-p95')), /Resource duration p95 42 ms/)
+    assert.match(fakeNodeText(resourceMetric('transfer-bytes')), /Transfer bytes 8192 B/)
+    assert.match(fakeNodeText(resourceMetric('encoded-bytes')), /Encoded bytes 4096 B/)
+    assert.match(fakeNodeText(resourceMetric('decoded-bytes')), /Decoded bytes unknown/)
+    assert.doesNotMatch(fakeNodeText(resourceMetric('decoded-bytes')), /\b0(?:\.0+)?\b/)
+    assert.match(fakeNodeText(resourceMetric('zero-transfer')), /Zero-transfer entries 2/)
+    assert.match(fakeNodeText(resourceMetric('buffer-full')), /Buffer-full events 1/)
+    const resourceCategories = findFakeNodes(resourceDetail, node => node.getAttribute('data-resource-category') !== null)
+    assert.equal(resourceCategories.length, 7)
+    assert.match(
+        fakeNodeText(resourceCategories.find(node => node.getAttribute('data-resource-category') === 'script')),
+        /Script 4 resources · p95 18 ms · transfer 2048 B/
+    )
+    assert.match(
+        fakeNodeText(resourceCategories.find(node => node.getAttribute('data-resource-category') === 'media')),
+        /Media 2 resources · p95 120 ms · transfer 0 B/
+    )
+    const unknownCategory = resourceCategories.find(node => node.getAttribute('data-resource-category') === 'other')
+    assert.match(fakeNodeText(unknownCategory), /Other unknown resources · p95 unknown · transfer unknown/)
+    assert.doesNotMatch(fakeNodeText(unknownCategory), /\b0(?:\.0+)?\b/)
+    assert.match(fakeNodeText(resourceDetail), /URL\/name removed/)
+    assert.match(fakeNodeText(resourceDetail), /Media decode, dropped playback frames, and GPU upload remain separate adapter evidence/)
+    const mediaHostDetail = findFakeNodes(panel, node => node.getAttribute('data-host-evidence') === 'media')[0]
+    assert.ok(mediaHostDetail)
+    const mediaHostMetric = id => findFakeNodes(mediaHostDetail, node => node.getAttribute('data-host-evidence-metric') === id)[0]
+    assert.match(fakeNodeText(mediaHostMetric('callback-p95')), /rVFC callback interval p95 16\.7 ms/)
+    assert.match(fakeNodeText(mediaHostMetric('presented-frames-delta-p95')), /Presented-frame delta p95 1/)
+    assert.match(fakeNodeText(mediaHostMetric('dropped-video-frames')), /Dropped video frames 6/)
+    assert.match(fakeNodeText(mediaHostMetric('total-video-frames')), /Total video frames 200/)
+    assert.match(fakeNodeText(mediaHostMetric('playback-drop-ratio')), /Playback drop ratio 3%/)
+    assert.match(fakeNodeText(mediaHostDetail), /valid baseline/)
+
+    const lifecycleCoverage = findFakeNodes(panel, node => node.getAttribute('data-coverage-family') === 'memoryLifecycle')[0]
+    lifecycleCoverage.click()
+    const lifecycleHostDetail = findFakeNodes(panel, node => node.getAttribute('data-host-evidence') === 'lifecycle')[0]
+    assert.ok(lifecycleHostDetail)
+    const lifecycleHostMetric = id => findFakeNodes(lifecycleHostDetail, node => node.getAttribute('data-host-evidence-metric') === id)[0]
+    assert.match(fakeNodeText(lifecycleHostMetric('animations')), /GSAP animations 12/)
+    assert.match(fakeNodeText(lifecycleHostMetric('active-animations')), /Active animations 3/)
+    assert.match(fakeNodeText(lifecycleHostMetric('scroll-triggers')), /ScrollTriggers 5/)
+    assert.match(fakeNodeText(lifecycleHostMetric('checkpoints')), /Lifecycle checkpoints mount 1 · interaction 1 · unmount 1 · manual 1/)
+    assert.match(fakeNodeText(lifecycleHostDetail), /Leak cannot be determined from checkpoints alone/)
+
+    const workCoverage = findFakeNodes(panel, node => node.getAttribute('data-coverage-family') === 'workAvoidance')[0]
+    workCoverage.click()
+    const workHostDetail = findFakeNodes(panel, node => node.getAttribute('data-host-evidence') === 'work')[0]
+    assert.ok(workHostDetail)
+    const workHostMetric = id => findFakeNodes(workHostDetail, node => node.getAttribute('data-host-evidence-metric') === id)[0]
+    assert.match(fakeNodeText(workHostMetric('framework-render-p95')), /Framework render p95 3\.20 ms/)
+    assert.match(fakeNodeText(workHostMetric('framework-commit-p95')), /Framework commit p95 1\.40 ms/)
+    assert.match(fakeNodeText(workHostMetric('total-work-samples')), /Total work samples 7/)
+    assert.match(fakeNodeText(workHostMetric('work-categories')), /Work categories script 2 · layout 2 · paint 1 · composite 1 · other 1/)
+
+    overlay.destroy()
+    const chineseDocument = new FakeDocument()
+    const chineseSnapshot = structuredClone(snapshot)
+    chineseSnapshot.hostEvidence.lifecycle.latestActiveAnimationCount = null
+    const chineseOverlay = createAnimationDevOverlay(
+        { state: 'running', snapshot: () => structuredClone(chineseSnapshot) },
+        { document: chineseDocument, production: false, initiallyOpen: true, locale: 'zh-CN' }
+    )
+    const chinesePanel = chineseDocument.body.children[0].shadowRoot.children[1].children[1]
+    assert.match(fakeNodeText(chinesePanel), /如何修改/)
+    assert.match(fakeNodeText(chinesePanel), /如何验证修改/)
+    assert.match(fakeNodeText(chinesePanel), /回归检查/)
+    assert.match(fakeNodeText(chinesePanel), /采集证据/)
+    assert.match(fakeNodeText(chinesePanel), /前台 1\.25 秒/)
+    assert.match(fakeNodeText(chinesePanel), /整个文档周期/)
+    assert.match(fakeNodeText(chinesePanel), /未观测到 未知/)
+    const chineseCoverageTab = findFakeNodes(chinesePanel, node => node.getAttribute('data-overlay-tab') === 'coverage')[0]
+    chineseCoverageTab.click()
+    const chineseResourcesCoverage = findFakeNodes(chinesePanel, node => node.getAttribute('data-coverage-family') === 'resourcesMedia')[0]
+    chineseResourcesCoverage.click()
+    const chineseResourceDetail = findFakeNodes(chinesePanel, node => node.getAttribute('data-resource-timing') !== null)[0]
+    assert.match(fakeNodeText(chineseResourceDetail), /采集窗口内的 Resource Timing/)
+    assert.match(fakeNodeText(chineseResourceDetail), /资源条目 17/)
+    assert.match(fakeNodeText(chineseResourceDetail), /解码体积 未知/)
+    assert.match(fakeNodeText(chineseResourceDetail), /脚本 共 4 个 · p95 18 ms · 传输 2048 B/)
+    assert.match(fakeNodeText(chineseResourceDetail), /媒体解码、播放掉帧和 GPU 上传仍需单独的适配器证据/)
+    const chineseMediaHostDetail = findFakeNodes(chinesePanel, node => node.getAttribute('data-host-evidence') === 'media')[0]
+    assert.match(fakeNodeText(chineseMediaHostDetail), /视频宿主证据/)
+    assert.match(fakeNodeText(chineseMediaHostDetail), /播放掉帧比例 3%/)
+    const chineseLifecycleCoverage = findFakeNodes(chinesePanel, node => node.getAttribute('data-coverage-family') === 'memoryLifecycle')[0]
+    chineseLifecycleCoverage.click()
+    const chineseLifecycleHostDetail = findFakeNodes(chinesePanel, node => node.getAttribute('data-host-evidence') === 'lifecycle')[0]
+    const chineseActiveMetric = findFakeNodes(
+        chineseLifecycleHostDetail,
+        node => node.getAttribute('data-host-evidence-metric') === 'active-animations'
+    )[0]
+    assert.match(fakeNodeText(chineseActiveMetric), /活动动画数 未知/)
+    assert.doesNotMatch(fakeNodeText(chineseActiveMetric), /\b0(?:\.0+)?\b/)
+    assert.match(fakeNodeText(chineseLifecycleHostDetail), /仅凭检查点尚不能判断泄漏/)
+    assert.match(fakeNodeText(chineseLifecycleHostDetail), /不属于 animation_rum v1/)
+    const chineseInteractionsTab = findFakeNodes(chinesePanel, node => node.getAttribute('data-overlay-tab') === 'interactions')[0]
+    chineseInteractionsTab.click()
+    assert.match(fakeNodeText(chinesePanel), /连续交互质量/)
+    assert.match(fakeNodeText(chinesePanel), /输入 → 视觉 p95 22 ms/)
+    assert.match(fakeNodeText(chinesePanel), /合并事件利用率 75% · 3\/4 个事件/)
+    assert.doesNotMatch(fakeNodeText(chinesePanel), /What to change/)
+    chineseOverlay.destroy()
+    collector.destroy()
+})
+
+test('dev overlay target recording is explicitly started, bounded, resettable, and cleared locally', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    collectFrames(runtime, [16, 16, 16])
+    const before = collector.snapshot()
+    const document = new FakeDocument()
+    let requestedAnimationFrames = 0
+    document.defaultView.requestAnimationFrame = callback => {
+        requestedAnimationFrames += 1
+        callback(runtime.now())
+        return requestedAnimationFrames
+    }
+    document.defaultView.cancelAnimationFrame = () => {}
+    const target = document.createElement('div')
+    target.namespaceURI = 'http://www.w3.org/1999/xhtml'
+    target.getAnimations = () => [
+        {
+            playState: 'running',
+            pending: false,
+            playbackRate: 1,
+            effect: {
+                getTiming: () => ({ duration: 180, delay: 0, iterations: 1 }),
+                getKeyframes: () => [{ transform: 'translateY(10px)', opacity: 0 }],
+            },
+        },
+    ]
+    document.hit = target
+    let targetSelection = null
+    const rendererAdapter = {
+        id: 'overlay-renderer',
+        version: '1.0.0',
+        canInspect: element => element === target,
+        inspect: () => ({
+            renderer: {
+                family: 'webgl',
+                capability: { state: 'supported', observed: true, buffered: false },
+                metrics: { cpuFrameMsP95: 2, gpuFrameMsP95: 3, drawCallsP95: 10 },
+                evidence: {
+                    window: { startedAt: 10, endedAt: 110 },
+                    acceptedSampleCount: 6,
+                    retainedSampleCount: 5,
+                    droppedSampleCount: 1,
+                    rejectedSampleCount: 2,
+                    gpu: { valid: true, disjoint: false, contextLost: false, source: 'host-summary' },
+                },
+            },
+        }),
+    }
+    const overlay = createAnimationDevOverlay(
+        {
+            get state() {
+                return collector.state
+            },
+            snapshot: () => collector.snapshot(),
+            selectElement(element, options) {
+                targetSelection = collector.selectElement(element, options)
+                return targetSelection
+            },
+        },
+        { document, production: false, initiallyOpen: true, locale: 'en', targetAdapters: [rendererAdapter] }
+    )
+    const host = document.body.children[0]
+    const dock = host.shadowRoot.children[1]
+    const panel = dock.children[1]
+    const targetAction = action => findFakeNodes(panel, node => node.getAttribute('data-target-recording-action') === action)[0]
+    const pickerButton = findFakeNodes(panel, node => node.getAttribute('data-animation-target-picker') !== null)[0]
+    assert.ok(pickerButton)
+    assert.equal(overlay.targetState, 'idle')
+
+    pickerButton.click()
+    assert.equal(overlay.targetState, 'picking')
+    assert.equal(overlay.expanded, false)
+    const down = document.dispatchCaptured('pointerdown')
+    const click = document.dispatchCaptured('click')
+    assert.equal(down.prevented, true)
+    assert.equal(click.stopped, true)
+    assert.equal(overlay.expanded, true)
+    assert.equal(overlay.targetState, 'selected')
+    assert.equal(requestedAnimationFrames, 0)
+    assert.ok(targetSelection)
+    const selected = targetSelection.snapshot()
+    assert.equal(selected.state, 'selected')
+    assert.equal(selected.activeInteractionId, null)
+    assert.equal(selected.correlated, null)
+    const targetTab = findFakeNodes(panel, node => node.getAttribute('data-overlay-tab') === 'target')[0]
+    assert.equal(targetTab.getAttribute('aria-selected'), 'true')
+    assert.match(fakeNodeText(panel), /Direct element evidence/)
+    assert.match(fakeNodeText(panel), /Page window during selection/)
+    assert.match(fakeNodeText(panel), /not part of animation_rum v1/)
+    assert.match(fakeNodeText(panel), /Evidence window 100 ms/)
+    assert.match(fakeNodeText(panel), /Samples \(accepted \/ retained \/ dropped \/ rejected\) 6 \/ 5 \/ 1 \/ 2/)
+    assert.match(fakeNodeText(panel), /Retained tail truncated/)
+    assert.match(fakeNodeText(panel), /GPU timing valid evidence/)
+
+    const startButton = targetAction('start')
+    assert.ok(startButton)
+    assert.equal(startButton.disabled, false)
+    assert.equal(targetAction('stop').disabled, true)
+    assert.equal(targetAction('reset').disabled, true)
+    startButton.click()
+    const recording = targetSelection.snapshot()
+    assert.equal(overlay.targetState, 'recording')
+    assert.equal(recording.state, 'recording')
+    assert.ok(recording.activeInteractionId)
+    assert.equal(recording.correlated, null)
+
+    runtime.tick(25)
+    const firstInteractionId = recording.activeInteractionId
+    const stopButton = targetAction('stop')
+    assert.ok(stopButton)
+    assert.equal(stopButton.disabled, false)
+    stopButton.click()
+    const stopped = targetSelection.snapshot()
+    assert.equal(overlay.targetState, 'selected')
+    assert.equal(stopped.state, 'selected')
+    assert.equal(stopped.activeInteractionId, null)
+    assert.ok(stopped.correlated)
+    assert.equal(stopped.correlationRelation, 'temporal-overlap')
+    const correlatedAtStop = structuredClone(stopped.correlated)
+    const durationAtStop = collector.snapshot().interactions.recent.find(interaction => interaction.id === firstInteractionId).durationMs
+
+    runtime.tick(80)
+    overlay.refresh()
+    assert.deepEqual(targetSelection.snapshot().correlated, correlatedAtStop)
+    assert.equal(
+        collector.snapshot().interactions.recent.find(interaction => interaction.id === firstInteractionId).durationMs,
+        durationAtStop
+    )
+
+    const resetButton = targetAction('reset')
+    assert.ok(resetButton)
+    assert.equal(resetButton.disabled, false)
+    resetButton.click()
+    const reset = targetSelection.snapshot()
+    assert.equal(reset.state, 'recording')
+    assert.ok(reset.activeInteractionId)
+    assert.notEqual(reset.activeInteractionId, firstInteractionId)
+    assert.equal(reset.correlated, null)
+
+    runtime.tick(15)
+    const resetInteractionId = reset.activeInteractionId
+    const clearButton = targetAction('clear')
+    assert.ok(clearButton)
+    clearButton.click()
+    assert.equal(overlay.targetState, 'idle')
+    assert.equal(targetSelection.state, 'cleared')
+    assert.throws(() => targetSelection.snapshot(), /cleared element selection/)
+    assert.match(fakeNodeText(panel), /No selected target/)
+    const after = collector.snapshot()
+    assert.equal(after.captureId, before.captureId)
+    assert.ok(after.frames.totalObservedCount > before.frames.totalObservedCount)
+    assert.equal(after.interactions.activeCount, 0)
+    assert.equal(after.interactions.recent.find(interaction => interaction.id === resetInteractionId).outcome, 'cancelled')
+    assert.equal(collector.state, 'running')
+    overlay.destroy()
+    assert.equal(document.listeners.size, 0)
+    collector.destroy()
+})
+
+test('dev overlay auto-detects Chinese and lets the developer switch language locally', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    collectFrames(runtime, [16, 32, 48])
+    const document = new FakeDocument()
+    document.documentElement.setAttribute('lang', 'zh-CN')
+    const overlay = createAnimationDevOverlay(collector, { document, production: false, initiallyOpen: true })
+    const host = document.body.children[0]
+    const panel = host.shadowRoot.children[1].children[1]
+
+    assert.equal(host.getAttribute('lang'), 'zh-CN')
+    assert.match(fakeNodeText(panel), /动效性能控制台/)
+    assert.match(fakeNodeText(panel), /近实时帧率（rAF）/)
+    assert.match(fakeNodeText(panel), /问题列表/)
+    const localeButton = findFakeNodes(panel, node => node.getAttribute('data-overlay-locale-toggle') !== null)[0]
+    assert.ok(localeButton)
+    assert.equal(localeButton.textContent, 'EN')
+
+    localeButton.click()
+    assert.equal(host.getAttribute('lang'), 'en')
+    assert.match(fakeNodeText(panel), /Motion Console/)
+    assert.match(fakeNodeText(panel), /Live rAF cadence/)
+
+    overlay.destroy()
+    collector.destroy()
+})
+
+test('collector rejects SSR while integration lifecycle safely no-ops', () => {
+    const runtime = new FakeRuntime({ browser: false })
+    assert.throws(() => new AnimationCollector({ runtime }).start(), AnimationUnsupportedError)
+    const transport = {
+        reports: [],
+        send(report) {
+            this.reports.push(report)
+        },
+    }
+    const integration = new AnimationIntegration({
+        runtime,
+        rum: { enabled: true, sampleRate: 1, sampleKey: 'server-render' },
+    })
+    const teardown = integration.setup(transport)
+    assert.equal(integration.collector.state, 'idle')
+    teardown()
+    assert.equal(integration.collector.state, 'destroyed')
+    assert.equal(transport.reports.length, 0)
+})
+
+test('browser runtime forwards shared observer capability and buffered fallback evidence', () => {
+    const originalWindow = globalThis.window
+    const originalDocument = globalThis.document
+    const originalObserver = globalThis.PerformanceObserver
+    const fakeWindow = {
+        requestAnimationFrame() {
+            return 1
+        },
+        cancelAnimationFrame() {},
+        addEventListener() {},
+        removeEventListener() {},
+    }
+    const fakeDocument = {
+        visibilityState: 'visible',
+        addEventListener() {},
+        removeEventListener() {},
+    }
+    globalThis.window = fakeWindow
+    globalThis.document = fakeDocument
+
+    try {
+        class SupportedWithoutList {
+            static supportedEntryTypes = undefined
+            observe(options) {
+                this.options = options
+            }
+            disconnect() {}
+        }
+        globalThis.PerformanceObserver = SupportedWithoutList
+        const supportedRuntime = createBrowserAnimationRuntime()
+        const supported = supportedRuntime.observePerformance('longtask', () => {})
+        assert.equal(supported.state, 'supported')
+        assert.equal(supported.buffered, true)
+        assert.equal(supported.reason, undefined)
+        supported.disconnect()
+
+        class LegacyFallbackObserver {
+            static supportedEntryTypes = undefined
+            observe(options) {
+                if ('type' in options) throw new Error('legacy signature only')
+                this.options = options
+            }
+            disconnect() {}
+        }
+        globalThis.PerformanceObserver = LegacyFallbackObserver
+        const fallbackRuntime = createBrowserAnimationRuntime()
+        const fallback = fallbackRuntime.observePerformance('longtask', () => {})
+        assert.equal(fallback.state, 'supported')
+        assert.equal(fallback.buffered, false)
+        fallback.disconnect()
+
+        class DrainingObserver {
+            static supportedEntryTypes = ['longtask']
+            static instances = []
+
+            constructor() {
+                this.records = []
+                DrainingObserver.instances.push(this)
+            }
+
+            observe() {}
+
+            takeRecords() {
+                const records = this.records
+                this.records = []
+                return records
+            }
+
+            disconnect() {}
+        }
+        globalThis.PerformanceObserver = DrainingObserver
+        const drainingRuntime = createBrowserAnimationRuntime()
+        const delivered = []
+        const draining = drainingRuntime.observePerformance('longtask', entries => delivered.push(...entries))
+        DrainingObserver.instances[0].records.push({ entryType: 'longtask', name: 'self', startTime: 5, duration: 60 })
+        drainingRuntime.drainPendingPerformanceEntries()
+        assert.deepEqual(delivered, [{ startTime: 5, duration: 60 }])
+        draining.disconnect()
+    } finally {
+        if (originalWindow === undefined) delete globalThis.window
+        else globalThis.window = originalWindow
+        if (originalDocument === undefined) delete globalThis.document
+        else globalThis.document = originalDocument
+        if (originalObserver === undefined) delete globalThis.PerformanceObserver
+        else globalThis.PerformanceObserver = originalObserver
+    }
+})
