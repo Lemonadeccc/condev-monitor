@@ -439,6 +439,93 @@ test('LoAF rendering tail omits zero and out-of-interval styleAndLayoutStart val
     assert.equal(renderingTail.status, 'not-observed')
 })
 
+test('LoAF paint timing distinguishes missing fields, exposed null values, and complete phase evidence', () => {
+    const noEntryRuntime = new FakeRuntime()
+    const noEntrySnapshot = new AnimationCollector({ runtime: noEntryRuntime }).start().stop()
+    assert.equal(noEntrySnapshot.longAnimationFrames.paintTiming.paintTimeCapability.state, 'unknown')
+    assert.equal(noEntrySnapshot.longAnimationFrames.paintTiming.paintTimeExposedCount, null)
+    assert.equal(noEntrySnapshot.capabilities.longAnimationFramePaintTime, null)
+
+    const preCaptureRuntime = new FakeRuntime()
+    preCaptureRuntime.advance(100)
+    const preCaptureCollector = new AnimationCollector({ runtime: preCaptureRuntime }).start()
+    preCaptureRuntime.emit('long-animation-frame', [{ startTime: 10, duration: 50, renderStart: 30, paintTime: 45, presentationTime: 50 }])
+    const preCapture = preCaptureCollector.stop()
+    assert.equal(preCapture.longAnimationFrames.paintTiming.paintTimeCapability.state, 'unknown')
+    assert.equal(preCapture.longAnimationFrames.paintTiming.paintTimeExposedCount, null)
+
+    const missingRuntime = new FakeRuntime()
+    const missingCollector = new AnimationCollector({ runtime: missingRuntime }).start()
+    missingRuntime.emit('long-animation-frame', [{ startTime: 10, duration: 80, renderStart: 30 }])
+    const missing = missingCollector.stop()
+    assert.equal(missing.longAnimationFrames.paintTiming.paintTimeCapability.state, 'unsupported')
+    assert.equal(missing.longAnimationFrames.paintTiming.presentationTimeCapability.state, 'unsupported')
+    assert.equal(missing.longAnimationFrames.paintTiming.paintTimeExposedCount, 0)
+    assert.equal(missing.longAnimationFrames.paintTiming.renderStartToPaintTotalObservedCount, null)
+    assert.equal(missing.capabilities.longAnimationFramePaintTime, false)
+    assert.equal(missing.capabilities.longAnimationFramePresentationTime, false)
+
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    runtime.emit('long-animation-frame', [
+        { startTime: 10, duration: 100, renderStart: 30, paintTime: 70, presentationTime: 85 },
+        { startTime: 120, duration: 100, renderStart: 150, paintTime: 180, presentationTime: null },
+    ])
+    runtime.advance(250)
+    const snapshot = collector.stop()
+    const paintTiming = snapshot.longAnimationFrames.paintTiming
+
+    assert.equal(paintTiming.paintTimeCapability.state, 'supported')
+    assert.equal(paintTiming.presentationTimeCapability.state, 'supported')
+    assert.equal(paintTiming.paintTimeExposedCount, 2)
+    assert.equal(paintTiming.presentationTimeExposedCount, 2)
+    assert.equal(paintTiming.renderStartToPaintTotalObservedCount, 2)
+    assert.equal(paintTiming.paintToPresentationTotalObservedCount, 1)
+    assert.deepEqual([paintTiming.renderStartToPaintDuration.count, paintTiming.renderStartToPaintDuration.total], [2, 70])
+    assert.deepEqual([paintTiming.paintToPresentationDuration.count, paintTiming.paintToPresentationDuration.p95], [1, 15])
+    assert.equal(snapshot.capabilities.longAnimationFramePaintTime, true)
+    assert.equal(snapshot.capabilities.longAnimationFramePresentationTime, true)
+})
+
+test('LoAF paint timing fails closed for invalid boundaries and retains full-stream counts after ring eviction', () => {
+    const invalidRuntime = new FakeRuntime()
+    invalidRuntime.advance(50)
+    const invalidCollector = new AnimationCollector({ runtime: invalidRuntime }).start()
+    invalidRuntime.emit('long-animation-frame', [
+        // Crossing the capture boundary is valid only because both phase endpoints are inside it.
+        { startTime: 10, duration: 100, renderStart: 60, paintTime: 80, presentationTime: 120 },
+        { startTime: 150, duration: 80, renderStart: 180, paintTime: 170, presentationTime: 190 },
+        { startTime: 250, duration: 80, renderStart: 270, paintTime: 340, presentationTime: 350 },
+        { startTime: 350, duration: 80, renderStart: 370, paintTime: 390, presentationTime: 380 },
+        { startTime: 450, duration: 80, renderStart: 470, paintTime: null, presentationTime: null },
+    ])
+    invalidRuntime.advance(550)
+    const invalid = invalidCollector.stop().longAnimationFrames.paintTiming
+    assert.equal(invalid.paintTimeCapability.state, 'supported')
+    assert.equal(invalid.presentationTimeCapability.state, 'supported')
+    assert.equal(invalid.renderStartToPaintTotalObservedCount, 2)
+    assert.equal(invalid.paintToPresentationTotalObservedCount, 2)
+    assert.deepEqual([invalid.renderStartToPaintDuration.count, invalid.renderStartToPaintDuration.total], [2, 40])
+    assert.deepEqual([invalid.paintToPresentationDuration.count, invalid.paintToPresentationDuration.total], [2, 60])
+
+    const ringRuntime = new FakeRuntime()
+    const ringCollector = new AnimationCollector({ runtime: ringRuntime, maxSignalEntries: 1 }).start()
+    ringRuntime.emit('long-animation-frame', [
+        { startTime: 10, duration: 100, renderStart: 30, paintTime: 70, presentationTime: 80 },
+        { startTime: 120, duration: 100, renderStart: 150, paintTime: null, presentationTime: null },
+    ])
+    ringRuntime.advance(250)
+    const ringSnapshot = ringCollector.stop()
+    const ringPaintTiming = ringSnapshot.longAnimationFrames.paintTiming
+    assert.equal(ringSnapshot.longAnimationFrames.totalObservedCount, 2)
+    assert.equal(ringSnapshot.longAnimationFrames.retainedCount, 1)
+    assert.equal(ringSnapshot.longAnimationFrames.droppedSampleCount, 1)
+    assert.equal(ringPaintTiming.renderStartToPaintTotalObservedCount, 1)
+    assert.equal(ringPaintTiming.paintToPresentationTotalObservedCount, 1)
+    assert.equal(ringPaintTiming.renderStartToPaintDuration, null)
+    assert.equal(ringPaintTiming.paintToPresentationDuration, null)
+})
+
 test('RUM percentile samples count only entries that expose each optional LoAF and Event Timing phase', () => {
     const runtime = new FakeRuntime()
     const collector = new AnimationCollector({ runtime }).start()
@@ -787,6 +874,10 @@ test('unsupported observers remain unknown evidence, not numeric zero', () => {
     assert.equal(snapshot.eventTiming.presentationDelay, null)
     assert.equal(snapshot.capabilities.longtask, null)
     assert.equal(snapshot.capabilities.event, null)
+    assert.equal(snapshot.longAnimationFrames.paintTiming.paintTimeCapability.state, 'unsupported')
+    assert.equal(snapshot.longAnimationFrames.paintTiming.presentationTimeCapability.state, 'unsupported')
+    assert.equal(snapshot.capabilities.longAnimationFramePaintTime, false)
+    assert.equal(snapshot.capabilities.longAnimationFramePresentationTime, false)
     assert.equal(Object.keys(snapshot.coverage).length, 12)
 
     for (const metricName of ['longAnimationFrameCount', 'longAnimationFrameDurationMs']) {
