@@ -10,6 +10,7 @@ function scenario() {
         url: 'http://localhost:5173/',
         routeKey: 'fixture.home',
         viewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
+        durationMs: 15_000,
         warmupRuns: 1,
         measuredRuns: 3,
         actions: [
@@ -76,6 +77,41 @@ test('requires at least three measured attempts and privacy-safe retained labels
     assert.equal(result.ok, false)
     assert.ok(result.errors.includes('invalid-measured-runs'))
     assert.ok(result.errors.includes('actions[0]:invalid-label'))
+})
+
+test('bounds the optional per-attempt observation duration', () => {
+    const tooShort = scenario()
+    tooShort.durationMs = 4_999
+    const tooLong = scenario()
+    tooLong.durationMs = 120_001
+
+    assert.ok(validateAnimationLabScenario(tooShort).errors.includes('invalid-duration'))
+    assert.ok(validateAnimationLabScenario(tooLong).errors.includes('invalid-duration'))
+
+    const maximumTraceEnvelope = scenario()
+    maximumTraceEnvelope.trace.maxDurationMs = 360_000
+    assert.equal(validateAnimationLabScenario(maximumTraceEnvelope).ok, true)
+
+    maximumTraceEnvelope.trace.maxDurationMs = 360_001
+    assert.ok(validateAnimationLabScenario(maximumTraceEnvelope).errors.includes('invalid-trace-duration'))
+})
+
+test('accepts the platform maximum of twenty measured runs', () => {
+    const input = scenario()
+    input.measuredRuns = 20
+    input.warmupRuns = 10
+    assert.equal(validateAnimationLabScenario(input).ok, true)
+
+    input.warmupRuns = 11
+    assert.ok(validateAnimationLabScenario(input).errors.includes('invalid-warmup-runs'))
+})
+
+test('requires an actual warm-up before declaring a warm cache run', () => {
+    const input = scenario()
+    input.cacheMode = 'warm'
+    input.warmupRuns = 0
+
+    assert.ok(validateAnimationLabScenario(input).errors.includes('warm-cache-requires-warmup'))
 })
 
 test('rejects unknown semantic fields, duplicate identities, and selector-shaped report aliases', () => {

@@ -85,6 +85,8 @@ export interface AnimationLabScenario {
     reducedMotion?: 'no-preference' | 'reduce'
     colorScheme?: 'light' | 'dark'
     cacheMode?: 'cold' | 'warm'
+    /** Minimum observation window for each warm-up, measured, and trace page attempt. */
+    durationMs?: number
     cpuThrottleRate?: number
     network?: {
         offline?: boolean
@@ -394,6 +396,8 @@ export interface LabAttemptSummary {
     startedAt: string
     endedAt: string
     durationMs: number
+    /** Post-navigation runner-owned observation window; absent for unavailable diagnostics. */
+    observationDurationMs?: number
     metrics: readonly AnimationLabMetric[]
     capabilities: Readonly<Record<string, boolean | null>>
     limitations: readonly string[]
@@ -412,6 +416,21 @@ export interface AnimationLabReport {
         viewport: { width: number; height: number; deviceScaleFactor: number }
         reducedMotion: 'no-preference' | 'reduce'
         cacheMode: 'cold' | 'warm'
+        execution?: {
+            warmupRuns: number
+            measuredRuns: number
+            durationMs?: number
+            trace: boolean
+            lighthouse: boolean
+            colorScheme: 'light' | 'dark' | null
+            cpuThrottleRate: number
+            network: {
+                offline?: boolean
+                latencyMs?: number
+                downloadBytesPerSecond?: number
+                uploadBytesPerSecond?: number
+            } | null
+        }
         actionLabels: readonly string[]
         actions?: readonly LabReportScenarioActionV2[]
     }

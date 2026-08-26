@@ -4,8 +4,10 @@ import { ANIMATION_LAB_SCHEMA_VERSION, type AnimationLabScenario, type LabScenar
 
 const MAX_ACTIONS = 100
 const MAX_SELECTOR_LENGTH = 1_024
-const MAX_RUNS = 10
+const MAX_WARMUP_RUNS = 10
+const MAX_MEASURED_RUNS = 20
 const MAX_TOTAL_ACTION_DURATION_MS = 120_000
+const MAX_TRACE_DURATION_MS = 360_000
 const SCENARIO_KEYS = new Set([
     'schemaVersion',
     'name',
@@ -18,6 +20,7 @@ const SCENARIO_KEYS = new Set([
     'reducedMotion',
     'colorScheme',
     'cacheMode',
+    'durationMs',
     'cpuThrottleRate',
     'network',
     'warmupRuns',
@@ -237,8 +240,10 @@ export function validateAnimationLabScenario(value: unknown): ScenarioValidation
         errors.push('invalid-reduced-motion')
     if (value.colorScheme !== undefined && !['light', 'dark'].includes(String(value.colorScheme))) errors.push('invalid-color-scheme')
     if (value.cacheMode !== undefined && !['cold', 'warm'].includes(String(value.cacheMode))) errors.push('invalid-cache-mode')
-    if (!integer(value.warmupRuns, 0, MAX_RUNS)) errors.push('invalid-warmup-runs')
-    if (!integer(value.measuredRuns, 3, MAX_RUNS)) errors.push('invalid-measured-runs')
+    if (value.durationMs !== undefined && !integer(value.durationMs, 5_000, 120_000)) errors.push('invalid-duration')
+    if (!integer(value.warmupRuns, 0, MAX_WARMUP_RUNS)) errors.push('invalid-warmup-runs')
+    if (!integer(value.measuredRuns, 3, MAX_MEASURED_RUNS)) errors.push('invalid-measured-runs')
+    if (value.cacheMode === 'warm' && value.warmupRuns === 0) errors.push('warm-cache-requires-warmup')
     if (!Array.isArray(value.actions) || value.actions.length === 0 || value.actions.length > MAX_ACTIONS) errors.push('invalid-actions')
     else {
         value.actions.forEach((action, index) => validateAction(action, errors, index))
@@ -292,7 +297,7 @@ export function validateAnimationLabScenario(value: unknown): ScenarioValidation
             if (value.trace.enabled !== undefined && typeof value.trace.enabled !== 'boolean') errors.push('invalid-trace-enabled')
             if (value.trace.screenshots !== undefined && typeof value.trace.screenshots !== 'boolean')
                 errors.push('invalid-trace-screenshots')
-            if (value.trace.maxDurationMs !== undefined && !integer(value.trace.maxDurationMs, 1_000, 120_000)) {
+            if (value.trace.maxDurationMs !== undefined && !integer(value.trace.maxDurationMs, 1_000, MAX_TRACE_DURATION_MS)) {
                 errors.push('invalid-trace-duration')
             }
         }
