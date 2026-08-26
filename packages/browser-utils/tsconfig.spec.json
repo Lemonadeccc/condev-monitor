@@ -1,0 +1,10 @@
+{
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "module": "commonjs",
+        "types": ["node", "jest"],
+        "typeRoots": ["../../node_modules/@types", "../browser/node_modules/@types"]
+    },
+    "include": ["src/**/*.ts", "test/**/*.ts"],
+    "exclude": []
+}

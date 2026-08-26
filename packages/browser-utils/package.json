@@ -4,6 +4,16 @@
     "main": "build/cjs/index.js",
     "module": "build/esm/index.mjs",
     "types": "build/types/index.d.ts",
+    "typesVersions": {
+        "*": {
+            "performance-runtime": [
+                "build/types/performance-runtime.d.ts"
+            ],
+            "web-vitals-runtime": [
+                "build/types/web-vitals-runtime.d.ts"
+            ]
+        }
+    },
     "files": [
         "build"
     ],
@@ -18,6 +28,26 @@
                 "types": "./build/types/index.d.ts",
                 "default": "./build/cjs/index.js"
             }
+        },
+        "./performance-runtime": {
+            "import": {
+                "types": "./build/types/performance-runtime.d.ts",
+                "default": "./build/esm/performance-runtime.mjs"
+            },
+            "require": {
+                "types": "./build/types/performance-runtime.d.ts",
+                "default": "./build/cjs/performance-runtime.js"
+            }
+        },
+        "./web-vitals-runtime": {
+            "import": {
+                "types": "./build/types/web-vitals-runtime.d.ts",
+                "default": "./build/esm/web-vitals-runtime.mjs"
+            },
+            "require": {
+                "types": "./build/types/web-vitals-runtime.d.ts",
+                "default": "./build/cjs/web-vitals-runtime.js"
+            }
         }
     },
     "scripts": {
@@ -28,6 +58,7 @@
         "build:transpile": "tsup",
         "build:types": "tsc -p tsconfig.types.json",
         "clean": "rimraf build",
+        "test": "pnpm --filter @condev-monitor/monitor-sdk-browser exec jest --runInBand --config ../../packages/browser-utils/jest.config.cjs",
         "typecheck": "tsc --noEmit"
     },
     "keywords": [],

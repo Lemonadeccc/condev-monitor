@@ -16,6 +16,7 @@
 
 import { getLoadState } from '../lib/getLoadState.js'
 import { getSelector } from '../lib/getSelector.js'
+import { getFinalReportCallback, withFinalReportCallback } from '../lib/finalReport.js'
 import { longestInteractionList, entryPreProcessingCallbacks, longestInteractionMap } from '../lib/interactions.js'
 import { observe } from '../lib/observe.js'
 import { whenIdle } from '../lib/whenIdle.js'
@@ -102,7 +103,7 @@ const groupEntriesByRenderTime = (entry: PerformanceEventTiming) => {
     // Iterate over all previous render times in reverse order to find a match.
     // Go in reverse since the most likely match will be at the end.
     for (let i = pendingEntriesGroups.length - 1; i >= 0; i--) {
-        const potentialGroup = pendingEntriesGroups[i]
+        const potentialGroup = pendingEntriesGroups[i]!
 
         // If a group's render time is within 8ms of the entry's render time,
         // assume they were part of the same frame and add it to the group.
@@ -159,7 +160,7 @@ const cleanupEntries = () => {
     // Keep all render times that are part of a pending INP candidate or
     // that occurred within the 50 most recently-dispatched groups of events.
     const longestInteractionGroups = longestInteractionList.map(i => {
-        return entryToEntriesGroupMap.get(i.entries[0])
+        return entryToEntriesGroupMap.get(i.entries[0]!)
     })
     const minIndex = pendingEntriesGroups.length - MAX_PREVIOUS_FRAMES
     pendingEntriesGroups = pendingEntriesGroups.filter((group, index) => {
@@ -172,7 +173,7 @@ const cleanupEntries = () => {
     // 2) occur after the most recently-processed event entry (for up to MAX_PREVIOUS_FRAMES)
     const loafsToKeep: Set<PerformanceLongAnimationFrameTiming> = new Set()
     for (let i = 0; i < pendingEntriesGroups.length; i++) {
-        const group = pendingEntriesGroups[i]
+        const group = pendingEntriesGroups[i]!
         getIntersectingLoAFs(group.startTime, group.processingEnd).forEach(loaf => {
             loafsToKeep.add(loaf)
         })
@@ -211,7 +212,7 @@ const getIntersectingLoAFs = (start: DOMHighResTimeStamp, end: DOMHighResTimeSta
 }
 
 const attributeINP = (metric: INPMetric): INPMetricWithAttribution => {
-    const firstEntry = metric.entries[0]
+    const firstEntry = metric.entries[0]!
     const group = entryToEntriesGroupMap.get(firstEntry)!
 
     const processingStart = firstEntry.processingStart
@@ -293,8 +294,13 @@ export const onINP = (onReport: (metric: INPMetricWithAttribution) => void, opts
     if (!loafObserver) {
         loafObserver = observe('long-animation-frame', handleLoAFEntries)
     }
+    const onFinalReport = getFinalReportCallback<INPMetricWithAttribution>(opts)
+    const unattributedOptions = withFinalReportCallback<INPMetric>(
+        opts,
+        onFinalReport ? metric => onFinalReport(attributeINP(metric)) : undefined
+    )
     unattributedOnINP((metric: INPMetric) => {
         const metricWithAttribution = attributeINP(metric)
         onReport(metricWithAttribution)
-    }, opts)
+    }, unattributedOptions)
 }

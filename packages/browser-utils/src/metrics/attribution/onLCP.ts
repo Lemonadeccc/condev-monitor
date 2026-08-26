@@ -16,6 +16,7 @@
 
 import { getNavigationEntry } from '../lib/getNavigationEntry.js'
 import { getSelector } from '../lib/getSelector.js'
+import { getFinalReportCallback, withFinalReportCallback } from '../lib/finalReport.js'
 import { onLCP as unattributedOnLCP } from '../onLCP.js'
 import { LCPAttribution, LCPMetric, LCPMetricWithAttribution, ReportOpts } from '../types.js'
 
@@ -32,7 +33,7 @@ const attributeLCP = (metric: LCPMetric): LCPMetricWithAttribution => {
         const navigationEntry = getNavigationEntry()
         if (navigationEntry) {
             const activationStart = navigationEntry.activationStart || 0
-            const lcpEntry = metric.entries[metric.entries.length - 1]
+            const lcpEntry = metric.entries[metric.entries.length - 1]!
             const lcpResourceEntry = lcpEntry.url && performance.getEntriesByType('resource').filter(e => e.name === lcpEntry.url)[0]
 
             const ttfb = Math.max(0, navigationEntry.responseStart - activationStart)
@@ -82,8 +83,13 @@ const attributeLCP = (metric: LCPMetric): LCPMetricWithAttribution => {
  * been determined.
  */
 export const onLCP = (onReport: (metric: LCPMetricWithAttribution) => void, opts?: ReportOpts) => {
+    const onFinalReport = getFinalReportCallback<LCPMetricWithAttribution>(opts)
+    const unattributedOptions = withFinalReportCallback<LCPMetric>(
+        opts,
+        onFinalReport ? metric => onFinalReport(attributeLCP(metric)) : undefined
+    )
     unattributedOnLCP((metric: LCPMetric) => {
         const metricWithAttribution = attributeLCP(metric)
         onReport(metricWithAttribution)
-    }, opts)
+    }, unattributedOptions)
 }

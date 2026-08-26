@@ -1,9 +1,16 @@
 {
     "extends": "../../tsconfig.json",
     "include": ["src/**/*"],
+    "exclude": ["src/**/*.spec.ts"],
     "compilerOptions": {
+        "baseUrl": ".",
         "types": ["node"],
         "lib": ["DOM", "ESNext"],
-        "module": "ESNext"
+        "module": "ESNext",
+        "paths": {
+            "@condev-monitor/monitor-sdk-browser": ["src/index.ts"],
+            "@condev-monitor/monitor-sdk-animation": ["../animation/src/index.ts"],
+            "@condev-monitor/monitor-sdk-animation/devtools": ["../animation/src/devtools.ts"]
+        }
     }
 }

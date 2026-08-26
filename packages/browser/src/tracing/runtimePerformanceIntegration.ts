@@ -1,4 +1,12 @@
 import { Transport } from '@condev-monitor/monitor-sdk-core'
+import {
+    drainPerformanceEntries,
+    observePerformanceEntries,
+    subscribeFrame,
+    subscribePageLifecycle,
+    type PageLifecycleEvent,
+    type RuntimeLongTaskEntry,
+} from '@condev-monitor/monitor-sdk-browser-utils/performance-runtime'
 
 export interface RuntimePerformanceOptions {
     /**
@@ -50,10 +58,6 @@ export interface RuntimePerformanceOptions {
     lowFpsConsecutive?: number
 }
 
-type LongTaskEntry = PerformanceEntry & {
-    attribution?: Array<Record<string, unknown>>
-}
-
 export const DEFAULT_RUNTIME_PERFORMANCE_OPTIONS: Required<RuntimePerformanceOptions> = {
     longTask: true,
     longTaskThresholdMs: 50,
@@ -67,7 +71,12 @@ export const DEFAULT_RUNTIME_PERFORMANCE_OPTIONS: Required<RuntimePerformanceOpt
 }
 
 export class RuntimePerformance {
-    private longTaskObserver: PerformanceObserver | null = null
+    readonly name = 'runtimePerformance'
+
+    private unsubscribeLongTask: (() => void) | null = null
+    private unsubscribeLifecycle: (() => void) | null = null
+    private initialized = false
+    private destroyed = false
 
     private jankSampleTimer: number | null = null
     private jankReportTimer: number | null = null
@@ -76,7 +85,7 @@ export class RuntimePerformance {
     private jankLagSum = 0
     private jankLagMax = 0
 
-    private fpsRafId: number | null = null
+    private unsubscribeFps: (() => void) | null = null
     private fpsFrameCount = 0
     private fpsWindowStart = 0
     private lowFpsConsecutiveCount = 0
@@ -86,77 +95,87 @@ export class RuntimePerformance {
         private options: RuntimePerformanceOptions = {}
     ) {}
 
-    init() {
+    setup(transport: Transport): void {
+        this.transport = transport
+        this.init()
+    }
+
+    init(): void {
+        if (this.initialized || this.destroyed) return
+        this.initialized = true
         this.initLongTask()
         this.initJank()
         this.initFps()
 
-        document.addEventListener('visibilitychange', () => {
-            if (document.visibilityState === 'hidden') {
-                this.pause()
-            } else {
-                this.resume()
-            }
-        })
+        this.unsubscribeLifecycle = subscribePageLifecycle(event => this.handleLifecycle(event), { priority: 10 })
     }
 
-    private pause() {
+    flush(): void {
+        if (this.destroyed) return
+        drainPerformanceEntries('longtask')
+    }
+
+    destroy(): void {
+        if (this.destroyed) return
+        this.flush()
+        this.destroyed = true
+        this.unsubscribeLifecycle?.()
+        this.unsubscribeLifecycle = null
+        this.unsubscribeLongTask?.()
+        this.unsubscribeLongTask = null
+        this.stopJank()
+        this.stopFps()
+        this.initialized = false
+    }
+
+    private handleLifecycle(event: PageLifecycleEvent): void {
+        if (event.type === 'hidden' || event.type === 'pagehide') {
+            this.pause()
+        } else {
+            this.resume()
+        }
+    }
+
+    private pause(): void {
+        // Preserve the legacy runtime-performance contract: a visibility
+        // transition discards an incomplete jank window instead of emitting a
+        // shorter, differently weighted metric.
         this.stopJank()
         this.stopFps()
     }
 
-    private resume() {
+    private resume(): void {
+        if (this.destroyed) return
         if (this.options.jank !== false) this.initJank()
         if (this.options.fps !== false) this.initFps()
     }
 
-    private initLongTask() {
+    private initLongTask(): void {
         if (this.options.longTask === false) return
-        if (typeof PerformanceObserver === 'undefined') return
-
-        const supported = (PerformanceObserver as unknown as { supportedEntryTypes?: string[] }).supportedEntryTypes
-        if (supported && !supported.includes('longtask')) return
+        if (this.unsubscribeLongTask) return
 
         const threshold = this.options.longTaskThresholdMs ?? DEFAULT_RUNTIME_PERFORMANCE_OPTIONS.longTaskThresholdMs
 
-        const observer = new PerformanceObserver(list => {
-            for (const entry of list.getEntries() as LongTaskEntry[]) {
-                if (entry.duration < threshold) continue
-                this.transport.send({
-                    event_type: 'performance',
-                    type: 'longTask',
-                    duration: entry.duration,
-                    startTime: entry.startTime,
-                    name: entry.name,
-                    entryType: entry.entryType,
-                    attribution: entry.attribution,
-                    path: window.location.pathname,
-                    at: Date.now(),
-                })
-            }
-        })
-
-        this.longTaskObserver = observer
-
-        // Prefer the newer signature when available.
-        try {
-            ;(observer as unknown as { observe: (o: unknown) => void }).observe({
-                type: 'longtask',
-                buffered: true,
+        this.unsubscribeLongTask = observePerformanceEntries('longtask', (entry: RuntimeLongTaskEntry) => {
+            if (entry.duration < threshold || this.destroyed) return
+            this.transport.send({
+                event_type: 'performance',
+                type: 'longTask',
+                duration: entry.duration,
+                startTime: entry.startTime,
+                name: entry.name,
+                entryType: entry.entryType,
+                attribution: entry.attribution,
+                path: this.currentPath(),
+                at: Date.now(),
             })
-        } catch {
-            // Fallback for older browsers.
-            try {
-                observer.observe({ entryTypes: ['longtask'] })
-            } catch {
-                // ignore
-            }
-        }
+        })
     }
 
-    private initJank() {
+    private initJank(): void {
         if (this.options.jank === false) return
-        if (document.visibilityState === 'hidden') return
+        if (typeof window === 'undefined' || typeof performance === 'undefined') return
+        if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
         if (this.jankSampleTimer !== null) return
 
         const interval = this.options.jankSampleIntervalMs ?? DEFAULT_RUNTIME_PERFORMANCE_OPTIONS.jankSampleIntervalMs
@@ -178,26 +197,35 @@ export class RuntimePerformance {
         }, interval)
 
         this.jankReportTimer = window.setInterval(() => {
-            if (this.jankCount <= 0) return
-            this.transport.send({
-                event_type: 'performance',
-                type: 'jank',
-                count: this.jankCount,
-                lagAvg: this.jankLagSum / this.jankCount,
-                lagMax: this.jankLagMax,
-                threshold,
-                sampleInterval: interval,
-                reportInterval,
-                path: window.location.pathname,
-                at: Date.now(),
-            })
-            this.jankCount = 0
-            this.jankLagSum = 0
-            this.jankLagMax = 0
+            this.reportJank()
         }, reportInterval)
     }
 
-    private stopJank() {
+    private reportJank(): void {
+        if (this.jankCount <= 0 || this.destroyed) return
+
+        const interval = this.options.jankSampleIntervalMs ?? DEFAULT_RUNTIME_PERFORMANCE_OPTIONS.jankSampleIntervalMs
+        const threshold = this.options.jankThresholdMs ?? DEFAULT_RUNTIME_PERFORMANCE_OPTIONS.jankThresholdMs
+        const reportInterval = this.options.jankReportIntervalMs ?? DEFAULT_RUNTIME_PERFORMANCE_OPTIONS.jankReportIntervalMs
+        this.transport.send({
+            event_type: 'performance',
+            type: 'jank',
+            count: this.jankCount,
+            lagAvg: this.jankLagSum / this.jankCount,
+            lagMax: this.jankLagMax,
+            threshold,
+            sampleInterval: interval,
+            reportInterval,
+            path: this.currentPath(),
+            at: Date.now(),
+        })
+        this.jankCount = 0
+        this.jankLagSum = 0
+        this.jankLagMax = 0
+    }
+
+    private stopJank(): void {
+        if (typeof window === 'undefined') return
         if (this.jankSampleTimer !== null) {
             window.clearInterval(this.jankSampleTimer)
             this.jankSampleTimer = null
@@ -211,10 +239,11 @@ export class RuntimePerformance {
         this.jankLagMax = 0
     }
 
-    private initFps() {
+    private initFps(): void {
         if (this.options.fps === false) return
-        if (document.visibilityState === 'hidden') return
-        if (this.fpsRafId !== null) return
+        if (typeof performance === 'undefined') return
+        if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return
+        if (this.unsubscribeFps !== null) return
 
         const lowFpsThreshold = this.options.lowFpsThreshold ?? DEFAULT_RUNTIME_PERFORMANCE_OPTIONS.lowFpsThreshold
         const lowFpsConsecutive = this.options.lowFpsConsecutive ?? DEFAULT_RUNTIME_PERFORMANCE_OPTIONS.lowFpsConsecutive
@@ -223,15 +252,14 @@ export class RuntimePerformance {
         this.fpsWindowStart = performance.now()
         this.lowFpsConsecutiveCount = 0
 
-        const loop = () => {
+        this.unsubscribeFps = subscribeFrame(({ timestamp }) => {
             this.fpsFrameCount += 1
 
-            const now = performance.now()
-            const elapsed = now - this.fpsWindowStart
+            const elapsed = timestamp - this.fpsWindowStart
             if (elapsed >= 1000) {
                 const fps = (this.fpsFrameCount * 1000) / elapsed
                 this.fpsFrameCount = 0
-                this.fpsWindowStart = now
+                this.fpsWindowStart = timestamp
 
                 if (fps < lowFpsThreshold) {
                     this.lowFpsConsecutiveCount += 1
@@ -242,7 +270,7 @@ export class RuntimePerformance {
                             fps,
                             threshold: lowFpsThreshold,
                             consecutive: this.lowFpsConsecutiveCount,
-                            path: window.location.pathname,
+                            path: this.currentPath(),
                             at: Date.now(),
                         })
                     }
@@ -250,19 +278,17 @@ export class RuntimePerformance {
                     this.lowFpsConsecutiveCount = 0
                 }
             }
-
-            this.fpsRafId = window.requestAnimationFrame(loop)
-        }
-
-        this.fpsRafId = window.requestAnimationFrame(loop)
+        })
     }
 
-    private stopFps() {
-        if (this.fpsRafId !== null) {
-            window.cancelAnimationFrame(this.fpsRafId)
-            this.fpsRafId = null
-        }
+    private stopFps(): void {
+        this.unsubscribeFps?.()
+        this.unsubscribeFps = null
         this.fpsFrameCount = 0
         this.lowFpsConsecutiveCount = 0
+    }
+
+    private currentPath(): string {
+        return typeof window !== 'undefined' ? window.location.pathname : ''
     }
 }

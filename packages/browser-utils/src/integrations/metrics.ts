@@ -1,6 +1,7 @@
 import { Transport } from '@condev-monitor/monitor-sdk-core'
 
-import { onCLS, onFCP, onINP, onLCP, onTTFB } from '../metrics'
+import { onFCP, onTTFB } from '../metrics'
+import { subscribeWebVitals, type WebVitalsRuntimeUnsubscribe } from '../web-vitals-runtime'
 
 export const onLoad = (callback: (metric: { name: string; value: number }) => void) => {
     const report = () => {
@@ -29,11 +30,24 @@ export const onLoad = (callback: (metric: { name: string; value: number }) => vo
 }
 
 export class Metrics {
+    readonly name = 'metrics'
+    private initialized = false
+    private destroyed = false
+    private webVitalsUnsubscribe: WebVitalsRuntimeUnsubscribe | null = null
+
     constructor(private transport: Transport) {}
 
-    init() {
-        ;[onCLS, onFCP, onINP, onLCP, onTTFB].forEach(metricFn => {
+    setup(transport: Transport): void {
+        this.transport = transport
+        this.init()
+    }
+
+    init(): void {
+        if (this.initialized || this.destroyed || typeof window === 'undefined' || typeof document === 'undefined') return
+        this.initialized = true
+        ;[onFCP, onTTFB].forEach(metricFn => {
             metricFn(metric => {
+                if (this.destroyed) return
                 this.transport.send({
                     event_type: 'performance',
                     type: 'webVital',
@@ -44,7 +58,22 @@ export class Metrics {
             })
         })
 
+        this.webVitalsUnsubscribe = subscribeWebVitals(
+            metric => {
+                if (this.destroyed) return
+                this.transport.send({
+                    event_type: 'performance',
+                    type: 'webVital',
+                    name: metric.name,
+                    value: metric.value,
+                    path: window.location.pathname,
+                })
+            },
+            { delivery: 'final' }
+        )
+
         onLoad(metric => {
+            if (this.destroyed) return
             this.transport.send({
                 event_type: 'performance',
                 type: 'webVital',
@@ -53,5 +82,12 @@ export class Metrics {
                 path: window.location.pathname,
             })
         })
+    }
+
+    destroy(): void {
+        this.destroyed = true
+        this.initialized = false
+        this.webVitalsUnsubscribe?.()
+        this.webVitalsUnsubscribe = null
     }
 }

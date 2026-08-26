@@ -16,6 +16,7 @@
 
 import { getLoadState } from '../lib/getLoadState.js'
 import { getSelector } from '../lib/getSelector.js'
+import { getFinalReportCallback, withFinalReportCallback } from '../lib/finalReport.js'
 import { onCLS as unattributedOnCLS } from '../onCLS.js'
 import { CLSAttribution, CLSMetric, CLSMetricWithAttribution, ReportOpts } from '../types.js'
 
@@ -75,8 +76,13 @@ const attributeCLS = (metric: CLSMetric): CLSMetricWithAttribution => {
  * during the same page load._
  */
 export const onCLS = (onReport: (metric: CLSMetricWithAttribution) => void, opts?: ReportOpts) => {
+    const onFinalReport = getFinalReportCallback<CLSMetricWithAttribution>(opts)
+    const unattributedOptions = withFinalReportCallback<CLSMetric>(
+        opts,
+        onFinalReport ? metric => onFinalReport(attributeCLS(metric)) : undefined
+    )
     unattributedOnCLS((metric: CLSMetric) => {
         const metricWithAttribution = attributeCLS(metric)
         onReport(metricWithAttribution)
-    }, opts)
+    }, unattributedOptions)
 }

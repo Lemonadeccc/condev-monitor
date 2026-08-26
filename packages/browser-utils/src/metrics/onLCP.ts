@@ -17,6 +17,7 @@
 import { onBFCacheRestore } from './lib/bfcache.js'
 import { bindReporter } from './lib/bindReporter.js'
 import { doubleRAF } from './lib/doubleRAF.js'
+import { getFinalReportCallback } from './lib/finalReport.js'
 import { getActivationStart } from './lib/getActivationStart.js'
 import { getVisibilityWatcher } from './lib/getVisibilityWatcher.js'
 import { initMetric } from './lib/initMetric.js'
@@ -78,7 +79,7 @@ export const onLCP = (onReport: (metric: LCPMetric) => void, opts?: ReportOpts) 
         const po = observe('largest-contentful-paint', handleEntries)
 
         if (po) {
-            report = bindReporter(onReport, metric, LCPThresholds, opts!.reportAllChanges)
+            report = bindReporter(onReport, metric, LCPThresholds, opts!.reportAllChanges, getFinalReportCallback<LCPMetric>(opts))
 
             const stopListening = runOnce(() => {
                 if (!reportedMetricIDs[metric.id]) {
@@ -105,7 +106,7 @@ export const onLCP = (onReport: (metric: LCPMetric) => void, opts?: ReportOpts) 
             // successfully registered.
             onBFCacheRestore(event => {
                 metric = initMetric('LCP')
-                report = bindReporter(onReport, metric, LCPThresholds, opts!.reportAllChanges)
+                report = bindReporter(onReport, metric, LCPThresholds, opts!.reportAllChanges, getFinalReportCallback<LCPMetric>(opts))
 
                 doubleRAF(() => {
                     metric.value = performance.now() - event.timeStamp

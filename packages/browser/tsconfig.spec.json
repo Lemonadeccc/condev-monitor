@@ -4,5 +4,6 @@
         "types": ["node", "jest"],
         "module": "commonjs"
     },
-    "include": ["src/**/*.spec.ts"]
+    "include": ["src/**/*.spec.ts"],
+    "exclude": []
 }

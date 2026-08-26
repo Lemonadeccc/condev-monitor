@@ -19,6 +19,7 @@ import { initMetric } from './lib/initMetric.js'
 import { observe } from './lib/observe.js'
 import { bindReporter } from './lib/bindReporter.js'
 import { doubleRAF } from './lib/doubleRAF.js'
+import { getFinalReportCallback } from './lib/finalReport.js'
 import { onHidden } from './lib/onHidden.js'
 import { runOnce } from './lib/runOnce.js'
 import { onFCP } from './onFCP.js'
@@ -98,7 +99,7 @@ export const onCLS = (onReport: (metric: CLSMetric) => void, opts?: ReportOpts) 
 
             const po = observe('layout-shift', handleEntries)
             if (po) {
-                report = bindReporter(onReport, metric, CLSThresholds, opts!.reportAllChanges)
+                report = bindReporter(onReport, metric, CLSThresholds, opts!.reportAllChanges, getFinalReportCallback<CLSMetric>(opts))
 
                 onHidden(() => {
                     handleEntries(po.takeRecords() as CLSMetric['entries'])
@@ -110,7 +111,7 @@ export const onCLS = (onReport: (metric: CLSMetric) => void, opts?: ReportOpts) 
                 onBFCacheRestore(() => {
                     sessionValue = 0
                     metric = initMetric('CLS', 0)
-                    report = bindReporter(onReport, metric, CLSThresholds, opts!.reportAllChanges)
+                    report = bindReporter(onReport, metric, CLSThresholds, opts!.reportAllChanges, getFinalReportCallback<CLSMetric>(opts))
 
                     doubleRAF(() => report())
                 })

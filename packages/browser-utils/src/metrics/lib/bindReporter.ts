@@ -30,10 +30,12 @@ export const bindReporter = <MetricName extends MetricType['name']>(
     callback: (metric: Extract<MetricType, { name: MetricName }>) => void,
     metric: Extract<MetricType, { name: MetricName }>,
     thresholds: MetricRatingThresholds,
-    reportAllChanges?: boolean
+    reportAllChanges?: boolean,
+    onFinalReport?: (metric: Extract<MetricType, { name: MetricName }>) => void
 ) => {
     let prevValue: number
     let delta: number
+    let prevFinalValue: number
     return (forceReport?: boolean) => {
         if (metric.value >= 0) {
             if (forceReport || reportAllChanges) {
@@ -48,6 +50,26 @@ export const bindReporter = <MetricName extends MetricType['name']>(
                     metric.delta = delta
                     metric.rating = getRating(metric.value, thresholds)
                     callback(metric)
+                }
+
+                // Track final reports independently from live changes. The
+                // callback cadence and delta match a separate reporter using
+                // the default reportAllChanges=false, without another observer.
+                if (forceReport && onFinalReport) {
+                    const finalDelta = metric.value - (prevFinalValue || 0)
+                    if (finalDelta || prevFinalValue === undefined) {
+                        prevFinalValue = metric.value
+                        const liveDelta = metric.delta
+                        metric.delta = finalDelta
+                        metric.rating = getRating(metric.value, thresholds)
+                        try {
+                            onFinalReport(metric)
+                        } catch {
+                            // The private runtime bridge must not break Web Vitals.
+                        } finally {
+                            metric.delta = liveDelta
+                        }
+                    }
                 }
             }
         }

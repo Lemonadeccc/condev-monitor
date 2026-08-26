@@ -16,6 +16,7 @@
 
 import { onBFCacheRestore } from './lib/bfcache.js'
 import { bindReporter } from './lib/bindReporter.js'
+import { getFinalReportCallback } from './lib/finalReport.js'
 import { initMetric } from './lib/initMetric.js'
 import {
     DEFAULT_DURATION_THRESHOLD,
@@ -107,7 +108,7 @@ export const onINP = (onReport: (metric: INPMetric) => void, opts?: ReportOpts) 
             durationThreshold: opts!.durationThreshold ?? DEFAULT_DURATION_THRESHOLD,
         })
 
-        report = bindReporter(onReport, metric, INPThresholds, opts!.reportAllChanges)
+        report = bindReporter(onReport, metric, INPThresholds, opts!.reportAllChanges, getFinalReportCallback<INPMetric>(opts))
 
         if (po) {
             // Also observe entries of type `first-input`. This is useful in cases
@@ -125,7 +126,7 @@ export const onINP = (onReport: (metric: INPMetric) => void, opts?: ReportOpts) 
                 resetInteractions()
 
                 metric = initMetric('INP')
-                report = bindReporter(onReport, metric, INPThresholds, opts!.reportAllChanges)
+                report = bindReporter(onReport, metric, INPThresholds, opts!.reportAllChanges, getFinalReportCallback<INPMetric>(opts))
             })
         }
     })
