@@ -1,9 +1,9 @@
 -- LLM Observability schema (idempotent).
--- AI-specific tables, fully isolated from lemonade.events (frontend monitoring).
+-- AI-specific tables, fully isolated from the events table (frontend monitoring).
 -- Partition by month, TTL 90 days default.
 
 -- ① Root Trace — one row per LLM request / agent run
-CREATE TABLE IF NOT EXISTS lemonade.ai_traces (
+CREATE TABLE IF NOT EXISTS ai_traces (
     trace_id      String,
     app_id        String,
     session_id    String         DEFAULT '',
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS lemonade.ai_traces (
   TTL toDateTime(started_at) + INTERVAL 90 DAY;
 
 -- ② Spans — child observations within a trace (tree via parent_span_id)
-CREATE TABLE IF NOT EXISTS lemonade.ai_spans (
+CREATE TABLE IF NOT EXISTS ai_spans (
     span_id        String,
     trace_id       String,
     parent_span_id String         DEFAULT '',
@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS lemonade.ai_spans (
   TTL toDateTime(started_at) + INTERVAL 90 DAY;
 
 -- ③ Feedback / Scores — user ratings and LLM-as-Judge evaluations
-CREATE TABLE IF NOT EXISTS lemonade.ai_feedback (
+CREATE TABLE IF NOT EXISTS ai_feedback (
     id          UUID           DEFAULT generateUUIDv4(),
     trace_id    String,
     span_id     String         DEFAULT '',
@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS lemonade.ai_feedback (
   TTL toDateTime(created_at) + INTERVAL 180 DAY;
 
 -- ④ Ingestion Runs — document ingest pipeline tracking (MODULAR-RAG) -- cspell:disable-line
-CREATE TABLE IF NOT EXISTS lemonade.ai_ingestion_runs (
+CREATE TABLE IF NOT EXISTS ai_ingestion_runs (
     run_id      String,
     app_id      String,
     trace_id    String         DEFAULT '',
@@ -92,7 +92,7 @@ CREATE TABLE IF NOT EXISTS lemonade.ai_ingestion_runs (
   TTL toDateTime(started_at) + INTERVAL 90 DAY;
 
 -- ⑤ Evaluations — RAGAS / custom LLM-as-Judge metric results
-CREATE TABLE IF NOT EXISTS lemonade.ai_evaluations (
+CREATE TABLE IF NOT EXISTS ai_evaluations (
     eval_id    UUID           DEFAULT generateUUIDv4(),
     trace_id   String,
     app_id     String,

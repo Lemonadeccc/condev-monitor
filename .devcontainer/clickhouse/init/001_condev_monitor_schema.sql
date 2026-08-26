@@ -1,10 +1,9 @@
 -- Condev Monitor ClickHouse schema (idempotent).
 -- Mounted into /docker-entrypoint-initdb.d so new environments auto-initialize.
-
-CREATE DATABASE IF NOT EXISTS lemonade;
+-- The caller selects the validated CLICKHOUSE_DATABASE/CLICKHOUSE_DB database.
 
 -- Legacy table — kept for backward compatibility during migration.
-CREATE TABLE IF NOT EXISTS lemonade.base_monitor_storage (
+CREATE TABLE IF NOT EXISTS base_monitor_storage (
     app_id String,
     event_type String,
     message String,
@@ -15,7 +14,7 @@ ORDER BY tuple ()
 TTL created_at + INTERVAL 30 DAY DELETE WHERE event_type = 'replay';
 
 -- New primary events table (Phase 1).
-CREATE TABLE IF NOT EXISTS lemonade.events (
+CREATE TABLE IF NOT EXISTS events (
     event_id     String,
     app_id       String,
     fingerprint  String DEFAULT '',
@@ -38,19 +37,19 @@ TTL received_at + INTERVAL 90 DAY DELETE,
 
 -- Compatibility MV: mirror writes from new events table → legacy base_monitor_storage
 -- so legacy readers continue to work during migration.
-CREATE MATERIALIZED VIEW IF NOT EXISTS lemonade.events_to_legacy_mv
-TO lemonade.base_monitor_storage AS
+CREATE MATERIALIZED VIEW IF NOT EXISTS events_to_legacy_mv
+TO base_monitor_storage AS
 SELECT
     app_id,
     event_type,
     message,
     info,
     toDateTime(received_at, 'Asia/Shanghai') AS created_at
-FROM lemonade.events;
+FROM events;
 
 -- Application settings used by dsn-server (e.g. replay_enabled).
 -- monitor backend also creates/syncs this table, but having it here avoids startup races.
-CREATE TABLE IF NOT EXISTS lemonade.app_settings (
+CREATE TABLE IF NOT EXISTS app_settings (
     app_id String,
     replay_enabled UInt8,
     updated_at DateTime
@@ -58,7 +57,7 @@ CREATE TABLE IF NOT EXISTS lemonade.app_settings (
 ORDER BY app_id;
 
 -- Materialized view used by dsn-server APIs (/span, /bugs).
-CREATE MATERIALIZED VIEW IF NOT EXISTS lemonade.base_monitor_view (
+CREATE MATERIALIZED VIEW IF NOT EXISTS base_monitor_view (
     app_id String,
     info JSON,
     event_type String,
@@ -75,4 +74,4 @@ SELECT
     message,
     concat('CONDEV', event_type) AS processes_message,
     now('Asia/Shanghai') AS created_at
-FROM lemonade.base_monitor_storage;
+FROM base_monitor_storage;

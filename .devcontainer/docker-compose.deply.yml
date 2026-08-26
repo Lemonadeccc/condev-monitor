@@ -11,10 +11,12 @@ services:
         environment:
             - CLICKHOUSE_USER=${CLICKHOUSE_USERNAME:-lemonade}
             - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-condevClickhouse}
-            - CLICKHOUSE_DB=${CLICKHOUSE_DB:-lemonade}
+            - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-${CLICKHOUSE_DB:-lemonade}}
+            - CLICKHOUSE_DB=
         volumes:
             - clickhouse_data:/var/lib/clickhouse/
-            - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+            - ./clickhouse/init-clickhouse-schema.sh:/docker-entrypoint-initdb.d/001_init-clickhouse-schema.sh:ro
+            - ./clickhouse/init:/opt/condev-monitor/clickhouse-schema:ro
             - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
         healthcheck:
             test: ['CMD-SHELL', "clickhouse-client --query 'SELECT 1' >/dev/null 2>&1 || exit 1"]
@@ -102,6 +104,7 @@ services:
             - DB_AUTOLOAD=${DB_AUTOLOAD:-true}
             - DB_SYNC=${DB_SYNC:-false}
             - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
+            - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-${CLICKHOUSE_DB:-lemonade}}
             - FRONTEND_URL=${FRONTEND_URL:-http://localhost:8888}
             - MAIL_ON=${MAIL_ON:-false}
             - AUTH_REQUIRE_EMAIL_VERIFICATION=${AUTH_REQUIRE_EMAIL_VERIFICATION:-false}
@@ -141,6 +144,7 @@ services:
             - NODE_ENV=${NODE_ENV:-production}
             - PORT=8082
             - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
+            - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-${CLICKHOUSE_DB:-lemonade}}
             - DB_TYPE=${DB_TYPE:-postgres}
             - DB_HOST=${DB_HOST:-condev-monitor-postgres}
             - DB_PORT=${DB_PORT:-5432}
@@ -252,6 +256,7 @@ services:
         environment:
             - NODE_ENV=${NODE_ENV:-production}
             - CLICKHOUSE_URL=${CLICKHOUSE_URL:-http://condev-monitor-clickhouse:8123}
+            - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-${CLICKHOUSE_DB:-lemonade}}
             - CLICKHOUSE_USERNAME=${CLICKHOUSE_USERNAME:-lemonade}
             - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-condevClickhouse}
             - KAFKA_BROKERS=${KAFKA_BROKERS:-condev-monitor-kafka:9092}

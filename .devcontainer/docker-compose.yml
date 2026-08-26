@@ -8,10 +8,12 @@ services:
         environment:
             - CLICKHOUSE_USER=${CLICKHOUSE_USERNAME:-lemonade}
             - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-condevClickhouse}
-            - CLICKHOUSE_DB=${CLICKHOUSE_DB:-lemonade}
+            - CLICKHOUSE_DATABASE=${CLICKHOUSE_DATABASE:-${CLICKHOUSE_DB:-lemonade}}
+            - CLICKHOUSE_DB=
         volumes:
             - ./clickhouse_data:/var/lib/clickhouse/
-            - ./clickhouse/init:/docker-entrypoint-initdb.d:ro
+            - ./clickhouse/init-clickhouse-schema.sh:/docker-entrypoint-initdb.d/001_init-clickhouse-schema.sh:ro
+            - ./clickhouse/init:/opt/condev-monitor/clickhouse-schema:ro
             - ./clickhouse/config.d:/etc/clickhouse-server/config.d:ro
 
     condev-monitor-postgres:

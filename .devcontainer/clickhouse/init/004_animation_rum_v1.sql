@@ -1,7 +1,8 @@
 -- Animation RUM v1 schema (idempotent).
 -- Deliberately isolated from the legacy events table/materialized views.
+-- The caller selects the validated CLICKHOUSE_DATABASE/CLICKHOUSE_DB database.
 
-CREATE TABLE IF NOT EXISTS lemonade.animation_rum_captures_v1 (
+CREATE TABLE IF NOT EXISTS animation_rum_captures_v1 (
     event_id                String,
     capture_id              String,
     app_id                  String,
@@ -27,7 +28,7 @@ CREATE TABLE IF NOT EXISTS lemonade.animation_rum_captures_v1 (
   ORDER BY (app_id, capture_id)
   TTL toDateTime(captured_at) + INTERVAL 90 DAY;
 
-CREATE TABLE IF NOT EXISTS lemonade.animation_rum_metrics_v1 (
+CREATE TABLE IF NOT EXISTS animation_rum_metrics_v1 (
     event_id                String,
     capture_id              String,
     app_id                  String,
@@ -54,7 +55,7 @@ CREATE TABLE IF NOT EXISTS lemonade.animation_rum_metrics_v1 (
 
 -- Reserved for short-lived, server-generated diagnostic references only.
 -- No arbitrary client text, stack, selector, URL, or source snippet is accepted.
-CREATE TABLE IF NOT EXISTS lemonade.animation_rum_diagnostics_v1 (
+CREATE TABLE IF NOT EXISTS animation_rum_diagnostics_v1 (
     diagnostic_id String,
     event_id      String,
     capture_id    String,

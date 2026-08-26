@@ -13,6 +13,7 @@
         "docker:stop": "docker compose -p condev-monitor -f .devcontainer/docker-compose.yml down",
         "docker:init-postgres": "sh ./scripts/init-postgres.sh",
         "docker:init-clickhouse": "sh ./scripts/init-clickhouse.sh",
+        "test:clickhouse-config": "node --test scripts/init-clickhouse.test.mjs",
         "docker:init-kafka": "sh ./scripts/init-kafka-topics.sh",
         "docker:deploy": "sh ./scripts/deploy-stack.sh",
         "docker:deploy:stop": "docker compose -p condev-monitor -f .devcontainer/docker-compose.deply.yml down",
