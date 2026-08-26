@@ -1,0 +1,913 @@
+import type {
+    AnimationCoverageStatus,
+    AnimationEvidenceLevel,
+    AnimationInteractionKind,
+    AnimationOverlayLocale,
+    AnimationOverlayLocalePreference,
+    AnimationRecommendation,
+    AnimationRumFamily,
+    CollectorState,
+    Confidence,
+    InteractionOutcome,
+    RecommendationConfidence,
+    RecommendationTargetKind,
+} from './types'
+
+// cspell:ignore readback
+
+const EN_MESSAGES = {
+    motion: 'Motion',
+    motionConsole: 'Motion Console',
+    panelAria: 'Animation performance development overlay',
+    primaryMeasurementsAria: 'Primary animation measurements',
+    viewsAria: 'Animation monitor views',
+    recording: 'Recording',
+    stopped: 'Stopped',
+    unavailable: 'Unavailable',
+    ready: 'Ready',
+    running: 'running',
+    localOnlyDiagnostics: '{state} · local-only diagnostics',
+    waitingSnapshot: 'Waiting for a local snapshot',
+    openForEvidence: 'Open the panel to inspect measured evidence.',
+    issueHistory: 'Issue history',
+    recentInteractions: 'Recent interactions',
+    metricCoverage: 'Metric coverage',
+    coverageNote: 'Coverage is explicit: not observed, not instrumented, unsupported, and unknown are never displayed as zero.',
+    localView: 'LOCAL VIEW · no overlay upload',
+    refreshAtLeast: 'Refresh ≥ {seconds}s',
+    overview: 'Overview',
+    interactions: 'Interactions',
+    coverage: 'Coverage',
+    targetView: 'Target',
+    selectTarget: 'Select target',
+    selectTargetTitle: 'Select an element to inspect its animation evidence',
+    targetPickerUnavailable: 'Target picker requires an element-aware collector',
+    pickingTarget: 'Click an element · Escape to cancel',
+    rendererSurfaces: 'Renderer surfaces',
+    rendererSurfaceCount: '{count} surfaces',
+    showRendererSurfaces: 'Show page markers',
+    hideRendererSurfaces: 'Hide page markers',
+    showRendererSurfacesTitle: 'Discover SVG and Canvas renderer surfaces and mark them on the page',
+    hideRendererSurfacesTitle: 'Remove renderer surface markers from the page',
+    refreshRendererSurfaces: 'Refresh',
+    rendererSurfaceHelp:
+        'Local SVG/Canvas markers are disabled. Context family is shown only when this SDK observed a successful getContext call.',
+    rendererSurfacePrivacy: 'Local only · pointer-free overlay · no selector, text, attributes, URL, or coordinates retained.',
+    rendererSurfacePausedHidden: 'Page hidden · renderer markers and their 4 Hz geometry redraw are paused.',
+    rendererSurfaceOutlineUnsupported: 'Surfaces were discovered, but this browser could not create the local outline layer.',
+    rendererSurfaceTruncated: 'The bounded surface list was truncated. Refine the page, then refresh.',
+    noRendererSurface: 'No renderer surface found',
+    noRendererSurfaceHelp: 'No page-owned SVG or Canvas surface was discovered in the document or an open Shadow Root.',
+    rendererSurfaceNativeSvg: 'native SVG element evidence',
+    rendererSurfaceContextObserved: 'context family observed by SDK registry',
+    rendererSurfaceContextUnknown: 'Canvas context was not observed; family stays unknown',
+    rendererSurfaceMeasured: 'measured',
+    rendererSurfaceUnknown: 'unknown',
+    selectedTarget: 'Selected target',
+    clearTarget: 'Clear target',
+    startTargetRecording: 'Start',
+    stopTargetRecording: 'Stop',
+    resetTargetRecording: 'Reset',
+    startTargetRecordingTitle: 'Start a bounded recording window for this target',
+    stopTargetRecordingTitle: 'Stop recording and retain the correlated snapshot',
+    resetTargetRecordingTitle: 'Cancel the current window, if any, and start a fresh recording',
+    targetRecordingReadyHelp: 'Recording does not start automatically. Start a bounded window, run the animation, then stop it.',
+    targetRecordingActiveHelp: 'This target window is recording. Stop it to retain the correlated snapshot.',
+    targetRecordingStoppedHelp: 'The correlated snapshot is retained. Reset when you are ready to record a fresh window.',
+    noSelectedTarget: 'No selected target',
+    noSelectedTargetHelp: 'Use the crosshair button, then click an element on the page. Page-level collection keeps running.',
+    targetDirectEvidence: 'Direct element evidence',
+    targetPageWindow: 'Page window during selection',
+    targetAttribution: 'Runtime and owner attribution',
+    targetRenderer: 'Canvas / renderer evidence',
+    rendererEvidenceWindow: 'Evidence window',
+    rendererSampleEvidence: 'Samples (accepted / retained / dropped / rejected)',
+    rendererTailState: 'Retained tail',
+    rendererTailTruncated: 'truncated',
+    rendererTailComplete: 'complete',
+    rendererGpuEvidence: 'GPU timing',
+    rendererGpuAccepted: 'valid evidence',
+    rendererGpuRejected: 'rejected: {reason}',
+    targetPrivacy: 'Privacy boundary',
+    targetPrivacyHelp:
+        'This detailed target view stays in memory and is not part of animation_rum v1. It never includes selector, id, class, text, input value, URL, props, or state.',
+    targetOverlapBoundary:
+        'Frame, LoAF, Long Task, and Event Timing values are temporal overlap for this selection window—not proof that the element caused them.',
+    targetNoRendererAdapter:
+        'Canvas dimensions are direct DOM evidence. Draw calls, GPU time, resources, readback, and scene objects require an explicit renderer adapter.',
+    standardAnimations: 'Standard animations',
+    runningAnimations: 'Running',
+    canvasBackingPixels: 'Backing pixels',
+    effectivePixelRatio: 'Effective pixel ratio',
+    animationProperties: 'Observed property candidates',
+    noPropertyEvidence: 'No keyframe property evidence observed.',
+    targetInspectionTruncated: 'Bounded inspection retained {inspected} of {total} animations.',
+    targetPropertiesTruncated: 'The keyframe property list reached its local bound.',
+    runtimeInventory: 'Runtime inventory',
+    noOwnerAttribution: 'No framework owner adapter matched; native DOM evidence remains available.',
+    adapterInspectionFailed: '{count} adapter inspection failures were isolated.',
+    targetDisconnected: 'The selected element is disconnected from the document.',
+    openMonitor: 'Open Condev animation monitor',
+    closeMonitor: 'Close Condev animation monitor',
+    openMonitorTitle: 'Open animation monitor',
+    closeMonitorTitle: 'Close animation monitor',
+    openWorkbench: 'Open wide animation workbench',
+    useCompact: 'Use compact animation panel',
+    toggleWorkbench: 'Toggle wide workbench',
+    close: 'Close',
+    switchToChinese: 'Switch animation monitor to Chinese',
+    switchToEnglish: 'Switch animation monitor to English',
+    findingsOne: '{count} measured finding',
+    findingsMany: '{count} measured findings',
+    currentRetained: '{current} current · {retained} retained',
+    retained: '{count} retained',
+    current: 'current',
+    earlier: 'earlier',
+    severityCritical: 'critical',
+    severityWarning: 'warning',
+    severityInfo: 'info',
+    confidenceMeta: '{confidence} confidence · {samples} samples · {evidence}',
+    observed: 'Observed',
+    target: '{kind} target',
+    whatToChange: 'What to change',
+    verifyChange: 'Verify the change',
+    regressionChecks: 'Regression checks',
+    noCurrentFinding: 'No current finding',
+    gatheringEvidence: 'Gathering evidence',
+    noCurrentFindingHelp: 'No measured rule fired in this bounded window. Review Coverage before drawing a broader conclusion.',
+    gatheringEvidenceHelp: 'Keep the capture running through representative animation interactions.',
+    noMeasuredFinding: 'No measured finding yet',
+    noMeasuredFindingHelp: 'Unknown and uncovered signals stay explicit while this local capture runs.',
+    captureEvidence: 'Capture evidence',
+    captureSufficient: 'Sufficient',
+    captureInsufficient: 'Insufficient',
+    captureForeground: 'Foreground',
+    captureBackground: 'Background',
+    captureOther: 'Other visibility',
+    captureNoBlockingReason: 'All capture evidence gates are satisfied.',
+    captureReasonVisibleWindow: 'foreground window is shorter than {duration}',
+    captureReasonFrameSamples: 'fewer than {count} retained frame samples',
+    captureReasonFrameTruncated: 'frame sample buffer was truncated',
+    captureReasonRefreshConfidence: 'refresh-rate confidence is low',
+    latestWebVitals: 'Latest Web Vitals',
+    documentLifetimeScope: 'document-lifetime · may predate this capture',
+    notObserved: 'not observed',
+    webVitalRatingGood: 'good',
+    webVitalRatingNeedsImprovement: 'needs improvement',
+    webVitalRatingPoor: 'poor',
+    noCompletedInteraction: 'No completed interaction',
+    noCompletedInteractionHelp: 'Wrap a transition, drag, scroll, gesture, or custom flow to connect frame evidence to user intent.',
+    interaction: 'Interaction {id}',
+    duration: 'Duration',
+    frameP95: 'Frame p95',
+    slowFrames: 'Slow frames',
+    missedDisplays: 'Missed displays',
+    overlappingSignals: 'Overlapping browser signals',
+    interactionQuality: 'Continuous interaction quality',
+    qualityInputToVisual: 'Input → visual p95',
+    qualityPointerSampleAge: 'Pointer sample age p95',
+    qualityProgressError: 'Progress error p95',
+    qualityDomWebglAlignment: 'DOM/WebGL alignment p95',
+    qualityControlConflict: 'Control conflicts',
+    qualityControlConflictValue: '{count} conflict samples · max {writers} writers',
+    qualitySettleTime: 'Settle time p95',
+    qualityOvershoot: 'Overshoot p95',
+    qualityCoalescedUtilization: 'Coalesced utilization',
+    qualityCoalescedUtilizationValue: '{value} · {consumed}/{available} events',
+    interpretationBoundary: 'Interpretation boundary',
+    interactionBoundary:
+        'This window connects browser timing evidence to a semantic interaction. It does not infer framework component ownership or GPU cost.',
+    noInteractionHistory: 'No interaction history',
+    noInteractionHistoryHelp: 'Completed semantic interactions will appear newest first.',
+    resourceTimingEvidence: 'Capture-window Resource Timing',
+    resourceTimingScope: 'capture-window · local aggregate · URL/name removed',
+    resourceCount: 'Resource entries',
+    resourceRetained: 'Retained entries',
+    resourceDropped: 'Dropped entries',
+    resourceRejected: 'Rejected entries',
+    resourceExcludedPreCapture: 'Excluded before capture',
+    resourceDurationP95: 'Resource duration p95',
+    resourceTransferBytes: 'Transfer bytes',
+    resourceEncodedBytes: 'Encoded bytes',
+    resourceDecodedBytes: 'Decoded bytes',
+    resourceZeroTransfer: 'Zero-transfer entries',
+    resourceBufferFull: 'Buffer-full events',
+    resourceCategories: 'Resource categories',
+    resourceCategoryScript: 'Script',
+    resourceCategoryImage: 'Image',
+    resourceCategoryMedia: 'Media',
+    resourceCategoryFetchXhr: 'Fetch / XHR',
+    resourceCategoryLinkCss: 'Stylesheet / link',
+    resourceCategoryFrame: 'Frame',
+    resourceCategoryOther: 'Other',
+    resourceCategorySummary: '{count} resources · p95 {duration} · transfer {bytes}',
+    resourceTimingBoundary:
+        'Resource Timing covers network/loading evidence only. Media decode, dropped playback frames, and GPU upload remain separate adapter evidence.',
+    hostEvidenceScope: 'capture-window · explicit host adapter · local only',
+    hostEvidenceBoundary:
+        'Explicit host counters stay in this local snapshot and are excluded from animation_rum v1. Counts and p95 values are evidence, not a pass/fail verdict.',
+    rendererHostEvidence: 'Renderer host evidence',
+    rendererBackend: 'Backend',
+    rendererDrawCallsP95: 'Draw calls p95',
+    rendererTrianglesP95: 'Triangles p95',
+    rendererGpuFrameP95: 'GPU frame p95',
+    hostAcceptedSamples: 'Accepted samples',
+    hostDroppedSamples: 'Dropped samples',
+    hostRejectedSamples: 'Rejected samples',
+    mediaHostEvidence: 'Video host evidence',
+    mediaCallbackP95: 'rVFC callback interval p95',
+    mediaPresentedFramesDeltaP95: 'Presented-frame delta p95',
+    mediaDroppedFrames: 'Dropped video frames',
+    mediaTotalFrames: 'Total video frames',
+    mediaDropRatio: 'Playback drop ratio',
+    mediaBoundary:
+        'Video cadence and playback-quality deltas need an explicit video probe and a valid baseline. Missing probe evidence stays unknown.',
+    lifecycleHostEvidence: 'GSAP lifecycle host evidence',
+    lifecycleAnimations: 'GSAP animations',
+    lifecycleActiveAnimations: 'Active animations',
+    lifecycleScrollTriggers: 'ScrollTriggers',
+    lifecycleCheckpoints: 'Lifecycle checkpoints',
+    lifecycleCheckpointSummary: 'mount {mount} · interaction {interaction} · unmount {unmount} · manual {manual}',
+    lifecycleLeakUnknown:
+        'Leak cannot be determined from checkpoints alone. It requires repeated equivalent mount → interaction → unmount cycles and plateau evidence.',
+    workHostEvidence: 'Framework and work host evidence',
+    frameworkRenderP95: 'Framework render p95',
+    frameworkCommitP95: 'Framework commit p95',
+    workTotalSamples: 'Total work samples',
+    workCategories: 'Work categories',
+    workCategorySummary: 'script {script} · layout {layout} · paint {paint} · composite {composite} · other {other}',
+    workAvoidanceUnknown:
+        'Measured work is not proof of avoidable or hidden/offscreen work. Work-avoidance coverage stays not instrumented until a dedicated protocol provides that evidence.',
+    coverageMeaning: 'What this status means',
+    coverageBoundary:
+        'Coverage describes available evidence, not whether the page passed. Missing or unsupported evidence is never converted to zero.',
+    collectorUnavailable: 'Collector snapshot unavailable',
+    collectorUnavailableHelp: 'Start the local collector, then repeat the representative animation interaction.',
+    unknown: 'unknown',
+    noLocalSnapshot: 'No local snapshot',
+    panelRefresh: 'Panel refresh {selfTime} · interval ≥ {seconds}s',
+    measuredFindingsHeadlineOne: '1 measured finding',
+    measuredFindingsHeadlineMany: '{count} measured findings',
+    stableWindow: 'Building a stable measurement window',
+    noThresholdBreach: 'No measured threshold breach',
+    findingsSummary: 'Ranked by severity, evidence confidence, target distance, and sample count—not a synthetic score.',
+    stableWindowSummary: 'Frame-tail guidance needs at least 5 s and 30 retained frames; {count} available now.',
+    noThresholdBreachSummary: 'No rule fired in this bounded capture. Coverage gaps remain visible separately.',
+    recentFps: 'Live rAF cadence',
+    recentFpsContext: '{samples} rAF callbacks · latest {window}',
+    recentFpsUnavailable: 'Collecting a visible comparison window',
+    frameTail: 'Frame p95',
+    investigateAbove: 'Investigate above {value}',
+    jankBursts: 'Jank bursts',
+    longestRun: '{count} frames in longest run',
+    retainedFrames: '{count} retained frame samples',
+    noOverlappingSignal: 'No overlapping observer signal',
+    reducedMotion: 'reduced motion',
+    recentFpsBoundary:
+        'Recent FPS is the latest observed rAF callback cadence. It is not GPU/display FPS and is not used alone as a verdict.',
+    coverageCount: '{count} families',
+} as const
+
+type OverlayMessageKey = keyof typeof EN_MESSAGES
+
+const ZH_MESSAGES = {
+    motion: '动效',
+    motionConsole: '动效性能控制台',
+    panelAria: '动画性能开发监控面板',
+    primaryMeasurementsAria: '主要动画性能指标',
+    viewsAria: '动画监控视图',
+    recording: '采集中',
+    stopped: '已停止',
+    unavailable: '不可用',
+    ready: '待启动',
+    running: '采集中',
+    localOnlyDiagnostics: '{state} · 仅本地诊断',
+    waitingSnapshot: '等待本地快照',
+    openForEvidence: '打开面板以查看实测证据。',
+    issueHistory: '问题列表',
+    recentInteractions: '最近交互',
+    metricCoverage: '指标覆盖',
+    coverageNote: '覆盖状态会明确区分：未观测、未接入、不支持和未知，绝不会把它们显示为 0。',
+    localView: '本地视图 · 浮窗不会上报',
+    refreshAtLeast: '刷新间隔 ≥ {seconds} 秒',
+    overview: '概览',
+    interactions: '交互',
+    coverage: '覆盖范围',
+    targetView: '选中目标',
+    selectTarget: '选取元素',
+    selectTargetTitle: '选中一个元素并查看它的动画证据',
+    targetPickerUnavailable: '元素选择器需要支持目标监控的采集器',
+    pickingTarget: '点击页面元素 · 按 Esc 取消',
+    rendererSurfaces: '渲染器表面',
+    rendererSurfaceCount: '{count} 个表面',
+    showRendererSurfaces: '显示页面标记',
+    hideRendererSurfaces: '隐藏页面标记',
+    showRendererSurfacesTitle: '发现 SVG 和 Canvas 渲染表面，并在页面上明确标记',
+    hideRendererSurfacesTitle: '移除页面上的渲染器表面标记',
+    refreshRendererSurfaces: '刷新',
+    rendererSurfaceHelp: 'SVG/Canvas 本地标记已关闭；只有 SDK 成功观测到 getContext 时才显示具体上下文类型。',
+    rendererSurfacePrivacy: '仅本地 · 标记层不接收鼠标事件 · 不保留 selector、文本、属性、URL 或坐标。',
+    rendererSurfacePausedHidden: '页面已隐藏 · 渲染器标记及其 4 Hz 几何重绘已暂停。',
+    rendererSurfaceOutlineUnsupported: '已经发现渲染表面，但当前浏览器无法创建本地标记层。',
+    rendererSurfaceTruncated: '渲染表面数量达到本地上限，列表已截断；请缩小页面范围后刷新。',
+    noRendererSurface: '未发现渲染器表面',
+    noRendererSurfaceHelp: '当前文档和开放的 Shadow Root 中没有发现页面自身的 SVG 或 Canvas。',
+    rendererSurfaceNativeSvg: '原生 SVG 元素证据',
+    rendererSurfaceContextObserved: 'SDK 上下文注册表已观测',
+    rendererSurfaceContextUnknown: '未观测到 Canvas 上下文，类型保持未知',
+    rendererSurfaceMeasured: '已观测',
+    rendererSurfaceUnknown: '未知',
+    selectedTarget: '已选目标',
+    clearTarget: '清除目标',
+    startTargetRecording: '开始',
+    stopTargetRecording: '停止',
+    resetTargetRecording: '重新记录',
+    startTargetRecordingTitle: '开始一个针对此目标的有界记录窗口',
+    stopTargetRecordingTitle: '停止记录并保留关联快照',
+    resetTargetRecordingTitle: '取消当前窗口（如有），然后开始一次全新记录',
+    targetRecordingReadyHelp: '选中目标后不会自动记录。请开始一个有界窗口，执行动画，然后停止。',
+    targetRecordingActiveHelp: '正在记录此目标窗口。停止后会保留关联快照。',
+    targetRecordingStoppedHelp: '关联快照已保留。准备好开始新窗口时，请点击“重新记录”。',
+    noSelectedTarget: '尚未选中目标',
+    noSelectedTargetHelp: '点击准星按钮，再点击页面上的元素。页面级监控会始终继续运行。',
+    targetDirectEvidence: '元素直接证据',
+    targetPageWindow: '选中期间的页面窗口',
+    targetAttribution: '运行时与归属',
+    targetRenderer: 'Canvas / 渲染器证据',
+    rendererEvidenceWindow: '证据窗口',
+    rendererSampleEvidence: '样本（接受 / 保留 / 丢弃 / 拒绝）',
+    rendererTailState: '保留尾窗',
+    rendererTailTruncated: '已截断',
+    rendererTailComplete: '完整',
+    rendererGpuEvidence: 'GPU 时间',
+    rendererGpuAccepted: '有效证据',
+    rendererGpuRejected: '已拒绝：{reason}',
+    targetPrivacy: '隐私边界',
+    targetPrivacyHelp:
+        '这个目标详情只保存在当前页面内存中，不属于 animation_rum v1；不会包含 selector、id、class、文本、输入值、URL、props 或 state。',
+    targetOverlapBoundary: '帧、LoAF、Long Task 和 Event Timing 只是与选中窗口时间重叠，不能证明由该元素造成。',
+    targetNoRendererAdapter: 'Canvas 尺寸属于 DOM 直接证据；draw call、GPU 时间、资源、readback 和场景对象必须由显式渲染器 adapter 提供。',
+    standardAnimations: '标准动画',
+    runningAnimations: '运行中',
+    canvasBackingPixels: '后备缓冲像素',
+    effectivePixelRatio: '有效像素比',
+    animationProperties: '观测到的属性候选',
+    noPropertyEvidence: '尚未观测到关键帧属性证据。',
+    targetInspectionTruncated: '有界检查保留了 {total} 个动画中的 {inspected} 个。',
+    targetPropertiesTruncated: '关键帧属性清单已达到本地上限。',
+    runtimeInventory: '运行时清单',
+    noOwnerAttribution: '没有匹配框架归属 adapter；原生 DOM 证据仍然可用。',
+    adapterInspectionFailed: '已隔离 {count} 个 adapter 检查失败。',
+    targetDisconnected: '选中的元素已经离开文档。',
+    openMonitor: '打开 Condev 动画监控',
+    closeMonitor: '关闭 Condev 动画监控',
+    openMonitorTitle: '打开动画监控',
+    closeMonitorTitle: '关闭动画监控',
+    openWorkbench: '打开宽屏动画工作台',
+    useCompact: '使用紧凑动画面板',
+    toggleWorkbench: '切换宽屏工作台',
+    close: '关闭',
+    switchToChinese: '将动画监控切换为中文',
+    switchToEnglish: '将动画监控切换为英文',
+    findingsOne: '{count} 个实测问题',
+    findingsMany: '{count} 个实测问题',
+    currentRetained: '当前 {current} · 保留 {retained}',
+    retained: '保留 {count}',
+    current: '当前',
+    earlier: '较早',
+    severityCritical: '严重',
+    severityWarning: '警告',
+    severityInfo: '提示',
+    confidenceMeta: '{confidence}置信度 · {samples} 个样本 · {evidence}',
+    observed: '观测值',
+    target: '{kind}目标',
+    whatToChange: '如何修改',
+    verifyChange: '如何验证修改',
+    regressionChecks: '回归检查',
+    noCurrentFinding: '当前没有实测问题',
+    gatheringEvidence: '正在收集证据',
+    noCurrentFindingHelp: '这个有限窗口内没有规则触发。下结论前请继续检查“覆盖范围”。',
+    gatheringEvidenceHelp: '请保持采集，并执行具有代表性的动画交互。',
+    noMeasuredFinding: '暂未发现实测问题',
+    noMeasuredFindingHelp: '采集期间，未知和未覆盖信号会继续明确显示。',
+    captureEvidence: '采集证据',
+    captureSufficient: '证据充足',
+    captureInsufficient: '证据不足',
+    captureForeground: '前台',
+    captureBackground: '后台',
+    captureOther: '其他可见性',
+    captureNoBlockingReason: '已满足全部采集证据门槛。',
+    captureReasonVisibleWindow: '前台采集窗口短于 {duration}',
+    captureReasonFrameSamples: '保留的帧样本少于 {count} 个',
+    captureReasonFrameTruncated: '帧样本缓冲区已截断',
+    captureReasonRefreshConfidence: '刷新率置信度较低',
+    latestWebVitals: '最新 Web Vitals',
+    documentLifetimeScope: '整个文档周期（document-lifetime）· 值可能早于本次采集',
+    notObserved: '未观测到',
+    webVitalRatingGood: '良好',
+    webVitalRatingNeedsImprovement: '需要改进',
+    webVitalRatingPoor: '较差',
+    noCompletedInteraction: '没有已完成的交互',
+    noCompletedInteractionHelp: '请标记转场、拖拽、滚动、手势或自定义流程，把帧证据与用户意图关联起来。',
+    interaction: '交互 {id}',
+    duration: '持续时间',
+    frameP95: '帧耗时 p95',
+    slowFrames: '慢帧',
+    missedDisplays: '错过刷新机会',
+    overlappingSignals: '重叠的浏览器信号',
+    interactionQuality: '连续交互质量',
+    qualityInputToVisual: '输入 → 视觉 p95',
+    qualityPointerSampleAge: '指针样本时延 p95',
+    qualityProgressError: '进度误差 p95',
+    qualityDomWebglAlignment: 'DOM/WebGL 对齐误差 p95',
+    qualityControlConflict: '控制冲突',
+    qualityControlConflictValue: '{count} 个样本 · 最多 {writers} 个写入者',
+    qualitySettleTime: '稳定时间 p95',
+    qualityOvershoot: '超调 p95',
+    qualityCoalescedUtilization: '合并事件利用率',
+    qualityCoalescedUtilizationValue: '{value} · {consumed}/{available} 个事件',
+    interpretationBoundary: '解释边界',
+    interactionBoundary: '这个窗口只把浏览器时序证据关联到语义交互，不会推断框架组件归属或 GPU 成本。',
+    noInteractionHistory: '暂无交互历史',
+    noInteractionHistoryHelp: '完成的语义交互会按时间倒序显示。',
+    resourceTimingEvidence: '采集窗口内的 Resource Timing',
+    resourceTimingScope: '采集窗口 · 本地汇总 · 已移除 URL/名称',
+    resourceCount: '资源条目',
+    resourceRetained: '保留条目',
+    resourceDropped: '丢弃条目',
+    resourceRejected: '拒绝条目',
+    resourceExcludedPreCapture: '排除采集前条目',
+    resourceDurationP95: '资源耗时 p95',
+    resourceTransferBytes: '传输字节',
+    resourceEncodedBytes: '编码体积',
+    resourceDecodedBytes: '解码体积',
+    resourceZeroTransfer: '零传输条目',
+    resourceBufferFull: '缓冲区满事件',
+    resourceCategories: '资源分类',
+    resourceCategoryScript: '脚本',
+    resourceCategoryImage: '图片',
+    resourceCategoryMedia: '媒体',
+    resourceCategoryFetchXhr: 'Fetch / XHR',
+    resourceCategoryLinkCss: '样式表 / link',
+    resourceCategoryFrame: 'Frame',
+    resourceCategoryOther: '其他',
+    resourceCategorySummary: '共 {count} 个 · p95 {duration} · 传输 {bytes}',
+    resourceTimingBoundary: 'Resource Timing 只覆盖网络与加载证据；媒体解码、播放掉帧和 GPU 上传仍需单独的适配器证据。',
+    hostEvidenceScope: '采集窗口 · 显式宿主适配器 · 仅本地',
+    hostEvidenceBoundary: '显式宿主计数只保留在本地快照中，不属于 animation_rum v1。计数和 p95 是观测证据，不是通过/失败结论。',
+    rendererHostEvidence: '渲染器宿主证据',
+    rendererBackend: '渲染后端',
+    rendererDrawCallsP95: 'Draw call p95',
+    rendererTrianglesP95: '三角形数量 p95',
+    rendererGpuFrameP95: 'GPU 帧耗时 p95',
+    hostAcceptedSamples: '接受样本',
+    hostDroppedSamples: '丢弃样本',
+    hostRejectedSamples: '拒绝样本',
+    mediaHostEvidence: '视频宿主证据',
+    mediaCallbackP95: 'rVFC 回调间隔 p95',
+    mediaPresentedFramesDeltaP95: '呈现帧增量 p95',
+    mediaDroppedFrames: '视频掉帧数',
+    mediaTotalFrames: '视频总帧数',
+    mediaDropRatio: '播放掉帧比例',
+    mediaBoundary: '视频节奏和播放质量增量需要显式视频探针与有效基线；缺少探针证据时保持为未知。',
+    lifecycleHostEvidence: 'GSAP 生命周期宿主证据',
+    lifecycleAnimations: 'GSAP 动画数',
+    lifecycleActiveAnimations: '活动动画数',
+    lifecycleScrollTriggers: 'ScrollTrigger 数',
+    lifecycleCheckpoints: '生命周期检查点',
+    lifecycleCheckpointSummary: '挂载 {mount} · 交互后 {interaction} · 卸载 {unmount} · 手动 {manual}',
+    lifecycleLeakUnknown: '仅凭检查点尚不能判断泄漏；还需要重复等价的挂载 → 交互 → 卸载周期以及平台期证据。',
+    workHostEvidence: '框架与工作量宿主证据',
+    frameworkRenderP95: '框架渲染 p95',
+    frameworkCommitP95: '框架提交 p95',
+    workTotalSamples: '工作总样本',
+    workCategories: '工作类别',
+    workCategorySummary: '脚本 {script} · 布局 {layout} · 绘制 {paint} · 合成 {composite} · 其他 {other}',
+    workAvoidanceUnknown: '已经测到工作量，不等于证明它可以避免或发生在隐藏/离屏状态；在专用协议提供这类证据前，无效工作规避仍未接入。',
+    coverageMeaning: '该状态的含义',
+    coverageBoundary: '覆盖状态描述的是证据是否可用，并不表示页面是否通过。缺失或不支持的证据绝不会转换为 0。',
+    collectorUnavailable: '无法读取采集器快照',
+    collectorUnavailableHelp: '请启动本地采集器，然后重新执行具有代表性的动画交互。',
+    unknown: '未知',
+    noLocalSnapshot: '没有本地快照',
+    panelRefresh: '面板刷新 {selfTime} · 间隔 ≥ {seconds} 秒',
+    measuredFindingsHeadlineOne: '发现 1 个实测问题',
+    measuredFindingsHeadlineMany: '发现 {count} 个实测问题',
+    stableWindow: '正在建立稳定测量窗口',
+    noThresholdBreach: '未发现实测阈值超限',
+    findingsSummary: '按严重程度、证据置信度、超限幅度和样本数排序，不生成综合健康分。',
+    stableWindowSummary: '帧尾建议至少需要 5 秒和 30 个保留帧；目前有 {count} 个。',
+    noThresholdBreachSummary: '这个有限采集窗口内没有规则触发；覆盖缺口会单独显示。',
+    recentFps: '近实时帧率（rAF）',
+    recentFpsContext: '{samples} 次 rAF 回调 · 最近 {window}',
+    recentFpsUnavailable: '正在收集可见状态下的对比窗口',
+    frameTail: '帧耗时 p95',
+    investigateAbove: '高于 {value} 时建议调查',
+    jankBursts: '连续卡顿',
+    longestRun: '最长连续 {count} 帧',
+    retainedFrames: '保留了 {count} 个帧样本',
+    noOverlappingSignal: '没有重叠的观察器信号',
+    reducedMotion: '减少动态效果',
+    recentFpsBoundary: '近实时帧率是相邻面板快照之间观测到的 rAF 回调频率，不等于 GPU/显示器 FPS，也不会单独用于性能结论。',
+    coverageCount: '{count} 类',
+} satisfies Record<OverlayMessageKey, string>
+
+const MESSAGES: Record<AnimationOverlayLocale, Record<OverlayMessageKey, string>> = {
+    en: EN_MESSAGES,
+    'zh-CN': ZH_MESSAGES,
+}
+
+export function overlayText(
+    locale: AnimationOverlayLocale,
+    key: OverlayMessageKey,
+    values: Readonly<Record<string, string | number>> = {}
+): string {
+    return MESSAGES[locale][key].replace(/\{([A-Za-z]+)\}/gu, (_match, name: string) => String(values[name] ?? `{${name}}`))
+}
+
+export function resolveOverlayLocale(
+    preference: AnimationOverlayLocalePreference | undefined,
+    documentValue: Document,
+    browserLanguage?: string
+): AnimationOverlayLocale {
+    if (preference === 'en' || preference === 'zh-CN') return preference
+    const documentLanguage = documentValue.documentElement?.getAttribute('lang') ?? ''
+    return /^(zh|cmn|yue)(-|$)/iu.test(documentLanguage || browserLanguage || '') ? 'zh-CN' : 'en'
+}
+
+export function collectorStateText(locale: AnimationOverlayLocale, state: CollectorState | 'running' | 'stopped' | undefined): string {
+    switch (state) {
+        case 'running':
+            return overlayText(locale, 'recording')
+        case 'stopped':
+            return overlayText(locale, 'stopped')
+        case 'destroyed':
+            return overlayText(locale, 'unavailable')
+        default:
+            return overlayText(locale, 'ready')
+    }
+}
+
+const FAMILY_LABELS: Record<AnimationOverlayLocale, Record<AnimationRumFamily, string>> = {
+    en: {
+        userOutcome: 'User outcome',
+        frameCadence: 'Frame cadence',
+        mainThread: 'Main thread',
+        renderingPipeline: 'Rendering pipeline',
+        renderer: 'Renderer',
+        scrollGesture: 'Scroll and gesture',
+        resourcesMedia: 'Resources and media',
+        memoryLifecycle: 'Memory and lifecycle',
+        workAvoidance: 'Work avoidance',
+        accessibility: 'Accessibility',
+        motionQuality: 'Motion quality',
+        monitorOverhead: 'Monitor overhead',
+    },
+    'zh-CN': {
+        userOutcome: '用户体验结果',
+        frameCadence: '帧节奏',
+        mainThread: '主线程',
+        renderingPipeline: '渲染流水线',
+        renderer: '渲染器',
+        scrollGesture: '滚动与手势',
+        resourcesMedia: '资源与媒体',
+        memoryLifecycle: '内存与生命周期',
+        workAvoidance: '无效工作规避',
+        accessibility: '无障碍',
+        motionQuality: '动效质量',
+        monitorOverhead: '监控自身开销',
+    },
+}
+
+export function familyText(locale: AnimationOverlayLocale, family: AnimationRumFamily): string {
+    return FAMILY_LABELS[locale][family]
+}
+
+const ISSUE_TITLES: Record<AnimationOverlayLocale, Readonly<Record<string, string>>> = {
+    en: {
+        'frame-tail-and-bursts': 'Frame tail and jank bursts',
+        'long-task-main-thread': 'Long main-thread task',
+        'loaf-rendering-tail': 'Rendering pipeline tail',
+        'event-input-delay': 'Input delay',
+        'event-processing-delay': 'Event processing delay',
+        'event-presentation-delay': 'Presentation delay',
+        'hidden-work': 'Work continued while hidden',
+        'reduced-motion-violations': 'Reduced-motion policy violation',
+        'monitor-callback-overhead': 'Monitor overhead',
+        'continuous-input-to-visual': 'Continuous input-to-visual latency',
+        'stale-pointer-samples': 'Stale pointer samples',
+        'visual-progress-drift': 'Visual progress drift',
+        'dom-webgl-alignment-drift': 'DOM/WebGL alignment drift',
+        'competing-progress-writers': 'Competing progress writers',
+        'motion-settle-time': 'Motion settle time',
+        'motion-overshoot': 'Motion overshoot',
+        'coalesced-event-utilization': 'Coalesced pointer-event utilization',
+    },
+    'zh-CN': {
+        'frame-tail-and-bursts': '帧尾耗时与连续卡顿',
+        'long-task-main-thread': '主线程长任务',
+        'loaf-rendering-tail': '渲染流水线尾部耗时',
+        'event-input-delay': '输入延迟',
+        'event-processing-delay': '事件处理延迟',
+        'event-presentation-delay': '呈现延迟',
+        'hidden-work': '页面隐藏后仍在工作',
+        'reduced-motion-violations': '违反减少动态效果策略',
+        'monitor-callback-overhead': '监控自身开销',
+        'continuous-input-to-visual': '连续交互的输入到视觉延迟',
+        'stale-pointer-samples': '指针样本过旧',
+        'visual-progress-drift': '视觉进度偏移',
+        'dom-webgl-alignment-drift': 'DOM/WebGL 对齐偏移',
+        'competing-progress-writers': '多个进度写入者冲突',
+        'motion-settle-time': '动效收敛时间',
+        'motion-overshoot': '动效超调',
+        'coalesced-event-utilization': '合并指针事件利用率',
+    },
+}
+
+export function issueTitle(locale: AnimationOverlayLocale, id: string, fallback: string): string {
+    return ISSUE_TITLES[locale][id] ?? fallback
+}
+
+const METRIC_LABELS: Record<AnimationOverlayLocale, Readonly<Record<string, string>>> = {
+    en: {
+        'frameDurationMs.p95': 'Frame duration p95',
+        jankBurstCount: 'Jank burst count',
+        'longTaskDurationMs.max': 'Long Task max',
+        'longAnimationFrameStyleLayoutTailMs.p95': 'Style/layout-to-frame-end p95',
+        'inputDelayMs.p95': 'Input delay p95',
+        'processingDurationMs.p95': 'Processing duration p95',
+        'presentationDelayMs.p95': 'Presentation delay p95',
+        activeWorkSamplesWhileHidden: 'Active work while hidden',
+        reducedMotionViolations: 'Reduced-motion violations',
+        callbackSelfTimeRatio: 'Callback self-time ratio',
+        'inputToVisualMs.p95': 'Input-to-visual p95',
+        'pointerSampleAgeMs.p95': 'Pointer sample age p95',
+        'progressError.p95': 'Progress error p95',
+        'domWebglAlignmentErrorPx.p95': 'DOM/WebGL alignment error p95',
+        'controlWritersPerFrame.p95': 'Progress writers per frame p95',
+        'settleTimeMs.p95': 'Settle time p95',
+        'overshootRatio.p95': 'Overshoot ratio p95',
+        coalescedEventUtilization: 'Coalesced event utilization',
+    },
+    'zh-CN': {
+        'frameDurationMs.p95': '帧耗时 p95',
+        jankBurstCount: '连续卡顿次数',
+        'longTaskDurationMs.max': '长任务最大耗时',
+        'longAnimationFrameStyleLayoutTailMs.p95': '样式/布局开始至帧结束 p95',
+        'inputDelayMs.p95': '输入延迟 p95',
+        'processingDurationMs.p95': '处理耗时 p95',
+        'presentationDelayMs.p95': '呈现延迟 p95',
+        activeWorkSamplesWhileHidden: '页面隐藏时的活动样本',
+        reducedMotionViolations: '减少动态效果违规次数',
+        callbackSelfTimeRatio: '监控回调自身耗时占比',
+        'inputToVisualMs.p95': '输入到视觉延迟 p95',
+        'pointerSampleAgeMs.p95': '指针样本时效 p95',
+        'progressError.p95': '进度误差 p95',
+        'domWebglAlignmentErrorPx.p95': 'DOM/WebGL 对齐误差 p95',
+        'controlWritersPerFrame.p95': '每帧进度写入者 p95',
+        'settleTimeMs.p95': '收敛时间 p95',
+        'overshootRatio.p95': '超调比率 p95',
+        coalescedEventUtilization: '合并事件利用率',
+    },
+}
+
+export function metricText(locale: AnimationOverlayLocale, name: string): string {
+    return METRIC_LABELS[locale][name] ?? name
+}
+
+const INTERACTION_LABELS: Record<AnimationOverlayLocale, Record<AnimationInteractionKind, string>> = {
+    en: {
+        transition: 'Transition',
+        drag: 'Drag',
+        scroll: 'Scroll',
+        pointer: 'Pointer',
+        keyboard: 'Keyboard',
+        load: 'Load',
+        lifecycle: 'Lifecycle',
+        gesture: 'Gesture',
+        navigation: 'Navigation',
+        custom: 'Custom',
+    },
+    'zh-CN': {
+        transition: '转场',
+        drag: '拖拽',
+        scroll: '滚动',
+        pointer: '指针',
+        keyboard: '键盘',
+        load: '加载',
+        lifecycle: '生命周期',
+        gesture: '手势',
+        navigation: '导航',
+        custom: '自定义',
+    },
+}
+
+export function interactionKindText(locale: AnimationOverlayLocale, kind: AnimationInteractionKind): string {
+    return INTERACTION_LABELS[locale][kind]
+}
+
+const COVERAGE_STATUS_LABELS: Record<AnimationOverlayLocale, Record<AnimationCoverageStatus, string>> = {
+    en: {
+        measured: 'Measured',
+        partial: 'Partial',
+        'not-observed': 'Not observed',
+        'not-instrumented': 'Not instrumented',
+        unsupported: 'Unsupported',
+    },
+    'zh-CN': {
+        measured: '已测量',
+        partial: '部分覆盖',
+        'not-observed': '未观测到',
+        'not-instrumented': '未接入',
+        unsupported: '不支持',
+    },
+}
+
+const COVERAGE_STATUS_MEANINGS: Record<AnimationOverlayLocale, Record<AnimationCoverageStatus, string>> = {
+    en: {
+        measured: 'Valid runtime evidence was observed for this family in the bounded capture.',
+        partial: 'Some evidence is available, but optional phases, samples, or an adapter remain incomplete.',
+        'not-observed': 'The capability exists, but this bounded capture did not observe a qualifying event.',
+        'not-instrumented': 'This family needs an explicit host or framework adapter before it can be measured.',
+        unsupported: 'The current browser/runtime does not expose the required capability.',
+    },
+    'zh-CN': {
+        measured: '这个有限采集窗口内已经观测到该指标族的有效运行时证据。',
+        partial: '已有部分证据，但可选阶段、样本或适配器仍不完整。',
+        'not-observed': '浏览器具备能力，但这个有限窗口内没有出现符合条件的事件。',
+        'not-instrumented': '需要显式接入宿主或框架适配器后才能测量。',
+        unsupported: '当前浏览器或运行时没有暴露所需能力。',
+    },
+}
+
+export function coverageStatusText(locale: AnimationOverlayLocale, status: AnimationCoverageStatus): string {
+    return COVERAGE_STATUS_LABELS[locale][status]
+}
+
+export function coverageMeaningText(locale: AnimationOverlayLocale, status: AnimationCoverageStatus): string {
+    return COVERAGE_STATUS_MEANINGS[locale][status]
+}
+
+const EVIDENCE_LABELS: Record<AnimationOverlayLocale, Record<AnimationEvidenceLevel, string>> = {
+    en: {
+        'field-measurement': 'Field measurement',
+        'controlled-lab-measurement': 'Controlled lab measurement',
+        'runtime-observation': 'Runtime observation',
+        'static-candidate': 'Static candidate',
+        'unsupported-or-unknown': 'Unsupported or unknown',
+    },
+    'zh-CN': {
+        'field-measurement': '真实用户测量',
+        'controlled-lab-measurement': '受控实验室测量',
+        'runtime-observation': '运行时观测',
+        'static-candidate': '静态候选',
+        'unsupported-or-unknown': '不支持或未知',
+    },
+}
+
+export function evidenceText(locale: AnimationOverlayLocale, evidence: AnimationEvidenceLevel): string {
+    return EVIDENCE_LABELS[locale][evidence]
+}
+
+const CONFIDENCE_LABELS: Record<AnimationOverlayLocale, Record<Confidence | RecommendationConfidence, string>> = {
+    en: { high: 'high', medium: 'medium', low: 'low' },
+    'zh-CN': { high: '高', medium: '中', low: '低' },
+}
+
+export function confidenceText(locale: AnimationOverlayLocale, confidence: Confidence | RecommendationConfidence): string {
+    return CONFIDENCE_LABELS[locale][confidence]
+}
+
+const OUTCOME_LABELS: Record<AnimationOverlayLocale, Record<InteractionOutcome, string>> = {
+    en: { completed: 'completed', cancelled: 'cancelled', abandoned: 'abandoned' },
+    'zh-CN': { completed: '已完成', cancelled: '已取消', abandoned: '未完成' },
+}
+
+export function outcomeText(locale: AnimationOverlayLocale, outcome: InteractionOutcome): string {
+    return OUTCOME_LABELS[locale][outcome]
+}
+
+export function targetKindText(locale: AnimationOverlayLocale, kind: RecommendationTargetKind): string {
+    if (locale === 'en') return kind
+    return kind === 'standard' ? '标准' : '项目预算'
+}
+
+export function sourceText(locale: AnimationOverlayLocale, source: 'explicit' | 'inferred'): string {
+    if (locale === 'en') return source
+    return source === 'explicit' ? '显式' : '推断'
+}
+
+export interface LocalizedRecommendationCopy {
+    why: string
+    actions: readonly string[]
+    rerunProtocol: readonly string[]
+    regressionChecks: readonly string[]
+}
+
+const ZH_RERUN = [
+    '使用相同视口和刷新率目标，重复同一个语义交互。',
+    '至少采集 3 次，对比 p95/p99 帧尾、连续卡顿和对应信号窗口。',
+    '只有目标指标改善，且交互结果与监控自身开销没有回退时，才保留这项修改。',
+] as const
+
+const ZH_RECOMMENDATIONS: Readonly<Record<string, { why: string; actions: readonly string[] }>> = {
+    'frame-tail-and-bursts': {
+        why: '观测到的帧尾耗时超过推断/显式帧预算，或形成了连续慢帧。',
+        actions: [
+            '减少受影响语义交互中每帧执行的 JavaScript 和 DOM 工作。',
+            '先批量读取、再批量写入，并优先使用适合合成器的 transform/opacity。',
+            '把非视觉工作拆分到不同帧，或移出交互窗口。',
+        ],
+    },
+    'long-task-main-thread': {
+        why: '观测到的长任务可能延迟动画回调和输入处理；它能证明长任务出现，但不能单独证明掉帧或用户群体影响。',
+        actions: [
+            '把长时间同步工作拆成可让出主线程的小任务。',
+            '适合时把解析、解码或计算移出主线程。',
+            '重新执行对应交互，确认帧尾确实改善。',
+        ],
+    },
+    'loaf-rendering-tail': {
+        why: '长动画帧证据显示，从样式/布局开始到帧结束存在明显尾部耗时；其中还包含后续渲染工作，不能全部归因于布局。',
+        actions: [
+            '修改前先在渲染性能轨迹中检查样式/布局以及后续绘制和合成。',
+            '检查这次视觉更新是否让过大的渲染区域失效。',
+            '减少已测得的流水线工作，并重新验证渲染尾部和帧节奏。',
+        ],
+    },
+    'event-input-delay': {
+        why: '观测到的输入延迟表明，事件处理器启动前主线程存在争用。',
+        actions: ['移除或延后排在交互处理器前面的工作。', '保持输入处理器精简，并把视觉写入合并到每帧一次。'],
+    },
+    'event-processing-delay': {
+        why: '观测到的事件处理耗时占用了交互预算中的明显部分。',
+        actions: ['减少处理器中的同步工作。', '把高频指针/滚动更新合并为每帧一次视觉写入。'],
+    },
+    'event-presentation-delay': {
+        why: '观测到的呈现延迟表示处理结束后，浏览器仍花了较长时间才呈现下一次结果。',
+        actions: ['检查处理器之后的渲染流水线工作。', '减少视觉更新引起的样式、布局和绘制失效。'],
+    },
+    'hidden-work': {
+        why: '文档不可见时仍观测到了性能活动信号。',
+        actions: ['页面隐藏时暂停动画生产者、定时器、媒体更新和渲染循环。', '页面恢复可见时，通过唯一生命周期所有者恢复工作。'],
+    },
+    'reduced-motion-violations': {
+        why: '显式无障碍适配器测得：用户请求减少动态效果时，仍存在违反动效策略的行为。',
+        actions: ['为非必要动效提供减少动态或无动态路径。', '保留状态变化与焦点提示，同时避免大幅空间移动。'],
+    },
+    'monitor-callback-overhead': {
+        why: '监控回调自身耗时超过项目调查预算，可能明显干扰正在被测量的页面。',
+        actions: [
+            '扩展监控前，先降低回调频率或页面采样比例。',
+            '批量处理观察器数据，并把非必要聚合推迟到生成快照时。',
+            '与关闭浮窗且不启用监控的对照运行比较。',
+        ],
+    },
+}
+
+const ZH_TECHNICAL_TEXT: Readonly<Record<string, string>> = {
+    'frame p99': '帧耗时 p99',
+    'frame p95': '帧耗时 p95',
+    'frame p95/p99': '帧耗时 p95/p99',
+    'longest slow-frame run': '最长连续慢帧',
+    'missed frame opportunities': '错过刷新机会',
+    'Long Task count': '长任务数量',
+    'Event Timing processing delay': 'Event Timing 处理延迟',
+    'LoAF duration p95': '长动画帧耗时 p95',
+    'style/layout-to-frame-end tail p95': '样式/布局开始至帧结束 p95',
+    'visual correctness': '视觉正确性',
+    'interaction duration p95': '交互持续时间 p95',
+    'inputDelayMs.p95': '输入延迟 p95',
+    'processingDurationMs.p95': '处理耗时 p95',
+    'presentationDelayMs.p95': '呈现延迟 p95',
+    'hidden work samples': '页面隐藏时的工作样本',
+    'duplicate rAF loops after resume': '恢复后重复的 rAF 循环',
+    'resume visual continuity': '恢复后的视觉连续性',
+    'interaction outcome parity': '交互结果一致性',
+    'focus visibility': '焦点可见性',
+    'essential status feedback': '必要状态反馈',
+    'callback self-time ratio': '回调自身耗时占比',
+    'report-build p95': '报告生成耗时 p95',
+    'signal coverage': '信号覆盖范围',
+}
+
+export function localizeRecommendation(
+    locale: AnimationOverlayLocale,
+    recommendation: AnimationRecommendation
+): LocalizedRecommendationCopy {
+    if (locale === 'en') {
+        return {
+            why: recommendation.why,
+            actions: recommendation.actions,
+            rerunProtocol: recommendation.rerunProtocol,
+            regressionChecks: recommendation.regressionChecks,
+        }
+    }
+    const translated = ZH_RECOMMENDATIONS[recommendation.id]
+    return {
+        why: translated?.why ?? recommendation.why,
+        actions: translated?.actions ?? recommendation.actions,
+        rerunProtocol: ZH_RERUN,
+        regressionChecks: recommendation.regressionChecks.map(item => ZH_TECHNICAL_TEXT[item] ?? item),
+    }
+}

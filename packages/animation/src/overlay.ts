@@ -1,0 +1,2278 @@
+import { createAnimationElementPicker } from './element-picker'
+import { type LiveFrameRateResult, measureLiveFrameRate } from './live-frame-rate'
+import { collectorStateText, overlayText, resolveOverlayLocale } from './overlay-i18n'
+import {
+    type AnimationOverlayViewModel,
+    buildAnimationOverlayViewModel,
+    formatOverlayMeasurement,
+    localizeOverlayIssueHistory,
+    type OverlayInteractionView,
+    type OverlayIssueHistoryEntry,
+    updateOverlayIssueHistory,
+} from './overlay-model'
+import { createRendererSurfaceInspector, type RendererSurfaceInspectorSnapshot } from './renderer-surfaces'
+import type {
+    AnimationElementSelectionHandle,
+    AnimationElementSelectionOptions,
+    AnimationElementSelectionSnapshot,
+    AnimationOverlay,
+    AnimationOverlayLocale,
+    AnimationOverlayOptions,
+    AnimationRumFamily,
+    AnimationSnapshot,
+    CollectorState,
+    InteractionHandle,
+    InteractionPerformanceSummary,
+} from './types'
+
+// cspell:ignore describedby Menlo Segoe
+
+declare const process: { env?: { NODE_ENV?: string } } | undefined
+
+let overlaySequence = 0
+const MIN_REFRESH_INTERVAL_MS = 1_000
+const MAX_TIMER_DELAY_MS = 2_147_483_647
+const OVERLAY_STORAGE_KEY = 'condev-animation-overlay-v2'
+const OVERLAY_TABS = ['overview', 'interactions', 'coverage', 'target'] as const
+const RESOURCE_CATEGORY_LABEL_KEYS = {
+    script: 'resourceCategoryScript',
+    image: 'resourceCategoryImage',
+    media: 'resourceCategoryMedia',
+    'fetch-xhr': 'resourceCategoryFetchXhr',
+    'link-css': 'resourceCategoryLinkCss',
+    frame: 'resourceCategoryFrame',
+    other: 'resourceCategoryOther',
+} as const
+type OverlayTab = (typeof OVERLAY_TABS)[number]
+type OverlayLayout = 'compact' | 'wide'
+
+export interface AnimationOverlaySource {
+    readonly state?: CollectorState
+    snapshot(): AnimationSnapshot
+    selectElement?(element: Element, options?: AnimationElementSelectionOptions): AnimationElementSelectionHandle
+}
+
+function developmentBuild(): boolean {
+    return typeof process !== 'undefined' && process.env?.NODE_ENV === 'development'
+}
+
+function noOpOverlay(refreshIntervalMs: number): AnimationOverlay {
+    return {
+        mounted: false,
+        refreshIntervalMs,
+        expanded: false,
+        targetState: 'idle',
+        setExpanded() {},
+        toggle() {},
+        startTargetPicker: () => false,
+        clearTarget() {},
+        refresh() {},
+        destroy() {},
+    }
+}
+
+function appendTextElement(documentValue: Document, parent: Node, tag: string, className: string, text: string): HTMLElement {
+    const element = documentValue.createElement(tag)
+    element.className = className
+    element.textContent = text
+    parent.appendChild(element)
+    return element
+}
+
+function appendList(documentValue: Document, parent: Node, items: readonly string[]): void {
+    const list = documentValue.createElement('ul')
+    list.className = 'detail-list'
+    for (const text of items) appendTextElement(documentValue, list, 'li', '', text)
+    parent.appendChild(list)
+}
+
+function overlayTabText(locale: AnimationOverlayLocale, tab: OverlayTab): string {
+    return overlayText(locale, tab === 'target' ? 'targetView' : tab)
+}
+
+function readCollectorState(source: AnimationOverlaySource): CollectorState | undefined {
+    try {
+        return source.state
+    } catch {
+        return undefined
+    }
+}
+
+function safeNow(timerOwner: Window | undefined): number | null {
+    try {
+        return timerOwner?.performance?.now() ?? null
+    } catch {
+        return null
+    }
+}
+
+/** Mounts an explicitly development-only Shadow DOM panel. It never starts or uploads a capture. */
+export function createAnimationDevOverlay(source: AnimationOverlaySource, options: AnimationOverlayOptions = {}): AnimationOverlay {
+    const requestedRefreshIntervalMs = options.refreshIntervalMs ?? MIN_REFRESH_INTERVAL_MS
+    const refreshIntervalMs = Number.isFinite(requestedRefreshIntervalMs)
+        ? Math.min(MAX_TIMER_DELAY_MS, Math.max(MIN_REFRESH_INTERVAL_MS, Math.floor(requestedRefreshIntervalMs)))
+        : MIN_REFRESH_INTERVAL_MS
+    // Unknown build modes fail closed. Callers whose bundler does not replace
+    // NODE_ENV must pass production: false from an explicit development flag.
+    if (options.production !== false && !developmentBuild()) return noOpOverlay(refreshIntervalMs)
+
+    const documentCandidate = options.document ?? (typeof document === 'undefined' ? undefined : document)
+    const mountTarget = documentCandidate?.body ?? documentCandidate?.documentElement
+    if (!documentCandidate || !mountTarget || typeof documentCandidate.createElement !== 'function') return noOpOverlay(refreshIntervalMs)
+    const documentValue = documentCandidate
+
+    const timerOwner = documentValue.defaultView ?? (typeof window === 'undefined' ? undefined : window)
+    let activeTab: OverlayTab = 'overview'
+    let layout: OverlayLayout = 'wide'
+    let locale: AnimationOverlayLocale = resolveOverlayLocale(options.locale, documentValue, timerOwner?.navigator?.language)
+    try {
+        const stored = timerOwner?.localStorage?.getItem(OVERLAY_STORAGE_KEY)
+        if (stored) {
+            const parsed = JSON.parse(stored) as { tab?: unknown; layout?: unknown; locale?: unknown }
+            if (OVERLAY_TABS.includes(parsed.tab as OverlayTab)) activeTab = parsed.tab as OverlayTab
+            if (parsed.layout === 'compact' || parsed.layout === 'wide') layout = parsed.layout
+            if ((options.locale === undefined || options.locale === 'auto') && (parsed.locale === 'en' || parsed.locale === 'zh-CN')) {
+                locale = parsed.locale
+            }
+        }
+    } catch {
+        // Storage is optional and may be blocked by the host document.
+    }
+
+    const host = documentValue.createElement('div')
+    host.setAttribute('data-condev-animation-overlay', '')
+    host.setAttribute('lang', locale)
+    const shadow = host.attachShadow({ mode: 'open' })
+    const style = documentValue.createElement('style')
+    style.textContent = `
+        :host {
+            all: initial; color-scheme: dark;
+            --bg: #0b0b0e; --raised: #121216; --selected: #1b1b21;
+            --border: #2a2a31; --border-strong: #3a3a44;
+            --text: #f4f4f6; --text-2: #b7b7c0; --text-3: #777783;
+            --accent: #9b87f5; --accent-soft: rgba(155,135,245,.14);
+            --danger: #ff6b6b; --warning: #f5b950; --info: #79a8ff; --success: #71d6a3;
+        }
+        * { box-sizing: border-box; }
+        button { font: inherit; }
+        .dock {
+            position: fixed; z-index: 2147483647;
+            right: max(14px, env(safe-area-inset-right)); bottom: max(14px, env(safe-area-inset-bottom));
+            width: 128px; height: 48px; color: var(--text); pointer-events: none;
+            font: 12px/1.45 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+        .trigger {
+            position: absolute; inset: 0; width: 128px; min-height: 48px; padding: 5px 11px 5px 6px;
+            border: 1px solid var(--border-strong); border-radius: 999px; color: var(--text);
+            background: rgba(11,11,14,.96); box-shadow: 0 12px 34px rgba(0,0,0,.38), inset 0 1px rgba(255,255,255,.05);
+            appearance: none; cursor: pointer; pointer-events: auto; display: grid;
+            grid-template-columns: 36px 1fr auto; align-items: center; gap: 7px; text-align: left;
+            transition: transform 120ms ease-out, border-color 120ms ease-out, background-color 120ms ease-out;
+        }
+        .trigger-brand {
+            width: 36px; height: 36px; border-radius: 999px; display: grid; place-items: center;
+            color: #0b0913; background: linear-gradient(145deg,#aa98ff,#7058d6);
+            box-shadow: inset 0 1px rgba(255,255,255,.4); font: 800 20px/1 ui-sans-serif, system-ui, sans-serif;
+        }
+        .trigger-copy { min-width: 0; display: grid; }
+        .trigger-copy strong { font-size: 11px; font-weight: 680; line-height: 1.25; letter-spacing: -.01em; }
+        .trigger-copy small { color: var(--text-3); font-size: 9px; line-height: 1.25; }
+        .trigger-state { width: 7px; height: 7px; border-radius: 999px; background: var(--text-3); box-shadow: 0 0 0 3px rgba(119,119,131,.12); }
+        .trigger[data-collector-state='running'] .trigger-state { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+        .trigger[data-collector-state='idle'] .trigger-state { background: var(--warning); }
+        .trigger-badge {
+            position: absolute; top: -5px; right: -4px; min-width: 19px; height: 19px; padding: 0 5px;
+            border: 2px solid var(--bg); border-radius: 999px; display: grid; place-items: center;
+            color: #170d00; background: var(--warning); font: 750 9px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-variant-numeric: tabular-nums;
+        }
+        .trigger-badge[data-visible='false'] { display: none; }
+        .trigger:focus-visible, .panel:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+        .trigger:active, .icon-button:active, .tab:active, .issue-button:active, .interaction-button:active, .coverage-button:active { transform: scale(.97); }
+        .panel {
+            position: absolute; right: 0; bottom: 58px; width: min(430px,calc(100vw - 28px));
+            height: min(640px,calc(100vh - 90px)); min-height: min(500px,calc(100vh - 90px)); overflow: hidden;
+            border: 1px solid var(--border); border-radius: 14px; color: var(--text); background: rgba(11,11,14,.985);
+            box-shadow: 0 28px 80px rgba(0,0,0,.48), inset 0 1px rgba(255,255,255,.045);
+            pointer-events: auto; transform-origin: bottom right; opacity: 1; visibility: visible; transform: translateY(0) scale(1);
+            transition: opacity 180ms cubic-bezier(.2,.8,.2,1), transform 180ms cubic-bezier(.2,.8,.2,1), visibility 0s linear 0s;
+            display: grid; grid-template-rows: auto auto auto auto minmax(0,1fr) auto; overscroll-behavior: contain;
+        }
+        .dock[data-layout='wide'] .panel { width: min(760px,calc(100vw - 28px)); }
+        .dock[data-expanded='false'] .panel {
+            opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(7px) scale(.975);
+            transition: opacity 140ms cubic-bezier(.4,0,1,1), transform 140ms cubic-bezier(.4,0,1,1), visibility 0s linear 140ms;
+        }
+        .panel-header { min-height: 58px; padding: 10px 10px 9px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+        .product { min-width: 0; display: flex; align-items: center; gap: 9px; }
+        .product-mark { width: 28px; height: 28px; flex: 0 0 auto; border-radius: 8px; display: grid; place-items: center; color: var(--accent); background: var(--accent-soft); border: 1px solid rgba(155,135,245,.24); font: 750 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .product-copy { min-width: 0; }
+        .product-copy h2 { margin: 0; font-size: 13px; line-height: 1.25; font-weight: 680; letter-spacing: -.015em; }
+        .product-copy p { margin: 2px 0 0; color: var(--text-3); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .header-actions { display: flex; gap: 4px; }
+        .icon-button { width: 44px; height: 44px; padding: 0; border: 0; border-radius: 9px; color: var(--text-2); background: transparent; cursor: pointer; display: grid; place-items: center; font-size: 18px; transition: color 120ms ease-out, background-color 120ms ease-out, transform 120ms ease-out; }
+        .picker-button[data-picker-state='picking'] { color: var(--accent); background: var(--accent-soft); }
+        .picker-button:disabled { color: var(--text-3); cursor: not-allowed; opacity: .45; }
+        .locale-toggle { font-size: 10px; font-weight: 720; letter-spacing: .02em; }
+        .diagnosis { padding: 12px 14px 11px; border-bottom: 1px solid var(--border); display: grid; gap: 4px; }
+        .diagnosis-row { display: flex; align-items: center; gap: 7px; }
+        .diagnosis-dot { width: 7px; height: 7px; border-radius: 999px; background: var(--info); }
+        .diagnosis[data-state='attention'] .diagnosis-dot { background: var(--warning); }
+        .diagnosis[data-state='steady'] .diagnosis-dot { background: var(--success); }
+        .diagnosis h3 { margin: 0; font-size: 12px; line-height: 1.35; font-weight: 680; }
+        .diagnosis-summary { margin: 0; color: var(--text-2); font-size: 10.5px; line-height: 1.45; }
+        .capture-meta { color: var(--text-3); font: 9.5px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric: tabular-nums; }
+        .metric-grid { padding: 10px 12px; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
+        .dock[data-layout='wide'] .metric-grid { grid-template-columns: repeat(4,minmax(0,1fr)); }
+        .metric { min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--raised); }
+        .metric-label { color: var(--text-3); font-size: 9.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .metric-value { margin-top: 2px; font: 680 15px/1.25 ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric: tabular-nums; }
+        .metric[data-tone='warning'] .metric-value { color: var(--warning); }
+        .metric[data-tone='unknown'] .metric-value { color: var(--text-3); }
+        .metric-context { margin-top: 2px; color: var(--text-3); font-size: 8.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .tabs { height: 49px; padding: 2px 8px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 3px; }
+        .tab { min-height: 44px; padding: 0 10px; border: 0; border-radius: 8px; color: var(--text-3); background: transparent; cursor: pointer; font-size: 10.5px; font-weight: 630; transition: color 120ms ease-out, background-color 120ms ease-out, transform 120ms ease-out; }
+        .tab[aria-selected='true'] { color: var(--text); background: var(--selected); }
+        .content { min-height: 0; overflow: hidden; }
+        .tab-panel { height: 100%; min-height: 0; }
+        .tab-panel[hidden] { display: none; }
+        .overview-panel { display: grid; grid-template-rows: auto minmax(0,1fr); }
+        .overview-evidence { padding: 8px 11px; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
+        .evidence-card { min-width: 0; padding: 8px 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--raised); }
+        .evidence-card-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+        .evidence-card-header strong { color: var(--text-2); font-size: 9.5px; font-weight: 690; }
+        .evidence-card-header span { color: var(--text-3); font: 8.5px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .evidence-card[data-status='sufficient'] .evidence-card-header span { color: var(--success); }
+        .evidence-card[data-status='insufficient'] .evidence-card-header span { color: var(--warning); }
+        .evidence-durations, .vital-grid { margin-top: 5px; display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 5px; }
+        .evidence-duration span, .vital-item span { display: block; color: var(--text-3); font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .evidence-duration strong, .vital-item strong { display: block; margin-top: 1px; color: var(--text); font: 620 10px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric: tabular-nums; }
+        .vital-item[data-observed='false'] strong { color: var(--text-3); }
+        .evidence-reasons { margin: 5px 0 0; color: var(--text-3); font-size: 8.5px; line-height: 1.4; }
+        .workspace { height: 100%; min-height: 0; display: grid; grid-template-rows: minmax(140px,.8fr) minmax(190px,1.2fr); }
+        .dock[data-layout='wide'] .workspace { grid-template-columns: minmax(250px,.78fr) minmax(360px,1.22fr); grid-template-rows: minmax(0,1fr); }
+        .list-pane, .detail-pane { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
+        .list-pane, .detail-pane, .coverage-panel { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+        .list-pane::-webkit-scrollbar, .detail-pane::-webkit-scrollbar, .coverage-panel::-webkit-scrollbar { width: 6px; height: 6px; }
+        .list-pane::-webkit-scrollbar-thumb, .detail-pane::-webkit-scrollbar-thumb, .coverage-panel::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--border-strong); }
+        .list-pane { padding: 11px; border-bottom: 1px solid var(--border); }
+        .dock[data-layout='wide'] .list-pane { border-right: 1px solid var(--border); border-bottom: 0; }
+        .detail-pane { padding: 14px; }
+        .section-heading { margin: 0 0 8px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .section-heading h3, .detail-pane h3 { margin: 0; font-size: 10px; font-weight: 720; letter-spacing: .07em; text-transform: uppercase; color: var(--text-2); }
+        .count { color: var(--text-3); font: 9px/1 ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .issue-list, .interaction-list, .coverage-grid { display: grid; gap: 5px; }
+        .issue-button, .interaction-button, .coverage-button { width: 100%; min-height: 54px; padding: 8px 9px; border: 1px solid transparent; border-radius: 9px; color: var(--text-2); background: transparent; text-align: left; cursor: pointer; display: grid; gap: 4px; transition: border-color 120ms ease-out, background-color 120ms ease-out, transform 120ms ease-out; }
+        .issue-button[data-selected='true'], .interaction-button[data-selected='true'], .coverage-button[data-selected='true'] { border-color: var(--border-strong); background: var(--selected); }
+        .issue-button[data-active='false'] { opacity: .64; }
+        .issue-top, .interaction-top { min-width: 0; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .issue-title, .interaction-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: 10.5px; font-weight: 640; }
+        .title-with-dot { min-width: 0; display: flex; align-items: center; gap: 7px; }
+        .severity { width: 7px; height: 7px; flex: 0 0 auto; border-radius: 999px; background: var(--info); }
+        .issue-button[data-severity='warning'] .severity, .interaction-button[data-status='warning'] .severity { background: var(--warning); }
+        .issue-button[data-severity='critical'] .severity { background: var(--danger); }
+        .issue-meta, .interaction-meta { display: flex; align-items: center; justify-content: space-between; gap: 7px; color: var(--text-3); font: 9px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric: tabular-nums; }
+        .issue-meta span, .interaction-meta span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .empty { min-height: 110px; padding: 18px 12px; border: 1px dashed var(--border); border-radius: 9px; display: grid; place-content: center; gap: 5px; text-align: center; }
+        .empty strong { color: var(--text-2); font-size: 11px; }
+        .empty span { max-width: 280px; color: var(--text-3); font-size: 10px; line-height: 1.45; }
+        .detail-kicker { color: var(--text-3); font: 9px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace; text-transform: uppercase; letter-spacing: .06em; }
+        .detail-title { margin: 5px 0 2px; color: var(--text); font-size: 16px; line-height: 1.3; font-weight: 690; letter-spacing: -.02em; }
+        .detail-meta { color: var(--text-3); font-size: 9.5px; }
+        .comparison { margin: 12px 0; display: grid; grid-template-columns: 1fr auto 1fr; align-items: stretch; gap: 7px; }
+        .comparison-card { padding: 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--raised); }
+        .comparison-card span { display: block; color: var(--text-3); font-size: 9px; }
+        .comparison-card strong { display: block; margin-top: 2px; font: 680 13px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric: tabular-nums; }
+        .comparison-arrow { align-self: center; color: var(--text-3); }
+        .detail-section { margin-top: 14px; }
+        .detail-section h4 { margin: 0 0 6px; color: var(--text-2); font-size: 10px; font-weight: 690; }
+        .detail-section p { margin: 0; color: var(--text-2); font-size: 10.5px; line-height: 1.52; }
+        .detail-list { margin: 0; padding-left: 17px; color: var(--text-2); font-size: 10.5px; line-height: 1.5; }
+        .detail-list li + li { margin-top: 5px; }
+        .verification { padding: 9px 10px; border-left: 2px solid var(--accent); border-radius: 0 7px 7px 0; background: var(--accent-soft); }
+        .interaction-facts, .resource-facts { margin: 12px 0; display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
+        .fact { padding: 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); }
+        .fact span { display: block; color: var(--text-3); font-size: 9px; }
+        .fact strong { display: block; margin-top: 2px; color: var(--text); font: 620 11px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric: tabular-nums; }
+        .resource-category-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
+        .resource-category { min-width: 0; padding: 8px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--raised); }
+        .resource-category strong { display: block; color: var(--text-2); font-size: 9.5px; font-weight: 650; }
+        .resource-category span { display: block; margin-top: 2px; color: var(--text-3); font: 8.5px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+        .coverage-note { margin: 0; color: var(--text-3); font-size: 10px; line-height: 1.5; }
+        .coverage-button { min-width: 0; min-height: 60px; grid-template-columns: 1fr auto; }
+        .coverage-button strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); font-size: 10.5px; font-weight: 620; }
+        .coverage-button small { color: var(--text-3); font-size: 9px; }
+        .coverage-status { padding: 2px 6px; border: 1px solid var(--border-strong); border-radius: 999px; color: var(--text-3); font: 8.5px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .coverage-button[data-status='measured'] .coverage-status { color: var(--success); border-color: rgba(113,214,163,.3); }
+        .coverage-button[data-status='partial'] .coverage-status { color: var(--warning); border-color: rgba(245,185,80,.3); }
+        .target-card { padding: 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--raised); display: grid; gap: 5px; }
+        .target-card strong { color: var(--text); font-size: 11px; }
+        .target-card span { color: var(--text-3); font: 9px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .surface-panel { margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid var(--border); display: grid; gap: 7px; }
+        .surface-heading { min-height: 28px; display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+        .surface-heading h3 { margin: 0; color: var(--text-2); font-size: 10px; font-weight: 630; }
+        .surface-heading span { color: var(--text-3); font: 9px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .surface-actions { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
+        .surface-toggle, .surface-refresh { min-height: 38px; padding: 0 9px; border: 1px solid var(--border-strong); border-radius: 8px;
+            color: var(--text-2); background: transparent; cursor: pointer; font-size: 9.5px; }
+        .surface-toggle[data-enabled='true'] { color: var(--accent); border-color: rgba(155,135,245,.45); background: var(--accent-soft); }
+        .surface-refresh:disabled { color: var(--text-3); cursor: not-allowed; opacity: .45; }
+        .surface-help { margin: 0; color: var(--text-3); font-size: 9px; line-height: 1.45; }
+        .surface-list { display: grid; gap: 5px; }
+        .surface-button { width: 100%; min-height: 48px; padding: 7px 8px; border: 1px solid transparent; border-radius: 8px;
+            color: var(--text-2); background: transparent; text-align: left; cursor: pointer; display: grid; grid-template-columns: 1fr auto;
+            align-items: center; gap: 3px 8px; }
+        .surface-button[data-selected='true'] { border-color: rgba(155,135,245,.55); background: var(--accent-soft); }
+        .surface-button strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-2); font-size: 10px; }
+        .surface-button small { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-3); font: 8.5px/1.35 ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .surface-evidence { grid-row: 1 / span 2; grid-column: 2; padding: 2px 5px; border: 1px solid var(--border-strong); border-radius: 999px;
+            color: var(--text-3); font: 8px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .surface-button[data-evidence-status='measured'] .surface-evidence { color: var(--success); border-color: rgba(113,214,163,.3); }
+        .target-actions { margin-top: 8px; display: flex; flex-wrap: wrap; gap: 6px; }
+        .text-button { min-height: 44px; padding: 0 10px; border: 1px solid var(--border-strong); border-radius: 8px; color: var(--text-2); background: transparent; cursor: pointer; font-size: 10px; }
+        .text-button:disabled { color: var(--text-3); cursor: not-allowed; opacity: .45; }
+        .target-recording-copy { line-height: 1.5; }
+        .target-properties { display: flex; flex-wrap: wrap; gap: 5px; }
+        .target-properties span { padding: 3px 6px; border: 1px solid var(--border); border-radius: 999px; color: var(--text-2); background: var(--raised); font: 9px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .target-boundary { margin-top: 12px; padding: 9px 10px; border-left: 2px solid var(--warning); background: rgba(245,185,80,.08); color: var(--text-2); font-size: 10px; line-height: 1.5; }
+        .panel-footer { min-height: 34px; padding: 7px 12px; border-top: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--text-3); background: rgba(18,18,22,.66); font: 8.5px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .local-label { color: var(--accent); font-weight: 720; letter-spacing: .08em; }
+        @media (hover: hover) and (pointer: fine) {
+            .trigger:hover { border-color: #575360; background: #121216; }
+            .icon-button:hover, .tab:hover { color: var(--text); background: var(--selected); }
+            .issue-button:hover, .interaction-button:hover, .coverage-button:hover, .surface-button:hover { background: var(--raised); }
+        }
+        @media (max-width: 780px) {
+            .layout-toggle { display: none; }
+            .dock[data-layout='wide'] .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(140px,.8fr) minmax(190px,1.2fr); }
+            .dock[data-layout='wide'] .list-pane { border-right: 0; border-bottom: 1px solid var(--border); }
+            .dock[data-layout='wide'] .metric-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+        }
+        @media (max-width: 540px) { .overview-evidence { grid-template-columns: 1fr; } }
+        @media (max-height: 590px) { .panel { min-height: 0; } .diagnosis-summary, .metric-context { display: none; } }
+        @media (prefers-reduced-motion: reduce) {
+            .trigger, .panel, .dock[data-expanded='false'] .panel, .icon-button, .tab, .issue-button, .interaction-button, .coverage-button { transition: none; }
+        }
+    `
+
+    const dock = documentValue.createElement('div')
+    dock.className = 'dock'
+    const panel = documentValue.createElement('section')
+    const panelId = `condev-animation-overlay-panel-${++overlaySequence}`
+    panel.className = 'panel'
+    panel.setAttribute('id', panelId)
+    panel.setAttribute('role', 'region')
+    panel.setAttribute('aria-label', overlayText(locale, 'panelAria'))
+    panel.setAttribute('tabindex', '0')
+
+    const trigger = documentValue.createElement('button')
+    trigger.className = 'trigger'
+    trigger.setAttribute('type', 'button')
+    trigger.setAttribute('aria-controls', panelId)
+    const triggerBrand = appendTextElement(documentValue, trigger, 'span', 'trigger-brand', '∿')
+    triggerBrand.setAttribute('aria-hidden', 'true')
+    const triggerCopy = documentValue.createElement('span')
+    triggerCopy.className = 'trigger-copy'
+    const triggerLabel = appendTextElement(documentValue, triggerCopy, 'strong', '', overlayText(locale, 'motion'))
+    const triggerStateLabel = appendTextElement(
+        documentValue,
+        triggerCopy,
+        'small',
+        '',
+        collectorStateText(locale, readCollectorState(source))
+    )
+    const triggerState = documentValue.createElement('span')
+    triggerState.className = 'trigger-state'
+    triggerState.setAttribute('aria-hidden', 'true')
+    const triggerBadge = documentValue.createElement('span')
+    triggerBadge.className = 'trigger-badge'
+    triggerBadge.textContent = '0'
+    triggerBadge.setAttribute('aria-label', overlayText(locale, 'findingsMany', { count: 0 }))
+    triggerBadge.setAttribute('data-visible', 'false')
+    trigger.append(triggerCopy, triggerState, triggerBadge)
+
+    const panelHeader = documentValue.createElement('header')
+    panelHeader.className = 'panel-header'
+    const product = documentValue.createElement('div')
+    product.className = 'product'
+    const productMark = appendTextElement(documentValue, product, 'span', 'product-mark', 'CM')
+    productMark.setAttribute('aria-hidden', 'true')
+    const productCopy = documentValue.createElement('div')
+    productCopy.className = 'product-copy'
+    const productTitle = appendTextElement(documentValue, productCopy, 'h2', '', overlayText(locale, 'motionConsole'))
+    const productState = appendTextElement(documentValue, productCopy, 'p', '', collectorStateText(locale, readCollectorState(source)))
+    product.appendChild(productCopy)
+    const headerActions = documentValue.createElement('div')
+    headerActions.className = 'header-actions'
+    const pickerButton = appendTextElement(documentValue, headerActions, 'button', 'icon-button picker-button', '⌖')
+    pickerButton.setAttribute('type', 'button')
+    pickerButton.setAttribute('data-animation-target-picker', '')
+    pickerButton.setAttribute('data-picker-state', 'idle')
+    pickerButton.setAttribute('aria-pressed', 'false')
+    ;(pickerButton as HTMLButtonElement).disabled = typeof source.selectElement !== 'function'
+    const localeButton = appendTextElement(
+        documentValue,
+        headerActions,
+        'button',
+        'icon-button locale-toggle',
+        locale === 'en' ? '中' : 'EN'
+    )
+    localeButton.setAttribute('type', 'button')
+    localeButton.setAttribute('data-overlay-locale-toggle', '')
+    const layoutButton = appendTextElement(documentValue, headerActions, 'button', 'icon-button layout-toggle', '⤢')
+    layoutButton.setAttribute('type', 'button')
+    layoutButton.setAttribute('title', overlayText(locale, 'toggleWorkbench'))
+    const closeButton = appendTextElement(documentValue, headerActions, 'button', 'icon-button', '×')
+    closeButton.setAttribute('type', 'button')
+    closeButton.setAttribute('aria-label', overlayText(locale, 'closeMonitor'))
+    closeButton.setAttribute('title', overlayText(locale, 'close'))
+    panelHeader.append(product, headerActions)
+
+    const diagnosis = documentValue.createElement('section')
+    diagnosis.className = 'diagnosis'
+    const diagnosisRow = documentValue.createElement('div')
+    diagnosisRow.className = 'diagnosis-row'
+    const diagnosisDot = documentValue.createElement('span')
+    diagnosisDot.className = 'diagnosis-dot'
+    diagnosisDot.setAttribute('aria-hidden', 'true')
+    const diagnosisHeadline = appendTextElement(documentValue, diagnosisRow, 'h3', '', overlayText(locale, 'waitingSnapshot'))
+    diagnosisRow.appendChild(diagnosisDot)
+    // Keep the visual indicator before the text without relying on innerHTML.
+    diagnosisRow.replaceChildren(diagnosisDot, diagnosisHeadline)
+    const diagnosisSummary = appendTextElement(documentValue, diagnosis, 'p', 'diagnosis-summary', overlayText(locale, 'openForEvidence'))
+    const captureMeta = appendTextElement(
+        documentValue,
+        diagnosis,
+        'div',
+        'capture-meta',
+        collectorStateText(locale, readCollectorState(source))
+    )
+    diagnosis.replaceChildren(diagnosisRow, diagnosisSummary, captureMeta)
+
+    const metricGrid = documentValue.createElement('section')
+    metricGrid.className = 'metric-grid'
+    metricGrid.setAttribute('aria-label', overlayText(locale, 'primaryMeasurementsAria'))
+
+    const tabs = documentValue.createElement('div')
+    tabs.className = 'tabs'
+    tabs.setAttribute('role', 'tablist')
+    tabs.setAttribute('aria-label', overlayText(locale, 'viewsAria'))
+    const tabButtons = new Map<OverlayTab, HTMLButtonElement>()
+
+    const content = documentValue.createElement('div')
+    content.className = 'content'
+    const tabPanels = new Map<OverlayTab, HTMLElement>()
+    const overviewPanel = documentValue.createElement('section')
+    overviewPanel.className = 'tab-panel overview-panel'
+    const overviewPanelId = `${panelId}-overview`
+    overviewPanel.setAttribute('id', overviewPanelId)
+    overviewPanel.setAttribute('role', 'tabpanel')
+    const overviewWorkspace = documentValue.createElement('div')
+    overviewWorkspace.className = 'workspace'
+    const overviewEvidence = documentValue.createElement('section')
+    overviewEvidence.className = 'overview-evidence'
+    const issuePane = documentValue.createElement('div')
+    issuePane.className = 'list-pane'
+    const issueHeading = documentValue.createElement('div')
+    issueHeading.className = 'section-heading'
+    const issueHeadingLabel = appendTextElement(documentValue, issueHeading, 'h3', '', overlayText(locale, 'issueHistory'))
+    const issueCount = appendTextElement(
+        documentValue,
+        issueHeading,
+        'span',
+        'count',
+        overlayText(locale, 'currentRetained', { current: 0, retained: 0 })
+    )
+    const issueList = documentValue.createElement('div')
+    issueList.className = 'issue-list'
+    issuePane.append(issueHeading, issueList)
+    const issueDetail = documentValue.createElement('article')
+    issueDetail.className = 'detail-pane'
+    overviewWorkspace.append(issuePane, issueDetail)
+    overviewPanel.append(overviewEvidence, overviewWorkspace)
+
+    const interactionsPanel = documentValue.createElement('section')
+    interactionsPanel.className = 'tab-panel'
+    const interactionsPanelId = `${panelId}-interactions`
+    interactionsPanel.setAttribute('id', interactionsPanelId)
+    interactionsPanel.setAttribute('role', 'tabpanel')
+    const interactionWorkspace = documentValue.createElement('div')
+    interactionWorkspace.className = 'workspace'
+    const interactionPane = documentValue.createElement('div')
+    interactionPane.className = 'list-pane'
+    const interactionHeading = documentValue.createElement('div')
+    interactionHeading.className = 'section-heading'
+    const interactionHeadingLabel = appendTextElement(
+        documentValue,
+        interactionHeading,
+        'h3',
+        '',
+        overlayText(locale, 'recentInteractions')
+    )
+    const interactionCount = appendTextElement(
+        documentValue,
+        interactionHeading,
+        'span',
+        'count',
+        overlayText(locale, 'retained', { count: 0 })
+    )
+    const interactionList = documentValue.createElement('div')
+    interactionList.className = 'interaction-list'
+    interactionPane.append(interactionHeading, interactionList)
+    const interactionDetail = documentValue.createElement('article')
+    interactionDetail.className = 'detail-pane'
+    interactionWorkspace.append(interactionPane, interactionDetail)
+    interactionsPanel.appendChild(interactionWorkspace)
+
+    const coveragePanel = documentValue.createElement('section')
+    coveragePanel.className = 'tab-panel coverage-panel'
+    const coveragePanelId = `${panelId}-coverage`
+    coveragePanel.setAttribute('id', coveragePanelId)
+    coveragePanel.setAttribute('role', 'tabpanel')
+    const coverageWorkspace = documentValue.createElement('div')
+    coverageWorkspace.className = 'workspace'
+    const coveragePane = documentValue.createElement('div')
+    coveragePane.className = 'list-pane'
+    const coverageHeading = documentValue.createElement('div')
+    coverageHeading.className = 'section-heading'
+    const coverageHeadingLabel = appendTextElement(documentValue, coverageHeading, 'h3', '', overlayText(locale, 'metricCoverage'))
+    const coverageCount = appendTextElement(
+        documentValue,
+        coverageHeading,
+        'span',
+        'count',
+        overlayText(locale, 'coverageCount', { count: 0 })
+    )
+    const coverageGrid = documentValue.createElement('div')
+    coverageGrid.className = 'coverage-grid'
+    coveragePane.append(coverageHeading, coverageGrid)
+    const coverageDetail = documentValue.createElement('article')
+    coverageDetail.className = 'detail-pane'
+    coverageWorkspace.append(coveragePane, coverageDetail)
+    coveragePanel.appendChild(coverageWorkspace)
+
+    const targetPanel = documentValue.createElement('section')
+    targetPanel.className = 'tab-panel'
+    const targetPanelId = `${panelId}-target`
+    targetPanel.setAttribute('id', targetPanelId)
+    targetPanel.setAttribute('role', 'tabpanel')
+    const targetWorkspace = documentValue.createElement('div')
+    targetWorkspace.className = 'workspace'
+    const targetPane = documentValue.createElement('div')
+    targetPane.className = 'list-pane'
+    const rendererSurfacePanel = documentValue.createElement('section')
+    rendererSurfacePanel.className = 'surface-panel'
+    rendererSurfacePanel.setAttribute('data-renderer-surface-panel', '')
+    const rendererSurfaceHeading = documentValue.createElement('div')
+    rendererSurfaceHeading.className = 'surface-heading'
+    const rendererSurfaceHeadingLabel = appendTextElement(
+        documentValue,
+        rendererSurfaceHeading,
+        'h3',
+        '',
+        overlayText(locale, 'rendererSurfaces')
+    )
+    const rendererSurfaceCount = appendTextElement(
+        documentValue,
+        rendererSurfaceHeading,
+        'span',
+        '',
+        overlayText(locale, 'rendererSurfaceCount', { count: 0 })
+    )
+    const rendererSurfaceActions = documentValue.createElement('div')
+    rendererSurfaceActions.className = 'surface-actions'
+    const rendererSurfaceToggle = appendTextElement(
+        documentValue,
+        rendererSurfaceActions,
+        'button',
+        'surface-toggle',
+        overlayText(locale, 'showRendererSurfaces')
+    )
+    rendererSurfaceToggle.setAttribute('type', 'button')
+    rendererSurfaceToggle.setAttribute('data-renderer-surface-toggle', '')
+    rendererSurfaceToggle.setAttribute('data-enabled', 'false')
+    rendererSurfaceToggle.setAttribute('aria-pressed', 'false')
+    const rendererSurfaceRefresh = appendTextElement(
+        documentValue,
+        rendererSurfaceActions,
+        'button',
+        'surface-refresh',
+        overlayText(locale, 'refreshRendererSurfaces')
+    )
+    rendererSurfaceRefresh.setAttribute('type', 'button')
+    rendererSurfaceRefresh.setAttribute('data-renderer-surface-refresh', '')
+    ;(rendererSurfaceRefresh as HTMLButtonElement).disabled = true
+    const rendererSurfaceHelp = appendTextElement(
+        documentValue,
+        rendererSurfacePanel,
+        'p',
+        'surface-help',
+        overlayText(locale, 'rendererSurfaceHelp')
+    )
+    const rendererSurfaceList = documentValue.createElement('div')
+    rendererSurfaceList.className = 'surface-list'
+    rendererSurfaceList.setAttribute('data-renderer-surface-list', '')
+    rendererSurfacePanel.replaceChildren(rendererSurfaceHeading, rendererSurfaceActions, rendererSurfaceHelp, rendererSurfaceList)
+    const targetHeading = documentValue.createElement('div')
+    targetHeading.className = 'section-heading'
+    const targetHeadingLabel = appendTextElement(documentValue, targetHeading, 'h3', '', overlayText(locale, 'selectedTarget'))
+    const targetStateLabel = appendTextElement(documentValue, targetHeading, 'span', 'count', overlayText(locale, 'ready'))
+    targetStateLabel.setAttribute('aria-live', 'polite')
+    targetStateLabel.setAttribute('aria-atomic', 'true')
+    const targetList = documentValue.createElement('div')
+    targetList.className = 'target-list'
+    targetPane.append(rendererSurfacePanel, targetHeading, targetList)
+    const targetDetail = documentValue.createElement('article')
+    targetDetail.className = 'detail-pane'
+    targetWorkspace.append(targetPane, targetDetail)
+    targetPanel.appendChild(targetWorkspace)
+
+    for (const [tab, tabPanel, tabPanelId] of [
+        ['overview', overviewPanel, overviewPanelId],
+        ['interactions', interactionsPanel, interactionsPanelId],
+        ['coverage', coveragePanel, coveragePanelId],
+        ['target', targetPanel, targetPanelId],
+    ] as const) {
+        const button = documentValue.createElement('button')
+        button.className = 'tab'
+        button.setAttribute('type', 'button')
+        button.setAttribute('role', 'tab')
+        button.setAttribute('data-overlay-tab', tab)
+        button.setAttribute('aria-controls', tabPanelId)
+        button.textContent = overlayTabText(locale, tab)
+        tabs.appendChild(button)
+        tabButtons.set(tab, button)
+        tabPanels.set(tab, tabPanel)
+        content.appendChild(tabPanel)
+    }
+
+    const footer = documentValue.createElement('footer')
+    footer.className = 'panel-footer'
+    const footerLocalLabel = appendTextElement(documentValue, footer, 'span', 'local-label', overlayText(locale, 'localView'))
+    const footerTiming = appendTextElement(
+        documentValue,
+        footer,
+        'span',
+        '',
+        overlayText(locale, 'refreshAtLeast', { seconds: refreshIntervalMs / 1_000 })
+    )
+
+    panel.append(panelHeader, diagnosis, metricGrid, tabs, content, footer)
+    dock.append(trigger, panel)
+    shadow.append(style, dock)
+    mountTarget.appendChild(host)
+
+    let destroyed = false
+    let expanded = options.initiallyOpen === true
+    let timerId: number | undefined
+    let issueHistory: readonly OverlayIssueHistoryEntry[] = []
+    let currentViewModel: AnimationOverlayViewModel | undefined
+    let selectedIssueId: string | undefined
+    let selectedInteractionId: string | undefined
+    let selectedCoverageFamily: AnimationRumFamily | undefined
+    let previousFrameRateSnapshot: AnimationSnapshot | undefined
+    let lastSnapshot: AnimationSnapshot | undefined
+    let lastLiveFrameRate: LiveFrameRateResult = { status: 'collecting' }
+    let lastPanelSelfTime = overlayText(locale, 'unavailable')
+    let unavailableRendered = false
+    let targetSelection: AnimationElementSelectionHandle | null = null
+    let targetSnapshot: AnimationElementSelectionSnapshot | null = null
+    let targetInteraction: InteractionHandle | null = null
+    let restorePanelAfterPick = false
+    const rendererSurfaceInspector = createRendererSurfaceInspector({ document: documentValue })
+    rendererSurfaceInspector.setEnabled(true)
+    let rendererSurfaceSnapshot: RendererSurfaceInspectorSnapshot = rendererSurfaceInspector.snapshot()
+
+    const persistViewPreference = (): void => {
+        try {
+            timerOwner?.localStorage?.setItem(OVERLAY_STORAGE_KEY, JSON.stringify({ tab: activeTab, layout, locale }))
+        } catch {
+            // Storage can be unavailable in privacy modes or sandboxed documents.
+        }
+    }
+
+    const syncCollectorState = (state = readCollectorState(source)): void => {
+        const label = collectorStateText(locale, state)
+        trigger.setAttribute('data-collector-state', state ?? 'idle')
+        triggerStateLabel.textContent = label
+        productState.textContent = overlayText(locale, 'localOnlyDiagnostics', { state: label })
+    }
+
+    const syncLayout = (): void => {
+        dock.setAttribute('data-layout', layout)
+        layoutButton.setAttribute('aria-pressed', String(layout === 'wide'))
+        layoutButton.setAttribute('aria-label', overlayText(locale, layout === 'wide' ? 'useCompact' : 'openWorkbench'))
+        layoutButton.setAttribute('title', overlayText(locale, 'toggleWorkbench'))
+        layoutButton.textContent = layout === 'wide' ? '⤡' : '⤢'
+    }
+
+    const setActiveTab = (nextTab: OverlayTab, moveFocus = false): void => {
+        activeTab = nextTab
+        for (const tab of OVERLAY_TABS) {
+            const active = tab === activeTab
+            const button = tabButtons.get(tab)
+            const tabPanel = tabPanels.get(tab)
+            button?.setAttribute('aria-selected', String(active))
+            button?.setAttribute('tabindex', active ? '0' : '-1')
+            if (tabPanel) {
+                tabPanel.hidden = !active
+                tabPanel.setAttribute('aria-hidden', String(!active))
+            }
+        }
+        if (moveFocus) tabButtons.get(activeTab)?.focus()
+        persistViewPreference()
+    }
+
+    const renderOverviewEvidence = (viewModel?: AnimationOverlayViewModel): void => {
+        overviewEvidence.replaceChildren()
+        overviewEvidence.setAttribute('aria-label', overlayText(locale, 'captureEvidence'))
+
+        const captureCard = documentValue.createElement('article')
+        captureCard.className = 'evidence-card'
+        captureCard.setAttribute('data-overlay-capture-sufficiency', '')
+        captureCard.setAttribute('data-status', viewModel?.captureEvidence.status ?? 'unknown')
+        const captureHeader = documentValue.createElement('div')
+        captureHeader.className = 'evidence-card-header'
+        appendTextElement(documentValue, captureHeader, 'strong', '', overlayText(locale, 'captureEvidence'))
+        appendTextElement(
+            documentValue,
+            captureHeader,
+            'span',
+            '',
+            viewModel?.captureEvidence.statusLabel ?? overlayText(locale, 'unknown')
+        )
+        captureCard.appendChild(captureHeader)
+        const durationGrid = documentValue.createElement('div')
+        durationGrid.className = 'evidence-durations'
+        const durations: ReadonlyArray<readonly [string, string]> = viewModel
+            ? [
+                  [overlayText(locale, 'captureForeground'), viewModel.captureEvidence.foregroundDuration],
+                  [overlayText(locale, 'captureBackground'), viewModel.captureEvidence.backgroundDuration],
+                  ...(viewModel.captureEvidence.otherDuration === null
+                      ? []
+                      : ([[overlayText(locale, 'captureOther'), viewModel.captureEvidence.otherDuration]] as const)),
+              ]
+            : [
+                  [overlayText(locale, 'captureForeground'), overlayText(locale, 'unknown')],
+                  [overlayText(locale, 'captureBackground'), overlayText(locale, 'unknown')],
+              ]
+        for (const [label, value] of durations) {
+            const duration = documentValue.createElement('div')
+            duration.className = 'evidence-duration'
+            appendTextElement(documentValue, duration, 'span', '', label)
+            appendTextElement(documentValue, duration, 'strong', '', value)
+            durationGrid.appendChild(duration)
+        }
+        captureCard.appendChild(durationGrid)
+        appendTextElement(
+            documentValue,
+            captureCard,
+            'p',
+            'evidence-reasons',
+            viewModel
+                ? viewModel.captureEvidence.reasons.length > 0
+                    ? viewModel.captureEvidence.reasons.join(' · ')
+                    : overlayText(locale, 'captureNoBlockingReason')
+                : overlayText(locale, 'notObserved')
+        )
+
+        const vitalsCard = documentValue.createElement('article')
+        vitalsCard.className = 'evidence-card'
+        vitalsCard.setAttribute('data-overlay-web-vitals', '')
+        const vitalsHeader = documentValue.createElement('div')
+        vitalsHeader.className = 'evidence-card-header'
+        appendTextElement(documentValue, vitalsHeader, 'strong', '', overlayText(locale, 'latestWebVitals'))
+        appendTextElement(
+            documentValue,
+            vitalsHeader,
+            'span',
+            '',
+            viewModel?.webVitalsScopeLabel ?? overlayText(locale, 'documentLifetimeScope')
+        )
+        vitalsCard.appendChild(vitalsHeader)
+        const vitalsGrid = documentValue.createElement('div')
+        vitalsGrid.className = 'vital-grid'
+        const webVitals =
+            viewModel?.webVitals ??
+            (['LCP', 'INP', 'CLS'] as const).map(name => ({
+                name,
+                value: overlayText(locale, 'unknown'),
+                ratingLabel: overlayText(locale, 'notObserved'),
+                observed: false,
+            }))
+        for (const vital of webVitals) {
+            const item = documentValue.createElement('div')
+            item.className = 'vital-item'
+            item.setAttribute('data-web-vital', vital.name)
+            item.setAttribute('data-observed', String(vital.observed))
+            appendTextElement(documentValue, item, 'span', '', `${vital.name} · ${vital.ratingLabel}`)
+            appendTextElement(documentValue, item, 'strong', '', vital.value)
+            vitalsGrid.appendChild(item)
+        }
+        vitalsCard.appendChild(vitalsGrid)
+        overviewEvidence.append(captureCard, vitalsCard)
+    }
+
+    const renderIssueDetail = (): void => {
+        issueDetail.replaceChildren()
+        const selected = issueHistory.find(issue => issue.recommendation.id === selectedIssueId) ?? issueHistory[0]
+        if (!selected) {
+            const empty = documentValue.createElement('div')
+            empty.className = 'empty'
+            appendTextElement(
+                documentValue,
+                empty,
+                'strong',
+                '',
+                overlayText(locale, currentViewModel?.captureState === 'steady' ? 'noCurrentFinding' : 'gatheringEvidence')
+            )
+            appendTextElement(
+                documentValue,
+                empty,
+                'span',
+                '',
+                overlayText(locale, currentViewModel?.captureState === 'steady' ? 'noCurrentFindingHelp' : 'gatheringEvidenceHelp')
+            )
+            issueDetail.appendChild(empty)
+            return
+        }
+
+        appendTextElement(
+            documentValue,
+            issueDetail,
+            'div',
+            'detail-kicker',
+            `${selected.familyLabel} · ${overlayText(locale, selected.active ? 'current' : 'earlier')}`
+        )
+        appendTextElement(documentValue, issueDetail, 'div', 'detail-title', selected.title)
+        appendTextElement(
+            documentValue,
+            issueDetail,
+            'div',
+            'detail-meta',
+            overlayText(locale, 'confidenceMeta', {
+                confidence: selected.confidenceLabel,
+                samples: selected.recommendation.metric.samples,
+                evidence: selected.evidenceLabel,
+            })
+        )
+        const comparison = documentValue.createElement('div')
+        comparison.className = 'comparison'
+        const observed = documentValue.createElement('div')
+        observed.className = 'comparison-card'
+        appendTextElement(documentValue, observed, 'span', '', overlayText(locale, 'observed'))
+        appendTextElement(documentValue, observed, 'strong', '', selected.observation)
+        const arrow = appendTextElement(documentValue, comparison, 'span', 'comparison-arrow', '→')
+        const target = documentValue.createElement('div')
+        target.className = 'comparison-card'
+        appendTextElement(documentValue, target, 'span', '', overlayText(locale, 'target', { kind: selected.targetKindLabel }))
+        appendTextElement(documentValue, target, 'strong', '', selected.target)
+        comparison.replaceChildren(observed, arrow, target)
+        issueDetail.appendChild(comparison)
+
+        const why = documentValue.createElement('section')
+        why.className = 'detail-section'
+        appendTextElement(documentValue, why, 'h4', '', selected.metricLabel)
+        appendTextElement(documentValue, why, 'p', '', selected.why)
+        issueDetail.appendChild(why)
+        const actions = documentValue.createElement('section')
+        actions.className = 'detail-section'
+        appendTextElement(documentValue, actions, 'h4', '', overlayText(locale, 'whatToChange'))
+        appendList(documentValue, actions, selected.actions)
+        issueDetail.appendChild(actions)
+        const verification = documentValue.createElement('section')
+        verification.className = 'detail-section verification'
+        appendTextElement(documentValue, verification, 'h4', '', overlayText(locale, 'verifyChange'))
+        appendList(documentValue, verification, selected.rerunProtocol)
+        appendTextElement(documentValue, verification, 'h4', '', overlayText(locale, 'regressionChecks'))
+        appendList(documentValue, verification, selected.regressionChecks)
+        issueDetail.appendChild(verification)
+    }
+
+    const renderIssueHistory = (): void => {
+        issueList.replaceChildren()
+        const activeIssues = issueHistory.filter(issue => issue.active)
+        issueCount.textContent = overlayText(locale, 'currentRetained', {
+            current: activeIssues.length,
+            retained: issueHistory.length,
+        })
+        if (issueHistory.length === 0) {
+            const empty = documentValue.createElement('div')
+            empty.className = 'empty'
+            appendTextElement(documentValue, empty, 'strong', '', overlayText(locale, 'noMeasuredFinding'))
+            appendTextElement(documentValue, empty, 'span', '', overlayText(locale, 'noMeasuredFindingHelp'))
+            issueList.appendChild(empty)
+            renderIssueDetail()
+            return
+        }
+        if (!selectedIssueId || !issueHistory.some(issue => issue.recommendation.id === selectedIssueId)) {
+            selectedIssueId = activeIssues[0]?.recommendation.id ?? issueHistory[0]?.recommendation.id
+        }
+        for (const issue of issueHistory) {
+            const button = documentValue.createElement('button')
+            button.className = 'issue-button'
+            button.setAttribute('type', 'button')
+            button.setAttribute('data-overlay-issue', issue.recommendation.id)
+            button.setAttribute('data-severity', issue.severity)
+            button.setAttribute('data-active', String(issue.active))
+            button.setAttribute('data-selected', String(issue.recommendation.id === selectedIssueId))
+            button.setAttribute('aria-pressed', String(issue.recommendation.id === selectedIssueId))
+            const top = documentValue.createElement('span')
+            top.className = 'issue-top'
+            const titleWrap = documentValue.createElement('span')
+            titleWrap.className = 'title-with-dot'
+            appendTextElement(documentValue, titleWrap, 'span', 'severity', '')
+            appendTextElement(documentValue, titleWrap, 'span', 'issue-title', issue.title)
+            const severityLabel =
+                issue.severity === 'critical'
+                    ? overlayText(locale, 'severityCritical')
+                    : issue.severity === 'warning'
+                      ? overlayText(locale, 'severityWarning')
+                      : overlayText(locale, 'severityInfo')
+            const issueState = appendTextElement(
+                documentValue,
+                top,
+                'span',
+                'count',
+                issue.active ? severityLabel : overlayText(locale, 'earlier')
+            )
+            top.replaceChildren(titleWrap, issueState)
+            const meta = documentValue.createElement('span')
+            meta.className = 'issue-meta'
+            appendTextElement(documentValue, meta, 'span', '', `${issue.observation} → ${issue.target}`)
+            appendTextElement(documentValue, meta, 'span', '', issue.confidenceLabel)
+            button.append(top, meta)
+            button.addEventListener('click', () => {
+                selectedIssueId = issue.recommendation.id
+                renderIssueHistory()
+            })
+            issueList.appendChild(button)
+        }
+        renderIssueDetail()
+    }
+
+    const renderInteractionDetail = (interactions: readonly OverlayInteractionView[]): void => {
+        interactionDetail.replaceChildren()
+        const selected = interactions.find(item => item.measurement.id === selectedInteractionId) ?? interactions[0]
+        if (!selected) {
+            const empty = documentValue.createElement('div')
+            empty.className = 'empty'
+            appendTextElement(documentValue, empty, 'strong', '', overlayText(locale, 'noCompletedInteraction'))
+            appendTextElement(documentValue, empty, 'span', '', overlayText(locale, 'noCompletedInteractionHelp'))
+            interactionDetail.appendChild(empty)
+            return
+        }
+        appendTextElement(documentValue, interactionDetail, 'div', 'detail-kicker', `${selected.kindLabel} · ${selected.outcomeLabel}`)
+        appendTextElement(documentValue, interactionDetail, 'div', 'detail-title', selected.title)
+        appendTextElement(
+            documentValue,
+            interactionDetail,
+            'div',
+            'detail-meta',
+            overlayText(locale, 'interaction', { id: selected.measurement.id })
+        )
+        const facts = documentValue.createElement('div')
+        facts.className = 'interaction-facts'
+        const factsToRender: ReadonlyArray<readonly [string, string]> = [
+            [overlayText(locale, 'duration'), selected.duration],
+            [overlayText(locale, 'frameP95'), selected.frameTail],
+            [overlayText(locale, 'slowFrames'), String(selected.measurement.performance.frames.slowFrameCount)],
+            [overlayText(locale, 'missedDisplays'), String(selected.measurement.performance.frames.missedFrameOpportunities)],
+        ]
+        for (const [label, value] of factsToRender) {
+            const fact = documentValue.createElement('div')
+            fact.className = 'fact'
+            appendTextElement(documentValue, fact, 'span', '', label)
+            appendTextElement(documentValue, fact, 'strong', '', value)
+            facts.appendChild(fact)
+        }
+        interactionDetail.appendChild(facts)
+        const signals = documentValue.createElement('section')
+        signals.className = 'detail-section'
+        appendTextElement(documentValue, signals, 'h4', '', overlayText(locale, 'overlappingSignals'))
+        appendTextElement(documentValue, signals, 'p', '', selected.signalSummary)
+        interactionDetail.appendChild(signals)
+        if (selected.qualityFacts.length > 0) {
+            const quality = documentValue.createElement('section')
+            quality.className = 'detail-section'
+            quality.setAttribute('data-interaction-quality', selected.measurement.id)
+            appendTextElement(documentValue, quality, 'h4', '', overlayText(locale, 'interactionQuality'))
+            const qualityFacts = documentValue.createElement('div')
+            qualityFacts.className = 'interaction-facts'
+            for (const evidence of selected.qualityFacts) {
+                const fact = documentValue.createElement('div')
+                fact.className = 'fact'
+                fact.setAttribute('data-interaction-quality-metric', evidence.id)
+                appendTextElement(documentValue, fact, 'span', '', evidence.label)
+                appendTextElement(documentValue, fact, 'strong', '', evidence.value)
+                qualityFacts.appendChild(fact)
+            }
+            quality.appendChild(qualityFacts)
+            interactionDetail.appendChild(quality)
+        }
+        const boundary = documentValue.createElement('section')
+        boundary.className = 'detail-section verification'
+        appendTextElement(documentValue, boundary, 'h4', '', overlayText(locale, 'interpretationBoundary'))
+        appendTextElement(documentValue, boundary, 'p', '', overlayText(locale, 'interactionBoundary'))
+        interactionDetail.appendChild(boundary)
+    }
+
+    const renderInteractions = (interactions: readonly OverlayInteractionView[]): void => {
+        interactionList.replaceChildren()
+        interactionCount.textContent = overlayText(locale, 'retained', { count: interactions.length })
+        if (!selectedInteractionId || !interactions.some(item => item.measurement.id === selectedInteractionId)) {
+            selectedInteractionId = interactions[0]?.measurement.id
+        }
+        if (interactions.length === 0) {
+            const empty = documentValue.createElement('div')
+            empty.className = 'empty'
+            appendTextElement(documentValue, empty, 'strong', '', overlayText(locale, 'noInteractionHistory'))
+            appendTextElement(documentValue, empty, 'span', '', overlayText(locale, 'noInteractionHistoryHelp'))
+            interactionList.appendChild(empty)
+        } else {
+            for (const interaction of interactions) {
+                const button = documentValue.createElement('button')
+                button.className = 'interaction-button'
+                button.setAttribute('type', 'button')
+                button.setAttribute('data-overlay-interaction', interaction.measurement.id)
+                button.setAttribute('data-status', interaction.status)
+                button.setAttribute('data-selected', String(interaction.measurement.id === selectedInteractionId))
+                button.setAttribute('aria-pressed', String(interaction.measurement.id === selectedInteractionId))
+                const top = documentValue.createElement('span')
+                top.className = 'interaction-top'
+                const titleWrap = documentValue.createElement('span')
+                titleWrap.className = 'title-with-dot'
+                appendTextElement(documentValue, titleWrap, 'span', 'severity', '')
+                appendTextElement(documentValue, titleWrap, 'span', 'interaction-title', interaction.title)
+                const outcome = appendTextElement(documentValue, top, 'span', 'count', interaction.outcomeLabel)
+                top.replaceChildren(titleWrap, outcome)
+                const meta = documentValue.createElement('span')
+                meta.className = 'interaction-meta'
+                appendTextElement(documentValue, meta, 'span', '', `${interaction.kindLabel} · ${interaction.duration}`)
+                appendTextElement(documentValue, meta, 'span', '', `${overlayText(locale, 'frameP95')} ${interaction.frameTail}`)
+                button.append(top, meta)
+                button.addEventListener('click', () => {
+                    selectedInteractionId = interaction.measurement.id
+                    renderInteractions(interactions)
+                })
+                interactionList.appendChild(button)
+            }
+        }
+        renderInteractionDetail(interactions)
+    }
+
+    const appendHostEvidenceFact = (
+        parent: HTMLElement,
+        family: 'renderer' | 'media' | 'lifecycle' | 'work',
+        id: string,
+        label: string,
+        value: string
+    ): void => {
+        const fact = documentValue.createElement('div')
+        fact.className = 'fact'
+        fact.setAttribute('data-host-evidence-family', family)
+        fact.setAttribute('data-host-evidence-metric', id)
+        appendTextElement(documentValue, fact, 'span', '', label)
+        appendTextElement(documentValue, fact, 'strong', '', value)
+        parent.appendChild(fact)
+    }
+
+    const hostFamilyAttempted = (summary: { acceptedSampleCount: number; rejectedSampleCount: number } | undefined): boolean =>
+        Boolean(summary && (summary.acceptedSampleCount > 0 || summary.rejectedSampleCount > 0))
+
+    const hostFamilyAccepted = (summary: { acceptedSampleCount: number } | undefined): boolean =>
+        Boolean(summary && summary.acceptedSampleCount > 0)
+
+    const formatKnownHostCount = (value: number | null | undefined, known: boolean): string =>
+        formatOverlayMeasurement(known ? value : null, 'count', locale)
+
+    const appendHostEvidenceBoundary = (section: HTMLElement): void => {
+        appendTextElement(documentValue, section, 'p', 'coverage-note', overlayText(locale, 'hostEvidenceBoundary'))
+    }
+
+    const renderRendererHostEvidenceDetail = (): void => {
+        const renderer = lastSnapshot?.hostEvidence?.renderer
+        const attempted = hostFamilyAttempted(renderer)
+        const section = documentValue.createElement('section')
+        section.className = 'detail-section'
+        section.setAttribute('data-host-evidence', 'renderer')
+        appendTextElement(documentValue, section, 'h4', '', overlayText(locale, 'rendererHostEvidence'))
+        appendTextElement(documentValue, section, 'p', 'coverage-note', overlayText(locale, 'hostEvidenceScope'))
+        const facts = documentValue.createElement('div')
+        facts.className = 'resource-facts'
+        const knownBackends = hostFamilyAccepted(renderer)
+            ? renderer?.backends
+                  .filter(backend => backend !== 'unknown')
+                  .map(backend => (backend === 'webgl' ? 'WebGL' : backend === 'webgl2' ? 'WebGL 2' : 'WebGPU'))
+            : undefined
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'backend',
+            overlayText(locale, 'rendererBackend'),
+            knownBackends && knownBackends.length > 0 ? knownBackends.join(' · ') : overlayText(locale, 'unknown')
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'draw-calls-p95',
+            overlayText(locale, 'rendererDrawCallsP95'),
+            formatOverlayMeasurement(renderer?.drawCalls?.p95, 'count', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'triangles-p95',
+            overlayText(locale, 'rendererTrianglesP95'),
+            formatOverlayMeasurement(renderer?.triangles?.p95, 'count', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'gpu-frame-p95',
+            overlayText(locale, 'rendererGpuFrameP95'),
+            formatOverlayMeasurement(renderer?.gpuFrameMs?.p95, 'ms', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'accepted',
+            overlayText(locale, 'hostAcceptedSamples'),
+            formatKnownHostCount(renderer?.acceptedSampleCount, attempted)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'dropped',
+            overlayText(locale, 'hostDroppedSamples'),
+            formatKnownHostCount(renderer?.droppedSampleCount, attempted)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'rejected',
+            overlayText(locale, 'hostRejectedSamples'),
+            formatKnownHostCount(renderer?.rejectedSampleCount, attempted)
+        )
+        section.appendChild(facts)
+        appendHostEvidenceBoundary(section)
+        coverageDetail.appendChild(section)
+    }
+
+    const renderMediaHostEvidenceDetail = (): void => {
+        const media = lastSnapshot?.hostEvidence?.media
+        const playbackQualityKnown = hostFamilyAccepted(media) && (media?.playbackQualityMeasuredSampleCount ?? 0) > 0
+        const section = documentValue.createElement('section')
+        section.className = 'detail-section'
+        section.setAttribute('data-host-evidence', 'media')
+        appendTextElement(documentValue, section, 'h4', '', overlayText(locale, 'mediaHostEvidence'))
+        appendTextElement(documentValue, section, 'p', 'coverage-note', overlayText(locale, 'hostEvidenceScope'))
+        const facts = documentValue.createElement('div')
+        facts.className = 'resource-facts'
+        appendHostEvidenceFact(
+            facts,
+            'media',
+            'callback-p95',
+            overlayText(locale, 'mediaCallbackP95'),
+            formatOverlayMeasurement(media?.callbackIntervalMs?.p95, 'ms', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'media',
+            'presented-frames-delta-p95',
+            overlayText(locale, 'mediaPresentedFramesDeltaP95'),
+            formatOverlayMeasurement(media?.presentedFramesDelta?.p95, 'count', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'media',
+            'dropped-video-frames',
+            overlayText(locale, 'mediaDroppedFrames'),
+            formatKnownHostCount(media?.droppedVideoFramesDelta, playbackQualityKnown)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'media',
+            'total-video-frames',
+            overlayText(locale, 'mediaTotalFrames'),
+            formatKnownHostCount(media?.totalVideoFramesDelta, playbackQualityKnown)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'media',
+            'playback-drop-ratio',
+            overlayText(locale, 'mediaDropRatio'),
+            formatOverlayMeasurement(playbackQualityKnown ? media?.playbackDropRatio : null, 'ratio', locale)
+        )
+        section.appendChild(facts)
+        appendTextElement(documentValue, section, 'p', 'coverage-note', overlayText(locale, 'mediaBoundary'))
+        appendHostEvidenceBoundary(section)
+        coverageDetail.appendChild(section)
+    }
+
+    const renderLifecycleHostEvidenceDetail = (): void => {
+        const lifecycle = lastSnapshot?.hostEvidence?.lifecycle
+        const checkpoints = lifecycle?.checkpoints
+        const section = documentValue.createElement('section')
+        section.className = 'detail-section'
+        section.setAttribute('data-host-evidence', 'lifecycle')
+        appendTextElement(documentValue, section, 'h4', '', overlayText(locale, 'lifecycleHostEvidence'))
+        appendTextElement(documentValue, section, 'p', 'coverage-note', overlayText(locale, 'hostEvidenceScope'))
+        const facts = documentValue.createElement('div')
+        facts.className = 'resource-facts'
+        appendHostEvidenceFact(
+            facts,
+            'lifecycle',
+            'animations',
+            overlayText(locale, 'lifecycleAnimations'),
+            formatOverlayMeasurement(lifecycle?.latestAnimationTotal, 'count', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'lifecycle',
+            'active-animations',
+            overlayText(locale, 'lifecycleActiveAnimations'),
+            formatOverlayMeasurement(lifecycle?.latestActiveAnimationCount, 'count', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'lifecycle',
+            'scroll-triggers',
+            overlayText(locale, 'lifecycleScrollTriggers'),
+            formatOverlayMeasurement(lifecycle?.latestScrollTriggerTotal, 'count', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'lifecycle',
+            'checkpoints',
+            overlayText(locale, 'lifecycleCheckpoints'),
+            hostFamilyAccepted(lifecycle) && checkpoints
+                ? overlayText(locale, 'lifecycleCheckpointSummary', {
+                      mount: checkpoints.mount,
+                      interaction: checkpoints['after-interaction'],
+                      unmount: checkpoints.unmount,
+                      manual: checkpoints.manual,
+                  })
+                : overlayText(locale, 'unknown')
+        )
+        section.appendChild(facts)
+        appendTextElement(documentValue, section, 'p', 'coverage-note', overlayText(locale, 'lifecycleLeakUnknown'))
+        appendHostEvidenceBoundary(section)
+        coverageDetail.appendChild(section)
+    }
+
+    const renderWorkHostEvidenceDetail = (): void => {
+        const framework = lastSnapshot?.hostEvidence?.framework
+        const work = lastSnapshot?.hostEvidence?.work
+        const workAttempted = hostFamilyAttempted(work)
+        const categories = work?.categories
+        const section = documentValue.createElement('section')
+        section.className = 'detail-section'
+        section.setAttribute('data-host-evidence', 'work')
+        appendTextElement(documentValue, section, 'h4', '', overlayText(locale, 'workHostEvidence'))
+        appendTextElement(documentValue, section, 'p', 'coverage-note', overlayText(locale, 'hostEvidenceScope'))
+        const facts = documentValue.createElement('div')
+        facts.className = 'resource-facts'
+        appendHostEvidenceFact(
+            facts,
+            'work',
+            'framework-render-p95',
+            overlayText(locale, 'frameworkRenderP95'),
+            formatOverlayMeasurement(framework?.renderMs?.p95, 'ms', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'work',
+            'framework-commit-p95',
+            overlayText(locale, 'frameworkCommitP95'),
+            formatOverlayMeasurement(framework?.commitMs?.p95, 'ms', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'work',
+            'total-work-samples',
+            overlayText(locale, 'workTotalSamples'),
+            formatKnownHostCount(work?.acceptedSampleCount, workAttempted)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'work',
+            'work-categories',
+            overlayText(locale, 'workCategories'),
+            hostFamilyAccepted(work) && categories ? overlayText(locale, 'workCategorySummary', categories) : overlayText(locale, 'unknown')
+        )
+        section.appendChild(facts)
+        appendTextElement(documentValue, section, 'p', 'coverage-note', overlayText(locale, 'workAvoidanceUnknown'))
+        appendHostEvidenceBoundary(section)
+        coverageDetail.appendChild(section)
+    }
+
+    const renderResourceTimingDetail = (): void => {
+        const resourceTiming = lastSnapshot?.resourceTiming
+        const section = documentValue.createElement('section')
+        section.className = 'detail-section'
+        section.setAttribute('data-resource-timing', '')
+        appendTextElement(documentValue, section, 'h4', '', overlayText(locale, 'resourceTimingEvidence'))
+        appendTextElement(documentValue, section, 'p', 'coverage-note', overlayText(locale, 'resourceTimingScope'))
+
+        const facts = documentValue.createElement('div')
+        facts.className = 'resource-facts'
+        const values = [
+            ['total-observed', 'resourceCount', resourceTiming?.totalObservedCount, 'count'],
+            ['retained', 'resourceRetained', resourceTiming?.retainedCount, 'count'],
+            ['dropped', 'resourceDropped', resourceTiming?.droppedSampleCount, 'count'],
+            ['rejected', 'resourceRejected', resourceTiming?.rejectedEntryCount, 'count'],
+            ['excluded-pre-capture', 'resourceExcludedPreCapture', resourceTiming?.excludedPreCaptureCount, 'count'],
+            ['duration-p95', 'resourceDurationP95', resourceTiming?.duration?.p95, 'ms'],
+            ['transfer-bytes', 'resourceTransferBytes', resourceTiming?.transferSizeBytes, 'bytes'],
+            ['encoded-bytes', 'resourceEncodedBytes', resourceTiming?.encodedBodySizeBytes, 'bytes'],
+            ['decoded-bytes', 'resourceDecodedBytes', resourceTiming?.decodedBodySizeBytes, 'bytes'],
+            ['zero-transfer', 'resourceZeroTransfer', resourceTiming?.zeroTransferSizeCount, 'count'],
+            ['buffer-full', 'resourceBufferFull', resourceTiming?.bufferFullEventCount, 'count'],
+        ] as const
+        for (const [id, labelKey, value, unit] of values) {
+            const fact = documentValue.createElement('div')
+            fact.className = 'fact'
+            fact.setAttribute('data-resource-timing-metric', id)
+            appendTextElement(documentValue, fact, 'span', '', overlayText(locale, labelKey))
+            appendTextElement(documentValue, fact, 'strong', '', formatOverlayMeasurement(value, unit, locale))
+            facts.appendChild(fact)
+        }
+        section.appendChild(facts)
+
+        appendTextElement(documentValue, section, 'h4', '', overlayText(locale, 'resourceCategories'))
+        const categories = documentValue.createElement('div')
+        categories.className = 'resource-category-grid'
+        for (const category of Object.keys(RESOURCE_CATEGORY_LABEL_KEYS) as Array<keyof typeof RESOURCE_CATEGORY_LABEL_KEYS>) {
+            const summary = resourceTiming?.categories?.[category]
+            const card = documentValue.createElement('div')
+            card.className = 'resource-category'
+            card.setAttribute('data-resource-category', category)
+            appendTextElement(documentValue, card, 'strong', '', overlayText(locale, RESOURCE_CATEGORY_LABEL_KEYS[category]))
+            appendTextElement(
+                documentValue,
+                card,
+                'span',
+                '',
+                overlayText(locale, 'resourceCategorySummary', {
+                    count: formatOverlayMeasurement(summary?.totalObservedCount, 'count', locale),
+                    duration: formatOverlayMeasurement(summary?.duration?.p95, 'ms', locale),
+                    bytes: formatOverlayMeasurement(summary?.transferSizeBytes, 'bytes', locale),
+                })
+            )
+            categories.appendChild(card)
+        }
+        section.appendChild(categories)
+        appendTextElement(documentValue, section, 'p', 'coverage-note', overlayText(locale, 'resourceTimingBoundary'))
+        coverageDetail.appendChild(section)
+    }
+
+    const renderCoverageDetail = (viewModel: AnimationOverlayViewModel): void => {
+        coverageDetail.replaceChildren()
+        const selected = viewModel.coverage.find(item => item.family === selectedCoverageFamily) ?? viewModel.coverage[0]
+        if (!selected) {
+            const empty = documentValue.createElement('div')
+            empty.className = 'empty'
+            appendTextElement(documentValue, empty, 'strong', '', overlayText(locale, 'metricCoverage'))
+            appendTextElement(documentValue, empty, 'span', '', overlayText(locale, 'coverageNote'))
+            coverageDetail.appendChild(empty)
+            return
+        }
+        appendTextElement(documentValue, coverageDetail, 'div', 'detail-kicker', selected.evidenceLabel)
+        appendTextElement(documentValue, coverageDetail, 'div', 'detail-title', selected.label)
+        appendTextElement(documentValue, coverageDetail, 'div', 'detail-meta', selected.statusLabel)
+        if (selected.family === 'renderer') renderRendererHostEvidenceDetail()
+        if (selected.family === 'resourcesMedia') {
+            renderResourceTimingDetail()
+            renderMediaHostEvidenceDetail()
+        }
+        if (selected.family === 'memoryLifecycle') renderLifecycleHostEvidenceDetail()
+        if (selected.family === 'workAvoidance') renderWorkHostEvidenceDetail()
+        const meaning = documentValue.createElement('section')
+        meaning.className = 'detail-section'
+        appendTextElement(documentValue, meaning, 'h4', '', overlayText(locale, 'coverageMeaning'))
+        appendTextElement(documentValue, meaning, 'p', '', selected.meaning)
+        coverageDetail.appendChild(meaning)
+        const boundary = documentValue.createElement('section')
+        boundary.className = 'detail-section verification'
+        appendTextElement(documentValue, boundary, 'h4', '', overlayText(locale, 'interpretationBoundary'))
+        appendTextElement(documentValue, boundary, 'p', 'coverage-note', overlayText(locale, 'coverageBoundary'))
+        coverageDetail.appendChild(boundary)
+    }
+
+    const renderCoverage = (viewModel: AnimationOverlayViewModel): void => {
+        coverageGrid.replaceChildren()
+        coverageCount.textContent = overlayText(locale, 'coverageCount', { count: viewModel.coverage.length })
+        if (!selectedCoverageFamily || !viewModel.coverage.some(item => item.family === selectedCoverageFamily)) {
+            selectedCoverageFamily = viewModel.coverage[0]?.family
+        }
+        for (const coverage of viewModel.coverage) {
+            const button = documentValue.createElement('button')
+            button.className = 'coverage-button'
+            button.setAttribute('type', 'button')
+            button.setAttribute('data-coverage-family', coverage.family)
+            button.setAttribute('data-status', coverage.status)
+            button.setAttribute('data-selected', String(coverage.family === selectedCoverageFamily))
+            button.setAttribute('aria-pressed', String(coverage.family === selectedCoverageFamily))
+            appendTextElement(documentValue, button, 'strong', '', coverage.label)
+            appendTextElement(documentValue, button, 'span', 'coverage-status', coverage.statusLabel)
+            appendTextElement(documentValue, button, 'small', '', coverage.evidenceLabel)
+            button.addEventListener('click', () => {
+                selectedCoverageFamily = coverage.family
+                renderCoverage(viewModel)
+            })
+            coverageGrid.appendChild(button)
+        }
+        renderCoverageDetail(viewModel)
+    }
+
+    const cancelTargetInteraction = (): void => {
+        const interaction = targetInteraction
+        if (!interaction) return
+        try {
+            interaction.cancel()
+        } catch {
+            // Selection cleanup below still gets a chance to cancel its active interaction.
+        } finally {
+            targetInteraction = null
+        }
+    }
+
+    const clearTarget = (): void => {
+        const selection = targetSelection
+        cancelTargetInteraction()
+        try {
+            selection?.clear()
+        } catch {
+            // Clearing the local overlay must not alter or stop the page collector.
+        }
+        targetSelection = null
+        targetSnapshot = null
+        rendererSurfaceInspector.select(null)
+        renderTarget(lastSnapshot)
+        renderRendererSurfaces()
+    }
+
+    const selectElementAsTarget = (element: Element, rendererSurfaceId?: string): void => {
+        clearTarget()
+        if (rendererSurfaceId) rendererSurfaceInspector.select(rendererSurfaceId)
+        try {
+            targetSelection =
+                source.selectElement?.(element, {
+                    mode: options.targetSelectionMode ?? 'subtree',
+                    adapters: options.targetAdapters,
+                }) ?? null
+            targetSnapshot = targetSelection?.snapshot() ?? null
+        } catch {
+            targetSelection = null
+            targetSnapshot = null
+        }
+        setActiveTab('target')
+        setExpanded(true)
+        renderRendererSurfaces()
+        renderTarget(lastSnapshot)
+    }
+
+    const startTargetRecording = (): void => {
+        const selection = targetSelection
+        if (!selection || targetInteraction || selection.state === 'cleared' || selection.state === 'disconnected') return
+        try {
+            targetInteraction = selection.beginInteraction('custom', 'selected target window')
+        } catch {
+            // Direct element evidence remains useful if the page collector stopped.
+        }
+        renderTarget(lastSnapshot)
+    }
+
+    const stopTargetRecording = (): void => {
+        const interaction = targetInteraction
+        if (!interaction) return
+        try {
+            interaction.end()
+            targetInteraction = null
+        } catch {
+            // Keep the handle so the developer can retry Stop or Clear the target.
+        }
+        renderTarget(lastSnapshot)
+    }
+
+    const resetTargetRecording = (): void => {
+        const interaction = targetInteraction
+        if (interaction) {
+            try {
+                interaction.cancel()
+                targetInteraction = null
+            } catch {
+                // Do not overlap a fresh window with one that could not be cancelled.
+                renderTarget(lastSnapshot)
+                return
+            }
+        }
+        startTargetRecording()
+    }
+
+    const targetWindow = (
+        pageSnapshot: AnimationSnapshot | undefined,
+        selected: AnimationElementSelectionSnapshot
+    ): InteractionPerformanceSummary | null => {
+        const interactionId = selected.activeInteractionId
+        if (interactionId && pageSnapshot) {
+            const active = pageSnapshot.interactions.active.find(interaction => interaction.id === interactionId)
+            if (active) return active.performance
+            const recent = pageSnapshot.interactions.recent.find(interaction => interaction.id === interactionId)
+            if (recent) return recent.performance
+        }
+        return selected.correlated
+    }
+
+    const appendTargetFact = (parent: Node, labelText: string, value: string): void => {
+        const fact = documentValue.createElement('div')
+        fact.className = 'fact'
+        appendTextElement(documentValue, fact, 'span', '', labelText)
+        appendTextElement(documentValue, fact, 'strong', '', value)
+        parent.appendChild(fact)
+    }
+
+    function renderRendererSurfaces(refreshDiscovery = false): void {
+        if (refreshDiscovery && rendererSurfaceInspector.enabled) rendererSurfaceSnapshot = rendererSurfaceInspector.refresh()
+        else rendererSurfaceSnapshot = rendererSurfaceInspector.snapshot()
+        const enabled = rendererSurfaceSnapshot.enabled
+        rendererSurfaceToggle.setAttribute('data-enabled', String(enabled))
+        rendererSurfaceToggle.setAttribute('aria-pressed', String(enabled))
+        rendererSurfaceToggle.textContent = overlayText(locale, enabled ? 'hideRendererSurfaces' : 'showRendererSurfaces')
+        rendererSurfaceToggle.setAttribute(
+            'title',
+            overlayText(locale, enabled ? 'hideRendererSurfacesTitle' : 'showRendererSurfacesTitle')
+        )
+        ;(rendererSurfaceRefresh as HTMLButtonElement).disabled = !enabled
+        rendererSurfaceRefresh.textContent = overlayText(locale, 'refreshRendererSurfaces')
+        rendererSurfaceCount.textContent = overlayText(locale, 'rendererSurfaceCount', {
+            count: rendererSurfaceSnapshot.retainedCount,
+        })
+        rendererSurfaceHelp.textContent = overlayText(
+            locale,
+            !enabled
+                ? 'rendererSurfaceHelp'
+                : rendererSurfaceSnapshot.outlineStatus === 'paused-hidden'
+                  ? 'rendererSurfacePausedHidden'
+                  : rendererSurfaceSnapshot.outlineStatus === 'unsupported'
+                    ? 'rendererSurfaceOutlineUnsupported'
+                    : rendererSurfaceSnapshot.truncated
+                      ? 'rendererSurfaceTruncated'
+                      : 'rendererSurfacePrivacy'
+        )
+        rendererSurfaceList.replaceChildren()
+        if (!enabled) return
+        if (rendererSurfaceSnapshot.surfaces.length === 0) {
+            const empty = documentValue.createElement('div')
+            empty.className = 'empty'
+            appendTextElement(documentValue, empty, 'strong', '', overlayText(locale, 'noRendererSurface'))
+            appendTextElement(documentValue, empty, 'span', '', overlayText(locale, 'noRendererSurfaceHelp'))
+            rendererSurfaceList.appendChild(empty)
+            return
+        }
+        for (const surface of rendererSurfaceSnapshot.surfaces) {
+            const button = documentValue.createElement('button')
+            button.className = 'surface-button'
+            button.setAttribute('type', 'button')
+            button.setAttribute('data-renderer-surface', surface.id)
+            button.setAttribute('data-renderer-kind', surface.kind)
+            button.setAttribute('data-evidence-status', surface.evidenceStatus)
+            button.setAttribute('data-selected', String(surface.id === rendererSurfaceSnapshot.selectedId))
+            button.setAttribute('aria-pressed', String(surface.id === rendererSurfaceSnapshot.selectedId))
+            appendTextElement(documentValue, button, 'strong', '', surface.kind === 'svg' ? 'SVG' : surface.kind.toUpperCase())
+            appendTextElement(
+                documentValue,
+                button,
+                'small',
+                '',
+                overlayText(
+                    locale,
+                    surface.evidence === 'native-svg'
+                        ? 'rendererSurfaceNativeSvg'
+                        : surface.evidence === 'context-registry'
+                          ? 'rendererSurfaceContextObserved'
+                          : 'rendererSurfaceContextUnknown'
+                )
+            )
+            appendTextElement(
+                documentValue,
+                button,
+                'span',
+                'surface-evidence',
+                overlayText(locale, surface.evidenceStatus === 'measured' ? 'rendererSurfaceMeasured' : 'rendererSurfaceUnknown')
+            )
+            button.addEventListener('click', () => {
+                const element = rendererSurfaceInspector.elementFor(surface.id)
+                if (!element) {
+                    rendererSurfaceSnapshot = rendererSurfaceInspector.refresh()
+                    renderRendererSurfaces()
+                    return
+                }
+                selectElementAsTarget(element, surface.id)
+            })
+            rendererSurfaceList.appendChild(button)
+        }
+    }
+
+    function renderTarget(pageSnapshot: AnimationSnapshot | undefined): void {
+        targetList.replaceChildren()
+        targetDetail.replaceChildren()
+        if (!targetSelection) {
+            targetStateLabel.textContent = overlayText(locale, 'ready')
+            const empty = documentValue.createElement('div')
+            empty.className = 'empty'
+            appendTextElement(documentValue, empty, 'strong', '', overlayText(locale, 'noSelectedTarget'))
+            appendTextElement(documentValue, empty, 'span', '', overlayText(locale, 'noSelectedTargetHelp'))
+            targetList.appendChild(empty)
+            const privacy = documentValue.createElement('section')
+            privacy.className = 'detail-section verification'
+            appendTextElement(documentValue, privacy, 'h4', '', overlayText(locale, 'targetPrivacy'))
+            appendTextElement(documentValue, privacy, 'p', '', overlayText(locale, 'targetPrivacyHelp'))
+            targetDetail.appendChild(privacy)
+            return
+        }
+
+        try {
+            targetSnapshot = targetSelection.snapshot()
+        } catch {
+            const selection = targetSelection
+            cancelTargetInteraction()
+            try {
+                selection.clear()
+            } catch {
+                // A failed local selection must not interfere with the page collector.
+            }
+            targetSelection = null
+            targetSnapshot = null
+            renderTarget(pageSnapshot)
+            return
+        }
+        const selected = targetSnapshot
+        const isRecording = selected.state === 'recording'
+        const hasCorrelatedSnapshot = selected.correlated !== null
+        const canRecord = selected.state !== 'disconnected'
+        targetStateLabel.textContent = overlayText(
+            locale,
+            selected.state === 'disconnected' ? 'unavailable' : isRecording ? 'recording' : hasCorrelatedSnapshot ? 'stopped' : 'ready'
+        )
+        const card = documentValue.createElement('div')
+        card.className = 'target-card'
+        const role = selected.localDescriptor.role ? ` · role=${selected.localDescriptor.role}` : ''
+        appendTextElement(documentValue, card, 'strong', '', `<${selected.localDescriptor.tagName}>${role}`)
+        appendTextElement(
+            documentValue,
+            card,
+            'span',
+            '',
+            `${selected.localDescriptor.mode} · ${formatOverlayMeasurement(selected.elapsedMs, 'ms', locale)}`
+        )
+        if (selected.state === 'disconnected') appendTextElement(documentValue, card, 'span', '', overlayText(locale, 'targetDisconnected'))
+        const recordingHelp = appendTextElement(
+            documentValue,
+            card,
+            'span',
+            'target-recording-copy',
+            overlayText(
+                locale,
+                isRecording
+                    ? 'targetRecordingActiveHelp'
+                    : hasCorrelatedSnapshot
+                      ? 'targetRecordingStoppedHelp'
+                      : 'targetRecordingReadyHelp'
+            )
+        )
+        const recordingHelpId = `${panelId}-target-recording-help`
+        recordingHelp.setAttribute('id', recordingHelpId)
+        targetList.appendChild(card)
+        const targetActions = documentValue.createElement('div')
+        targetActions.className = 'target-actions'
+        const startButton = appendTextElement(
+            documentValue,
+            targetActions,
+            'button',
+            'text-button',
+            overlayText(locale, 'startTargetRecording')
+        )
+        startButton.setAttribute('type', 'button')
+        startButton.setAttribute('data-target-recording-action', 'start')
+        startButton.setAttribute('aria-describedby', recordingHelpId)
+        startButton.setAttribute('title', overlayText(locale, 'startTargetRecordingTitle'))
+        ;(startButton as HTMLButtonElement).disabled = !canRecord || isRecording || hasCorrelatedSnapshot
+        startButton.addEventListener('click', startTargetRecording)
+        const stopButton = appendTextElement(
+            documentValue,
+            targetActions,
+            'button',
+            'text-button',
+            overlayText(locale, 'stopTargetRecording')
+        )
+        stopButton.setAttribute('type', 'button')
+        stopButton.setAttribute('data-target-recording-action', 'stop')
+        stopButton.setAttribute('aria-describedby', recordingHelpId)
+        stopButton.setAttribute('title', overlayText(locale, 'stopTargetRecordingTitle'))
+        ;(stopButton as HTMLButtonElement).disabled = targetInteraction === null
+        stopButton.addEventListener('click', stopTargetRecording)
+        const resetButton = appendTextElement(
+            documentValue,
+            targetActions,
+            'button',
+            'text-button',
+            overlayText(locale, 'resetTargetRecording')
+        )
+        resetButton.setAttribute('type', 'button')
+        resetButton.setAttribute('data-target-recording-action', 'reset')
+        resetButton.setAttribute('aria-describedby', recordingHelpId)
+        resetButton.setAttribute('title', overlayText(locale, 'resetTargetRecordingTitle'))
+        ;(resetButton as HTMLButtonElement).disabled = !canRecord || (!isRecording && !hasCorrelatedSnapshot)
+        resetButton.addEventListener('click', resetTargetRecording)
+        const clearButton = appendTextElement(documentValue, targetActions, 'button', 'text-button', overlayText(locale, 'clearTarget'))
+        clearButton.setAttribute('type', 'button')
+        clearButton.setAttribute('data-target-recording-action', 'clear')
+        clearButton.addEventListener('click', clearTarget)
+        targetList.appendChild(targetActions)
+
+        appendTextElement(documentValue, targetDetail, 'div', 'detail-kicker', selected.direct.relation)
+        appendTextElement(documentValue, targetDetail, 'div', 'detail-title', `<${selected.localDescriptor.tagName}>`)
+        appendTextElement(documentValue, targetDetail, 'div', 'detail-meta', `${selected.selectionId} · ${selected.state}`)
+
+        const directSection = documentValue.createElement('section')
+        directSection.className = 'detail-section'
+        appendTextElement(documentValue, directSection, 'h4', '', overlayText(locale, 'targetDirectEvidence'))
+        const directFacts = documentValue.createElement('div')
+        directFacts.className = 'interaction-facts'
+        appendTargetFact(
+            directFacts,
+            overlayText(locale, 'standardAnimations'),
+            formatOverlayMeasurement(selected.direct.totalCount, 'count', locale)
+        )
+        appendTargetFact(
+            directFacts,
+            overlayText(locale, 'runningAnimations'),
+            formatOverlayMeasurement(selected.direct.runningCount, 'count', locale)
+        )
+        appendTargetFact(
+            directFacts,
+            overlayText(locale, 'canvasBackingPixels'),
+            formatOverlayMeasurement(selected.geometry.backingPixelArea, 'pixels', locale)
+        )
+        appendTargetFact(
+            directFacts,
+            overlayText(locale, 'effectivePixelRatio'),
+            selected.geometry.effectivePixelRatio === null
+                ? overlayText(locale, 'unknown')
+                : `${formatOverlayMeasurement(selected.geometry.effectivePixelRatio, 'count', locale)}×`
+        )
+        directSection.appendChild(directFacts)
+        if ((selected.direct.droppedAnimationCount ?? 0) > 0) {
+            appendTextElement(
+                documentValue,
+                directSection,
+                'p',
+                '',
+                overlayText(locale, 'targetInspectionTruncated', {
+                    inspected: selected.direct.inspectedCount ?? 0,
+                    total: selected.direct.totalCount ?? 0,
+                })
+            )
+        }
+        appendTextElement(documentValue, directSection, 'h4', '', overlayText(locale, 'animationProperties'))
+        const propertyList = documentValue.createElement('div')
+        propertyList.className = 'target-properties'
+        const properties = [
+            ...selected.direct.properties.compositorCandidate.map(property => `compositor? ${property}`),
+            ...selected.direct.properties.layoutCandidate.map(property => `layout? ${property}`),
+            ...selected.direct.properties.paintCandidate.map(property => `paint? ${property}`),
+            ...selected.direct.properties.unknown.map(property => `unknown ${property}`),
+        ]
+        if (properties.length === 0) appendTextElement(documentValue, directSection, 'p', '', overlayText(locale, 'noPropertyEvidence'))
+        else for (const property of properties) appendTextElement(documentValue, propertyList, 'span', '', property)
+        directSection.appendChild(propertyList)
+        if (selected.direct.propertyTruncated) {
+            appendTextElement(documentValue, directSection, 'p', '', overlayText(locale, 'targetPropertiesTruncated'))
+        }
+        targetDetail.appendChild(directSection)
+
+        const overlap = targetWindow(pageSnapshot, selected)
+        const windowSection = documentValue.createElement('section')
+        windowSection.className = 'detail-section'
+        appendTextElement(documentValue, windowSection, 'h4', '', overlayText(locale, 'targetPageWindow'))
+        const windowFacts = documentValue.createElement('div')
+        windowFacts.className = 'interaction-facts'
+        appendTargetFact(
+            windowFacts,
+            overlayText(locale, 'frameP95'),
+            formatOverlayMeasurement(overlap?.frames.duration?.p95, 'ms', locale)
+        )
+        appendTargetFact(
+            windowFacts,
+            overlayText(locale, 'slowFrames'),
+            formatOverlayMeasurement(overlap?.frames.slowFrameCount, 'count', locale)
+        )
+        appendTargetFact(windowFacts, 'LoAF', formatOverlayMeasurement(overlap?.longAnimationFrames.overlapCount, 'count', locale))
+        appendTargetFact(windowFacts, 'Long Task', formatOverlayMeasurement(overlap?.longTasks.overlapCount, 'count', locale))
+        windowSection.appendChild(windowFacts)
+        appendTextElement(documentValue, windowSection, 'div', 'target-boundary', overlayText(locale, 'targetOverlapBoundary'))
+        targetDetail.appendChild(windowSection)
+
+        const attributionSection = documentValue.createElement('section')
+        attributionSection.className = 'detail-section'
+        appendTextElement(documentValue, attributionSection, 'h4', '', overlayText(locale, 'targetAttribution'))
+        appendTextElement(
+            documentValue,
+            attributionSection,
+            'p',
+            '',
+            `${overlayText(locale, 'runtimeInventory')}: UI ${selected.inventory.uiFrameworks.join(', ') || '—'} · meta ${
+                selected.inventory.metaRuntimes.join(', ') || '—'
+            } · renderer ${selected.inventory.renderers.join(', ') || '—'} · motion ${selected.inventory.motionEngines.join(', ') || '—'}`
+        )
+        if (selected.owners.length > 0) {
+            appendList(
+                documentValue,
+                attributionSection,
+                selected.owners.map(owner => `${owner.relation}: ${owner.label ?? owner.framework ?? owner.adapterId}`)
+            )
+        } else appendTextElement(documentValue, attributionSection, 'p', '', overlayText(locale, 'noOwnerAttribution'))
+        if (selected.adapterErrors.length > 0) {
+            appendTextElement(
+                documentValue,
+                attributionSection,
+                'p',
+                '',
+                overlayText(locale, 'adapterInspectionFailed', { count: selected.adapterErrors.length })
+            )
+        }
+        targetDetail.appendChild(attributionSection)
+
+        const rendererSection = documentValue.createElement('section')
+        rendererSection.className = 'detail-section'
+        appendTextElement(documentValue, rendererSection, 'h4', '', overlayText(locale, 'targetRenderer'))
+        if (selected.renderers.length === 0) {
+            appendTextElement(documentValue, rendererSection, 'p', '', overlayText(locale, 'targetNoRendererAdapter'))
+        } else {
+            for (const renderer of selected.renderers) {
+                const measured = Object.entries(renderer.metrics)
+                    .filter((entry): entry is [string, number] => entry[1] !== null)
+                    .map(([name, value]) => `${renderer.family}.${name}: ${value}`)
+                appendTextElement(
+                    documentValue,
+                    rendererSection,
+                    'p',
+                    '',
+                    `${renderer.adapterId}@${renderer.adapterVersion} · ${renderer.capability.state}${
+                        renderer.capability.reason ? ` · ${renderer.capability.reason}` : ''
+                    }`
+                )
+                const evidenceFacts = documentValue.createElement('div')
+                evidenceFacts.className = 'interaction-facts'
+                const count = (value: number | null): string =>
+                    value === null ? overlayText(locale, 'unavailable') : formatOverlayMeasurement(value, 'count', locale)
+                appendTargetFact(
+                    evidenceFacts,
+                    overlayText(locale, 'rendererEvidenceWindow'),
+                    renderer.evidence.window.durationMs === null
+                        ? overlayText(locale, 'unavailable')
+                        : formatOverlayMeasurement(renderer.evidence.window.durationMs, 'ms', locale)
+                )
+                appendTargetFact(
+                    evidenceFacts,
+                    overlayText(locale, 'rendererSampleEvidence'),
+                    [
+                        renderer.evidence.acceptedSampleCount,
+                        renderer.evidence.retainedSampleCount,
+                        renderer.evidence.droppedSampleCount,
+                        renderer.evidence.rejectedSampleCount,
+                    ]
+                        .map(count)
+                        .join(' / ')
+                )
+                appendTargetFact(
+                    evidenceFacts,
+                    overlayText(locale, 'rendererTailState'),
+                    renderer.evidence.truncated === null
+                        ? overlayText(locale, 'unavailable')
+                        : overlayText(locale, renderer.evidence.truncated ? 'rendererTailTruncated' : 'rendererTailComplete')
+                )
+                appendTargetFact(
+                    evidenceFacts,
+                    overlayText(locale, 'rendererGpuEvidence'),
+                    renderer.evidence.gpu.rejectionReason === null
+                        ? overlayText(locale, 'rendererGpuAccepted')
+                        : overlayText(locale, 'rendererGpuRejected', { reason: renderer.evidence.gpu.rejectionReason })
+                )
+                rendererSection.appendChild(evidenceFacts)
+                if (measured.length > 0) appendList(documentValue, rendererSection, measured)
+            }
+        }
+        targetDetail.appendChild(rendererSection)
+
+        const privacy = documentValue.createElement('section')
+        privacy.className = 'detail-section verification'
+        appendTextElement(documentValue, privacy, 'h4', '', overlayText(locale, 'targetPrivacy'))
+        appendTextElement(documentValue, privacy, 'p', '', overlayText(locale, 'targetPrivacyHelp'))
+        targetDetail.appendChild(privacy)
+    }
+
+    const renderViewModel = (snapshot: AnimationSnapshot, viewModel: AnimationOverlayViewModel, recordHistory = true): void => {
+        unavailableRendered = false
+        lastSnapshot = snapshot
+        currentViewModel = viewModel
+        syncCollectorState(snapshot.state)
+        diagnosis.setAttribute('data-state', viewModel.captureState)
+        diagnosisHeadline.textContent = viewModel.headline
+        diagnosisSummary.textContent = viewModel.summary
+        captureMeta.textContent = viewModel.captureMeta
+        metricGrid.replaceChildren()
+        for (const metric of viewModel.metrics) {
+            const card = documentValue.createElement('div')
+            card.className = 'metric'
+            card.setAttribute('data-metric', metric.id)
+            card.setAttribute('data-tone', metric.tone)
+            if (metric.id === 'live-fps') card.setAttribute('title', overlayText(locale, 'recentFpsBoundary'))
+            appendTextElement(documentValue, card, 'div', 'metric-label', metric.label)
+            appendTextElement(documentValue, card, 'div', 'metric-value', metric.value)
+            appendTextElement(documentValue, card, 'div', 'metric-context', metric.context)
+            metricGrid.appendChild(card)
+        }
+        renderOverviewEvidence(viewModel)
+        if (recordHistory) issueHistory = updateOverlayIssueHistory(issueHistory, viewModel.issues, snapshot.capturedAt)
+        const activeIssueCount = issueHistory.filter(issue => issue.active).length
+        triggerBadge.textContent = activeIssueCount > 99 ? '99+' : String(activeIssueCount)
+        triggerBadge.setAttribute(
+            'aria-label',
+            overlayText(locale, activeIssueCount === 1 ? 'findingsOne' : 'findingsMany', { count: activeIssueCount })
+        )
+        triggerBadge.setAttribute('data-visible', String(activeIssueCount > 0))
+        renderIssueHistory()
+        renderInteractions(viewModel.interactions)
+        renderCoverage(viewModel)
+        renderRendererSurfaces()
+        renderTarget(snapshot)
+    }
+
+    const renderUnavailable = (): void => {
+        unavailableRendered = true
+        lastSnapshot = undefined
+        currentViewModel = undefined
+        syncCollectorState()
+        diagnosis.setAttribute('data-state', 'collecting')
+        diagnosisHeadline.textContent = overlayText(locale, 'collectorUnavailable')
+        diagnosisSummary.textContent = overlayText(locale, 'collectorUnavailableHelp')
+        captureMeta.textContent = collectorStateText(locale, readCollectorState(source))
+        metricGrid.replaceChildren()
+        for (const label of [
+            overlayText(locale, 'recentFps'),
+            overlayText(locale, 'frameTail'),
+            overlayText(locale, 'jankBursts'),
+            overlayText(locale, 'missedDisplays'),
+        ]) {
+            const card = documentValue.createElement('div')
+            card.className = 'metric'
+            card.setAttribute('data-tone', 'unknown')
+            appendTextElement(documentValue, card, 'div', 'metric-label', label)
+            appendTextElement(documentValue, card, 'div', 'metric-value', overlayText(locale, 'unknown'))
+            appendTextElement(documentValue, card, 'div', 'metric-context', overlayText(locale, 'noLocalSnapshot'))
+            metricGrid.appendChild(card)
+        }
+        renderOverviewEvidence()
+        renderIssueHistory()
+        renderInteractions([])
+        coverageGrid.replaceChildren()
+        coverageCount.textContent = overlayText(locale, 'coverageCount', { count: 0 })
+        coverageDetail.replaceChildren()
+        renderRendererSurfaces()
+        renderTarget(undefined)
+    }
+
+    const refresh = (): void => {
+        if (destroyed || !expanded) return
+        const startedAt = safeNow(timerOwner)
+        try {
+            const snapshot = source.snapshot()
+            lastLiveFrameRate = measureLiveFrameRate(previousFrameRateSnapshot, snapshot)
+            previousFrameRateSnapshot = snapshot
+            renderViewModel(snapshot, buildAnimationOverlayViewModel(snapshot, locale, lastLiveFrameRate))
+        } catch {
+            previousFrameRateSnapshot = undefined
+            lastLiveFrameRate = { status: 'not-observed' }
+            renderUnavailable()
+        }
+        const endedAt = safeNow(timerOwner)
+        lastPanelSelfTime =
+            startedAt === null || endedAt === null
+                ? overlayText(locale, 'unavailable')
+                : formatOverlayMeasurement(endedAt - startedAt, 'ms', locale)
+        footerTiming.textContent = overlayText(locale, 'panelRefresh', {
+            selfTime: lastPanelSelfTime,
+            seconds: refreshIntervalMs / 1_000,
+        })
+    }
+
+    const stopRefreshLoop = (): void => {
+        if (timerId === undefined) return
+        timerOwner?.clearInterval(timerId)
+        timerId = undefined
+    }
+    const startRefreshLoop = (): void => {
+        if (timerId !== undefined) return
+        timerId = timerOwner?.setInterval(refresh, refreshIntervalMs)
+    }
+    const syncExpandedState = (): void => {
+        dock.setAttribute('data-expanded', String(expanded))
+        panel.setAttribute('aria-hidden', String(!expanded))
+        panel.inert = !expanded
+        trigger.setAttribute('aria-expanded', String(expanded))
+        trigger.setAttribute('aria-label', overlayText(locale, expanded ? 'closeMonitor' : 'openMonitor'))
+        trigger.setAttribute('title', overlayText(locale, expanded ? 'closeMonitorTitle' : 'openMonitorTitle'))
+        syncCollectorState()
+    }
+
+    const applyLocaleCopy = (): void => {
+        host.setAttribute('lang', locale)
+        panel.setAttribute('aria-label', overlayText(locale, 'panelAria'))
+        metricGrid.setAttribute('aria-label', overlayText(locale, 'primaryMeasurementsAria'))
+        tabs.setAttribute('aria-label', overlayText(locale, 'viewsAria'))
+        triggerLabel.textContent = overlayText(locale, 'motion')
+        productTitle.textContent = overlayText(locale, 'motionConsole')
+        issueHeadingLabel.textContent = overlayText(locale, 'issueHistory')
+        interactionHeadingLabel.textContent = overlayText(locale, 'recentInteractions')
+        coverageHeadingLabel.textContent = overlayText(locale, 'metricCoverage')
+        rendererSurfaceHeadingLabel.textContent = overlayText(locale, 'rendererSurfaces')
+        targetHeadingLabel.textContent = overlayText(locale, 'selectedTarget')
+        footerLocalLabel.textContent = overlayText(locale, 'localView')
+        closeButton.setAttribute('aria-label', overlayText(locale, 'closeMonitor'))
+        closeButton.setAttribute('title', overlayText(locale, 'close'))
+        pickerButton.setAttribute('aria-label', overlayText(locale, 'selectTarget'))
+        pickerButton.setAttribute(
+            'title',
+            overlayText(locale, typeof source.selectElement === 'function' ? 'selectTargetTitle' : 'targetPickerUnavailable')
+        )
+        localeButton.textContent = locale === 'en' ? '中' : 'EN'
+        localeButton.setAttribute('lang', locale === 'en' ? 'zh-CN' : 'en')
+        localeButton.setAttribute('aria-label', overlayText(locale, locale === 'en' ? 'switchToChinese' : 'switchToEnglish'))
+        localeButton.setAttribute('title', overlayText(locale, locale === 'en' ? 'switchToChinese' : 'switchToEnglish'))
+        for (const tab of OVERLAY_TABS) {
+            const button = tabButtons.get(tab)
+            if (button) button.textContent = overlayTabText(locale, tab)
+        }
+        syncCollectorState()
+        syncLayout()
+        syncExpandedState()
+        if (lastSnapshot) {
+            issueHistory = localizeOverlayIssueHistory(issueHistory, locale)
+            renderViewModel(lastSnapshot, buildAnimationOverlayViewModel(lastSnapshot, locale, lastLiveFrameRate), false)
+        } else if (unavailableRendered) {
+            renderUnavailable()
+        } else {
+            diagnosisHeadline.textContent = overlayText(locale, 'waitingSnapshot')
+            diagnosisSummary.textContent = overlayText(locale, 'openForEvidence')
+            captureMeta.textContent = collectorStateText(locale, readCollectorState(source))
+            issueCount.textContent = overlayText(locale, 'currentRetained', { current: 0, retained: issueHistory.length })
+            interactionCount.textContent = overlayText(locale, 'retained', { count: 0 })
+            coverageCount.textContent = overlayText(locale, 'coverageCount', { count: 0 })
+            renderOverviewEvidence()
+            renderIssueHistory()
+            renderInteractions([])
+            coverageDetail.replaceChildren()
+            renderRendererSurfaces()
+            renderTarget(undefined)
+        }
+        if (!lastSnapshot) lastPanelSelfTime = overlayText(locale, 'unavailable')
+        footerTiming.textContent = lastSnapshot
+            ? overlayText(locale, 'panelRefresh', {
+                  selfTime: lastPanelSelfTime,
+                  seconds: refreshIntervalMs / 1_000,
+              })
+            : overlayText(locale, 'refreshAtLeast', { seconds: refreshIntervalMs / 1_000 })
+    }
+    const setExpanded = (nextExpanded: boolean): void => {
+        if (destroyed || expanded === nextExpanded) return
+        const activeElement = shadow.activeElement
+        const returnFocusToTrigger = !nextExpanded && activeElement !== null && (activeElement === panel || panel.contains(activeElement))
+        expanded = nextExpanded
+        syncExpandedState()
+        if (expanded) {
+            previousFrameRateSnapshot = undefined
+            lastLiveFrameRate = { status: 'collecting' }
+            refresh()
+            startRefreshLoop()
+        } else {
+            stopRefreshLoop()
+            previousFrameRateSnapshot = undefined
+            lastLiveFrameRate = { status: 'collecting' }
+            if (returnFocusToTrigger) trigger.focus()
+        }
+    }
+    const toggle = (): void => setExpanded(!expanded)
+    const onTriggerClick = (): void => toggle()
+    const onCloseClick = (): void => setExpanded(false)
+    const onLayoutClick = (): void => {
+        layout = layout === 'compact' ? 'wide' : 'compact'
+        syncLayout()
+        persistViewPreference()
+    }
+    const onLocaleClick = (): void => {
+        locale = locale === 'en' ? 'zh-CN' : 'en'
+        applyLocaleCopy()
+        persistViewPreference()
+    }
+    const onRendererSurfaceToggle = (): void => {
+        rendererSurfaceInspector.setEnabled(!rendererSurfaceInspector.enabled)
+        rendererSurfaceSnapshot = rendererSurfaceInspector.snapshot()
+        renderRendererSurfaces()
+    }
+    const onRendererSurfaceRefresh = (): void => {
+        rendererSurfaceSnapshot = rendererSurfaceInspector.refresh()
+        renderRendererSurfaces()
+    }
+    const picker = createAnimationElementPicker({
+        document: documentValue,
+        exclude: element => element === host || host.contains(element),
+        onStateChange(state) {
+            pickerButton.setAttribute('data-picker-state', state)
+            pickerButton.setAttribute('aria-pressed', String(state === 'picking'))
+            if (state === 'picking') productState.textContent = overlayText(locale, 'pickingTarget')
+        },
+        onCancel() {
+            if (restorePanelAfterPick) setExpanded(true)
+            restorePanelAfterPick = false
+            syncCollectorState()
+        },
+        onSelect(element) {
+            restorePanelAfterPick = false
+            selectElementAsTarget(element)
+            refresh()
+        },
+    })
+    const startTargetPicker = (): boolean => {
+        if (destroyed || typeof source.selectElement !== 'function') return false
+        restorePanelAfterPick = expanded
+        const started = picker.start()
+        if (started) setExpanded(false)
+        else restorePanelAfterPick = false
+        return started
+    }
+    const onPickerClick = (): void => {
+        if (picker.state === 'picking') picker.cancel()
+        else startTargetPicker()
+    }
+    const tabClickHandlers = new Map<OverlayTab, () => void>()
+    const tabKeyHandlers = new Map<OverlayTab, (event: KeyboardEvent) => void>()
+    for (const [index, tab] of OVERLAY_TABS.entries()) {
+        const clickHandler = (): void => setActiveTab(tab)
+        const keyHandler = (event: KeyboardEvent): void => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return
+            event.preventDefault()
+            const nextIndex =
+                event.key === 'Home'
+                    ? 0
+                    : event.key === 'End'
+                      ? OVERLAY_TABS.length - 1
+                      : (index + (event.key === 'ArrowRight' ? 1 : -1) + OVERLAY_TABS.length) % OVERLAY_TABS.length
+            setActiveTab(OVERLAY_TABS[nextIndex] ?? 'overview', true)
+        }
+        tabButtons.get(tab)?.addEventListener('click', clickHandler)
+        tabButtons.get(tab)?.addEventListener('keydown', keyHandler)
+        tabClickHandlers.set(tab, clickHandler)
+        tabKeyHandlers.set(tab, keyHandler)
+    }
+    const onContainedInput = (event: Event): void => event.stopPropagation()
+    const containedInputTypes = [
+        'click',
+        'dblclick',
+        'auxclick',
+        'pointerdown',
+        'pointerup',
+        'pointercancel',
+        'pointermove',
+        'pointerover',
+        'pointerout',
+        'mousedown',
+        'mouseup',
+        'mousemove',
+        'mouseover',
+        'mouseout',
+        'touchstart',
+        'touchmove',
+        'touchend',
+        'touchcancel',
+        'wheel',
+        'contextmenu',
+        'focusin',
+        'focusout',
+    ] as const
+    const onShadowKeyDown = (event: Event): void => {
+        event.stopPropagation()
+        if (expanded && (event as KeyboardEvent).key === 'Escape') {
+            event.preventDefault()
+            setExpanded(false)
+            trigger.focus()
+        }
+    }
+    trigger.addEventListener('click', onTriggerClick)
+    pickerButton.addEventListener('click', onPickerClick)
+    closeButton.addEventListener('click', onCloseClick)
+    localeButton.addEventListener('click', onLocaleClick)
+    layoutButton.addEventListener('click', onLayoutClick)
+    rendererSurfaceToggle.addEventListener('click', onRendererSurfaceToggle)
+    rendererSurfaceRefresh.addEventListener('click', onRendererSurfaceRefresh)
+    for (const type of containedInputTypes) shadow.addEventListener(type, onContainedInput, { passive: true })
+    shadow.addEventListener('keydown', onShadowKeyDown)
+    shadow.addEventListener('keyup', onContainedInput)
+    setActiveTab(activeTab)
+    applyLocaleCopy()
+    if (expanded) {
+        refresh()
+        startRefreshLoop()
+    }
+
+    return {
+        mounted: true,
+        refreshIntervalMs,
+        get expanded() {
+            return expanded
+        },
+        get targetState() {
+            return targetSelection?.state ?? (picker.state === 'selected' ? 'idle' : picker.state)
+        },
+        setExpanded,
+        toggle,
+        startTargetPicker,
+        clearTarget,
+        refresh,
+        destroy(): void {
+            if (destroyed) return
+            destroyed = true
+            stopRefreshLoop()
+            picker.destroy()
+            rendererSurfaceInspector.destroy()
+            const selection = targetSelection
+            cancelTargetInteraction()
+            try {
+                selection?.clear()
+            } catch {
+                // Destroying the overlay never changes the page collector lifecycle.
+            }
+            targetSelection = null
+            trigger.removeEventListener('click', onTriggerClick)
+            pickerButton.removeEventListener('click', onPickerClick)
+            closeButton.removeEventListener('click', onCloseClick)
+            localeButton.removeEventListener('click', onLocaleClick)
+            layoutButton.removeEventListener('click', onLayoutClick)
+            rendererSurfaceToggle.removeEventListener('click', onRendererSurfaceToggle)
+            rendererSurfaceRefresh.removeEventListener('click', onRendererSurfaceRefresh)
+            for (const tab of OVERLAY_TABS) {
+                const button = tabButtons.get(tab)
+                const clickHandler = tabClickHandlers.get(tab)
+                const keyHandler = tabKeyHandlers.get(tab)
+                if (clickHandler) button?.removeEventListener('click', clickHandler)
+                if (keyHandler) button?.removeEventListener('keydown', keyHandler)
+            }
+            for (const type of containedInputTypes) shadow.removeEventListener(type, onContainedInput)
+            shadow.removeEventListener('keydown', onShadowKeyDown)
+            shadow.removeEventListener('keyup', onContainedInput)
+            host.remove()
+        },
+    }
+}

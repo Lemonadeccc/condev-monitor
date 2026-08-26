@@ -1,0 +1,56 @@
+{
+    "name": "@condev-monitor/monitor-sdk-animation",
+    "version": "0.1.0",
+    "description": "Framework-neutral, local-first animation performance monitoring for Condev Monitor",
+    "main": "build/cjs/index.js",
+    "module": "build/esm/index.mjs",
+    "types": "build/types/index.d.ts",
+    "files": [
+        "build",
+        "README.md"
+    ],
+    "sideEffects": false,
+    "exports": {
+        "./package.json": "./package.json",
+        ".": {
+            "import": {
+                "types": "./build/types/index.d.ts",
+                "default": "./build/esm/index.mjs"
+            },
+            "require": {
+                "types": "./build/types/index.d.ts",
+                "default": "./build/cjs/index.js"
+            }
+        },
+        "./devtools": {
+            "import": {
+                "types": "./build/types/devtools.d.ts",
+                "default": "./build/esm/devtools.mjs"
+            },
+            "require": {
+                "types": "./build/types/devtools.d.ts",
+                "default": "./build/cjs/devtools.js"
+            }
+        }
+    },
+    "scripts": {
+        "clean": "rimraf build",
+        "build": "pnpm clean && pnpm build:transpile && pnpm build:types",
+        "build:transpile": "tsup",
+        "build:types": "tsc -p tsconfig.types.json",
+        "typecheck": "tsc -p tsconfig.json --noEmit",
+        "test": "pnpm build && node --test test/*.test.mjs"
+    },
+    "keywords": [
+        "animation",
+        "performance",
+        "monitoring",
+        "raf",
+        "long-animation-frame"
+    ],
+    "license": "Apache-2.0",
+    "dependencies": {
+        "@condev-monitor/monitor-sdk-browser-utils": "workspace:*",
+        "@condev-monitor/monitor-sdk-core": "workspace:*"
+    }
+}
