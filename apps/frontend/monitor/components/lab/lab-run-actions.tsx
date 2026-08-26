@@ -40,7 +40,7 @@ function buildRunnerCommand(runId: string, serverOrigin: string, browser: LabBro
         `printf 'Paste the one-time Runner Grant: ' >&2`,
         'IFS= read -r -s CONDEV_LAB_RUNNER_TOKEN',
         `printf '\\n' >&2`,
-        'pnpm --filter @condev-monitor/animation-lab-runner build && \\',
+        "pnpm --filter '@condev-monitor/animation-lab-runner...' build && \\",
         'CONDEV_LAB_RUNNER_TOKEN="$CONDEV_LAB_RUNNER_TOKEN" node apps/backend/lab-runner/build/cli.js \\',
         `  --config ${GENERIC_SCENARIO_PATH} \\`,
         `  --browser ${browser} \\`,
