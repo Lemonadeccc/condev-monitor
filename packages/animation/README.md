@@ -234,6 +234,7 @@ Renderer adapters must provide already aggregated, non-blocking evidence. Their 
 
 ```ts
 import { createAnimationTargetAdapterRegistry } from '@condev-monitor/monitor-sdk-animation'
+import { createAnimationDevOverlay } from '@condev-monitor/monitor-sdk-animation/devtools'
 
 const threeTargets = createAnimationTargetAdapterRegistry('three-renderer', '1.0.0')
 const unregister = threeTargets.register(renderer.domElement, () => ({
@@ -345,7 +346,7 @@ The projection never receives the sticky sampling key, so it cannot transmit it.
 ## Development overlay
 
 ```ts
-import { createAnimationDevOverlay } from '@condev-monitor/monitor-sdk-animation'
+import { createAnimationDevOverlay } from '@condev-monitor/monitor-sdk-animation/devtools'
 
 const overlay = createAnimationDevOverlay(integration.collector, {
     production: import.meta.env.PROD,
@@ -357,6 +358,8 @@ const overlay = createAnimationDevOverlay(integration.collector, {
 overlay.toggle()
 overlay.setExpanded(false)
 ```
+
+`createAnimationDevOverlay` is intentionally available only from the `./devtools` subpath so importing the package root does not load the local development UI into CommonJS or non-tree-shaking consumers. Existing low-level callers must move that named import to `@condev-monitor/monitor-sdk-animation/devtools`; root imports for collectors, integrations, recommendations, target adapters, and overlay types remain unchanged. The high-level Browser animation entry already loads this subpath dynamically only when `animation.devtools` is enabled.
 
 The development UI has three local-only forms: a 48px-high lower-right launcher, a compact diagnostics panel, and a wide issue/detail workbench. Desktop starts in the wide workbench so Overview, Interactions, Coverage, and Target keep their selectable list on the left and the selected detail on the right; narrow viewports fall back to a stacked layout. The header switches compact/wide layout and English/Simplified Chinese. `locale: 'auto'` reads the injected document language and then the browser language. Locale, layout, and active-tab preferences are stored locally when storage is available. The launcher reports collector operation (`Recording`, `Stopped`, or `Ready`) separately from its measured-finding badge, so capture state is never presented as a health grade.
 

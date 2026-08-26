@@ -10,7 +10,6 @@ import {
     AnimationStateError,
     AnimationUnsupportedError,
     createBrowserAnimationRuntime,
-    createAnimationDevOverlay,
     createAnimationElementPicker,
     createAnimationTargetAdapterRegistry,
     createFrameworkCommitProbe,
@@ -18,6 +17,7 @@ import {
     recommendAnimationImprovements,
     toAnimationRumSummary,
 } from '../build/esm/index.mjs'
+import { createAnimationDevOverlay } from '../build/esm/devtools.mjs'
 
 class FakeRuntime {
     constructor({
