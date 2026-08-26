@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common'
 import { METHOD_METADATA, PATH_METADATA } from '@nestjs/common/constants'
 import { RequestMethod } from '@nestjs/common/enums'
 
@@ -7,6 +8,8 @@ describe('LabController routes', () => {
     it('exposes the frontend canonical labs routes while retaining runs aliases', () => {
         expect(Reflect.getMetadata(PATH_METADATA, LabController.prototype.createRun)).toEqual(['', '/runs'])
         expect(Reflect.getMetadata(METHOD_METADATA, LabController.prototype.createRun)).toBe(RequestMethod.POST)
+        expect(Reflect.getMetadata(PATH_METADATA, LabController.prototype.compareRuns)).toBe('/comparisons')
+        expect(Reflect.getMetadata(METHOD_METADATA, LabController.prototype.compareRuns)).toBe(RequestMethod.POST)
         expect(Reflect.getMetadata(PATH_METADATA, LabController.prototype.listRuns)).toEqual(['', '/runs'])
         expect(Reflect.getMetadata(PATH_METADATA, LabController.prototype.getTimeline)).toEqual([
             '/:runId/timeline',
@@ -22,6 +25,58 @@ describe('LabController routes', () => {
         ])
         expect(Reflect.getMetadata(PATH_METADATA, LabController.prototype.getRun)).toEqual(['/:runId', '/runs/:runId'])
         expect(Reflect.getMetadata(METHOD_METADATA, LabController.prototype.getRun)).toBe(RequestMethod.GET)
+    })
+
+    it('parses an explicit Before/After request and returns the closed comparison result without caching it', async () => {
+        const result = {
+            schemaVersion: 1,
+            kind: 'animation-lab-before-after',
+            comparable: false,
+            reasons: [{ code: 'condition-mismatch', side: 'both', field: 'browser-version' }],
+        }
+        const compareRuns = jest.fn().mockResolvedValue(result)
+        const setHeader = jest.fn()
+        const controller = new LabController({ compareRuns } as never)
+        const body = {
+            beforeRunId: '11111111-1111-4111-8111-111111111111',
+            afterRunId: '22222222-2222-4222-8222-222222222222',
+        }
+
+        await expect(controller.compareRuns(body, { user: { id: 7 } }, { setHeader } as never)).resolves.toEqual({
+            success: true,
+            data: result,
+        })
+        expect(compareRuns).toHaveBeenCalledWith(7, body)
+        expect(setHeader).toHaveBeenCalledWith('Cache-Control', 'private, no-store')
+        expect(setHeader).toHaveBeenCalledWith('Pragma', 'no-cache')
+    })
+
+    it.each([
+        {
+            beforeRunId: 'not-a-uuid',
+            afterRunId: '22222222-2222-4222-8222-222222222222',
+        },
+        {
+            beforeRunId: ' 11111111-1111-4111-8111-111111111111 ',
+            afterRunId: '22222222-2222-4222-8222-222222222222',
+        },
+        {
+            beforeRunId: '11111111-1111-4111-8111-111111111111',
+            afterRunId: '11111111-1111-4111-8111-111111111111',
+        },
+        {
+            beforeRunId: '11111111-1111-4111-8111-111111111111',
+            afterRunId: '22222222-2222-4222-8222-222222222222',
+            unexpected: true,
+        },
+    ])('rejects an ambiguous or non-canonical comparison request', async body => {
+        const compareRuns = jest.fn()
+        const controller = new LabController({ compareRuns } as never)
+
+        await expect(controller.compareRuns(body, { user: { id: 7 } }, { setHeader: jest.fn() } as never)).rejects.toBeInstanceOf(
+            BadRequestException
+        )
+        expect(compareRuns).not.toHaveBeenCalled()
     })
 
     it('keeps the service analysis projection inside the existing success envelope', async () => {

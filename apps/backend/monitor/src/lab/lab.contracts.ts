@@ -74,6 +74,11 @@ export type CreateLabRunInput = {
     config: LabRunConfig
 }
 
+export type CompareLabRunsInput = {
+    beforeRunId: string
+    afterRunId: string
+}
+
 type LabSummaryMetricV1 = {
     family: string
     name: string
@@ -123,6 +128,7 @@ const SAFE_SUMMARY_NAME = /^[A-Za-z][A-Za-z0-9._:-]{0,79}$/
 const SAFE_ERROR_CODE = /^[A-Z][A-Z0-9_:-]{0,79}$/
 const SAFE_IDEMPOTENCY_KEY = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/
 const SHA256 = /^[a-f0-9]{64}$/
+const STRICT_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
 const ARTIFACT_MAX_BYTES: Record<LabArtifactKind, number> = {
     'animation-report': 2 * 1024 * 1024,
@@ -174,6 +180,11 @@ function requiredString(value: unknown, label: string, max: number, pattern?: Re
         throw new BadRequestException(`Invalid ${label}`)
     }
     return normalized
+}
+
+function strictUuid(value: unknown, label: string): string {
+    if (typeof value !== 'string' || !STRICT_UUID.test(value)) throw new BadRequestException(`Invalid ${label}`)
+    return value
 }
 
 function hasControlCharacter(value: string): boolean {
@@ -320,6 +331,16 @@ export function parseCreateLabRunInput(raw: unknown): CreateLabRunInput {
         buildId: optionalString(raw.buildId, 'buildId', 120, SAFE_DIMENSION),
         config: parseLabRunConfig(raw.config),
     }
+}
+
+export function parseCompareLabRunsInput(raw: unknown): CompareLabRunsInput {
+    if (!isRecord(raw)) throw new BadRequestException('Request body must be an object')
+    exactKeys(raw, ['beforeRunId', 'afterRunId'], 'request body')
+    if (jsonBytes(raw, 'request body') > 1024) throw new BadRequestException('Request body is too large')
+    const beforeRunId = strictUuid(raw.beforeRunId, 'beforeRunId')
+    const afterRunId = strictUuid(raw.afterRunId, 'afterRunId')
+    if (beforeRunId === afterRunId) throw new BadRequestException('beforeRunId and afterRunId must be different')
+    return { beforeRunId, afterRunId }
 }
 
 function parseMetric(raw: unknown, index: number): LabSummaryMetric {

@@ -1,5 +1,5 @@
 // cspell:ignore labg
-import { ConflictException, UnauthorizedException } from '@nestjs/common'
+import { BadRequestException, ConflictException, NotFoundException, UnauthorizedException } from '@nestjs/common'
 
 import { LabArtifactEntity } from './entity/lab-artifact.entity'
 import { LabRunEntity } from './entity/lab-run.entity'
@@ -448,5 +448,296 @@ describe('LabService runner grants and ownership', () => {
         run.config = JSON.stringify({ ...enabled, trace: false })
         run.summary = JSON.stringify({ capabilities: { cdpTrace: true } })
         expect(() => (service as any).assertTraceIndexMatchesRunConfig(run)).toThrow(ConflictException)
+    })
+})
+
+function completedRun(id: string, overrides: Partial<LabRunEntity> = {}): LabRunEntity {
+    return runEntity({
+        id,
+        status: 'completed',
+        phase: 'done',
+        progress: 100,
+        completedAt: new Date('2026-08-25T00:02:00.000Z'),
+        ...overrides,
+    })
+}
+
+function comparisonReport(
+    run: LabRunEntity,
+    overrides: {
+        routeKey?: string
+        scenarioProtocolHash?: string | null
+        browserVersion?: string | null
+    } = {}
+) {
+    return {
+        runId: run.id,
+        compactSummary: {},
+        analysis: {
+            semanticsVersion: 2 as const,
+            measurementContract: {
+                contractVersion: 2 as const,
+                expectedHz: 60,
+                targetFrameMs: 16.666667,
+                source: 'explicit' as const,
+                confidence: 'explicit' as const,
+                budgetRef: {
+                    catalogVersion: 1 as const,
+                    budgetId: 'condev.animation.default',
+                    budgetVersion: 1,
+                },
+                metricCatalogVersion: 2 as const,
+            },
+            scenarioActions: [],
+            actionWindows: [],
+            metrics: [],
+            technologyEvidence: [],
+            findings: [],
+        },
+        measuredAttempts: Array.from({ length: 3 }, (_, index) => {
+            const attemptId = `${run.id.slice(0, 8)}-attempt-${index + 1}`
+            return {
+                attemptId,
+                metrics: [
+                    {
+                        metricId: 'frame.duration.p95',
+                        family: 'frameCadence',
+                        name: 'frameDurationMs',
+                        stat: 'p95',
+                        unit: 'ms',
+                        value: 16 + index * 2,
+                        samples: 100 + index * 10,
+                        status: 'measured' as const,
+                        evidenceLevel: 'controlled-lab-measurement' as const,
+                        scope: { level: 'attempt' as const, attemptId },
+                        aggregation: { population: 'frames', method: 'nearest-rank' },
+                        budgetRefs: [
+                            {
+                                catalogVersion: 1,
+                                budgetId: 'condev.animation.default',
+                                budgetVersion: 1,
+                                ruleId: 'frame-tail',
+                            },
+                        ],
+                        evidenceRefs: ['runtime-browser'],
+                        limitations: [],
+                    },
+                ],
+                capabilities: { frameCadence: true },
+                limitations: [],
+            }
+        }),
+        context: {
+            startedAt: '2026-08-25T00:00:00.000Z',
+            endedAt: '2026-08-25T00:01:30.000Z',
+            durationMs: 90_000,
+            routeKey: overrides.routeKey ?? 'fixture.home',
+            scenarioProtocolHash: overrides.scenarioProtocolHash === undefined ? 'a'.repeat(64) : overrides.scenarioProtocolHash,
+            environment: 'development',
+            browser: 'chromium 140.0',
+            browserName: 'chromium',
+            browserVersion: overrides.browserVersion === undefined ? '140.0' : overrides.browserVersion,
+            browserHeadless: true,
+            viewport: { width: 1280, height: 720, dpr: 1 },
+            reducedMotion: 'no-preference' as const,
+            cacheMode: 'warm' as const,
+            execution: {
+                warmupRuns: 1,
+                measuredRuns: 3,
+                durationMs: 30_000,
+                trace: true,
+                lighthouse: false,
+                colorScheme: 'light' as const,
+                cpuThrottleRate: 1,
+                network: null,
+            },
+        },
+        lighthouse: null,
+    }
+}
+
+function comparisonHarness() {
+    const runs = repository<LabRunEntity>()
+    const artifacts = repository<LabArtifactEntity>()
+    const grants = repository<LabRunnerGrantEntity>()
+    const applications = { assertOwned: jest.fn().mockResolvedValue(undefined) }
+    const storage = { readStoredJson: jest.fn() }
+    const service = new LabService(runs as never, artifacts as never, grants as never, {} as never, applications as never, storage as never)
+    return { service, runs, artifacts, applications, storage }
+}
+
+describe('LabService Before/After comparisons', () => {
+    const beforeId = '11111111-1111-4111-8111-111111111111'
+    const afterId = '22222222-2222-4222-8222-222222222222'
+
+    it('compares only the two explicit completed runs and keeps private report details server-side', async () => {
+        const { service, runs, artifacts, applications } = comparisonHarness()
+        const before = completedRun(beforeId, { targetOrigin: 'https://private-before.example.test/account' })
+        const after = completedRun(afterId, { targetOrigin: 'https://private-after.example.test/account' })
+        const beforeArtifact = reportArtifact(before)
+        const afterArtifact = { ...reportArtifact(after), id: '44444444-4444-4444-8444-444444444444' }
+        runs.findOne.mockImplementation(async options => (options.where.id === beforeId ? before : after))
+        artifacts.findOne.mockImplementation(async options => (options.where.runId === beforeId ? beforeArtifact : afterArtifact))
+        const readAnimationReport = jest.fn().mockResolvedValueOnce(comparisonReport(before)).mockResolvedValueOnce(comparisonReport(after))
+        Object.defineProperty(service, 'readAnimationReport', { value: readAnimationReport })
+
+        const result = await service.compareRuns(7, { beforeRunId: beforeId, afterRunId: afterId })
+
+        expect(result).toEqual(
+            expect.objectContaining({
+                schemaVersion: 1,
+                kind: 'animation-lab-before-after',
+                comparable: true,
+                trust: 'caller-attested',
+                beforeRunId: beforeId,
+                afterRunId: afterId,
+                coverage: expect.objectContaining({ comparedMetrics: 1 }),
+            })
+        )
+        expect(applications.assertOwned).toHaveBeenNthCalledWith(1, before.appId, 7)
+        expect(applications.assertOwned).toHaveBeenNthCalledWith(2, after.appId, 7)
+        expect(artifacts.findOne).toHaveBeenCalledWith({
+            where: { runId: beforeId, appId: before.appId, kind: 'animation-report' },
+            order: { createdAt: 'DESC' },
+        })
+        const exposed = JSON.stringify(result)
+        expect(exposed).not.toContain('private-before')
+        expect(exposed).not.toContain('private-after')
+        expect(exposed).not.toContain('attempt-1')
+        expect(exposed).not.toContain(beforeArtifact.storageKey)
+    })
+
+    it('returns a bounded condition mismatch instead of computing a delta for unlike routes', async () => {
+        const { service, runs, artifacts } = comparisonHarness()
+        const before = completedRun(beforeId)
+        const after = completedRun(afterId)
+        runs.findOne.mockImplementation(async options => (options.where.id === beforeId ? before : after))
+        artifacts.findOne.mockImplementation(async options =>
+            options.where.runId === beforeId
+                ? reportArtifact(before)
+                : { ...reportArtifact(after), id: '44444444-4444-4444-8444-444444444444' }
+        )
+        Object.defineProperty(service, 'readAnimationReport', {
+            value: jest
+                .fn()
+                .mockResolvedValueOnce(comparisonReport(before))
+                .mockResolvedValueOnce(comparisonReport(after, { routeKey: 'fixture.other' })),
+        })
+
+        await expect(service.compareRuns(7, { beforeRunId: beforeId, afterRunId: afterId })).resolves.toEqual(
+            expect.objectContaining({
+                comparable: false,
+                reasons: [{ code: 'condition-mismatch', side: 'both', field: 'route-key' }],
+            })
+        )
+    })
+
+    it('rejects report identity drift before comparison evidence is exposed', async () => {
+        const { service, runs, artifacts } = comparisonHarness()
+        const before = completedRun(beforeId)
+        const after = completedRun(afterId)
+        runs.findOne.mockImplementation(async options => (options.where.id === beforeId ? before : after))
+        artifacts.findOne.mockImplementation(async options =>
+            options.where.runId === beforeId
+                ? reportArtifact(before)
+                : { ...reportArtifact(after), id: '44444444-4444-4444-8444-444444444444' }
+        )
+        const drifted = comparisonReport(before)
+        drifted.runId = afterId
+        Object.defineProperty(service, 'readAnimationReport', {
+            value: jest.fn().mockResolvedValueOnce(drifted).mockResolvedValueOnce(comparisonReport(after)),
+        })
+
+        await expect(service.compareRuns(7, { beforeRunId: beforeId, afterRunId: afterId })).resolves.toEqual({
+            schemaVersion: 1,
+            kind: 'animation-lab-before-after',
+            comparable: false,
+            reasons: [{ code: 'invalid-candidate', side: 'before', field: 'candidate' }],
+        })
+    })
+
+    it('reports missing and expired raw reports without falling back to retained compact summaries', async () => {
+        const { service, runs, artifacts, storage } = comparisonHarness()
+        const before = completedRun(beforeId, { summary: JSON.stringify({ metrics: [{ value: 1 }] }) })
+        const after = completedRun(afterId, { summary: JSON.stringify({ metrics: [{ value: 2 }] }) })
+        const expired = { ...reportArtifact(after), expiresAt: new Date('2020-01-01T00:00:00.000Z') }
+        runs.findOne.mockImplementation(async options => (options.where.id === beforeId ? before : after))
+        artifacts.findOne.mockImplementation(async options => (options.where.runId === beforeId ? null : expired))
+
+        await expect(service.compareRuns(7, { beforeRunId: beforeId, afterRunId: afterId })).resolves.toEqual({
+            schemaVersion: 1,
+            kind: 'animation-lab-before-after',
+            comparable: false,
+            reasons: [
+                { code: 'evidence-unavailable', side: 'before', field: 'animation-report-missing' },
+                { code: 'evidence-unavailable', side: 'after', field: 'animation-report-expired' },
+            ],
+        })
+        expect(storage.readStoredJson).not.toHaveBeenCalled()
+    })
+
+    it('treats a missing stored report file as unavailable evidence', async () => {
+        const { service, runs, artifacts } = comparisonHarness()
+        const before = completedRun(beforeId)
+        const after = completedRun(afterId)
+        runs.findOne.mockImplementation(async options => (options.where.id === beforeId ? before : after))
+        artifacts.findOne.mockImplementation(async options =>
+            options.where.runId === beforeId
+                ? reportArtifact(before)
+                : { ...reportArtifact(after), id: '44444444-4444-4444-8444-444444444444' }
+        )
+        Object.defineProperty(service, 'readAnimationReport', {
+            value: jest
+                .fn()
+                .mockRejectedValueOnce(new NotFoundException('Artifact file not found'))
+                .mockResolvedValueOnce(comparisonReport(after)),
+        })
+
+        await expect(service.compareRuns(7, { beforeRunId: beforeId, afterRunId: afterId })).resolves.toEqual(
+            expect.objectContaining({
+                comparable: false,
+                reasons: [{ code: 'evidence-unavailable', side: 'before', field: 'animation-report-missing' }],
+            })
+        )
+    })
+
+    it('fails closed before artifact access when either run is unfinished or belongs to a different app', async () => {
+        const { service, runs, artifacts, applications } = comparisonHarness()
+        const before = completedRun(beforeId, { status: 'running' })
+        const after = completedRun(afterId, { appId: 'another-app' })
+        runs.findOne.mockImplementation(async options => (options.where.id === beforeId ? before : after))
+
+        await expect(service.compareRuns(7, { beforeRunId: beforeId, afterRunId: afterId })).resolves.toEqual({
+            schemaVersion: 1,
+            kind: 'animation-lab-before-after',
+            comparable: false,
+            reasons: [
+                { code: 'invalid-candidate', side: 'before', field: 'run-status' },
+                { code: 'condition-mismatch', side: 'both', field: 'app-id' },
+            ],
+        })
+        expect(applications.assertOwned).toHaveBeenCalledWith(before.appId, 7)
+        expect(applications.assertOwned).toHaveBeenCalledWith(after.appId, 7)
+        expect(artifacts.findOne).not.toHaveBeenCalled()
+    })
+
+    it('does not expose either run when ownership validation fails', async () => {
+        const { service, runs, artifacts, applications } = comparisonHarness()
+        const before = completedRun(beforeId)
+        const after = completedRun(afterId, { appId: 'private-app' })
+        runs.findOne.mockImplementation(async options => (options.where.id === beforeId ? before : after))
+        applications.assertOwned.mockImplementation(async appId => {
+            if (appId === after.appId) throw new UnauthorizedException('not owned')
+        })
+
+        await expect(service.compareRuns(7, { beforeRunId: beforeId, afterRunId: afterId })).rejects.toBeInstanceOf(UnauthorizedException)
+        expect(artifacts.findOne).not.toHaveBeenCalled()
+    })
+
+    it('rejects the same run defensively even when the controller parser is bypassed', async () => {
+        const { service, runs } = comparisonHarness()
+
+        await expect(service.compareRuns(7, { beforeRunId: beforeId, afterRunId: beforeId })).rejects.toBeInstanceOf(BadRequestException)
+        expect(runs.findOne).not.toHaveBeenCalled()
     })
 })

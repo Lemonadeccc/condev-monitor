@@ -20,6 +20,7 @@ import { LabArtifactEntity } from './entity/lab-artifact.entity'
 import { LabRunEntity } from './entity/lab-run.entity'
 import { LabRunnerGrantEntity } from './entity/lab-runner-grant.entity'
 import {
+    type CompareLabRunsInput,
     createHash,
     type CreateLabRunInput,
     LAB_RUN_ARTIFACT_TOTAL_MAX_BYTES,
@@ -31,6 +32,15 @@ import {
     parseLabRunSummary,
     type UpdateLabRunInput,
 } from './lab.contracts'
+import {
+    ANIMATION_LAB_COMPARISON_SCHEMA_VERSION,
+    type AnimationLabComparisonResult,
+    compareAnimationLabCandidates,
+    type LabComparisonCandidate,
+    type LabComparisonRejectionReason,
+    type LabComparisonUnavailableReason,
+    unavailableAnimationLabComparison,
+} from './lab-comparison'
 import {
     LAB_ANIMATION_REPORT_DECODED_MAX_BYTES,
     LAB_PLATFORM_TIMELINE_EVENT_LIMIT,
@@ -153,6 +163,48 @@ export class LabService {
             artifacts: artifacts.map(artifact => this.serializePlatformArtifact(artifact)),
             analysis: report?.analysis ?? null,
         }
+    }
+
+    async compareRuns(userId: number, input: CompareLabRunsInput): Promise<AnimationLabComparisonResult> {
+        if (input.beforeRunId === input.afterRunId) {
+            throw new BadRequestException('beforeRunId and afterRunId must be different')
+        }
+        const [beforeRun, afterRun] = await Promise.all([this.requireRun(input.beforeRunId), this.requireRun(input.afterRunId)])
+        await Promise.all([
+            this.applicationService.assertOwned(beforeRun.appId, userId),
+            this.applicationService.assertOwned(afterRun.appId, userId),
+        ])
+
+        const runReasons: LabComparisonRejectionReason[] = []
+        if (beforeRun.status !== 'completed') runReasons.push({ code: 'invalid-candidate', side: 'before', field: 'run-status' })
+        if (afterRun.status !== 'completed') runReasons.push({ code: 'invalid-candidate', side: 'after', field: 'run-status' })
+        if (beforeRun.appId !== afterRun.appId) runReasons.push({ code: 'condition-mismatch', side: 'both', field: 'app-id' })
+        if (runReasons.length > 0) return this.incomparableRuns(runReasons)
+
+        const [beforeArtifact, afterArtifact] = await Promise.all([
+            this.latestComparisonArtifact(beforeRun),
+            this.latestComparisonArtifact(afterRun),
+        ])
+        const evidenceReasons: LabComparisonUnavailableReason[] = []
+        if (!beforeArtifact) evidenceReasons.push({ code: 'evidence-unavailable', side: 'before', field: 'animation-report-missing' })
+        else if (this.isExpired(beforeArtifact)) {
+            evidenceReasons.push({ code: 'evidence-unavailable', side: 'before', field: 'animation-report-expired' })
+        }
+        if (!afterArtifact) evidenceReasons.push({ code: 'evidence-unavailable', side: 'after', field: 'animation-report-missing' })
+        else if (this.isExpired(afterArtifact)) {
+            evidenceReasons.push({ code: 'evidence-unavailable', side: 'after', field: 'animation-report-expired' })
+        }
+        if (evidenceReasons.length > 0) return unavailableAnimationLabComparison(evidenceReasons)
+
+        const reports = await this.readComparisonReports(beforeArtifact!, afterArtifact!)
+        if ('reasons' in reports) return unavailableAnimationLabComparison(reports.reasons)
+        const beforeCandidate = this.comparisonCandidate(beforeRun, reports.before)
+        const afterCandidate = this.comparisonCandidate(afterRun, reports.after)
+        const candidateReasons: LabComparisonRejectionReason[] = []
+        if (!beforeCandidate) candidateReasons.push({ code: 'invalid-candidate', side: 'before', field: 'candidate' })
+        if (!afterCandidate) candidateReasons.push({ code: 'invalid-candidate', side: 'after', field: 'candidate' })
+        if (candidateReasons.length > 0) return this.incomparableRuns(candidateReasons)
+        return compareAnimationLabCandidates(beforeCandidate!, afterCandidate!)
     }
 
     async getTimeline(userId: number, runId: string) {
@@ -619,6 +671,83 @@ export class LabService {
     private async latestArtifact(runId: string, kind: LabArtifactEntity['kind']): Promise<LabArtifactEntity | null> {
         const artifact = await this.artifactRepository.findOne({ where: { runId, kind }, order: { createdAt: 'DESC' } })
         return artifact && !this.isExpired(artifact) ? artifact : null
+    }
+
+    private async latestComparisonArtifact(run: LabRunEntity): Promise<LabArtifactEntity | null> {
+        return this.artifactRepository.findOne({
+            where: { runId: run.id, appId: run.appId, kind: 'animation-report' },
+            order: { createdAt: 'DESC' },
+        })
+    }
+
+    private async readComparisonReports(
+        beforeArtifact: LabArtifactEntity,
+        afterArtifact: LabArtifactEntity
+    ): Promise<{ before: ParsedAnimationReport; after: ParsedAnimationReport } | { reasons: LabComparisonUnavailableReason[] }> {
+        const output: Partial<{ before: ParsedAnimationReport; after: ParsedAnimationReport }> = {}
+        const reasons: LabComparisonUnavailableReason[] = []
+        for (const [side, artifact] of [
+            ['before', beforeArtifact],
+            ['after', afterArtifact],
+        ] as const) {
+            try {
+                output[side] = await this.readAnimationReport(artifact)
+            } catch (error) {
+                if (!(error instanceof NotFoundException)) throw error
+                reasons.push({ code: 'evidence-unavailable', side, field: 'animation-report-missing' })
+            }
+        }
+        if (reasons.length > 0) return { reasons }
+        return { before: output.before!, after: output.after! }
+    }
+
+    private comparisonCandidate(run: LabRunEntity, report: ParsedAnimationReport): LabComparisonCandidate | null {
+        const execution = report.context.execution
+        const measurementContract = report.analysis?.measurementContract
+        const scenarioProtocolHash = report.context.scenarioProtocolHash
+        const browserVersion = report.context.browserVersion
+        if (report.runId !== run.id || !execution || !measurementContract || !scenarioProtocolHash || !browserVersion) return null
+        return {
+            runId: run.id,
+            appId: run.appId,
+            status: run.status,
+            scenarioKey: run.scenarioKey,
+            comparisonContext: {
+                routeKey: report.context.routeKey,
+                scenarioProtocolHash,
+                environment: report.context.environment,
+                browser: {
+                    name: report.context.browserName,
+                    version: browserVersion,
+                    headless: report.context.browserHeadless,
+                },
+                viewport: { ...report.context.viewport },
+                reducedMotion: report.context.reducedMotion,
+                cacheMode: report.context.cacheMode,
+                execution: {
+                    ...execution,
+                    network: execution.network ? { ...execution.network } : null,
+                },
+                measurementContract: {
+                    ...measurementContract,
+                    budgetRef: { ...measurementContract.budgetRef },
+                },
+            },
+            measuredAttempts: report.measuredAttempts.map(attempt => ({
+                attemptId: attempt.attemptId,
+                metrics: attempt.metrics,
+                capabilities: attempt.capabilities,
+            })),
+        }
+    }
+
+    private incomparableRuns(reasons: LabComparisonRejectionReason[]): AnimationLabComparisonResult {
+        return {
+            schemaVersion: ANIMATION_LAB_COMPARISON_SCHEMA_VERSION,
+            kind: 'animation-lab-before-after',
+            comparable: false,
+            reasons: reasons.slice(0, 64).map(reason => ({ ...reason })),
+        }
     }
 
     private async readAnimationReport(artifact: LabArtifactEntity): Promise<ParsedAnimationReport> {

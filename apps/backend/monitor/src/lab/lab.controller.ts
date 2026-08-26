@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, Post, Query, Request, Res, StreamableFile
 import { AuthGuard } from '@nestjs/passport'
 import type { Response } from 'express'
 
-import { parseCreateLabRunInput } from './lab.contracts'
+import { parseCompareLabRunsInput, parseCreateLabRunInput } from './lab.contracts'
 import { LabService } from './lab.service'
 
 @Controller('/labs')
@@ -15,6 +15,14 @@ export class LabController {
         response.setHeader('Cache-Control', 'private, no-store')
         response.setHeader('Pragma', 'no-cache')
         const data = await this.labService.createRun(req.user.id, parseCreateLabRunInput(body))
+        return { success: true, data }
+    }
+
+    @Post('/comparisons')
+    async compareRuns(@Body() body: unknown, @Request() req, @Res({ passthrough: true }) response: Response) {
+        response.setHeader('Cache-Control', 'private, no-store')
+        response.setHeader('Pragma', 'no-cache')
+        const data = await this.labService.compareRuns(req.user.id, parseCompareLabRunsInput(body))
         return { success: true, data }
     }
 

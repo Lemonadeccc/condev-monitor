@@ -3,6 +3,7 @@ import {
     compareAnimationLabCandidates,
     type LabComparisonCandidate,
     type LabComparisonMismatchField,
+    unavailableAnimationLabComparison,
 } from './lab-comparison'
 import type { AnimationLabMetricV2Projection } from './lab-semantics-v2'
 
@@ -87,6 +88,24 @@ function clone(value: LabComparisonCandidate): LabComparisonCandidate {
 }
 
 describe('animation Lab Before/After comparison core', () => {
+    it('represents missing or expired raw evidence without falling back to summaries', () => {
+        expect(
+            unavailableAnimationLabComparison([
+                { code: 'evidence-unavailable', side: 'before', field: 'animation-report-expired' },
+                { code: 'evidence-unavailable', side: 'after', field: 'animation-report-missing' },
+                { code: 'evidence-unavailable', side: 'after', field: 'animation-report-missing' },
+            ])
+        ).toEqual({
+            schemaVersion: ANIMATION_LAB_COMPARISON_SCHEMA_VERSION,
+            kind: 'animation-lab-before-after',
+            comparable: false,
+            reasons: [
+                { code: 'evidence-unavailable', side: 'before', field: 'animation-report-expired' },
+                { code: 'evidence-unavailable', side: 'after', field: 'animation-report-missing' },
+            ],
+        })
+    })
+
     it('derives bounded descriptive distributions from repeated measured attempts', () => {
         const result = compareAnimationLabCandidates(candidate('run-before'), candidate('run-after', [12, 15, 18]))
 
@@ -348,6 +367,9 @@ describe('animation Lab Before/After comparison core', () => {
         const missingProtocol = candidate('missing-protocol')
         missingProtocol.comparisonContext.scenarioProtocolHash = ''
 
+        const missingBrowserVersion = candidate('missing-browser-version')
+        missingBrowserVersion.comparisonContext.browser.version = ''
+
         const nonFinite = candidate('non-finite')
         nonFinite.measuredAttempts[0]!.metrics[0]!.value = Number.NaN
 
@@ -372,6 +394,7 @@ describe('animation Lab Before/After comparison core', () => {
         const cases = [
             { value: running, field: 'run-status' },
             { value: missingProtocol, field: 'candidate' },
+            { value: missingBrowserVersion, field: 'candidate' },
             { value: nonFinite, field: 'metrics' },
             { value: forgedCatalog, field: 'metrics' },
             { value: duplicateScope, field: 'metrics' },

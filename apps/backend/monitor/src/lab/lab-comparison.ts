@@ -89,6 +89,12 @@ export type LabComparisonRejectionReason = {
     field: LabComparisonMismatchField
 }
 
+export type LabComparisonUnavailableReason = {
+    code: 'evidence-unavailable'
+    side: 'before' | 'after' | 'both'
+    field: 'animation-report-missing' | 'animation-report-expired'
+}
+
 export type LabComparisonCaveat =
     | 'host-environment-unverified'
     | 'caller-attested-scenario-protocol'
@@ -175,10 +181,25 @@ export type IncomparableAnimationLabResult = {
     schemaVersion: typeof ANIMATION_LAB_COMPARISON_SCHEMA_VERSION
     kind: 'animation-lab-before-after'
     comparable: false
-    reasons: readonly LabComparisonRejectionReason[]
+    reasons: readonly (LabComparisonRejectionReason | LabComparisonUnavailableReason)[]
 }
 
 export type AnimationLabComparisonResult = ComparableAnimationLabResult | IncomparableAnimationLabResult
+
+export function unavailableAnimationLabComparison(reasons: readonly LabComparisonUnavailableReason[]): IncomparableAnimationLabResult {
+    const retained = reasons
+        .filter(
+            (reason, index, all) => all.findIndex(candidate => candidate.side === reason.side && candidate.field === reason.field) === index
+        )
+        .slice(0, MAX_REASONS)
+        .map(reason => ({ ...reason }))
+    return {
+        schemaVersion: ANIMATION_LAB_COMPARISON_SCHEMA_VERSION,
+        kind: 'animation-lab-before-after',
+        comparable: false,
+        reasons: retained,
+    }
+}
 
 type MetricGroup = {
     exemplar: AnimationLabMetricV2Projection
@@ -318,7 +339,7 @@ function validateContext(context: LabComparisonCandidate['comparisonContext']): 
         SHA256_HEX.test(context.scenarioProtocolHash) &&
         boundedString(context.environment, 120, true) &&
         token(context.browser.name, 40) &&
-        boundedString(context.browser.version, 120, true) &&
+        boundedString(context.browser.version, 120) &&
         typeof context.browser.headless === 'boolean' &&
         integer(context.viewport.width, 240, 7_680) &&
         integer(context.viewport.height, 240, 4_320) &&
