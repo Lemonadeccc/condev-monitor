@@ -156,6 +156,8 @@ pnpm docker:deploy
 
 注意：仓库里的文件名就是 `docker-compose.deply.yml`，虽然看起来像拼写错误，但根脚本已经按这个名字写死了。
 
+`pnpm docker:deploy` 和 `pnpm docker:start` 都会重新执行幂等的 ClickHouse schema，因此已有 volume 也会应用 `004_animation_rum_v1.sql` 等新增文件。如果没有走这两个受支持脚本，而是单独部署应用容器，必须先针对目标 compose project 执行 `pnpm docker:init-clickhouse`，再启用 animation RUM 写入和查询。
+
 ### 2. 停止整栈
 
 ```bash

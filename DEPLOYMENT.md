@@ -157,6 +157,8 @@ This command:
 
 Important note: the file name in the repository is literally `docker-compose.deply.yml`. The root script already uses that exact path.
 
+`pnpm docker:deploy` and `pnpm docker:start` both re-run the idempotent ClickHouse schema files, so an existing volume receives new files such as `004_animation_rum_v1.sql`. If you deploy application containers separately instead of using these supported scripts, run `pnpm docker:init-clickhouse` against the target compose project before enabling animation RUM writers or queries.
+
 ### 2. Stop the stack
 
 ```bash
