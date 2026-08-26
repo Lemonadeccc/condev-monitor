@@ -1,0 +1,95 @@
+.preloader,
+.split-overlay,
+.tags-overlay {
+  position: fixed;
+  inset: 0;
+  width: 100vw;
+  height: 100svh;
+  pointer-events: auto;
+}
+
+.preloader,
+.split-overlay {
+  background-color: var(--d);
+  color: var(--l);
+}
+
+.preloader {
+  z-index: 10000;
+}
+
+.split-overlay {
+  z-index: 9999;
+}
+
+.tags-overlay {
+  z-index: 10000;
+}
+
+.preloader h1,
+.split-overlay h1 {
+  opacity: 0;
+}
+
+.tags-overlay p {
+  opacity: 0;
+}
+
+.intro-title {
+  position: absolute;
+  top: 49%;
+  left: 50%;
+  width: 100%;
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+
+.intro-title .char {
+  position: relative;
+  display: inline-block;
+  margin-top: 0.75rem;
+  overflow: hidden;
+  transform: translateY(2.75rem);
+}
+
+.intro-title .char span {
+  position: relative;
+  display: inline-block;
+  transform: translateY(110%);
+  will-change: transform;
+}
+
+.tag {
+  position: absolute;
+  width: max-content;
+  overflow: hidden;
+  color: var(--l);
+}
+
+.tag .word {
+  position: relative;
+  display: inline-block;
+  transform: translateY(110%);
+  will-change: transform;
+}
+
+.tag-1 {
+  top: 15%;
+  left: 15%;
+}
+
+.tag-2 {
+  bottom: 15%;
+  left: 25%;
+}
+
+.tag-3 {
+  bottom: 30%;
+  right: 15%;
+}
+
+@media (max-width: 1000px) {
+  .intro-title .char {
+    transform: translateY(1rem);
+  }
+}

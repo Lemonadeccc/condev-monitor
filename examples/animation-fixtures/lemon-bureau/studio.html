@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Studio | Lemon Bureau | Codegrid</title>
+    <meta name="author" content="Codegrid" />
+    <meta name="description" content="MWT April 2026 by Codegrid" />
+    <meta name="theme-color" content="#0f0f0f" />
+    <link rel="icon" type="image/png" href="/icons/site-icon.png" />
+    <link rel="stylesheet" href="/css/globals.css" />
+    <link rel="stylesheet" href="/css/nav.css" />
+    <link rel="stylesheet" href="/css/studio.css" />
+    <link rel="stylesheet" href="/css/home.css" />
+    <link rel="stylesheet" href="/css/footer.css" />
+    <script src="/js/wrappedgl.js"></script>
+    <script src="/js/simulator.js"></script>
+  </head>
+  <body>
+    <!-- studio: navigation -->
+    <nav>
+      <div class="nav-logo">
+        <a href="/">
+          <img src="/logo/nav-logo.svg" alt="nav logo" />
+        </a>
+      </div>
+      <div class="nav-icon">
+        <img src="/icons/nav-icon.png" alt="nav icon" />
+      </div>
+      <div class="nav-toggler">
+        <p>Menu</p>
+      </div>
+    </nav>
+
+    <!-- studio: hero -->
+    <section class="studio-hero">
+      <div class="studio-hero-img">
+        <img src="/studio/hero.jpg" alt="" />
+      </div>
+      <div class="studio-hero-copy">
+        <div class="studio-hero-header">
+          <h1
+            data-animate-variant="slide"
+            data-animate-on-scroll="false"
+            data-animate-delay="0.8"
+          >
+            Zero
+          </h1>
+        </div>
+        <div class="studio-hero-header">
+          <h1
+            data-animate-variant="slide"
+            data-animate-on-scroll="false"
+            data-animate-delay="0.9"
+          >
+            Fuss
+          </h1>
+        </div>
+      </div>
+      <div class="hero-footer">
+        <div class="hero-footer-col">
+          <p
+            data-animate-variant="slide"
+            data-animate-on-scroll="false"
+            data-animate-delay="1"
+          >
+            Acid Workroom
+          </p>
+          <p
+            data-animate-variant="slide"
+            data-animate-on-scroll="false"
+            data-animate-delay="1.1"
+          >
+            Pulp Level / Max
+          </p>
+        </div>
+        <div class="hero-footer-col">
+          <p
+            data-animate-variant="slide"
+            data-animate-on-scroll="false"
+            data-animate-delay="1.2"
+          >
+            Bureau 101
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <!-- studio: about -->
+    <section class="about">
+      <div class="container">
+        <div class="about-row">
+          <div class="about-col">
+            <h1 data-animate-variant="slide" data-animate-on-scroll="true">
+              Concept Driven
+            </h1>
+          </div>
+        </div>
+        <div class="about-row">
+          <div class="about-col about-col-copy">
+            <p data-animate-variant="slide" data-animate-on-scroll="true">
+              Lemon Bureau is a creative agency rooted in Paris and working
+              everywhere else. We believe that great design is not decoration.
+            </p>
+          </div>
+          <div class="about-col">
+            <h1 data-animate-variant="slide" data-animate-on-scroll="true">
+              Visual Culture
+            </h1>
+          </div>
+        </div>
+        <div class="about-row">
+          <div class="about-col">
+            <h1 data-animate-variant="slide" data-animate-on-scroll="true">
+              Found in Paris
+            </h1>
+          </div>
+          <div class="about-col about-col-copy">
+            <p data-animate-variant="slide" data-animate-on-scroll="true">
+              From brand strategy to the final pixel, we handle it all in house.
+              Our clients range from early stage founders to established
+              European names.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="particle-canvas">
+        <canvas id="particle-canvas"></canvas>
+        <div class="particle-header">
+          <h1 data-animate-variant="slide-words" data-animate-on-scroll="true">
+            Ideas In Motion
+          </h1>
+        </div>
+      </div>
+    </section>
+
+    <!-- studio: team cards -->
+    <section id="team-cards"></section>
+
+    <!-- studio: clients -->
+    <section class="clients">
+      <div class="container">
+        <div class="clients-header-wrapper">
+          <div class="clients-header">
+            <h3 data-animate-variant="slide" data-animate-on-scroll="true">
+              Brands We Have Shaped
+            </h3>
+          </div>
+          <div class="clients-copy">
+            <p data-animate-variant="slide" data-animate-on-scroll="true">
+              Over the years we have built lasting relationships with clients
+              across fashion, technology, culture, and commerce. We do not just
+              deliver work. We deliver work that performs, persists, and gets
+              remembered.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- studio: footer -->
+    <footer>
+      <div id="footer-canvas"></div>
+      <div class="footer-inner">
+        <div class="footer-cta">
+          <span
+            class="footer-cta-eyebrow"
+            data-animate-variant="slide"
+            data-animate-on-scroll="true"
+          >
+            We Are Listening
+          </span>
+          <h3
+            class="footer-cta-heading"
+            data-animate-variant="slide"
+            data-animate-on-scroll="true"
+            data-animate-delay="0.1"
+          >
+            Your Next Big Thing Starts Here
+          </h3>
+        </div>
+        <div class="footer-bottom">
+          <p class="footer-logo">MWT APR 2026</p>
+          <p class="footer-copy">Developed by Codegrid</p>
+        </div>
+      </div>
+    </footer>
+
+    <script type="module" src="/js/lenis-scroll.js"></script>
+    <script type="module" src="/js/cursor.js"></script>
+    <script type="module" src="/js/animated-copy.js"></script>
+    <script type="module" src="/js/simulation.js"></script>
+    <script type="module" src="/js/particle-visual.js"></script>
+    <script type="module" src="/js/nav.js"></script>
+    <script type="module" src="/js/studio-hero.js"></script>
+    <script type="module" src="/js/home-hero.js"></script>
+    <script type="module" src="/js/team-cards.js"></script>
+    <script type="module" src="/js/clients.js"></script>
+    <script type="module" src="/js/footer.js"></script>
+  </body>
+</html>

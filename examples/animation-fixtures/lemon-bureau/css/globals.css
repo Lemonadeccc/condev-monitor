@@ -1,0 +1,204 @@
+@import "./fonts.css";
+
+:root {
+  --l: #ffd601;
+  --d: #0f0f0f;
+  --f-h: "Humane", system-ui, sans-serif;
+  --f-nm: "Neue Montreal", system-ui, sans-serif;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+  user-select: none;
+}
+
+::-webkit-scrollbar {
+  display: none;
+}
+
+body {
+  font-family: var(--f-nm);
+  background-color: var(--l);
+  color: var(--d);
+}
+
+img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--f-h);
+  line-height: 0.85;
+  text-transform: uppercase;
+}
+
+h1 {
+  font-size: clamp(5rem, 20vw, 20rem);
+}
+h2 {
+  font-size: clamp(4.5rem, 15vw, 15rem);
+}
+h3 {
+  font-size: clamp(4rem, 12vw, 12rem);
+}
+h4 {
+  font-size: clamp(3.5rem, 10vw, 10rem);
+}
+h5 {
+  font-size: clamp(3rem, 8vw, 8rem);
+}
+h6 {
+  font-size: clamp(2.5rem, 6vw, 6rem);
+}
+
+p {
+  font-family: var(--f-nm);
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.125;
+  text-transform: uppercase;
+}
+
+p.md {
+  font-size: 1.125rem;
+}
+p.lg {
+  font-size: 1.25rem;
+}
+
+.container {
+  width: 100%;
+  max-width: 2000px;
+  margin: 0 auto;
+  padding: 2.5rem;
+}
+
+.line,
+.word {
+  position: relative;
+  will-change: transform;
+}
+
+.line {
+  display: block;
+}
+.word {
+  display: inline-block;
+}
+
+.line-mask,
+.word-mask {
+  display: block;
+  overflow: hidden;
+}
+
+html.lenis,
+html.lenis body {
+  height: auto;
+}
+
+.lenis:not(.lenis-autoToggle).lenis-stopped {
+  overflow: clip;
+}
+
+.lenis [data-lenis-prevent],
+.lenis [data-lenis-prevent-wheel],
+.lenis [data-lenis-prevent-touch] {
+  overscroll-behavior: contain;
+}
+
+.lenis.lenis-smooth iframe {
+  pointer-events: none;
+}
+
+.lenis.lenis-autoToggle {
+  transition-property: overflow;
+  transition-duration: 1ms;
+  transition-behavior: allow-discrete;
+}
+
+@media (pointer: fine) {
+  #custom-cursor {
+    position: fixed;
+    top: 0;
+    left: 0;
+    z-index: 20001;
+    width: 28px;
+    height: 28px;
+    opacity: 0;
+    background-color: var(--l);
+    -webkit-mask: url("/icons/cursor.png") center / contain no-repeat;
+    mask: url("/icons/cursor.png") center / contain no-repeat;
+    mix-blend-mode: difference;
+    pointer-events: none;
+    user-select: none;
+    transform: translate3d(var(--x, -100px), var(--y, -100px), 0)
+      translate(-50%, -50%);
+    transition: opacity 120ms ease;
+    will-change: transform, opacity;
+  }
+
+  #custom-cursor.is-visible {
+    opacity: 1;
+  }
+
+  .container {
+    padding: 2.25rem;
+  }
+}
+
+@view-transition {
+  navigation: auto;
+}
+
+::view-transition-group(root) {
+  animation: none;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 0.5s;
+  backface-visibility: hidden;
+  transform: translateZ(0);
+  will-change: transform, clip-path, filter;
+}
+
+::view-transition-old(root) {
+  animation: 1.5s cubic-bezier(0.87, 0, 0.13, 1) both move-out;
+}
+
+::view-transition-new(root) {
+  clip-path: polygon(0% 100%, 100% 100%, 100% 100%, 0% 100%);
+  animation: 1.5s cubic-bezier(0.87, 0, 0.13, 1) both move-in;
+}
+
+@keyframes move-out {
+  from {
+    opacity: 1;
+    filter: none;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 1;
+    filter: brightness(0.25);
+    transform: translateY(-35%);
+  }
+}
+
+@keyframes move-in {
+  from {
+    clip-path: polygon(0% 100%, 100% 100%, 100% 100%, 0% 100%);
+  }
+  to {
+    clip-path: polygon(0% 100%, 100% 100%, 100% 0%, 0% 0%);
+  }
+}
