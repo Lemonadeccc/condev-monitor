@@ -117,6 +117,12 @@ examples/aisdk-rag-chatbox/.env*
 examples/rag/backend/.env
 examples/rag/frontend/.env
 
+# Keep local animation-example credentials out of source control.
+examples/animation-fixtures/**/.env*
+
+# Local Animation Lab reports can contain raw traces and source diagnostics.
+/lab-results/
+
 .devcontainer/data
 .devcontainer/postgressql_data
 .devcontainer/postgresql_data
