@@ -13,7 +13,7 @@
 
 浏览器插件只是新的展示和调试入口，不拥有另一套 FPS、Long Task 或框架指标实现。这样页面浮层、自动化测试、移动端远程调试和浏览器插件得到的指标含义保持一致。
 
-Labs 不是要求真实用户打开 DevTools 的功能。它是一个从命令行启动的浏览器中立 runner，当前 Playwright adapter 支持 Chromium、Firefox 和 WebKit：三个引擎都能按本地 JSON 场景重复执行 pointer、hover、click、scroll、drag、keyboard、resize 等动作并运行页面 probe；CDP Performance trace 和 Lighthouse navigation 只在 Chromium 中可用。Chrome Network 面板的 “Preserve log/保留日志” 从不参与采集；页面 SDK 由 transport、离线队列和生命周期 flush 负责生产上报，Labs 由 runner 直接写本地产物并用授权 API 上传脱敏派生结果。
+Labs 不是要求真实用户打开 DevTools 的功能。它是一个从命令行启动的浏览器中立 runner，当前 Playwright adapter 支持 Chromium、Firefox 和 WebKit：三个引擎都能按本地 JSON 场景重复执行 pointer、hover、click、scroll、drag、keyboard、resize 等动作并运行页面 probe；每条 `PerformanceObserver` 信号仍以浏览器 `supportedEntryTypes` 的精确声明为能力边界，浏览器静默接受未知 type 不算支持，因此 Firefox/WebKit 当前没有的 Long Task、LoAF、CLS 信号会保持 `unsupported`，不会伪装成测得的 0。CDP Performance trace 和 Lighthouse navigation 只在 Chromium 中可用。Chrome Network 面板的 “Preserve log/保留日志” 从不参与采集；页面 SDK 由 transport、离线队列和生命周期 flush 负责生产上报，Labs 由 runner 直接写本地产物并用授权 API 上传脱敏派生结果。
 
 ## 推荐接入：一次 init
 
