@@ -189,6 +189,8 @@ export interface BrowserAnimationPageEvidenceSnapshot {
 export interface BrowserAnimationPageEvidenceController {
     readonly enabled: boolean
     start(): void
+    /** Samples the current page once without stopping the document-lifetime observer. */
+    captureBoundary(): BrowserAnimationPageEvidenceSnapshot
     stop(): BrowserAnimationPageEvidenceSnapshot
     snapshot(): BrowserAnimationPageEvidenceSnapshot
     dispose(): void
@@ -441,6 +443,8 @@ export function createAutomaticAnimationPageEvidence(input: AutomaticPageEvidenc
     let stopped = false
     let disposed = false
     let timer: number | null = null
+    let pendingBoundaryVisibility: BrowserAnimationWorkAvoidanceEvidence['visibilityState'] | null = null
+    let boundarySampleVersion = 0
     let startedAt = pageNow(windowValue)
     let sampledAt = startedAt
     let sampleCount = 0
@@ -889,6 +893,12 @@ export function createAutomaticAnimationPageEvidence(input: AutomaticPageEvidenc
 
     const onVisibilityChange = (): void => {
         for (const probe of videoProbes.values()) probe.resetBaseline()
+        const visibility = normalizedVisibility(documentValue)
+        if (pendingBoundaryVisibility === visibility) {
+            pendingBoundaryVisibility = null
+            return
+        }
+        pendingBoundaryVisibility = null
         sample()
     }
     if (options.visibility || options.media) documentValue.addEventListener?.('visibilitychange', onVisibilityChange)
@@ -1067,6 +1077,15 @@ export function createAutomaticAnimationPageEvidence(input: AutomaticPageEvidenc
             installLifecycleListeners(documentValue)
             sample()
             schedule()
+        },
+        captureBoundary(): BrowserAnimationPageEvidenceSnapshot {
+            sample()
+            const version = ++boundarySampleVersion
+            pendingBoundaryVisibility = normalizedVisibility(documentValue)
+            void Promise.resolve().then(() => {
+                if (boundarySampleVersion === version) pendingBoundaryVisibility = null
+            })
+            return snapshot()
         },
         stop,
         snapshot,
