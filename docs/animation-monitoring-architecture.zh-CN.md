@@ -307,14 +307,14 @@ Renderer window 必须与目标 collector 使用同一个 `AnimationRuntime.now(
 
 ### 后端
 
-| 目录                        | 职责                                                                                                                                         |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/backend/dsn-server`   | 公开但受限的 animation RUM 写入口；严格校验 schema、大小、隐私、appId、采样元数据和 v1 精确 metric tuple；不提供公开读 API                   |
-| `apps/backend/event-worker` | Kafka 二次校验、幂等投影和专用 ClickHouse 表；无效 SDK envelope 的 DLQ 不保存原文；聚合当前在 Monitor 查询时完成                             |
-| `apps/backend/monitor`      | JWT + application ownership 下的 Animation 查询与 Labs 控制面；Labs 使用 2 小时 runner grant、流式 artifact、严格 schema/大小和 7 天访问期限 |
-| `apps/backend/lab-runner`   | 用户/CI 本机的浏览器中立场景执行器；三引擎跑通用探针/动作，Chromium 另有 CDP/Lighthouse，只上传有界脱敏 report/trace-index                   |
-| `.devcontainer/clickhouse`  | production animation capture、metric、diagnostic 表及 TTL                                                                                    |
-| `.devcontainer/postgres`    | Labs run、一次性 grant hash 和 artifact 元数据                                                                                               |
+| 目录                        | 职责                                                                                                                                                                                                              |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/backend/dsn-server`   | 公开但受限的 animation RUM 写入口；严格校验 schema、大小、隐私、appId、采样元数据和 v1 精确 metric tuple；不提供公开读 API                                                                                        |
+| `apps/backend/event-worker` | Kafka 二次校验、幂等投影和专用 ClickHouse 表；无效 SDK envelope 的 DLQ 不保存原文；聚合当前在 Monitor 查询时完成                                                                                                  |
+| `apps/backend/monitor`      | JWT + application ownership 下的 Animation 查询与 Labs 控制面；RUM v2 以 `FINAL` 子行计数和 event/scope 身份核对 completion marker；Labs 使用 2 小时 runner grant、流式 artifact、严格 schema/大小和 7 天访问期限 |
+| `apps/backend/lab-runner`   | 用户/CI 本机的浏览器中立场景执行器；三引擎跑通用探针/动作，Chromium 另有 CDP/Lighthouse，只上传有界脱敏 report/trace-index                                                                                        |
+| `.devcontainer/clickhouse`  | production animation capture、metric、diagnostic 表及 TTL                                                                                                                                                         |
+| `.devcontainer/postgres`    | Labs run、一次性 grant hash 和 artifact 元数据                                                                                                                                                                    |
 
 生产读接口必须位于有租户鉴权的 Monitor API；不能继续把只凭 `appId` 的查询放在 DSN controller。
 
@@ -322,8 +322,8 @@ Renderer window 必须与目标 collector 使用同一个 `AnimationRuntime.now(
 
 `apps/frontend/monitor` 中开发：
 
-- `/animations`：已实现跨 capture 指标聚合和最近采集；`count`/`sum` 不直接横比 raw total，而以 `windowDurationMs` 换算每分钟后再聚合；后续增加 route、release、device 的可视化筛选；
-- `/animations/[captureId]`：已实现匿名 context、frame/main-thread 指标、capability 和 12-family coverage；本地 raw timeline 不进入 RUM；
+- `/animations`：已实现跨 capture 指标聚合和最近采集；SDK 证据完整性与 ClickHouse 存储投影完整性分开显示，子行不一致的 marker 从统计与趋势中排除；`count`/`sum` 不直接横比 raw total，而以 `windowDurationMs` 换算每分钟后再聚合；后续增加 route、release、device 的可视化筛选；
+- `/animations/v2/[captureId]`：已实现匿名 context、frame/main-thread 指标、capability 和 12-family coverage；详情只展示通过 marker expected count、`FINAL` observed count、event/scope identity 和闭集 mapper 四层核对的子行，不完整投影返回 409；本地 raw timeline 不进入 RUM；
 - 后续增加 recommendations、source candidate、Replay/trace 关联；
 - `measured / partial / not-observed / not-instrumented / unsupported` coverage 显示。
 

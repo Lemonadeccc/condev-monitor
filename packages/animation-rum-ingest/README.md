@@ -22,6 +22,6 @@ ClickHouse v2 writes are not transactional. Consumers must execute the returned 
 2. metric rows;
 3. capture completion marker.
 
-Platform queries must anchor child rows to the completed capture and verify the stored child counts. A failed attempt may leave retriable orphan child rows, but it must never write the completion marker early.
+Platform queries must anchor child rows to the completed capture and verify the stored child counts after `FINAL`. Verification is identity-aware: rows for the same `(app_id, capture_id)` still fail when their `event_id` or `scope` differs from the marker. A marker with missing, extra, or identity-replaced children is a storage projection mismatch, not a healthy completion or a delayed marker. Analytics exclude that capture and detail reads fail closed instead of returning a partial child set. A failed attempt may leave retriable orphan child rows, but children without a marker remain invisible and the writer must never write the marker early.
 
 This package only handles closed aggregate evidence. It must never receive selectors, DOM ids/classes/text, URLs, input values, headers, cookies, user identity, framework props/state, raw samples, screenshots, or shader source.
