@@ -474,6 +474,34 @@ export const ANIMATION_RUM_V2_METRIC_CATALOG: readonly AnimationRumV2MetricDefin
     metric('motion.settle-time.p95', 'motionQuality', 'settleTimeMs', 'p95', 'ms', interactionAdapter, ['interaction-quality-adapter']),
 ])
 
+/**
+ * Closed event-flow aggregates that can be divided by a capture window.
+ * Point-in-time inventory such as running animations, surfaces, and video
+ * elements is intentionally excluded even though those metrics use `count`.
+ */
+export const ANIMATION_RUM_V2_PER_MINUTE_METRIC_IDS = Object.freeze([
+    'frame.jank-burst.count',
+    'frame.missed-opportunities.sum',
+    'main.loaf.count',
+    'main.loaf-duration.sum',
+    'main.long-task.count',
+    'main.long-task-duration.sum',
+    'outcome.interaction.count',
+    'outcome.interaction-completed.count',
+    'outcome.interaction-cancelled.count',
+    'outcome.interaction-abandoned.count',
+    'monitor.callback.count',
+    'pipeline.loaf-render-start-to-paint.count',
+    'pipeline.loaf-paint-to-presentation.count',
+    'main.input-capture-to-next-raf.count',
+    'outcome.loaf-first-ui-to-end.count',
+    'pipeline.loaf-forced-style-layout.count',
+    'resource.count',
+    'resource.transfer-size.sum',
+    'resource.encoded-size.sum',
+    'resource.decoded-size.sum',
+] as const)
+
 const METRIC_BY_ID = new Map(ANIMATION_RUM_V2_METRIC_CATALOG.map(definition => [definition.metricId, definition]))
 
 export function getAnimationRumV2MetricDefinition(metricId: string): AnimationRumV2MetricDefinition | undefined {
