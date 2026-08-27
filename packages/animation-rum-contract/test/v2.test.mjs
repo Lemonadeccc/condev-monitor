@@ -7,6 +7,7 @@ import {
     ANIMATION_RUM_V2_MAX_METRICS,
     ANIMATION_RUM_V2_METRIC_CATALOG,
     ANIMATION_RUM_V2_PAGE_ADDITION_COUNT,
+    ANIMATION_RUM_V2_PER_MINUTE_METRIC_IDS,
     ANIMATION_RUM_V2_TARGET_ADAPTER_ADDITION_COUNT,
     detectAnimationRumProtocol,
     getAnimationRumV2MetricDefinition,
@@ -56,6 +57,31 @@ test('locks the complete catalog manifest independently from its validator', () 
     }))
     const hash = createHash('sha256').update(JSON.stringify(manifest)).digest('hex')
     assert.equal(hash, '256cc18e6a1ff339887ec246317791e693d317d94e15e91b5158d612e8237b58')
+})
+
+test('normalizes only closed event flows and never point-in-time inventory', () => {
+    const ids = new Set(ANIMATION_RUM_V2_PER_MINUTE_METRIC_IDS)
+    assert.ok(Object.isFrozen(ANIMATION_RUM_V2_PER_MINUTE_METRIC_IDS))
+    assert.equal(ids.size, ANIMATION_RUM_V2_PER_MINUTE_METRIC_IDS.length)
+    for (const metricId of ids) {
+        const definition = getAnimationRumV2MetricDefinition(metricId)
+        assert.ok(definition, metricId)
+        assert.ok(definition.stat === 'count' || definition.stat === 'sum', metricId)
+        assert.equal(definition.evidenceWindow, 'capture-window', metricId)
+    }
+    for (const metricId of [
+        'animation.running.count',
+        'animation.infinite.count',
+        'accessibility.reduced-motion-active-candidate.count',
+        'surface.canvas.count',
+        'surface.svg.count',
+        'surface.canvas2d.count',
+        'surface.webgl.count',
+        'surface.webgpu.count',
+        'media.video-element.count',
+    ]) {
+        assert.equal(ids.has(metricId), false, metricId)
+    }
 })
 
 test('links each distribution to its intended observed population', () => {
