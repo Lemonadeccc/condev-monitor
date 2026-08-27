@@ -145,32 +145,6 @@ describe('AnimationRumV2QueryService', () => {
                         },
                         {
                             scope: 'target',
-                            metric_id: 'renderer.gpu-frame.p95',
-                            relation: 'adapter',
-                            owner: 'renderer-adapter',
-                            capture_count: 4,
-                            measured_capture_count: 1,
-                            partial_capture_count: 0,
-                            not_observed_capture_count: 1,
-                            not_instrumented_capture_count: 0,
-                            unsupported_capture_count: 1,
-                            unknown_capture_count: 1,
-                            captures_with_value: 1,
-                            measured_captures_with_value: 1,
-                            partial_captures_with_value: 0,
-                            reported_samples: 8,
-                            measured_reported_samples: 8,
-                            partial_reported_samples: 0,
-                            capture_value_avg: 2.4,
-                            capture_value_p50: 2.2,
-                            capture_value_p75: 2.3,
-                            capture_value_p95: 2.6,
-                            capture_value_min: 2,
-                            capture_value_max: 2.7,
-                            normalized_captures_with_value: 0,
-                        },
-                        {
-                            scope: 'target',
                             metric_id: 'main.long-task.count',
                             relation: 'target-temporal-overlap',
                             owner: 'browser-core',
@@ -302,7 +276,7 @@ describe('AnimationRumV2QueryService', () => {
                 }),
             })
         )
-        expect(response.metrics).toHaveLength(3)
+        expect(response.metrics).toHaveLength(2)
         expect(response.metrics.find(metric => metric?.metricId === 'frame.duration.p95')).toEqual(
             expect.objectContaining({
                 metricId: 'frame.duration.p95',
@@ -333,27 +307,6 @@ describe('AnimationRumV2QueryService', () => {
                     max: null,
                 },
                 valuePerMinute: expect.objectContaining({ capturesWithValue: 1, p95: 6 }),
-            })
-        )
-        expect(response.metrics.find(metric => metric?.metricId === 'renderer.gpu-frame.p95')).toEqual(
-            expect.objectContaining({
-                family: 'renderer',
-                scope: 'target',
-                relation: 'adapter',
-                owner: 'renderer-adapter',
-                statusCounts: {
-                    measured: 1,
-                    partial: 0,
-                    notObserved: 1,
-                    notInstrumented: 0,
-                    unsupported: 1,
-                    unknown: 1,
-                },
-                measuredCaptures: 1,
-                partialCaptures: 0,
-                excludedPartialCaptures: 0,
-                captureValue: expect.objectContaining({ measuredCaptures: 1, p95: 2.6 }),
-                valuePerMinute: null,
             })
         )
 
@@ -478,6 +431,71 @@ describe('AnimationRumV2QueryService', () => {
                 excludedPartialCaptures: 1,
                 reportedSamples: '9007199254740995',
                 captureValue: expect.objectContaining({ average: null, p50: null, p75: null, p95: null, min: null, max: null }),
+            })
+        )
+    })
+
+    it('keeps all six GPU states distinct while excluding partial and unavailable captures from the measured distribution', () => {
+        const { service } = createService({ query: jest.fn() })
+        const view = (service as any).summaryMetricView({
+            scope: 'target',
+            metric_id: 'renderer.gpu-frame.p95',
+            relation: 'adapter',
+            owner: 'renderer-adapter',
+            capture_count: 6,
+            measured_capture_count: 1,
+            partial_capture_count: 1,
+            not_observed_capture_count: 1,
+            not_instrumented_capture_count: 1,
+            unsupported_capture_count: 1,
+            unknown_capture_count: 1,
+            captures_with_value: 2,
+            measured_captures_with_value: 1,
+            partial_captures_with_value: 1,
+            reported_samples: 16,
+            measured_reported_samples: 8,
+            partial_reported_samples: 8,
+            capture_value_avg: 2.4,
+            capture_value_p50: 2.4,
+            capture_value_p75: 2.4,
+            capture_value_p95: 2.4,
+            capture_value_min: 2.4,
+            capture_value_max: 2.4,
+            normalized_captures_with_value: 0,
+        })
+
+        expect(view).toEqual(
+            expect.objectContaining({
+                metricId: 'renderer.gpu-frame.p95',
+                family: 'renderer',
+                scope: 'target',
+                relation: 'adapter',
+                owner: 'renderer-adapter',
+                captureCount: 6,
+                statusCounts: {
+                    measured: 1,
+                    partial: 1,
+                    notObserved: 1,
+                    notInstrumented: 1,
+                    unsupported: 1,
+                    unknown: 1,
+                },
+                measuredCaptures: 1,
+                partialCaptures: 1,
+                excludedPartialCaptures: 1,
+                captureValue: {
+                    aggregation: 'distribution-of-capture-aggregates',
+                    measuredCaptures: 1,
+                    partialCaptures: 1,
+                    excludedPartialCaptures: 1,
+                    average: 2.4,
+                    p50: 2.4,
+                    p75: 2.4,
+                    p95: 2.4,
+                    min: 2.4,
+                    max: 2.4,
+                },
+                valuePerMinute: null,
             })
         )
     })
@@ -613,6 +631,119 @@ describe('AnimationRumV2QueryService', () => {
                     result([
                         {
                             scope: 'target',
+                            metric_id: 'frame.duration.p95',
+                            relation: 'target-temporal-overlap',
+                            owner: 'browser-core',
+                            value: 18.5,
+                            samples: 120,
+                            status: 'measured',
+                        },
+                    ])
+                )
+                .mockResolvedValueOnce(
+                    result([
+                        {
+                            scope: 'target',
+                            owner: 'browser-core',
+                            family: 'frameCadence',
+                            provider_version: '2.0.0',
+                            accepted: 120,
+                            retained: 100,
+                            evidence: 100,
+                            dropped: 20,
+                            rejected: 0,
+                            truncated: 1,
+                        },
+                    ])
+                )
+                .mockResolvedValueOnce(
+                    result([
+                        captureRow({
+                            event_id: 'event_parent_1234',
+                            capture_id: 'capture_parent_1234',
+                            parent_capture_id: '',
+                            scope: 'page',
+                            target_key: '',
+                        }),
+                    ])
+                ),
+        }
+        const { service } = createService(clickhouse)
+
+        const response = await service.capture(41, 'vanillaFixture1', 'capture_12345678')
+
+        expect(response.capture).toEqual(
+            expect.objectContaining({
+                eventId: 'event_12345678',
+                contractVersion: 2,
+                snapshotSchemaVersion: 1,
+                scope: 'target',
+                parentCaptureId: 'capture_parent_1234',
+                targetKey: 'hero-canvas',
+            })
+        )
+        expect(response.capture.projectionIntegrity).toEqual({
+            semantics: 'completion-marker-child-row-counts',
+            status: 'verified',
+            expected: { metrics: 1, providerEvidence: 1 },
+            observed: { metrics: 1, providerEvidence: 1 },
+        })
+        expect(Object.keys(response.capture.capabilities)).toEqual([...ANIMATION_RUM_V2_CAPABILITIES])
+        expect(Object.keys(response.capture.coverage)).toEqual([...ANIMATION_RUM_FAMILIES])
+        expect(response.capture.capabilities).not.toHaveProperty('url')
+        expect(response.capture.coverage).not.toHaveProperty('metadata')
+        expect(response.metrics).toEqual([
+            expect.objectContaining({
+                metricId: 'frame.duration.p95',
+                relation: 'target-temporal-overlap',
+                owner: 'browser-core',
+                value: 18.5,
+            }),
+        ])
+        expect(response.providerEvidence).toEqual([
+            {
+                owner: 'browser-core',
+                family: 'frameCadence',
+                providerVersion: '2.0.0',
+                accepted: 120,
+                retained: 100,
+                evidence: 100,
+                dropped: 20,
+                rejected: 0,
+                truncated: true,
+            },
+        ])
+        expect(response.relationships).toEqual(
+            expect.objectContaining({
+                parent: expect.objectContaining({
+                    captureId: 'capture_parent_1234',
+                    scope: 'page',
+                    targetKey: null,
+                    projectionIntegrity: expect.objectContaining({ status: 'verified' }),
+                }),
+                targets: null,
+            })
+        )
+        const childCalls = clickhouse.query.mock.calls.slice(1, 3).map(call => call[0])
+        expect(childCalls).toHaveLength(2)
+        expect(childCalls.every(call => call.query.includes('event_id = {eventId:String}'))).toBe(true)
+        expect(childCalls.every(call => call.query_params.eventId === 'event_12345678')).toBe(true)
+        expect(clickhouse.query.mock.calls[0][0].query).toContain('captured_at >= {retentionFloor')
+        expect(clickhouse.query.mock.calls[0][0].query_params.retentionFloor).toBeDefined()
+        expect(clickhouse.query.mock.calls[3][0].query).toContain('captured_at >= {retentionFloor')
+        expect(JSON.stringify(response)).not.toContain('private.invalid')
+        expect(JSON.stringify(response)).not.toContain('#private')
+    })
+
+    it('returns GPU timer capability and its unavailable metric status in the same capture detail', async () => {
+        const clickhouse = {
+            query: jest
+                .fn()
+                .mockResolvedValueOnce(result([captureRow()]))
+                .mockResolvedValueOnce(
+                    result([
+                        {
+                            scope: 'target',
                             metric_id: 'renderer.gpu-frame.p95',
                             relation: 'adapter',
                             owner: 'renderer-adapter',
@@ -654,28 +785,8 @@ describe('AnimationRumV2QueryService', () => {
 
         const response = await service.capture(41, 'vanillaFixture1', 'capture_12345678')
 
-        expect(response.capture).toEqual(
-            expect.objectContaining({
-                eventId: 'event_12345678',
-                contractVersion: 2,
-                snapshotSchemaVersion: 1,
-                scope: 'target',
-                parentCaptureId: 'capture_parent_1234',
-                targetKey: 'hero-canvas',
-            })
-        )
-        expect(response.capture.projectionIntegrity).toEqual({
-            semantics: 'completion-marker-child-row-counts',
-            status: 'verified',
-            expected: { metrics: 1, providerEvidence: 1 },
-            observed: { metrics: 1, providerEvidence: 1 },
-        })
-        expect(Object.keys(response.capture.capabilities)).toEqual([...ANIMATION_RUM_V2_CAPABILITIES])
-        expect(Object.keys(response.capture.coverage)).toEqual([...ANIMATION_RUM_FAMILIES])
-        expect(response.capture.capabilities).not.toHaveProperty('url')
         expect(response.capture.capabilities['renderer-adapter']).toBe('supported')
         expect(response.capture.capabilities['gpu-timer-query']).toBe('unsupported')
-        expect(response.capture.coverage).not.toHaveProperty('metadata')
         expect(response.metrics).toEqual([
             expect.objectContaining({
                 metricId: 'renderer.gpu-frame.p95',
@@ -687,38 +798,13 @@ describe('AnimationRumV2QueryService', () => {
             }),
         ])
         expect(response.providerEvidence).toEqual([
-            {
+            expect.objectContaining({
                 owner: 'renderer-adapter',
                 family: 'renderer',
-                providerVersion: '2.0.0',
-                accepted: 1,
-                retained: 1,
                 evidence: 1,
-                dropped: 0,
-                rejected: 0,
                 truncated: false,
-            },
+            }),
         ])
-        expect(response.relationships).toEqual(
-            expect.objectContaining({
-                parent: expect.objectContaining({
-                    captureId: 'capture_parent_1234',
-                    scope: 'page',
-                    targetKey: null,
-                    projectionIntegrity: expect.objectContaining({ status: 'verified' }),
-                }),
-                targets: null,
-            })
-        )
-        const childCalls = clickhouse.query.mock.calls.slice(1, 3).map(call => call[0])
-        expect(childCalls).toHaveLength(2)
-        expect(childCalls.every(call => call.query.includes('event_id = {eventId:String}'))).toBe(true)
-        expect(childCalls.every(call => call.query_params.eventId === 'event_12345678')).toBe(true)
-        expect(clickhouse.query.mock.calls[0][0].query).toContain('captured_at >= {retentionFloor')
-        expect(clickhouse.query.mock.calls[0][0].query_params.retentionFloor).toBeDefined()
-        expect(clickhouse.query.mock.calls[3][0].query).toContain('captured_at >= {retentionFloor')
-        expect(JSON.stringify(response)).not.toContain('private.invalid')
-        expect(JSON.stringify(response)).not.toContain('#private')
     })
 
     it('returns 409 before reading child tables when a completion marker has an incomplete child projection', async () => {
