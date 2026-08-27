@@ -1035,6 +1035,33 @@ function bindingAllows(definition: AnimationRumV2MetricDefinition, scope: unknow
     )
 }
 
+function unavailableStatusForRequiredCapabilities(
+    states: readonly AnimationRumV2CapabilityState[]
+): Extract<AnimationRumV2MetricStatus, 'not-instrumented' | 'unsupported' | 'unknown'> | null {
+    if (states.includes('unsupported')) return 'unsupported'
+    if (states.includes('disabled')) return 'not-instrumented'
+    if (states.includes('unknown')) return 'unknown'
+    return null
+}
+
+function validateGpuTimerMetricCapabilityStatus(
+    definition: AnimationRumV2MetricDefinition,
+    status: unknown,
+    capabilities: AnimationRumV2Report['capabilities'],
+    errors: string[]
+): void {
+    if (definition.metricId !== 'renderer.gpu-frame.p95' || typeof status !== 'string' || !UNAVAILABLE_STATUSES.has(status)) return
+    const states = definition.requiredCapabilities.map(capability => capabilities[capability])
+    if (states.some(state => typeof state !== 'string' || !CAPABILITY_STATES.has(state))) return
+
+    const capabilityStatus = unavailableStatusForRequiredCapabilities(states)
+    // A supported timer may still have no completed query or may reject a
+    // disjoint/invalid result. Other unavailable states must describe the
+    // strongest unavailable required capability exactly.
+    const matches = capabilityStatus === null ? status === 'not-observed' || status === 'unknown' : status === capabilityStatus
+    if (!matches) add(errors, 'metric_capability_mismatch')
+}
+
 function parseMetrics(
     raw: unknown,
     scope: unknown,
@@ -1097,6 +1124,7 @@ function parseMetrics(
                 if (capabilities[capability] !== 'supported') add(errors, 'metric_capability_mismatch')
             }
         }
+        if (definition && capabilities) validateGpuTimerMetricCapabilityStatus(definition, value.status, capabilities, errors)
         if (typeof value.metricId === 'string' && typeof value.relation === 'string') {
             const identity = `${value.metricId}\0${value.relation}`
             if (identities.has(identity)) add(errors, 'duplicate_metric')

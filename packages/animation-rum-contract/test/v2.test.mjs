@@ -149,6 +149,42 @@ test('accepts every registered scope, relation, and provider binding', () => {
     }
 })
 
+test('keeps GPU timer capability and unavailable metric status semantically aligned', () => {
+    const definition = getAnimationRumV2MetricDefinition('renderer.gpu-frame.p95')
+    assert.ok(definition)
+    const unavailableStatuses = ['not-observed', 'not-instrumented', 'unsupported', 'unknown']
+    const cases = [
+        { renderer: 'supported', timer: 'supported', allowed: ['not-observed', 'unknown'] },
+        { renderer: 'unsupported', timer: 'supported', allowed: ['unsupported'] },
+        { renderer: 'supported', timer: 'unsupported', allowed: ['unsupported'] },
+        { renderer: 'disabled', timer: 'unknown', allowed: ['not-instrumented'] },
+        { renderer: 'unknown', timer: 'supported', allowed: ['unknown'] },
+        { renderer: 'unsupported', timer: 'disabled', allowed: ['unsupported'] },
+    ]
+
+    for (const binding of definition.bindings) {
+        for (const capabilityCase of cases) {
+            for (const status of unavailableStatuses) {
+                const report = createAnimationRumV2ReportForMetric(definition, binding)
+                report.capabilities['renderer-adapter'] = capabilityCase.renderer
+                report.capabilities['gpu-timer-query'] = capabilityCase.timer
+                Object.assign(report.metrics[0], { value: null, samples: null, status })
+                report.coverage.renderer = {
+                    status,
+                    evidenceLevel: status === 'not-observed' ? 'runtime-observation' : 'unsupported-or-unknown',
+                }
+
+                const result = validateNormalizedAnimationRumV2(report, { nowEpochMs: ANIMATION_RUM_V2_GOLDEN_NOW })
+                const label = `${binding.scope}/${binding.relation} renderer=${capabilityCase.renderer} timer=${capabilityCase.timer} status=${status}`
+                assert.equal(result.ok, capabilityCase.allowed.includes(status), `${label}: ${JSON.stringify(result)}`)
+                if (!result.ok && !capabilityCase.allowed.includes(status)) {
+                    assert.ok(result.errors.includes('metric_capability_mismatch'), `${label}: ${JSON.stringify(result)}`)
+                }
+            }
+        }
+    }
+})
+
 test('matches the shared v2 golden acceptance corpus', () => {
     for (const golden of ANIMATION_RUM_V2_GOLDEN_CASES) {
         const result = validateNormalizedAnimationRumV2(golden.payload(), { nowEpochMs: ANIMATION_RUM_V2_GOLDEN_NOW })
