@@ -2367,6 +2367,120 @@ test('renderer adapters normalize bounded evidence and keep GPU timing fail-clos
     collector.destroy()
 })
 
+test('renderer adapter post-processing isolates throwing nested getters without discarding normalized attribution', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    const target = {
+        tagName: 'CANVAS',
+        namespaceURI: 'http://www.w3.org/1999/xhtml',
+        isConnected: true,
+        width: 300,
+        height: 150,
+        ownerDocument: { defaultView: { innerWidth: 1_000, innerHeight: 800 } },
+        getAttribute: () => null,
+        getAnimations: () => [],
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 300, bottom: 150, width: 300, height: 150 }),
+        addEventListener() {},
+        removeEventListener() {},
+    }
+    const throwingMetrics = {}
+    Object.defineProperty(throwingMetrics, 'drawCallsP95', {
+        enumerable: true,
+        get() {
+            throw new Error('caller-owned metrics getter failed')
+        },
+    })
+    const throwingWindow = { endedAt: 0 }
+    Object.defineProperty(throwingWindow, 'startedAt', {
+        enumerable: true,
+        get() {
+            throw new Error('caller-owned evidence getter failed')
+        },
+    })
+    const adapters = [
+        {
+            id: 'throwing-metrics',
+            version: '1.0.0',
+            canInspect: element => element === target,
+            inspect: () => ({
+                inventory: { uiFrameworks: ['react'], renderers: ['canvas2d'] },
+                owners: [{ relation: 'framework-owner', framework: 'react', label: 'Retained React owner' }],
+                renderer: {
+                    family: 'canvas2d',
+                    capability: { state: 'supported', observed: true, buffered: false },
+                    metrics: throwingMetrics,
+                    evidence: {
+                        window: { startedAt: 0, endedAt: 0 },
+                        acceptedSampleCount: 1,
+                        retainedSampleCount: 1,
+                        droppedSampleCount: 0,
+                    },
+                },
+            }),
+        },
+        {
+            id: 'throwing-evidence',
+            version: '1.0.0',
+            canInspect: element => element === target,
+            inspect: () => ({
+                inventory: { uiFrameworks: ['vue'], renderers: ['webgl'] },
+                owners: [{ relation: 'framework-owner', framework: 'vue', label: 'Retained Vue owner' }],
+                renderer: {
+                    family: 'webgl',
+                    capability: { state: 'supported', observed: true, buffered: false },
+                    metrics: { drawCallsP95: 2 },
+                    evidence: {
+                        window: throwingWindow,
+                        acceptedSampleCount: 1,
+                        retainedSampleCount: 1,
+                        droppedSampleCount: 0,
+                    },
+                },
+            }),
+        },
+        {
+            id: 'valid-after-failures',
+            version: '1.0.0',
+            canInspect: element => element === target,
+            inspect: () => ({
+                renderer: {
+                    family: 'other',
+                    capability: { state: 'supported', observed: true, buffered: false },
+                    metrics: { drawCallsP95: 3 },
+                    evidence: {
+                        window: { startedAt: 0, endedAt: 0 },
+                        acceptedSampleCount: 1,
+                        retainedSampleCount: 1,
+                        droppedSampleCount: 0,
+                    },
+                },
+            }),
+        },
+    ]
+
+    const selection = collector.selectElement(target, { adapters })
+    const snapshot = selection.snapshot()
+
+    assert.deepEqual(snapshot.adapterErrors, ['throwing-metrics:inspection-failed', 'throwing-evidence:inspection-failed'])
+    assert.deepEqual(
+        snapshot.renderers.map(renderer => renderer.adapterId),
+        ['valid-after-failures']
+    )
+    assert.equal(snapshot.renderers[0].metrics.drawCallsP95, 3)
+    assert.deepEqual(snapshot.inventory.uiFrameworks, ['vanilla', 'react', 'vue'])
+    assert.deepEqual(snapshot.inventory.renderers, ['canvas', 'canvas2d', 'webgl', 'other'])
+    assert.deepEqual(
+        snapshot.owners.map(owner => [owner.adapterId, owner.framework, owner.label]),
+        [
+            ['throwing-metrics', 'react', 'Retained React owner'],
+            ['throwing-evidence', 'vue', 'Retained Vue owner'],
+        ]
+    )
+
+    selection.clear()
+    collector.destroy()
+})
+
 test('renderer adapter windows use the collector monotonic clock and must fit the exact interaction window', () => {
     const runtime = new FakeRuntime()
     const collector = new AnimationCollector({ runtime }).start()

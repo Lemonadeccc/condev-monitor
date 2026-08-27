@@ -995,24 +995,31 @@ export function createAnimationElementSelection(
             const evidenceBounds: RendererEvidenceBounds = correlatedWindow
                 ? { startedAt: correlatedWindow.startedAt, endedAt: correlatedWindow.endedAt }
                 : { startedAt: selectedAt, endedAt: capturedAt }
-            const rendererInspections: AnimationTargetRendererInspection[] = rendererCandidates.map(candidate => {
-                let evidence = rendererEvidence(candidate.evidence, candidate.metrics, candidate.family)
-                const windowInvalid =
-                    rendererEvidenceRequiresWindow(evidence, candidate.metrics) &&
-                    !rendererEvidenceWindowValid(candidate.evidence, evidence, evidenceBounds)
-                if (windowInvalid) {
-                    adapterErrors.push(`${candidate.adapterId}:renderer-evidence-window-invalid`)
-                    evidence = rendererEvidence(undefined, undefined, candidate.family)
+            const rendererInspections: AnimationTargetRendererInspection[] = []
+            for (const candidate of rendererCandidates) {
+                try {
+                    let evidence = rendererEvidence(candidate.evidence, candidate.metrics, candidate.family)
+                    const windowInvalid =
+                        rendererEvidenceRequiresWindow(evidence, candidate.metrics) &&
+                        !rendererEvidenceWindowValid(candidate.evidence, evidence, evidenceBounds)
+                    if (windowInvalid) {
+                        adapterErrors.push(`${candidate.adapterId}:renderer-evidence-window-invalid`)
+                        evidence = rendererEvidence(undefined, undefined, candidate.family)
+                    }
+                    rendererInspections.push({
+                        adapterId: candidate.adapterId,
+                        adapterVersion: candidate.adapterVersion,
+                        family: candidate.family,
+                        capability: candidate.capability,
+                        metrics: rendererMetrics(windowInvalid ? undefined : candidate.metrics, evidence),
+                        evidence,
+                    })
+                } catch {
+                    // Inventory and owners were already normalized into SDK-owned values above.
+                    // Discard only this adapter's renderer candidate when its nested getters fail.
+                    adapterErrors.push(`${candidate.adapterId}:inspection-failed`)
                 }
-                return {
-                    adapterId: candidate.adapterId,
-                    adapterVersion: candidate.adapterVersion,
-                    family: candidate.family,
-                    capability: candidate.capability,
-                    metrics: rendererMetrics(windowInvalid ? undefined : candidate.metrics, evidence),
-                    evidence,
-                }
-            })
+            }
 
             const state = !connected(element) ? 'disconnected' : recording ? 'recording' : 'selected'
             const inventory: AnimationTargetRuntimeInventory = {
