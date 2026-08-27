@@ -2094,22 +2094,26 @@ test('element selection is a parallel native sidecar with bounded direct evidenc
         },
     }
     const registry = createAnimationTargetAdapterRegistry('react-three', '1.2.0')
-    const unregisterAdapter = registry.register(target, () => ({
-        inventory: { uiFrameworks: ['react'], metaRuntimes: ['next'], renderers: ['webgl'], motionEngines: ['gsap'] },
-        owners: [
-            {
-                relation: 'framework-owner',
-                framework: 'react',
-                label: 'HeroCanvas',
-                source: { file: 'src/HeroCanvas.tsx', line: 42 },
+    let registryInspectionContext = null
+    const unregisterAdapter = registry.register(target, context => {
+        registryInspectionContext = context
+        return {
+            inventory: { uiFrameworks: ['react'], metaRuntimes: ['next'], renderers: ['webgl'], motionEngines: ['gsap'] },
+            owners: [
+                {
+                    relation: 'framework-owner',
+                    framework: 'react',
+                    label: 'HeroCanvas',
+                    source: { file: 'src/HeroCanvas.tsx', line: 42 },
+                },
+            ],
+            renderer: {
+                family: 'webgl',
+                capability: { state: 'supported', observed: true, buffered: false },
+                metrics: { drawCallsP95: 12, trianglesP95: 2_000, gpuFrameMsP95: -1 },
             },
-        ],
-        renderer: {
-            family: 'webgl',
-            capability: { state: 'supported', observed: true, buffered: false },
-            metrics: { drawCallsP95: 12, trianglesP95: 2_000, gpuFrameMsP95: -1 },
-        },
-    }))
+        }
+    })
 
     const before = collector.snapshot()
     const selection = collector.selectElement(target, { mode: 'subtree', adapters: [registry.adapter] })
@@ -2143,6 +2147,9 @@ test('element selection is a parallel native sidecar with bounded direct evidenc
     assert.equal(direct.renderers[0].evidence.gpu.source, 'unknown')
     assert.equal(direct.renderers[0].evidence.gpu.rejectionReason, 'not-reported')
     assert.deepEqual(direct.adapterErrors, ['react-three:renderer-evidence-window-invalid'])
+    assert.equal(registryInspectionContext.evidenceWindow.startedAt, direct.selectedAt)
+    assert.ok(registryInspectionContext.evidenceWindow.endedAt <= direct.capturedAt)
+    assert.equal(registryInspectionContext.evidenceWindow.relation, 'selection-window')
     assert.doesNotMatch(JSON.stringify(direct), /private-id/)
 
     target.getAnimations = () => Array.from({ length: 300 }, () => animation)
@@ -2378,11 +2385,13 @@ test('renderer adapter windows use the collector monotonic clock and must fit th
     }
     let rendererWindow = { startedAt: 100, endedAt: 100 }
     let advanceDuringInspect = false
+    let inspectionContext = null
     const adapter = {
         id: 'clock-window',
         version: '1.0.0',
         canInspect: element => element === target,
-        inspect: () => {
+        inspect: (_element, context) => {
+            inspectionContext = context
             if (advanceDuringInspect) {
                 runtime.advance(5)
                 rendererWindow = { startedAt: 100, endedAt: runtime.now() }
@@ -2405,14 +2414,27 @@ test('renderer adapter windows use the collector monotonic clock and must fit th
         },
     }
 
+    const contextMutator = {
+        id: 'context-mutator',
+        version: '1.0.0',
+        canInspect: element => element === target,
+        inspect: (_element, context) => {
+            context.evidenceWindow.endedAt = -1
+            return null
+        },
+    }
+
     runtime.advance(100)
-    const selection = collector.selectElement(target, { adapters: [adapter] })
+    const selection = collector.selectElement(target, { adapters: [contextMutator, adapter] })
     advanceDuringInspect = true
     let selected = selection.snapshot()
     advanceDuringInspect = false
     assert.equal(selected.capturedAt, 105)
     assert.equal(selected.renderers[0].metrics.drawCallsP95, 4)
     assert.deepEqual(selected.renderers[0].evidence.window, { startedAt: 100, endedAt: 105, durationMs: 5 })
+    assert.deepEqual(inspectionContext, {
+        evidenceWindow: { startedAt: 100, endedAt: 100, relation: 'selection-window' },
+    })
 
     for (const invalidWindow of [
         { startedAt: 0, endedAt: 50 },
@@ -2442,6 +2464,9 @@ test('renderer adapter windows use the collector monotonic clock and must fit th
     selected = selection.snapshot()
     assert.equal(selected.renderers[0].metrics.drawCallsP95, 4)
     assert.deepEqual(selected.adapterErrors, [])
+    assert.deepEqual(inspectionContext, {
+        evidenceWindow: { startedAt: 200, endedAt: 220, relation: 'interaction-window' },
+    })
 
     selection.clear()
     runtime.time = 1_750_000_000_000

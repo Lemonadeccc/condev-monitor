@@ -593,6 +593,55 @@ describe('browser animation single-init entry', () => {
         expect(() => client.animation.registerTarget({} as Element, () => null)).toThrow('after the client was destroyed')
     })
 
+    it('forwards target evidence windows to Browser registration providers', async () => {
+        const clock = controllableFrameRuntime()
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: clock.runtime } })
+        const target = {
+            tagName: 'DIV',
+            namespaceURI: 'http://www.w3.org/1999/xhtml',
+            isConnected: true,
+            ownerDocument: { defaultView: { innerWidth: 1_000, innerHeight: 800 } },
+            getAttribute: () => null,
+            getAnimations: () => [],
+            getBoundingClientRect: () => ({ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }),
+            addEventListener: () => undefined,
+            removeEventListener: () => undefined,
+        } as unknown as Element
+        const contexts: unknown[] = []
+        let advanceDuringInspection = true
+        client.animation.registerTarget(target, context => {
+            contexts.push(context)
+            if (advanceDuringInspection) clock.advance(5)
+            return null
+        })
+
+        const selection = client.animation.selectElement(target)
+        const selected = selection.snapshot()
+        const selectionContext = contexts.at(-1) as {
+            evidenceWindow: { startedAt: number; endedAt: number; relation: string }
+        }
+        expect(selectionContext.evidenceWindow.startedAt).toBe(selected.selectedAt)
+        expect(selectionContext.evidenceWindow.endedAt).toBeLessThan(selected.capturedAt)
+        expect(selectionContext.evidenceWindow.relation).toBe('selection-window')
+
+        advanceDuringInspection = false
+        const interaction = selection.beginInteraction('custom')
+        clock.advance(20)
+        interaction.end()
+        const correlated = selection.snapshot()
+        expect(contexts.at(-1)).toEqual({
+            evidenceWindow: {
+                startedAt: correlated.correlatedWindow?.startedAt,
+                endedAt: correlated.correlatedWindow?.endedAt,
+                relation: 'interaction-window',
+            },
+        })
+
+        selection.clear()
+        await client.destroy()
+    })
+
     it('enables privacy-safe automatic load, pointer, scroll, hover, keyboard, and resize windows by default', async () => {
         jest.useFakeTimers()
         const globals = installInteractiveBrowserGlobals()

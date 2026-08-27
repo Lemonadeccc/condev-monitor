@@ -793,6 +793,19 @@ export interface AnimationTargetAdapterRendererInspection {
 }
 
 /**
+ * SDK-owned bounds for one target-adapter inspection. Adapters may use this
+ * window to filter already-recorded evidence, but must not mutate it or choose
+ * a different clock domain.
+ */
+export interface AnimationTargetAdapterInspectionContext {
+    readonly evidenceWindow: {
+        readonly startedAt: number
+        readonly endedAt: number
+        readonly relation: 'selection-window' | 'interaction-window'
+    }
+}
+
+/**
  * Optional framework/renderer enrichment. The browser-native element evidence
  * remains available when no adapter can inspect the target.
  */
@@ -800,7 +813,7 @@ export interface AnimationTargetAdapter {
     readonly id: string
     readonly version: string
     canInspect(element: Element): boolean
-    inspect(element: Element): AnimationTargetAdapterInspection | null
+    inspect(element: Element, context?: AnimationTargetAdapterInspectionContext): AnimationTargetAdapterInspection | null
 }
 
 export interface AnimationTargetAdapterInspection {
@@ -811,7 +824,10 @@ export interface AnimationTargetAdapterInspection {
 
 export interface AnimationTargetAdapterRegistry {
     readonly adapter: AnimationTargetAdapter
-    register(element: Element, inspect: () => AnimationTargetAdapterInspection | null): () => void
+    register(
+        element: Element,
+        inspect: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null
+    ): () => void
     unregister(element: Element): void
 }
 

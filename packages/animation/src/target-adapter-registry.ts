@@ -1,10 +1,10 @@
-import type { AnimationTargetAdapterInspection, AnimationTargetAdapterRegistry } from './types'
+import type { AnimationTargetAdapterInspection, AnimationTargetAdapterInspectionContext, AnimationTargetAdapterRegistry } from './types'
 
 const ADAPTER_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u
 
 interface Registration {
     generation: number
-    inspect(): AnimationTargetAdapterInspection | null
+    inspect(context?: AnimationTargetAdapterInspectionContext): AnimationTargetAdapterInspection | null
 }
 
 /**
@@ -22,7 +22,7 @@ export function createAnimationTargetAdapterRegistry(id: string, version: string
             id,
             version,
             canInspect: element => registrations.has(element),
-            inspect: element => registrations.get(element)?.inspect() ?? null,
+            inspect: (element, context) => registrations.get(element)?.inspect(context) ?? null,
         },
         register(element, inspect) {
             if (!element || typeof element !== 'object') throw new TypeError('target adapter registration requires an Element')

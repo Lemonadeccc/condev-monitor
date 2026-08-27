@@ -27,6 +27,7 @@ import {
     type AnimationRuntime,
     type AnimationSnapshot,
     type AnimationTargetAdapterInspection,
+    type AnimationTargetAdapterInspectionContext,
     type AnimationWorkStatsSample,
     type FrameworkCommitProbe,
     type GsapLifecycleProbe,
@@ -217,7 +218,10 @@ export interface AnimationClientHandle {
     createVideoProbe(video: VideoFrameSourceLike): VideoFrameProbe
     /** Registers one caller-owned semantic target for RUM v2. Picker/overlay selections are never uploaded. */
     registerRumTarget(targetKey: string, element: Element, options?: BrowserAnimationRumTargetOptions): BrowserAnimationRumTargetHandle
-    registerTarget(element: Element, inspect: () => AnimationTargetAdapterInspection | null): () => void
+    registerTarget(
+        element: Element,
+        inspect: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null
+    ): () => void
     unregisterTarget(element: Element): void
 }
 
@@ -1007,7 +1011,10 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         this.rumV2 = controller
     }
 
-    registerTarget(element: Element, inspect: () => AnimationTargetAdapterInspection | null): () => void {
+    registerTarget(
+        element: Element,
+        inspect: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null
+    ): () => void {
         if (this.disposed) throw new Error('Cannot register an animation target after the client was destroyed')
         this.registrationByElement.get(element)?.()
         const unregister = this.targetRegistry.register(element, inspect)

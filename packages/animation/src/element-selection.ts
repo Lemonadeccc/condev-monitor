@@ -935,13 +935,31 @@ export function createAnimationElementSelection(
                 evidence: AnimationTargetAdapterRendererEvidence | undefined
             }> = []
             const adapterErrors: string[] = []
+            let adapterEvidenceWindow: {
+                startedAt: number
+                endedAt: number
+                relation: 'selection-window' | 'interaction-window'
+            } | null = null
 
             for (const adapter of (options.adapters ?? []).slice(0, MAX_TARGET_ADAPTERS)) {
                 const adapterId = safeAdapterToken(adapter.id, 'adapter')
                 const adapterVersion = safeAdapterToken(adapter.version, 'unknown')
                 try {
                     if (!adapter.canInspect(element)) continue
-                    const inspection = adapter.inspect(element)
+                    adapterEvidenceWindow ??= correlatedWindow
+                        ? {
+                              startedAt: correlatedWindow.startedAt,
+                              endedAt: correlatedWindow.endedAt,
+                              relation: 'interaction-window',
+                          }
+                        : {
+                              startedAt: selectedAt,
+                              endedAt: dependencies.now(),
+                              relation: 'selection-window',
+                          }
+                    const inspection = adapter.inspect(element, {
+                        evidenceWindow: { ...adapterEvidenceWindow },
+                    })
                     if (!inspection) continue
                     mergeClosedValues(uiFrameworks, inspection.inventory?.uiFrameworks, UI_FRAMEWORKS)
                     mergeClosedValues(metaRuntimes, inspection.inventory?.metaRuntimes, META_RUNTIMES)
