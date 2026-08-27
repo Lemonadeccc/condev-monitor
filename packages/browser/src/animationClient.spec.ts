@@ -3,6 +3,26 @@ import type { AnimationRuntime } from '@condev-monitor/monitor-sdk-animation'
 const mockTransportSend = jest.fn()
 const mockTransportFlush = jest.fn(async () => undefined)
 const mockTransportDestroy = jest.fn()
+const mockRumV2DeliveryInstances: Array<{
+    start: jest.Mock
+    suspend: jest.Mock
+    resume: jest.Mock
+    persist: jest.Mock
+    flush: jest.Mock
+    stop: jest.Mock
+}> = []
+const mockRumV2DeliveryConstructor = jest.fn().mockImplementation(() => {
+    const instance = {
+        start: jest.fn(),
+        suspend: jest.fn(async () => undefined),
+        resume: jest.fn(async () => undefined),
+        persist: jest.fn(async () => ({ reports: [] })),
+        flush: jest.fn(async () => ({ attempted: 0, confirmed: 0, terminal: 0, retried: 0 })),
+        stop: jest.fn(async () => undefined),
+    }
+    mockRumV2DeliveryInstances.push(instance)
+    return instance
+})
 
 jest.mock('./transport', () => ({
     BrowserTransport: jest.fn().mockImplementation(() => ({
@@ -10,6 +30,11 @@ jest.mock('./transport', () => ({
         flush: mockTransportFlush,
         destroy: mockTransportDestroy,
     })),
+}))
+
+jest.mock('./animation-rum-v2-delivery', () => ({
+    ...jest.requireActual('./animation-rum-v2-delivery'),
+    AnimationRumV2DeliveryCoordinator: mockRumV2DeliveryConstructor,
 }))
 
 jest.mock('./tracing/errorsIntegration', () => ({
@@ -186,6 +211,8 @@ describe('browser animation single-init entry', () => {
         mockTransportSend.mockClear()
         mockTransportFlush.mockClear()
         mockTransportDestroy.mockClear()
+        mockRumV2DeliveryConstructor.mockClear()
+        mockRumV2DeliveryInstances.length = 0
         delete (globalThis as typeof globalThis & Record<PropertyKey, unknown>)[ACTIVE_CLIENT_KEY]
     })
 
@@ -272,6 +299,123 @@ describe('browser animation single-init entry', () => {
         expect(animationEvents[0].context.routeKey).toBe('fixture.home')
         expect(animationEvents[0]).not.toHaveProperty('pageEvidence')
         expect(JSON.stringify(animationEvents[0])).not.toContain('rendererSurfaces')
+        await client.destroy()
+        restoreGlobals()
+    })
+
+    it('routes explicit RUM v2 only through durable delivery and keeps stop synchronous', async () => {
+        const restoreGlobals = installBrowserGlobals()
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({
+            dsn: 'https://example.test/dsn-api/tracking/app',
+            performance: false,
+            whiteScreen: false,
+            animation: {
+                runtime: runtime(),
+                autoInputWindows: false,
+                autoPageEvidence: false,
+                rum: { contractVersion: 2, sampleRate: 1 },
+                context: { routeKey: 'fixture.home', environment: 'test', runtimeFamily: 'vanilla' },
+            },
+        })
+        const delivery = mockRumV2DeliveryInstances[0]!
+
+        expect(client.animation.sampled).toBe(true)
+        expect(delivery.start).toHaveBeenCalledTimes(1)
+        await client.flush()
+        expect(delivery.persist).not.toHaveBeenCalled()
+
+        const stopped = client.animation.stop()
+        expect(stopped?.schemaVersion).toBe(1)
+        expect(delivery.persist).toHaveBeenCalledTimes(1)
+        await client.flush()
+
+        const reports = delivery.persist.mock.calls[0]![0] as Array<{ contractVersion: number; scope: string }>
+        expect(reports).toHaveLength(1)
+        expect(reports[0]).toMatchObject({ contractVersion: 2, scope: 'page' })
+        expect(mockTransportSend).not.toHaveBeenCalled()
+
+        await client.destroy()
+        expect(delivery.stop).toHaveBeenCalledTimes(1)
+        expect(mockTransportDestroy).toHaveBeenCalledTimes(1)
+        restoreGlobals()
+    })
+
+    it('keeps explicit v1 on the generic transport and disables every v2 side effect at sampleRate zero', async () => {
+        const restoreGlobals = installBrowserGlobals()
+        const { init } = require('./animation') as typeof import('./animation')
+        const v1 = init({
+            dsn: 'https://example.test/dsn-api/tracking/app',
+            performance: false,
+            whiteScreen: false,
+            animation: { runtime: runtime(), rum: { contractVersion: 1, sampleRate: 1 } },
+        })
+        v1.animation.stop()
+        await v1.flush()
+        expect(mockTransportSend.mock.calls.filter(call => call[0]?.event_type === 'animation_rum')).toHaveLength(1)
+        expect(mockRumV2DeliveryConstructor).not.toHaveBeenCalled()
+        await v1.destroy()
+
+        mockTransportSend.mockClear()
+        const disabled = init({
+            dsn: 'https://example.test/dsn-api/tracking/app',
+            performance: false,
+            whiteScreen: false,
+            animation: { runtime: runtime(), rum: { contractVersion: 2, sampleRate: 0 } },
+        })
+        expect(disabled.animation.sampled).toBe(false)
+        disabled.animation.stop()
+        await disabled.flush()
+        expect(mockRumV2DeliveryConstructor).not.toHaveBeenCalled()
+        expect(mockTransportSend).not.toHaveBeenCalled()
+        await disabled.destroy()
+        restoreGlobals()
+    })
+
+    it('keeps SSR RUM v2 free of delivery, observers, timers, and network', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({
+            dsn: 'https://example.test/dsn-api/tracking/app',
+            animation: { runtime: runtime(), rum: { contractVersion: 2, sampleRate: 1 } },
+        })
+
+        expect(client.localOnly).toBe(true)
+        expect(client.animation.sampled).toBe(false)
+        expect(mockRumV2DeliveryConstructor).not.toHaveBeenCalled()
+        expect(mockTransportSend).not.toHaveBeenCalled()
+        await client.destroy()
+    })
+
+    it('rejects invalid v2 route and DSN configuration before Browser side effects', async () => {
+        const restoreGlobals = installBrowserGlobals()
+        const { BrowserTransport } = require('./transport') as typeof import('./transport')
+        const { init } = require('./animation') as typeof import('./animation')
+
+        expect(() =>
+            init({
+                dsn: 'https://example.test/dsn-api/tracking/app',
+                animation: {
+                    runtime: runtime(),
+                    rum: { contractVersion: 2, sampleRate: 1 },
+                    context: { routeKey: '/users/private-id' },
+                },
+            })
+        ).toThrow('static registered v2 route key')
+        expect(() =>
+            init({
+                dsn: 'not-a-browser-dsn',
+                animation: { runtime: runtime(), rum: { contractVersion: 2, sampleRate: 1 } },
+            })
+        ).toThrow('valid Browser DSN')
+        expect(BrowserTransport).not.toHaveBeenCalled()
+        expect(mockRumV2DeliveryConstructor).not.toHaveBeenCalled()
+
+        const client = init({
+            dsn: 'https://example.test/dsn-api/tracking/app',
+            performance: false,
+            whiteScreen: false,
+            animation: { runtime: runtime(), rum: { contractVersion: 2, sampleRate: 0 } },
+        })
         await client.destroy()
         restoreGlobals()
     })
