@@ -144,6 +144,105 @@ describe('browser client handle', () => {
         await replacement?.destroy()
     })
 
+    it('awaits one internal before-destroy hook before the existing flush and teardown lifecycle', async () => {
+        let releaseHook!: () => void
+        const hookFinished = new Promise<void>(resolve => {
+            releaseHook = resolve
+        })
+        const hook = jest.fn(async () => {
+            mockLifecycle.push('before-destroy.start')
+            await hookFinished
+            mockLifecycle.push('before-destroy.end')
+        })
+        const integration: MonitorIntegration = {
+            name: 'custom',
+            flush: () => {
+                mockLifecycle.push('custom.flush')
+            },
+            destroy: () => {
+                mockLifecycle.push('custom.destroy')
+            },
+        }
+        const { __setBrowserBeforeDestroyHook, init } = require('./index') as typeof import('./index')
+        const client = init({
+            dsn: 'https://example.test/tracking/app',
+            integrations: [integration],
+            performance: false,
+            whiteScreen: false,
+        })!
+        __setBrowserBeforeDestroyHook(client, hook)
+
+        const firstDestroy = client.destroy()
+        const concurrentDestroy = client.destroy()
+
+        expect(concurrentDestroy).toBe(firstDestroy)
+        await Promise.resolve()
+        expect(hook).toHaveBeenCalledTimes(1)
+        expect(mockTransports[0]!.flush).not.toHaveBeenCalled()
+
+        releaseHook()
+        await firstDestroy
+        await client.destroy()
+
+        expect(hook).toHaveBeenCalledTimes(1)
+        expect(mockLifecycle.indexOf('before-destroy.end')).toBeLessThan(mockLifecycle.indexOf('custom.flush'))
+        expect(mockLifecycle.indexOf('custom.flush')).toBeLessThan(mockLifecycle.indexOf('transport.flush'))
+        expect(mockLifecycle.indexOf('transport.flush')).toBeLessThan(mockLifecycle.indexOf('custom.destroy'))
+        expect(mockTransports[0]!.destroy).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps destruction retryable when the internal before-destroy hook fails', async () => {
+        const hookFailure = new Error('durable finalization failed')
+        const hook = jest.fn().mockRejectedValueOnce(hookFailure).mockResolvedValueOnce(undefined)
+        const { __setBrowserBeforeDestroyHook, init } = require('./index') as typeof import('./index')
+        const options = {
+            dsn: 'https://example.test/tracking/app',
+            performance: false as const,
+            whiteScreen: false as const,
+        }
+        const client = init(options)!
+        __setBrowserBeforeDestroyHook(client, hook)
+
+        await expect(client.destroy()).rejects.toBe(hookFailure)
+        expect(client.isDestroyed()).toBe(false)
+        expect(mockTransports[0]!.flush).not.toHaveBeenCalled()
+        expect(mockTransports[0]!.destroy).not.toHaveBeenCalled()
+        expect(init(options)).toBeUndefined()
+
+        await expect(client.destroy()).resolves.toBeUndefined()
+        expect(hook).toHaveBeenCalledTimes(2)
+        expect(mockTransports[0]!.destroy).toHaveBeenCalledTimes(1)
+
+        const replacement = init(options)
+        expect(replacement).not.toBe(client)
+        await replacement?.destroy()
+    })
+
+    it('does not repeat a successful before-destroy hook when the existing flush must be retried', async () => {
+        const hook = jest.fn(async () => {
+            mockLifecycle.push('before-destroy')
+        })
+        const { __setBrowserBeforeDestroyHook, init } = require('./index') as typeof import('./index')
+        const client = init({
+            dsn: 'https://example.test/tracking/app',
+            performance: false,
+            whiteScreen: false,
+        })!
+        __setBrowserBeforeDestroyHook(client, hook)
+        const flushFailure = new Error('ordinary transport flush failed')
+        mockTransports[0]!.flush.mockRejectedValueOnce(flushFailure)
+
+        await expect(client.destroy()).rejects.toBe(flushFailure)
+        expect(hook).toHaveBeenCalledTimes(1)
+        expect(client.isDestroyed()).toBe(false)
+        expect(mockTransports[0]!.destroy).not.toHaveBeenCalled()
+
+        await expect(client.destroy()).resolves.toBeUndefined()
+        expect(hook).toHaveBeenCalledTimes(1)
+        expect(mockTransports[0]!.flush).toHaveBeenCalledTimes(3)
+        expect(mockTransports[0]!.destroy).toHaveBeenCalledTimes(1)
+    })
+
     it('keeps the singleton reserved until a failed initialization is fully aborted', async () => {
         let finishCleanup!: () => void
         const cleanupFinished = new Promise<void>(resolve => {
