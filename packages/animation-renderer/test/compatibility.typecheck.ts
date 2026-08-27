@@ -20,8 +20,18 @@ import type {
     WebGpuQuerySetDescriptorLike,
     WebGpuQuerySetLike,
     WebGpuTimestampTimingEvidence,
+    WebGpuTransferDeviceLike,
+    WebGpuTransferTargetAdapterInspection,
+    WebGpuTransferTargetInspectionContext,
+    WebGpuTransferTargetRendererInspection,
 } from '../src'
-import { createCanvas2dRecorder, createWebGlGpuTimer, createWebGpuMultiPassTimestampTimer, createWebGpuTimestampTimer } from '../src'
+import {
+    createCanvas2dRecorder,
+    createWebGlGpuTimer,
+    createWebGpuMultiPassTimestampTimer,
+    createWebGpuTimestampTimer,
+    createWebGpuTransferRecorder,
+} from '../src'
 
 declare const evidence: WebGlGpuTimingEvidence
 const rendererHostReading: RendererHostGpuTimingReading = evidence
@@ -215,6 +225,55 @@ const completeWebGpuRendererHostReading: RendererHostReading = {
     drawCalls: 1,
 }
 void completeWebGpuRendererHostReading
+
+const webGpuTransferDevice: WebGpuTransferDeviceLike = brandedDevice
+const webGpuTransfers = createWebGpuTransferRecorder({
+    device: webGpuTransferDevice,
+    maxRetainedOperations: 512,
+    maxPendingReadbacks: 2,
+})
+const uploadResult: number = webGpuTransfers.measureUpload({ kind: 'queue-write-buffer', bytes: 16 }, () => 1)
+const readbackPromise: Promise<void> = webGpuTransfers.observeReadback(
+    {
+        kind: 'texture-to-buffer-map-read',
+        bytes: 16,
+        submissionAttestation: 'caller-attests-associated-copy-command-stream-submitted',
+    },
+    () => Promise.resolve()
+)
+const webGpuTransferContext: WebGpuTransferTargetInspectionContext = targetContext
+const webGpuTransferSpecificRenderer: WebGpuTransferTargetRendererInspection = webGpuTransfers.inspectWindow(
+    webGpuTransferContext.evidenceWindow
+)
+const webGpuTransferRenderer: AnimationTargetAdapterRendererInspection = webGpuTransferSpecificRenderer
+const webGpuTransferSpecificInspection: WebGpuTransferTargetAdapterInspection = webGpuTransfers.inspect(targetContext)
+const webGpuTransferInspection: AnimationTargetAdapterInspection = webGpuTransferSpecificInspection
+const webGpuTransferProvider: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null =
+    webGpuTransfers.inspect
+void uploadResult
+void readbackPromise
+void webGpuTransferRenderer
+void webGpuTransferInspection
+void webGpuTransferProvider
+
+webGpuTransfers.observeReadback(
+    {
+        kind: 'buffer-map-read',
+        // @ts-expect-error readback attribution requires the exact submit attestation
+        submissionAttestation: 'missing-attestation',
+    },
+    () => Promise.resolve()
+)
+
+declare const promiseLikeOnly: PromiseLike<void>
+webGpuTransfers.observeReadback(
+    {
+        kind: 'buffer-map-read',
+        submissionAttestation: 'caller-attests-associated-copy-command-stream-submitted',
+    },
+    // @ts-expect-error WebGPU mapAsync integration requires a native Promise contract
+    () => promiseLikeOnly
+)
 
 declare const canvasContext: CanvasRenderingContext2D
 const canvasRecorder = createCanvas2dRecorder({
