@@ -10,6 +10,8 @@ import {
     ANIMATION_RUM_V2_TARGET_ADAPTER_ADDITION_COUNT,
     detectAnimationRumProtocol,
     getAnimationRumV2MetricDefinition,
+    isAnimationRumV2RouteKey,
+    isAnimationRumV2TargetKey,
     validateNormalizedAnimationRumV2,
 } from '../build/esm/index.js'
 import {
@@ -139,6 +141,19 @@ test('keeps normalized validation separate from transport protocol detection', (
     )
     assert.equal(detectAnimationRumProtocol({ event_type: 'animation_rum', message: 'legacy custom event' }), 'legacy-animation-rum')
     assert.equal(detectAnimationRumProtocol({ event_type: 'error', contractVersion: 2, snapshotSchemaVersion: 1 }), 'other')
+})
+
+test('shares privacy-bounded semantic key validation with server control planes', () => {
+    assert.equal(isAnimationRumV2RouteKey('catalog.product-detail'), true)
+    assert.equal(isAnimationRumV2RouteKey('docs:motion_examples'), true)
+    assert.equal(isAnimationRumV2RouteKey('orders.12345'), false)
+    assert.equal(isAnimationRumV2RouteKey('orders.550e8400-e29b-41d4-a716-446655440000'), false)
+    assert.equal(isAnimationRumV2RouteKey('Catalog.Product'), false)
+
+    assert.equal(isAnimationRumV2TargetKey('hero-canvas'), true)
+    assert.equal(isAnimationRumV2TargetKey('gallery.card'), true)
+    assert.equal(isAnimationRumV2TargetKey('item.abcdef0123456789'), false)
+    assert.equal(isAnimationRumV2TargetKey('hero:canvas'), false)
 })
 
 test('does not accept a transport wrapper as a normalized report', () => {

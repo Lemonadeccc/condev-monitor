@@ -765,6 +765,22 @@ function boundedSemanticKey(value: unknown, maximum: number, pattern: RegExp): v
     return boundedString(value, maximum, pattern) && !HIGH_CARDINALITY_TOKEN_RE.test(value)
 }
 
+/**
+ * Validates a static, application-registered route template identity. This does
+ * not replace server-side registration or cardinality enforcement.
+ */
+export function isAnimationRumV2RouteKey(value: unknown): value is string {
+    return boundedSemanticKey(value, 96, ROUTE_KEY_RE)
+}
+
+/**
+ * Validates a static, application-registered target identity. This does not
+ * replace server-side registration or cardinality enforcement.
+ */
+export function isAnimationRumV2TargetKey(value: unknown): value is string {
+    return boundedSemanticKey(value, 48, TARGET_KEY_RE)
+}
+
 function payloadBytes(value: unknown): number {
     try {
         return new TextEncoder().encode(JSON.stringify(value)).byteLength
@@ -814,7 +830,7 @@ function parseContext(raw: unknown, errors: string[]): AnimationRumV2Report['con
         return null
     }
     rejectUnknownKeys(raw, CONTEXT_KEYS, errors, 'unknown_context_field')
-    if (raw.routeKey !== undefined && !boundedSemanticKey(raw.routeKey, 96, ROUTE_KEY_RE)) add(errors, 'invalid_route_key')
+    if (raw.routeKey !== undefined && !isAnimationRumV2RouteKey(raw.routeKey)) add(errors, 'invalid_route_key')
     if (raw.visibilityState !== undefined && (typeof raw.visibilityState !== 'string' || !VISIBILITY_STATES.has(raw.visibilityState))) {
         add(errors, 'invalid_visibility_state')
     }
@@ -1147,7 +1163,7 @@ export function validateNormalizedAnimationRumV2(raw: unknown, options: { nowEpo
     } else if (raw.scope === 'target') {
         if (!boundedString(raw.parentCaptureId, 80, ID_RE)) add(errors, 'invalid_parent_capture_id')
         if (raw.parentCaptureId === raw.captureId) add(errors, 'self_parent_capture')
-        if (!boundedSemanticKey(raw.targetKey, 48, TARGET_KEY_RE)) add(errors, 'invalid_target_key')
+        if (!isAnimationRumV2TargetKey(raw.targetKey)) add(errors, 'invalid_target_key')
     }
     const capturedTimestamp = canonicalUtcTimestamp(raw.capturedAt)
     const now = finiteNumber(options.nowEpochMs, 0, Number.MAX_SAFE_INTEGER) ? options.nowEpochMs : Date.now()
