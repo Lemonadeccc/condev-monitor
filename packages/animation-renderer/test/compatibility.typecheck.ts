@@ -18,7 +18,7 @@ import type {
     WebGpuQuerySetLike,
     WebGpuTimestampTimingEvidence,
 } from '../src'
-import { createCanvas2dRecorder, createWebGpuTimestampTimer } from '../src'
+import { createCanvas2dRecorder, createWebGpuMultiPassTimestampTimer, createWebGpuTimestampTimer } from '../src'
 
 declare const evidence: WebGlGpuTimingEvidence
 const rendererHostReading: RendererHostGpuTimingReading = evidence
@@ -87,6 +87,80 @@ if (webGpuTicket) {
             webGpuTimer.notifySubmitted(webGpuTicket, 'another-command-stream')
         }
     }
+}
+
+interface RenderPassDescriptorLike {
+    colorAttachments: readonly unknown[]
+    timestampWrites?: {
+        querySet: BrandedQuerySet
+        beginningOfPassWriteIndex?: number
+        endOfPassWriteIndex?: number
+    }
+}
+
+interface ComputePassDescriptorLike {
+    label?: string
+    timestampWrites?: {
+        querySet: BrandedQuerySet
+        beginningOfPassWriteIndex?: number
+        endOfPassWriteIndex?: number
+    }
+}
+
+declare const renderPassDescriptor: RenderPassDescriptorLike
+declare const secondRenderPassDescriptor: RenderPassDescriptorLike
+declare const computePassDescriptor: ComputePassDescriptorLike
+declare const secondComputePassDescriptor: ComputePassDescriptorLike
+
+const webGpuMultiPassTimer = createWebGpuMultiPassTimestampTimer({
+    device: brandedDevice,
+    frameBoundary: 'multi-pass-single-command-buffer-complete-frame',
+})
+const webGpuMultiPassTicket = webGpuMultiPassTimer.beginFrame()
+if (webGpuMultiPassTicket) {
+    const renderToRender = webGpuMultiPassTimer.instrumentFrameBoundaryPasses(
+        webGpuMultiPassTicket,
+        renderPassDescriptor,
+        secondRenderPassDescriptor
+    )
+    if (renderToRender) {
+        const firstRender: RenderPassDescriptorLike = renderToRender.firstPassDescriptor
+        const lastRender: RenderPassDescriptorLike = renderToRender.lastPassDescriptor
+        const firstIndex: 0 = renderToRender.firstPassDescriptor.timestampWrites.beginningOfPassWriteIndex
+        const lastIndex: 1 = renderToRender.lastPassDescriptor.timestampWrites.endOfPassWriteIndex
+        void firstRender
+        void lastRender
+        void firstIndex
+        void lastIndex
+    }
+
+    const computeToCompute = webGpuMultiPassTimer.instrumentFrameBoundaryPasses(
+        webGpuMultiPassTicket,
+        computePassDescriptor,
+        secondComputePassDescriptor
+    )
+    if (computeToCompute) {
+        const firstCompute: ComputePassDescriptorLike = computeToCompute.firstPassDescriptor
+        const lastCompute: ComputePassDescriptorLike = computeToCompute.lastPassDescriptor
+        void firstCompute
+        void lastCompute
+    }
+
+    const computeToRender = webGpuMultiPassTimer.instrumentFrameBoundaryPasses(
+        webGpuMultiPassTicket,
+        computePassDescriptor,
+        renderPassDescriptor
+    )
+    if (computeToRender) {
+        const firstCompute: ComputePassDescriptorLike = computeToRender.firstPassDescriptor
+        const lastRender: RenderPassDescriptorLike = computeToRender.lastPassDescriptor
+        void firstCompute
+        void lastRender
+    }
+
+    webGpuMultiPassTimer.endFrame(webGpuMultiPassTicket, brandedEncoder, 'all-frame-passes-ended-on-associated-encoder')
+    // @ts-expect-error multi-pass attribution requires the exact completion attestation
+    webGpuMultiPassTimer.endFrame(webGpuMultiPassTicket, brandedEncoder)
 }
 
 declare const webGpuEvidence: WebGpuTimestampTimingEvidence
