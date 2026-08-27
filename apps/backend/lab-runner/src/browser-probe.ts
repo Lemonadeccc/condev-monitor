@@ -116,7 +116,19 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             sampleDrops[stream] += 1
         }
     }
+    const supportedPerformanceEntryTypes = (() => {
+        try {
+            const values = PerformanceObserver.supportedEntryTypes
+            return Array.isArray(values) ? new Set(values) : null
+        } catch {
+            return null
+        }
+    })()
     const observe = (type: string, callback: (entry: PerformanceEntry) => void, durationThreshold?: number): boolean => {
+        // Firefox and WebKit accept an unknown entry type without throwing.
+        // Trust the browser's closed support declaration so an unavailable
+        // stream can never be reported as a measured healthy zero.
+        if (!supportedPerformanceEntryTypes?.has(type)) return false
         try {
             const observer = new PerformanceObserver(list => list.getEntries().forEach(callback))
             observer.observe({

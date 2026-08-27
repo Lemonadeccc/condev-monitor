@@ -48,6 +48,57 @@ test('exposes a closed browser-driver capability matrix without changing the sce
     }
 })
 
+test('does not manufacture healthy zeroes for unsupported PerformanceObserver entry types', async () => {
+    const metricCases = [
+        { type: 'longtask', capability: 'longtask', metric: 'longTaskCount' },
+        { type: 'long-animation-frame', capability: 'loaf', metric: 'longAnimationFrameCount' },
+        { type: 'layout-shift', capability: 'layoutShift', metric: 'CLS' },
+    ]
+
+    for (const engine of ['firefox', 'webkit']) {
+        const driver = createBrowserDriver(engine)
+        const session = await driver.launch()
+        const context = await session.createContext(scenario())
+        try {
+            const page = await context.newPage()
+            const key = `__condevLabProbe_observer_capability_${engine}`
+            const capability = engine.padEnd(43, 'x')
+            await page.addInitScript(
+                browserProbeSource(key, {
+                    capability,
+                    expectedRefreshHz: 60,
+                    targetFrameMs: 1000 / 60,
+                    metricCatalogVersion: 2,
+                    actions: [],
+                })
+            )
+            await page.navigate('data:text/html,<!doctype html><main>observer capability fixture</main>', 10_000)
+            const supportedEntryTypes = await page.rawPage.evaluate(() => [...PerformanceObserver.supportedEntryTypes])
+            const raw = await page.collectProbeResult(key, capability, 0)
+            const result = decodePageProbeResult(raw, [], 2)
+
+            for (const fixture of metricCases) {
+                const supported = supportedEntryTypes.includes(fixture.type)
+                const metric = result.metrics.find(item => item.name === fixture.metric)
+                assert.equal(result.capabilities[fixture.capability], supported, `${engine} ${fixture.type} capability`)
+                if (!supported) {
+                    assert.equal(metric.status, 'unsupported', `${engine} ${fixture.type} status`)
+                    assert.equal(metric.value, null, `${engine} ${fixture.type} value`)
+                }
+            }
+            if (!supportedEntryTypes.includes('long-animation-frame')) {
+                assert.equal(result.capabilities.loafPaintTime, false, `${engine} LoAF paint capability`)
+                assert.equal(result.capabilities.loafPresentationTime, false, `${engine} LoAF presentation capability`)
+                assert.equal(result.capabilities.loafFirstUIEventTimestamp, false, `${engine} LoAF input capability`)
+                assert.equal(result.capabilities.loafForcedStyleAndLayoutDuration, false, `${engine} LoAF style capability`)
+            }
+        } finally {
+            await context.close().catch(() => undefined)
+            await session.close().catch(() => undefined)
+        }
+    }
+})
+
 test('fails closed for unsupported controlled conditions and discloses context-only cold cache', () => {
     assert.throws(() => validateBrowserDriverScenario('firefox', scenario({ cpuThrottleRate: 2 })), /CPU throttling is unavailable/)
     assert.throws(
@@ -369,6 +420,7 @@ test('derives catalog v2 LoAF paint phases only from complete browser boundaries
         const capability = 'B'.repeat(43)
         const fakeObserver = `;(() => {
           class FixturePerformanceObserver {
+            static supportedEntryTypes = ['long-animation-frame'];
             constructor(callback) { this.callback = callback; this.type = ''; this.drained = false; }
             observe(options) { this.type = options.type; }
             takeRecords() {
@@ -473,6 +525,7 @@ test('computes CLS from the largest one-second-gap and five-second session windo
         const capability = 'D'.repeat(43)
         const fakeObserver = `;(() => {
           class FixturePerformanceObserver {
+            static supportedEntryTypes = ['layout-shift'];
             constructor(callback) { this.callback = callback; this.type = ''; this.drained = false; }
             observe(options) { this.type = options.type; }
             takeRecords() {
