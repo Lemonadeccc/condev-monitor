@@ -88,8 +88,21 @@ test('the internal RUM v2 delivery foundation bundles code and declarations with
     }
 })
 
-test('the public Browser build does not leak a private contract import before delivery is connected to init', () => {
+test('the public Browser build never leaves a runtime import to the private contract package', () => {
     for (const path of collectFiles(resolve(packageDirectory, 'build')).filter(path => /\.(?:js|mjs|cjs|d\.ts)$/u.test(path))) {
         assert.doesNotMatch(readFileSync(path, 'utf8'), /(?:from\s*|require\()\s*['"]@condev-monitor\/animation-rum-contract/u, path)
+    }
+})
+
+test('RUM v2 delivery stays in the opt-in animation entry and out of the root Browser bundle', () => {
+    const rootEntries = ['build/cjs/index.js', 'build/esm/index.mjs', 'build/umd/index.global.js']
+    const animationEntries = ['build/cjs/animation.js', 'build/esm/animation.mjs']
+    const v2Marker = /validateNormalizedAnimationRumV2|condev-monitor-animation-rum-v2|postgres-outbox/u
+
+    for (const entry of rootEntries) {
+        assert.doesNotMatch(readFileSync(resolve(packageDirectory, entry), 'utf8'), v2Marker, entry)
+    }
+    for (const entry of animationEntries) {
+        assert.match(readFileSync(resolve(packageDirectory, entry), 'utf8'), v2Marker, entry)
     }
 })
