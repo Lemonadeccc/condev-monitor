@@ -294,6 +294,8 @@ Renderer window 必须与目标 collector 使用同一个 `AnimationRuntime.now(
 - `packages/browser` 创建稳定 client handle，协调 integration finalize、transport flush 和 destroy；
 - animation 通过显式 integration 接入，不进入 browser SDK 的默认 bundle；
 - lifecycle flush 在线时发送，离线时先等待持久化；持久化失败则恢复内存队列，不静默丢弃；
+- RUM v2 的多报告请求收到 `400/403/409/413` 时只视为“批次终止”，不能把同批每项直接判死。`400/409/413` 有界二分，`403` 直接逐项确认；只有单项仍返回终止状态才写 terminal，合法 sibling 依靠精确 `2xx` receipt 独立确认，无效 receipt、网络错误、`429/5xx` 只重试受影响子集；
+- 每个额外隔离请求前原子续租全部 unresolved 报告，失去任一租约就停止；进入 BFCache、suspend 或 destroy 后不再启动新子请求，未决项按原重试合同释放。page settlement 仍先解锁或终止 target，不能绕过 parent-before-child；
 - 旧 `performance` 事件保持兼容，但逐步迁移到共享运行时，避免重复采集和重复上报。
 
 离线 flush 的 Promise 现在会等待 IndexedDB 写入，失败时恢复内存队列；但浏览器可在 page termination 的任意时刻终止异步事务，最终 durable 仍必须用真实 Chrome/Firefox/Safari 的 pagehide/offline 场景门禁验证，不能只凭 Node 单测承诺“绝不丢失”。
