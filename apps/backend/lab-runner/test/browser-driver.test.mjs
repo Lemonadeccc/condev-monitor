@@ -123,6 +123,122 @@ test('accepts only standard CSS and capability-sequenced probe commands in a rea
     }
 })
 
+test('resets the frame baseline across hidden page gaps for both metric catalogs', async () => {
+    const driver = createBrowserDriver('chromium')
+    const session = await driver.launch()
+    const context = await session.createContext(scenario())
+    try {
+        for (const metricCatalogVersion of [1, 2]) {
+            const page = await context.newPage()
+            const key = `__condevLabProbe_visibility_fixture_${metricCatalogVersion}`
+            const capability = String(metricCatalogVersion).repeat(43)
+            const frameHarness = `;(() => {
+              let nextFrameId = 0;
+              let visibilityState = 'visible';
+              const callbacks = new Map();
+              const listenerBalance = { visibilitychange: 0, pagehide: 0 };
+              const documentAddEventListener = document.addEventListener.bind(document);
+              const documentRemoveEventListener = document.removeEventListener.bind(document);
+              const windowAddEventListener = window.addEventListener.bind(window);
+              const windowRemoveEventListener = window.removeEventListener.bind(window);
+              Object.defineProperty(document, 'addEventListener', {
+                configurable: true,
+                value(type, callback, options) {
+                  if (type === 'visibilitychange') listenerBalance.visibilitychange += 1;
+                  return documentAddEventListener(type, callback, options);
+                },
+              });
+              Object.defineProperty(document, 'removeEventListener', {
+                configurable: true,
+                value(type, callback, options) {
+                  if (type === 'visibilitychange') listenerBalance.visibilitychange -= 1;
+                  return documentRemoveEventListener(type, callback, options);
+                },
+              });
+              Object.defineProperty(window, 'addEventListener', {
+                configurable: true,
+                value(type, callback, options) {
+                  if (type === 'pagehide') listenerBalance.pagehide += 1;
+                  return windowAddEventListener(type, callback, options);
+                },
+              });
+              Object.defineProperty(window, 'removeEventListener', {
+                configurable: true,
+                value(type, callback, options) {
+                  if (type === 'pagehide') listenerBalance.pagehide -= 1;
+                  return windowRemoveEventListener(type, callback, options);
+                },
+              });
+              Object.defineProperty(document, 'visibilityState', {
+                configurable: true,
+                get: () => visibilityState,
+              });
+              Object.defineProperty(window, 'requestAnimationFrame', {
+                configurable: true,
+                value(callback) {
+                  const id = ++nextFrameId;
+                  callbacks.set(id, callback);
+                  return id;
+                },
+              });
+              Object.defineProperty(window, 'cancelAnimationFrame', {
+                configurable: true,
+                value(id) { callbacks.delete(id); },
+              });
+              Object.defineProperty(window, '__condevFrameFixture', {
+                configurable: false,
+                value: Object.freeze({
+                  fire(timestamp) {
+                    const pending = [...callbacks.values()];
+                    callbacks.clear();
+                    for (const callback of pending) callback(timestamp);
+                  },
+                  visibility(value) {
+                    visibilityState = value;
+                    document.dispatchEvent(new Event('visibilitychange'));
+                  },
+                  listenerBalance() { return { ...listenerBalance }; },
+                }),
+              });
+            })();`
+            await page.addInitScript(
+                `${frameHarness}${browserProbeSource(key, {
+                    capability,
+                    expectedRefreshHz: 60,
+                    targetFrameMs: 1000 / 60,
+                    metricCatalogVersion,
+                    actions: [],
+                })}`
+            )
+            await page.navigate('data:text/html,<!doctype html><main>visibility frame fixture</main>', 10_000)
+            await page.rawPage.evaluate(() => {
+                window.__condevFrameFixture.fire(100)
+                window.__condevFrameFixture.fire(116)
+                window.__condevFrameFixture.visibility('hidden')
+                window.__condevFrameFixture.fire(2_116)
+                window.__condevFrameFixture.visibility('visible')
+                window.__condevFrameFixture.fire(5_116)
+                window.__condevFrameFixture.fire(5_132)
+            })
+            const raw = await page.collectProbeResult(key, capability, 0)
+            const result = decodePageProbeResult(raw, [], metricCatalogVersion)
+            const listenerBalance = await page.rawPage.evaluate(() => window.__condevFrameFixture.listenerBalance())
+            const frameP95 = result.metrics.find(item => item.name === 'frameDurationMs' && item.stat === 'p95')
+            const slowRate = result.metrics.find(item => item.name === 'slowFrameRate')
+            const missed = result.metrics.find(item => item.name === 'missedFrameOpportunities')
+
+            assert.deepEqual([frameP95.value, frameP95.samples], [16, 2])
+            assert.equal(slowRate.value, 0)
+            assert.equal(missed.value, 0)
+            assert.deepEqual(listenerBalance, { visibilitychange: 0, pagehide: 0 })
+            await page.close()
+        }
+    } finally {
+        await context.close().catch(() => undefined)
+        await session.close().catch(() => undefined)
+    }
+})
+
 test('derives catalog v2 LoAF paint phases only from complete browser boundaries', async () => {
     const driver = createBrowserDriver('chromium')
     const session = await driver.launch()

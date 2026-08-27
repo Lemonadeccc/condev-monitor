@@ -106,6 +106,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
     const inputCandidatesByAction = new Map<string, number>()
     const inputCompletedByAction = new Map<string, number>()
     const inputListenerCleanups: Array<() => void> = []
+    const frameLifecycleListenerCleanups: Array<() => void> = []
 
     const retain = <T>(stream: keyof typeof sampleDrops, values: T[], value: T): void => {
         if (values.length < maximumSamples) values.push(value)
@@ -524,15 +525,38 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         }
     }
 
+    const resetFrameBaseline = (): void => {
+        lastFrame = null
+    }
+    try {
+        const onVisibilityChange = (): void => {
+            if (document.visibilityState !== 'visible') resetFrameBaseline()
+        }
+        document.addEventListener('visibilitychange', onVisibilityChange)
+        frameLifecycleListenerCleanups.push(() => document.removeEventListener('visibilitychange', onVisibilityChange))
+    } catch {
+        // The frame callback still refuses to retain intervals observed while hidden.
+    }
+    try {
+        window.addEventListener('pagehide', resetFrameBaseline)
+        frameLifecycleListenerCleanups.push(() => window.removeEventListener('pagehide', resetFrameBaseline))
+    } catch {
+        // A missing page lifecycle listener must not break the disposable probe.
+    }
+
     const onFrame = (timestamp: number): void => {
         const callbackEnteredAt = performance.now()
         if (stopped) return
         frameSequence += 1
-        if (document.visibilityState === 'visible') resolvePendingInputs(callbackEnteredAt)
-        if (lastFrame !== null && document.visibilityState === 'visible') {
-            retain('frames', frames, { startTime: lastFrame, duration: Math.max(0, timestamp - lastFrame) })
+        if (document.visibilityState === 'visible') {
+            resolvePendingInputs(callbackEnteredAt)
+            if (lastFrame !== null) {
+                retain('frames', frames, { startTime: lastFrame, duration: Math.max(0, timestamp - lastFrame) })
+            }
+            lastFrame = timestamp
+        } else {
+            resetFrameBaseline()
         }
-        lastFrame = timestamp
         frameId = requestAnimationFrame(onFrame)
     }
     frameId = requestAnimationFrame(onFrame)
@@ -892,6 +916,13 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             stopped = true
             cancelAnimationFrame(frameId)
             cancelPendingInputs()
+            for (const cleanup of frameLifecycleListenerCleanups.splice(0)) {
+                try {
+                    cleanup()
+                } catch {
+                    // Cleanup failure cannot change already captured evidence.
+                }
+            }
             for (const cleanup of inputListenerCleanups.splice(0)) {
                 try {
                     cleanup()
