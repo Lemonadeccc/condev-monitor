@@ -1,6 +1,7 @@
 import {
     AnimationIntegration,
     createAnimationTargetAdapterRegistry,
+    createBrowserAnimationRuntime,
     createFrameworkCommitProbe,
     createGsapLifecycleProbe,
     createThreeRendererProbe,
@@ -9,6 +10,7 @@ import {
     type AnimationCollector,
     type AnimationElementSelectionHandle,
     type AnimationElementSelectionOptions,
+    type AnimationElementSelectionSnapshot,
     type AnimationFrameworkStatsSample,
     type AnimationHostFramework,
     type AnimationInputDispatchKind,
@@ -21,6 +23,7 @@ import {
     type AnimationOverlayOptions,
     type AnimationRenderStatsSample,
     type AnimationRumOptions,
+    type AnimationRuntime,
     type AnimationSnapshot,
     type AnimationTargetAdapterInspection,
     type AnimationWorkStatsSample,
@@ -38,11 +41,17 @@ import {
     __hasActiveBrowserMonitoring,
     __releaseLocalAnimationClient,
     __reserveLocalAnimationClient,
+    __setBrowserBeforeDestroyHook,
     init as initBrowser,
 } from '@condev-monitor/monitor-sdk-browser'
 import type { IntegrationLike, MonitorIntegration } from '@condev-monitor/monitor-sdk-core'
 
 import type { BrowserMonitorClient, BrowserMonitorOptions } from './index'
+import {
+    createBrowserAnimationRumV2Controller,
+    validateBrowserAnimationRumV2Configuration,
+    type BrowserAnimationRumV2Controller,
+} from './animation-rum-v2'
 import {
     createAutomaticAnimationPageEvidence,
     disabledAnimationPageEvidenceSnapshot,
@@ -66,7 +75,6 @@ export type {
     BrowserAnimationRendererSurfaceEvidence,
     BrowserAnimationWorkAvoidanceEvidence,
 } from './animation-page-evidence'
-
 export {
     BrowserMonitorClient,
     clearUser,
@@ -96,6 +104,8 @@ type AnimationDevtoolsModule = typeof import('@condev-monitor/monitor-sdk-animat
 export interface BrowserAnimationRumOptions extends Omit<AnimationRumOptions, 'enabled' | 'sampleRate'> {
     /** Explicit production sampling decision. `0` records locally only; `1` uploads every sampled page. */
     sampleRate: number
+    /** Omit (or pass `1`) for legacy transport; pass `2` for durable page/target RUM v2. */
+    contractVersion?: 1 | 2
 }
 
 export interface BrowserAnimationDevtoolsOptions extends Omit<AnimationOverlayOptions, 'production'> {}
@@ -168,6 +178,18 @@ export interface BrowserAnimationSnapshot extends AnimationSnapshot {
     pageEvidence: BrowserAnimationPageEvidenceSnapshot
 }
 
+export interface BrowserAnimationRumTargetOptions extends AnimationElementSelectionOptions {}
+
+export interface BrowserAnimationRumTargetHandle {
+    readonly targetKey: string
+    readonly element: Element
+    readonly active: boolean
+    beginInteraction(kind: AnimationInteractionKind, label?: string): AnimationInteractionHandle
+    /** Null when this page was not selected for RUM and no element sidecar was created. */
+    snapshot(): AnimationElementSelectionSnapshot | null
+    unregister(): void
+}
+
 export interface AnimationClientHandle {
     readonly integration: AnimationIntegration
     readonly collector: AnimationCollector
@@ -189,6 +211,8 @@ export interface AnimationClientHandle {
     createGsapProbe(options: Omit<GsapLifecycleProbeOptions, 'sink'>): GsapLifecycleProbe
     createThreeProbe(options: Omit<ThreeRendererProbeOptions, 'sink'>): ThreeRendererProbe
     createVideoProbe(video: VideoFrameSourceLike): VideoFrameProbe
+    /** Registers one caller-owned semantic target for RUM v2. Picker/overlay selections are never uploaded. */
+    registerRumTarget(targetKey: string, element: Element, options?: BrowserAnimationRumTargetOptions): BrowserAnimationRumTargetHandle
     registerTarget(element: Element, inspect: () => AnimationTargetAdapterInspection | null): () => void
     unregisterTarget(element: Element): void
 }
@@ -239,16 +263,24 @@ function integrationName(integration: IntegrationLike): string | undefined {
     }
 }
 
-function resolveRumOptions(rum: BrowserAnimationFeatureOptions['rum'], dsn: string): AnimationRumOptions {
+function resolveRumOptions(rum: BrowserAnimationFeatureOptions['rum'], dsn: string, routeKey?: string): AnimationRumOptions {
     if (!rum) return { enabled: false, sampleRate: 0 }
     if (!dsn) throw new TypeError('animation.rum requires a DSN; omit rum to keep the animation monitor local-only')
-    return { ...rum, enabled: true }
+    const contractVersion = rum.contractVersion ?? 1
+    if (contractVersion !== 1 && contractVersion !== 2) throw new TypeError('animation.rum.contractVersion must be 1 or 2')
+    const { contractVersion: _contractVersion, ...resolved } = rum
+    if (contractVersion === 2) {
+        validateBrowserAnimationRumV2Configuration(dsn, resolved, routeKey)
+        return { enabled: false, sampleRate: 0 }
+    }
+    return { ...resolved, enabled: true }
 }
 
 function resolveAnimationOptions(
     options: BrowserAnimationFeatureOptions,
     browserOptions: Pick<BrowserAnimationInitOptions, 'release' | 'dist'>,
-    dsn: string
+    dsn: string,
+    runtime: AnimationRuntime
 ): AnimationIntegrationOptions {
     const {
         devtools: _devtools,
@@ -260,7 +292,8 @@ function resolveAnimationOptions(
     } = options
     return {
         ...collectorOptions,
-        rum: resolveRumOptions(rum, dsn),
+        runtime,
+        rum: resolveRumOptions(rum, dsn, context?.routeKey),
         context: {
             ...context,
             release: context?.release ?? inheritedAnimationVersion(browserOptions.release),
@@ -832,6 +865,7 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     private automaticInputWindows: AutomaticInputWindows | null = null
     private automaticPageEvidence: BrowserAnimationPageEvidenceController | null = null
     private finalPageEvidence: BrowserAnimationPageEvidenceSnapshot | null = null
+    private rumV2: BrowserAnimationRumV2Controller | null = null
     private disposed = false
 
     constructor(
@@ -844,7 +878,7 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     }
 
     get sampled(): boolean {
-        return this.integration.sampled
+        return this.rumV2?.sampled ?? this.integration.sampled
     }
 
     get started(): boolean {
@@ -878,6 +912,7 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     }
 
     stop(): BrowserAnimationSnapshot | null {
+        this.rumV2?.prepareForStop()
         this.automaticInputWindows?.dispose()
         this.automaticInputWindows = null
         const pageEvidence = this.automaticPageEvidence
@@ -885,13 +920,23 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         pageEvidence?.dispose()
         this.automaticPageEvidence = null
         const snapshot = this.integration.stop()
-        return snapshot ? { ...snapshot, pageEvidence: this.finalPageEvidence } : null
+        const browserSnapshot = snapshot ? { ...snapshot, pageEvidence: this.finalPageEvidence } : null
+        if (browserSnapshot) this.rumV2?.finalize(browserSnapshot)
+        return browserSnapshot
     }
 
     snapshot(): BrowserAnimationSnapshot {
         return {
             ...this.integration.snapshot(),
             pageEvidence: this.finalPageEvidence ?? this.automaticPageEvidence?.snapshot() ?? disabledAnimationPageEvidenceSnapshot(),
+        }
+    }
+
+    snapshotForRumBoundary(): BrowserAnimationSnapshot {
+        return {
+            ...this.integration.snapshot(),
+            pageEvidence:
+                this.finalPageEvidence ?? this.automaticPageEvidence?.captureBoundary() ?? disabledAnimationPageEvidenceSnapshot(),
         }
     }
 
@@ -942,6 +987,16 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
 
     createVideoProbe(video: VideoFrameSourceLike): VideoFrameProbe {
         return this.trackProbe(createVideoFrameProbe({ sink: this, video }))
+    }
+
+    registerRumTarget(targetKey: string, element: Element, options?: BrowserAnimationRumTargetOptions): BrowserAnimationRumTargetHandle {
+        if (!this.rumV2) throw new Error('registerRumTarget() requires animation.rum.contractVersion 2')
+        return this.rumV2.registerTarget(targetKey, element, options)
+    }
+
+    attachRumV2(controller: BrowserAnimationRumV2Controller): void {
+        if (this.rumV2 && this.rumV2 !== controller) throw new Error('Animation RUM v2 is already attached')
+        this.rumV2 = controller
     }
 
     registerTarget(element: Element, inspect: () => AnimationTargetAdapterInspection | null): () => void {
@@ -1005,6 +1060,8 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         this.automaticPageEvidence?.dispose()
         this.automaticPageEvidence = null
         this.devtools.destroy()
+        this.rumV2?.dispose()
+        this.rumV2 = null
         for (const unregister of [...this.registrations]) unregister()
         this.registrationByElement.clear()
         for (const probe of [...this.probes].reverse()) {
@@ -1021,6 +1078,7 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
 class AnimationFeatureLifecycle implements MonitorIntegration {
     readonly name = 'animation-feature-lifecycle'
     private handle: AnimationClientHandleImpl | null = null
+    private rumV2: BrowserAnimationRumV2Controller | null = null
     private destroyed = false
 
     constructor(private readonly onDestroyed: () => void) {}
@@ -1029,8 +1087,16 @@ class AnimationFeatureLifecycle implements MonitorIntegration {
         this.handle = handle
     }
 
+    attachRumV2(controller: BrowserAnimationRumV2Controller): void {
+        this.rumV2 = controller
+    }
+
     setup(): void {
         // Cleanup is owned by destroy(); setup intentionally has no side effects.
+    }
+
+    flush(): Promise<void> | void {
+        return this.rumV2?.flush()
     }
 
     destroy(): void {
@@ -1039,6 +1105,8 @@ class AnimationFeatureLifecycle implements MonitorIntegration {
         try {
             this.handle?.dispose()
         } finally {
+            this.rumV2?.dispose()
+            this.rumV2 = null
             this.onDestroyed()
         }
     }
@@ -1115,6 +1183,7 @@ export function init(options: BrowserAnimationInitOptions = {}): AnimationBrowse
     const dsn = options.dsn?.trim() ?? ''
     const animationOptions = options.animation ?? {}
     const isBrowser = browserEnvironment()
+    const sharedRuntime = animationOptions.runtime ?? createBrowserAnimationRuntime()
 
     if (options.integrations?.some(integration => integrationName(integration) === 'animation')) {
         throw new TypeError('Do not pass an animation integration manually when using the browser/animation init entry')
@@ -1139,7 +1208,7 @@ export function init(options: BrowserAnimationInitOptions = {}): AnimationBrowse
 
     let integration: AnimationIntegration
     try {
-        integration = new AnimationIntegration(resolveAnimationOptions(animationOptions, options, dsn))
+        integration = new AnimationIntegration(resolveAnimationOptions(animationOptions, options, dsn, sharedRuntime))
     } catch (error) {
         if (localReservationOwner) __releaseLocalAnimationClient(localReservationOwner)
         throw error
@@ -1182,6 +1251,7 @@ export function init(options: BrowserAnimationInitOptions = {}): AnimationBrowse
     }
 
     let browserClient: BrowserMonitorClient | undefined
+    let rumV2Controller: BrowserAnimationRumV2Controller | null = null
     try {
         browserClient = initBrowser({
             ...options,
@@ -1196,9 +1266,32 @@ export function init(options: BrowserAnimationInitOptions = {}): AnimationBrowse
         const client = attachAnimationHandle(browserClient, animation)
         resolvedClient = client
         animation.startOwnedFeatures()
+        const rumOptions = animationOptions.rum
+        if (rumOptions && (rumOptions.contractVersion ?? 1) === 2) {
+            const { contractVersion: _contractVersion, ...rumV2Options } = rumOptions
+            const rumV2 = createBrowserAnimationRumV2Controller({
+                dsn,
+                rum: rumV2Options,
+                runtime: sharedRuntime,
+                context: resolveAnimationOptions(animationOptions, options, dsn, sharedRuntime).context,
+                getPageSnapshot: () => animation.snapshotForRumBoundary(),
+                selectElement: (element, targetOptions) => animation.selectElement(element, targetOptions),
+                beginInteraction: (kind, label) => animation.beginInteraction(kind, label),
+            })
+            rumV2Controller = rumV2
+            animation.attachRumV2(rumV2)
+            lifecycle.attachRumV2(rumV2)
+            __setBrowserBeforeDestroyHook(browserClient, async () => {
+                animation.stop()
+                await rumV2.flush()
+                await rumV2.stopDelivery()
+            })
+        }
         writeActiveClient({ dsn, client })
         return client
     } catch (error) {
+        rumV2Controller?.dispose()
+        void rumV2Controller?.stopDelivery().catch(() => undefined)
         try {
             lifecycle.destroy()
         } catch {
