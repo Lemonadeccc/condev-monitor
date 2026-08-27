@@ -243,6 +243,20 @@ test('builds and validates one exact Kafka envelope with appId as its partition 
     assert.equal('payloadHash' in envelope, false)
 })
 
+test('accepts the control-plane app id length boundary', () => {
+    for (const appId of ['a', `a${'b'.repeat(79)}`]) {
+        const envelope = buildAnimationRumV2KafkaEnvelope({
+            appId,
+            report: createAnimationRumV2GoldenReport(),
+            receivedAt: RECEIVED_AT,
+            nowEpochMs: ANIMATION_RUM_V2_GOLDEN_NOW,
+        })
+
+        assert.equal(envelope.appId, appId)
+        assert.equal(validateAnimationRumV2KafkaEnvelope(envelope, GOLDEN_VALIDATION_OPTIONS).ok, true)
+    }
+})
+
 test('fails closed on unknown, missing, mismatched, or oversized envelope identity', () => {
     const envelope = buildAnimationRumV2KafkaEnvelope({
         appId: APP_ID,

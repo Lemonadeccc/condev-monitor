@@ -8,7 +8,7 @@ export const ANIMATION_RUM_V2_KAFKA_SOURCE = 'animation-rum-v2' as const
 export const ANIMATION_RUM_V2_MAX_ENVELOPE_BYTES = 96 * 1024
 export const ANIMATION_RUM_V2_MAX_RECEIVED_AT_FUTURE_MS = 5 * 60 * 1_000
 
-const APP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{1,79}$/u
+const APP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u
 const ISO_UTC_RE = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/u
 const ENVELOPE_KEYS = new Set([
     'schemaVersion',
