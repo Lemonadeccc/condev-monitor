@@ -561,6 +561,11 @@ export class AnimationRumV2OutboxDispatcherService implements OnApplicationBoots
 
     private safeErrorCode(error: unknown, fallback: string): string {
         const code = isRecord(error) && typeof error.code === 'string' ? error.code.toUpperCase() : ''
-        return /^[A-Z][A-Z0-9_]{0,63}$/u.test(code) ? code : fallback
+        if (/^[A-Z][A-Z0-9_]{0,63}$/u.test(code)) return code
+        // PostgreSQL SQLSTATE values can begin with a digit (for example,
+        // 42P01). Prefix the bounded five-character code so operational logs
+        // remain useful without exposing messages, SQL, or connection data.
+        if (/^[0-9A-Z]{5}$/u.test(code)) return `PG_${code}`
+        return fallback
     }
 }

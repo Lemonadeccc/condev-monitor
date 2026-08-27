@@ -610,6 +610,24 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
         expect(kafka.publishBatch).not.toHaveBeenCalled()
     })
 
+    it('keeps PostgreSQL SQLSTATE diagnostics bounded without exposing error messages', () => {
+        const timeline: string[] = []
+        const service = new AnimationRumV2OutboxDispatcherService(
+            { query: jest.fn(), connect: jest.fn() } as never,
+            createKafka(timeline) as never,
+            createConfig() as never
+        )
+        const safeErrorCode = (
+            service as unknown as {
+                safeErrorCode(error: unknown, fallback: string): string
+            }
+        ).safeErrorCode.bind(service)
+
+        expect(safeErrorCode({ code: '42P01', message: 'sensitive SQL text' }, 'DISPATCH_FAILED')).toBe('PG_42P01')
+        expect(safeErrorCode({ code: 'econnreset', message: 'private connection data' }, 'DISPATCH_FAILED')).toBe('ECONNRESET')
+        expect(safeErrorCode({ code: 'bad-code!', message: 'private connection data' }, 'DISPATCH_FAILED')).toBe('DISPATCH_FAILED')
+    })
+
     it('shares one in-flight cycle across concurrent dispatchOnce callers', async () => {
         let resolveDiscovery!: (value: QueryResultLike) => void
         const discovery = new Promise<QueryResultLike>(resolve => {
