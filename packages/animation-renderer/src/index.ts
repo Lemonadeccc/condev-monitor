@@ -1,3 +1,21 @@
+export { Canvas2dRecorderOptionsError, createCanvas2dRecorder } from './canvas2d-recorder'
+export type {
+    Canvas2dContextLike,
+    Canvas2dDrawKind,
+    Canvas2dDrawOperations,
+    Canvas2dReadbackEvidence,
+    Canvas2dRecorder,
+    Canvas2dRecorderAggregate,
+    Canvas2dRecorderCapability,
+    Canvas2dRecorderOptions,
+    Canvas2dRecorderSnapshot,
+    Canvas2dRendererHostReading,
+    Canvas2dSurfaceLike,
+    Canvas2dTargetAdapterInspection,
+    Canvas2dTargetInspectionContext,
+    Canvas2dTargetRendererInspection,
+    Canvas2dUploadEvidence,
+} from './canvas2d-recorder'
 export { WebGlGpuTimerOptionsError, createWebGlGpuTimer } from './webgl-gpu-timer'
 export type {
     WebGlGpuTimer,
