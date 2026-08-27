@@ -13,6 +13,17 @@ import { Replay, ReplayOptions } from './replay/replayIntegration'
 let activeClient: BrowserMonitorClient | null = null
 let localAnimationOwner: object | null = null
 
+type BrowserBeforeDestroyHook = () => void | Promise<void>
+
+interface BrowserDestroyLifecycleState {
+    hook: BrowserBeforeDestroyHook | null
+    hookCompleted: boolean
+    destroyPromise: Promise<void> | null
+    destructionStarted: boolean
+}
+
+const browserDestroyLifecycle = new WeakMap<BrowserMonitorClient, BrowserDestroyLifecycleState>()
+
 function setActiveClient(client: BrowserMonitorClient | null): void {
     activeClient = client
 }
@@ -32,6 +43,22 @@ export function __reserveLocalAnimationClient(owner: object): boolean {
 /** @internal Releases a reservation only when it still belongs to the caller. */
 export function __releaseLocalAnimationClient(owner: object): void {
     if (localAnimationOwner === owner) localAnimationOwner = null
+}
+
+/**
+ * @internal Installs the Browser animation entry's durable finalization hook.
+ * This is assembly plumbing, not an application-facing lifecycle API.
+ */
+export function __setBrowserBeforeDestroyHook(client: BrowserMonitorClient, hook: BrowserBeforeDestroyHook): void {
+    const lifecycle = browserDestroyLifecycle.get(client)
+    if (!lifecycle) throw new TypeError('Expected a BrowserMonitorClient owned by this SDK instance')
+    if (client.isDestroyed() || lifecycle.destructionStarted) {
+        throw new Error('Cannot install a before-destroy hook after Browser client destruction has started')
+    }
+    if (lifecycle.hook && lifecycle.hook !== hook) {
+        throw new Error('A Browser before-destroy hook is already installed')
+    }
+    lifecycle.hook = hook
 }
 
 export type { WhiteScreenOptions }
@@ -95,6 +122,12 @@ export class BrowserMonitorClient extends Monitoring {
         private readonly builtInWhiteScreen: WhiteScreen | null
     ) {
         super(options)
+        browserDestroyLifecycle.set(this, {
+            hook: null,
+            hookCompleted: false,
+            destroyPromise: null,
+            destructionStarted: false,
+        })
     }
 
     triggerBuiltInWhiteScreenCheck(reason?: string): void {
@@ -102,6 +135,39 @@ export class BrowserMonitorClient extends Monitoring {
     }
 
     override destroy(): Promise<void> {
+        const lifecycle = browserDestroyLifecycle.get(this)!
+        const beforeDestroyHook = lifecycle.hook
+        if (!beforeDestroyHook) {
+            lifecycle.destructionStarted = true
+            const attempt = this.destroyMonitoring()
+            void attempt.catch(() => {
+                if (!this.isDestroyed()) lifecycle.destructionStarted = false
+            })
+            return attempt
+        }
+        if (lifecycle.destroyPromise) return lifecycle.destroyPromise
+        lifecycle.destructionStarted = true
+
+        // Defer execution until after the promise is stored so a hook that
+        // indirectly calls destroy() cannot start a second hook attempt.
+        const attempt = Promise.resolve().then(async () => {
+            if (!lifecycle.hookCompleted) {
+                await beforeDestroyHook()
+                lifecycle.hookCompleted = true
+            }
+            await this.destroyMonitoring()
+        })
+        lifecycle.destroyPromise = attempt
+        void attempt.catch(() => {
+            if (!this.isDestroyed() && lifecycle.destroyPromise === attempt) {
+                lifecycle.destroyPromise = null
+                lifecycle.destructionStarted = false
+            }
+        })
+        return attempt
+    }
+
+    private destroyMonitoring(): Promise<void> {
         return super.destroy().then(
             () => {
                 this.onDestroyed()
