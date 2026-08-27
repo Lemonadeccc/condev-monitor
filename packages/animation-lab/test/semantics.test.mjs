@@ -5,7 +5,11 @@ import {
     ANIMATION_LAB_METRIC_CATALOG_V1,
     ANIMATION_LAB_METRIC_CATALOG_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
+    DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_V1,
+    DEFAULT_ANIMATION_LAB_BUDGET_V2,
+    evaluateAnimationLabBudgetRule,
+    getAnimationLabBudgetV1,
     getAnimationLabMetricCatalogEntry,
     validateAnimationLabSemanticsV2,
     validateLabMeasurementContract,
@@ -207,6 +211,78 @@ test('central metric and budget catalogs are closed, unique, and internally refe
     for (const rule of DEFAULT_ANIMATION_LAB_BUDGET_V1.rules) assert.ok(getAnimationLabMetricCatalogEntry(rule.metricId))
 })
 
+test('adds an explicit budget v2 without changing the v1 rule tuple', () => {
+    assert.equal(DEFAULT_ANIMATION_LAB_BUDGET_V1.budgetVersion, 1)
+    assert.equal(DEFAULT_ANIMATION_LAB_BUDGET_V1.rules.find(rule => rule.ruleId === 'long-task-count').minimumSamples, 1)
+    assert.equal(DEFAULT_ANIMATION_LAB_BUDGET_V2.budgetVersion, 2)
+    assert.deepEqual(
+        DEFAULT_ANIMATION_LAB_BUDGET_V2.rules.map(rule => ({
+            ...rule,
+            minimumSamples: rule.ruleId === 'long-task-count' ? 1 : rule.minimumSamples,
+        })),
+        DEFAULT_ANIMATION_LAB_BUDGET_V1.rules
+    )
+    assert.equal(DEFAULT_ANIMATION_LAB_BUDGET_V2.rules.find(rule => rule.ruleId === 'long-task-count').minimumSamples, 0)
+    assert.equal(getAnimationLabBudgetV1('condev.animation.default', 1), DEFAULT_ANIMATION_LAB_BUDGET_V1)
+    assert.equal(getAnimationLabBudgetV1('condev.animation.default', 2), DEFAULT_ANIMATION_LAB_BUDGET_V2)
+    assert.equal(getAnimationLabBudgetV1('condev.animation.default', 3), undefined)
+})
+
+test('evaluates zero-event count evidence only for the opted-in budget version', () => {
+    const contract = { targetFrameMs: 16.666667 }
+    const zeroMetric = { metricId: 'main.long-task.count', value: 0, samples: 0, status: 'measured' }
+    const positiveMetric = { ...zeroMetric, value: 1, samples: 1 }
+    const partialPositive = { ...positiveMetric, status: 'partial' }
+    const v1Rule = DEFAULT_ANIMATION_LAB_BUDGET_V1.rules.find(rule => rule.ruleId === 'long-task-count')
+    const v2Rule = DEFAULT_ANIMATION_LAB_BUDGET_V2.rules.find(rule => rule.ruleId === 'long-task-count')
+
+    assert.equal(evaluateAnimationLabBudgetRule(v1Rule, zeroMetric, contract).status, 'insufficient-evidence')
+    assert.equal(evaluateAnimationLabBudgetRule(v2Rule, zeroMetric, contract).status, 'within-budget')
+    assert.equal(evaluateAnimationLabBudgetRule(v2Rule, positiveMetric, contract).status, 'breach')
+    assert.equal(evaluateAnimationLabBudgetRule(v2Rule, partialPositive, contract).status, 'candidate-breach')
+    assert.equal(evaluateAnimationLabBudgetRule(v2Rule, { ...zeroMetric, status: 'partial' }, contract).status, 'insufficient-evidence')
+    assert.equal(evaluateAnimationLabBudgetRule(v2Rule, { ...zeroMetric, samples: null }, contract).status, 'insufficient-evidence')
+    assert.equal(evaluateAnimationLabBudgetRule(v2Rule, { ...zeroMetric, samples: 1 }, contract).status, 'insufficient-evidence')
+    assert.equal(evaluateAnimationLabBudgetRule(v2Rule, { ...zeroMetric, value: 1 }, contract).status, 'insufficient-evidence')
+    for (const status of ['not-observed', 'unsupported', 'unknown']) {
+        assert.equal(
+            evaluateAnimationLabBudgetRule(
+                v2Rule,
+                { ...zeroMetric, value: null, samples: status === 'not-observed' ? 0 : null, status },
+                contract
+            ).status,
+            'insufficient-evidence'
+        )
+    }
+})
+
+test('rejects malformed budget refs without throwing from cross-reference checks', () => {
+    const input = semantics()
+    input.metrics[0].budgetRefs = [null]
+    input.findings[0].budgetRefs = [null]
+    assert.doesNotThrow(() => validateAnimationLabSemanticsV2(input))
+    const result = validateAnimationLabSemanticsV2(input)
+    assert.equal(result.ok, false)
+    assert.ok(result.errors.includes('metrics[0].budgetRefs[0]:invalid'))
+    assert.ok(result.errors.includes('findings[0].budgetRefs[0]:invalid'))
+
+    for (const malformed of [null, {}]) {
+        const malformedMetric = semantics()
+        malformedMetric.metrics[0].budgetRefs = malformed
+        assert.doesNotThrow(() => validateAnimationLabSemanticsV2(malformedMetric))
+        const malformedResult = validateAnimationLabSemanticsV2(malformedMetric)
+        assert.equal(malformedResult.ok, false)
+        assert.ok(malformedResult.errors.includes('metrics[0].budgetRefs:invalid-count'))
+    }
+
+    const malformedEvidence = semantics()
+    malformedEvidence.metrics[0].evidenceRefs = {}
+    assert.doesNotThrow(() => validateAnimationLabSemanticsV2(malformedEvidence))
+    const malformedEvidenceResult = validateAnimationLabSemanticsV2(malformedEvidence)
+    assert.equal(malformedEvidenceResult.ok, false)
+    assert.ok(malformedEvidenceResult.errors.includes('metrics[0].evidenceRefs:invalid-count'))
+})
+
 test('keeps catalog v1 unchanged while catalog v2 adds closed scheduling and LoAF diagnostic metrics', () => {
     assert.deepEqual(ANIMATION_LAB_METRIC_CATALOG_V2.slice(0, ANIMATION_LAB_METRIC_CATALOG_V1.length), ANIMATION_LAB_METRIC_CATALOG_V1)
     assert.equal(ANIMATION_LAB_METRIC_CATALOG_V2.length, ANIMATION_LAB_METRIC_CATALOG_V1.length + 10)
@@ -284,4 +360,48 @@ test('rejects a budget reference that the local runner cannot execute', () => {
     const result = validateLabMeasurementContract(value)
     assert.equal(result.ok, false)
     assert.ok(result.errors.includes('measurementContract.budgetRef:unknown-local-budget'))
+
+    value.budgetRef = DEFAULT_ANIMATION_LAB_BUDGET_REF_V2
+    assert.equal(validateLabMeasurementContract(value).ok, true)
+    value.budgetRef = { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 3 }
+    const unknownVersion = validateLabMeasurementContract(value)
+    assert.equal(unknownVersion.ok, false)
+    assert.ok(unknownVersion.errors.includes('measurementContract.budgetRef:unknown-local-budget'))
+})
+
+test('accepts budget v2 and rejects mixed metric or finding budget references', () => {
+    const input = semantics()
+    input.measurementContract.budgetRef = DEFAULT_ANIMATION_LAB_BUDGET_REF_V2
+    input.metrics[0].budgetRefs = [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V2, ruleId: 'frame-tail' }]
+    input.findings[0].budgetRefs = [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V2, ruleId: 'frame-tail' }]
+    assert.equal(validateAnimationLabSemanticsV2(input).ok, true)
+
+    input.metrics[0].budgetRefs = [budgetRef('frame-tail')]
+    const mixedMetric = validateAnimationLabSemanticsV2(input)
+    assert.equal(mixedMetric.ok, false)
+    assert.ok(mixedMetric.errors.includes('metrics:budget-ref-contract-mismatch'))
+
+    input.metrics[0].budgetRefs = [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V2, ruleId: 'frame-tail' }]
+    input.findings[0].budgetRefs = [budgetRef('frame-tail')]
+    const mixedFinding = validateAnimationLabSemanticsV2(input)
+    assert.equal(mixedFinding.ok, false)
+    assert.ok(mixedFinding.errors.includes('findings:budget-ref-contract-mismatch'))
+
+    input.findings[0].budgetRefs = [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V2, ruleId: 'long-task-count' }]
+    const wrongFindingMetric = validateAnimationLabSemanticsV2(input)
+    assert.equal(wrongFindingMetric.ok, false)
+    assert.ok(wrongFindingMetric.errors.includes('findings:budget-rule-metric-mismatch'))
+
+    input.findings[0].metricIds = ['frame.duration.p95']
+    input.findings[0].ruleId = 'long-task-count'
+    input.findings[0].budgetRefs = [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V2, ruleId: 'frame-tail' }]
+    const wrongFindingRuleId = validateAnimationLabSemanticsV2(input)
+    assert.equal(wrongFindingRuleId.ok, false)
+    assert.ok(wrongFindingRuleId.errors.includes('findings:rule-id-budget-ref-mismatch'))
+
+    input.findings = []
+    input.metrics[0].budgetRefs = [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V2, ruleId: 'long-task-count' }]
+    const wrongMetricRule = validateAnimationLabSemanticsV2(input)
+    assert.equal(wrongMetricRule.ok, false)
+    assert.ok(wrongMetricRule.errors.includes('metrics[0].budgetRefs[0]:metric-mismatch'))
 })

@@ -554,9 +554,24 @@ export function validateAnimationLabSemanticsV2(value: unknown): LabContractVali
 
     const metrics = Array.isArray(value.metrics) ? (value.metrics.filter(record) as unknown as AnimationLabMetricV2[]) : []
     const metricSet = new Set(metrics.map(metric => metric.metricId))
+    const contractBudgetRef =
+        record(value.measurementContract) && record(value.measurementContract.budgetRef) ? value.measurementContract.budgetRef : null
     for (const metric of metrics) {
         if (metric.scope?.actionId && !actionsById.has(metric.scope.actionId)) add(errors, 'metrics:unknown-action-id')
-        for (const ref of metric.evidenceRefs ?? []) if (!evidenceSet.has(ref)) add(errors, 'metrics:unknown-evidence-ref')
+        for (const ref of Array.isArray(metric.evidenceRefs) ? metric.evidenceRefs : []) {
+            if (!evidenceSet.has(ref)) add(errors, 'metrics:unknown-evidence-ref')
+        }
+        for (const ref of Array.isArray(metric.budgetRefs) ? metric.budgetRefs : []) {
+            if (!record(ref)) continue
+            if (
+                contractBudgetRef &&
+                (ref.catalogVersion !== contractBudgetRef.catalogVersion ||
+                    ref.budgetId !== contractBudgetRef.budgetId ||
+                    ref.budgetVersion !== contractBudgetRef.budgetVersion)
+            ) {
+                add(errors, 'metrics:budget-ref-contract-mismatch')
+            }
+        }
     }
 
     const findings = Array.isArray(value.findings) ? value.findings.filter(record) : []
@@ -574,6 +589,24 @@ export function validateAnimationLabSemanticsV2(value: unknown): LabContractVali
         }
         for (const actionId of Array.isArray(finding.actionIds) ? finding.actionIds : []) {
             if (!actionsById.has(actionId)) add(errors, 'findings:unknown-action-id')
+        }
+        for (const ref of Array.isArray(finding.budgetRefs) ? finding.budgetRefs : []) {
+            if (!record(ref)) continue
+            if (
+                contractBudgetRef &&
+                (ref.catalogVersion !== contractBudgetRef.catalogVersion ||
+                    ref.budgetId !== contractBudgetRef.budgetId ||
+                    ref.budgetVersion !== contractBudgetRef.budgetVersion)
+            ) {
+                add(errors, 'findings:budget-ref-contract-mismatch')
+            }
+            if (typeof ref.budgetId !== 'string' || typeof ref.budgetVersion !== 'number') continue
+            const localBudget = getAnimationLabBudgetV1(ref.budgetId, ref.budgetVersion)
+            const localRule = localBudget?.rules.find(rule => rule.ruleId === ref.ruleId)
+            if (localRule && finding.ruleId !== ref.ruleId) add(errors, 'findings:rule-id-budget-ref-mismatch')
+            if (localRule && Array.isArray(finding.metricIds) && !finding.metricIds.includes(localRule.metricId)) {
+                add(errors, 'findings:budget-rule-metric-mismatch')
+            }
         }
     }
 

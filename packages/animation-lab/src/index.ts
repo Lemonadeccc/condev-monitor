@@ -3,11 +3,14 @@ export {
     ANIMATION_LAB_METRIC_CATALOG_V1,
     ANIMATION_LAB_METRIC_CATALOG_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
+    DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_V1,
+    DEFAULT_ANIMATION_LAB_BUDGET_V2,
     getAnimationLabBudgetV1,
     getAnimationLabMetricCatalog,
     getAnimationLabMetricCatalogEntry,
 } from './catalog'
+export { evaluateAnimationLabBudgetRule, resolveAnimationLabBudgetTarget } from './budget'
 export { normalizeLighthouseResult } from './lighthouse'
 export { sanitizeTraceSource, safeDisplayText, safeToken } from './privacy'
 export { resolveLabActionId, validateAnimationLabScenario, type ScenarioValidationResult } from './scenario'

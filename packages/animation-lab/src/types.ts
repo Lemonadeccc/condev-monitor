@@ -250,6 +250,13 @@ export interface LabBudgetDefinitionV1 extends LabBudgetRefV1 {
     rules: readonly LabBudgetRuleDefinitionV1[]
 }
 
+export type LabBudgetRuleEvaluationStatus = 'breach' | 'candidate-breach' | 'within-budget' | 'insufficient-evidence'
+
+export interface LabBudgetRuleEvaluationV1 {
+    status: LabBudgetRuleEvaluationStatus
+    target: number
+}
+
 export interface LabReportScenarioActionV2 {
     actionId: string
     /** Zero-based order within the scenario. */

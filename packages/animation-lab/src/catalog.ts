@@ -242,7 +242,13 @@ export const DEFAULT_ANIMATION_LAB_BUDGET_REF_V1: Readonly<LabBudgetRefV1> = Obj
     budgetVersion: 1,
 })
 
-/** Diagnostic defaults, not universal UX grades. This closed v1 runtime executes only this bundled definition. */
+export const DEFAULT_ANIMATION_LAB_BUDGET_REF_V2: Readonly<LabBudgetRefV1> = Object.freeze({
+    catalogVersion: ANIMATION_LAB_BUDGET_CATALOG_VERSION,
+    budgetId: 'condev.animation.default',
+    budgetVersion: 2,
+})
+
+/** Unchanged budget v1 diagnostic defaults, not universal UX grades. */
 export const DEFAULT_ANIMATION_LAB_BUDGET_V1: Readonly<LabBudgetDefinitionV1> = Object.freeze({
     ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
     rules: Object.freeze([
@@ -284,7 +290,24 @@ export const DEFAULT_ANIMATION_LAB_BUDGET_V1: Readonly<LabBudgetDefinitionV1> = 
     ]),
 })
 
-export const ANIMATION_LAB_BUDGET_CATALOG_V1: readonly Readonly<LabBudgetDefinitionV1>[] = Object.freeze([DEFAULT_ANIMATION_LAB_BUDGET_V1])
+/**
+ * Explicit opt-in budget v2. The only semantic change is that a supported,
+ * fully measured Long Task count can use its natural zero-event population as
+ * sufficient evidence. All other rules retain v1 thresholds and sample gates.
+ */
+export const DEFAULT_ANIMATION_LAB_BUDGET_V2: Readonly<LabBudgetDefinitionV1> = Object.freeze({
+    ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
+    rules: Object.freeze(
+        DEFAULT_ANIMATION_LAB_BUDGET_V1.rules.map(rule =>
+            Object.freeze(rule.ruleId === 'long-task-count' ? { ...rule, minimumSamples: 0 } : { ...rule })
+        )
+    ),
+})
+
+export const ANIMATION_LAB_BUDGET_CATALOG_V1: readonly Readonly<LabBudgetDefinitionV1>[] = Object.freeze([
+    DEFAULT_ANIMATION_LAB_BUDGET_V1,
+    DEFAULT_ANIMATION_LAB_BUDGET_V2,
+])
 
 export function getAnimationLabBudgetV1(budgetId: string, budgetVersion: number): Readonly<LabBudgetDefinitionV1> | undefined {
     return ANIMATION_LAB_BUDGET_CATALOG_V1.find(budget => budget.budgetId === budgetId && budget.budgetVersion === budgetVersion)
