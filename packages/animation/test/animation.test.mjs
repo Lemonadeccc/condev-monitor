@@ -2195,6 +2195,74 @@ test('element selection is a parallel native sidecar with bounded direct evidenc
     collector.destroy()
 })
 
+test('adapter inspection purpose defaults local, supports rum, freezes options, and isolates adapter contexts', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    const target = {
+        tagName: 'DIV',
+        namespaceURI: 'http://www.w3.org/1999/xhtml',
+        isConnected: true,
+        ownerDocument: { defaultView: { innerWidth: 1_000, innerHeight: 800 } },
+        getAttribute: () => null,
+        getAnimations: () => [],
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }),
+        addEventListener() {},
+        removeEventListener() {},
+    }
+    const mutatingContexts = []
+    const observedContexts = []
+    const initialPurposes = []
+    const mutatingAdapter = {
+        id: 'purpose-mutator',
+        version: '1',
+        canInspect: element => element === target,
+        inspect: (_element, context) => {
+            mutatingContexts.push(context)
+            initialPurposes.push(context.inspectionPurpose)
+            context.inspectionPurpose = context.inspectionPurpose === 'local' ? 'rum' : 'local'
+            context.evidenceWindow.relation = 'interaction-window'
+            return null
+        },
+    }
+    const observingAdapter = {
+        id: 'purpose-observer',
+        version: '1',
+        canInspect: element => element === target,
+        inspect: (_element, context) => {
+            observedContexts.push(context)
+            return null
+        },
+    }
+    const adapters = [mutatingAdapter, observingAdapter]
+
+    const localOptions = { adapters }
+    const localSelection = collector.selectElement(target, localOptions)
+    localOptions.inspectionPurpose = 'rum'
+    localSelection.snapshot()
+
+    const rumOptions = { adapters, inspectionPurpose: 'rum' }
+    const rumSelection = collector.selectElement(target, rumOptions)
+    rumOptions.inspectionPurpose = 'local'
+    rumSelection.snapshot()
+
+    assert.deepEqual(initialPurposes, ['local', 'rum'])
+    assert.deepEqual(
+        observedContexts.map(context => [context.inspectionPurpose, context.evidenceWindow.relation]),
+        [
+            ['local', 'selection-window'],
+            ['rum', 'selection-window'],
+        ]
+    )
+    for (let index = 0; index < observedContexts.length; index += 1) {
+        assert.notEqual(mutatingContexts[index], observedContexts[index])
+        assert.notEqual(mutatingContexts[index].evidenceWindow, observedContexts[index].evidenceWindow)
+    }
+
+    localSelection.clear()
+    rumSelection.clear()
+    collector.destroy()
+})
+
 test('renderer adapters normalize bounded evidence and keep GPU timing fail-closed', () => {
     const runtime = new FakeRuntime()
     const collector = new AnimationCollector({ runtime }).start()
@@ -2547,6 +2615,7 @@ test('renderer adapter windows use the collector monotonic clock and must fit th
     assert.equal(selected.renderers[0].metrics.drawCallsP95, 4)
     assert.deepEqual(selected.renderers[0].evidence.window, { startedAt: 100, endedAt: 105, durationMs: 5 })
     assert.deepEqual(inspectionContext, {
+        inspectionPurpose: 'local',
         evidenceWindow: { startedAt: 100, endedAt: 100, relation: 'selection-window' },
     })
 
@@ -2579,6 +2648,7 @@ test('renderer adapter windows use the collector monotonic clock and must fit th
     assert.equal(selected.renderers[0].metrics.drawCallsP95, 4)
     assert.deepEqual(selected.adapterErrors, [])
     assert.deepEqual(inspectionContext, {
+        inspectionPurpose: 'local',
         evidenceWindow: { startedAt: 200, endedAt: 220, relation: 'interaction-window' },
     })
 
@@ -3797,6 +3867,7 @@ test('dev overlay target recording is explicitly started, bounded, resettable, a
     ]
     document.hit = target
     let targetSelection = null
+    let targetSelectionOptions = null
     let rendererWindow = { startedAt: runtime.now(), endedAt: runtime.now() }
     const rendererAdapter = {
         id: 'overlay-renderer',
@@ -3825,6 +3896,7 @@ test('dev overlay target recording is explicitly started, bounded, resettable, a
             },
             snapshot: () => collector.snapshot(),
             selectElement(element, options) {
+                targetSelectionOptions = options
                 targetSelection = collector.selectElement(element, options)
                 return targetSelection
             },
@@ -3850,6 +3922,7 @@ test('dev overlay target recording is explicitly started, bounded, resettable, a
     assert.equal(overlay.targetState, 'selected')
     assert.equal(requestedAnimationFrames, 0)
     assert.ok(targetSelection)
+    assert.equal(targetSelectionOptions.inspectionPurpose, 'local')
     const selected = targetSelection.snapshot()
     assert.equal(selected.state, 'selected')
     assert.equal(selected.activeInteractionId, null)

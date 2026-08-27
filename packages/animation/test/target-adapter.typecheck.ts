@@ -16,8 +16,10 @@ const contextualAdapter = {
     canInspect: () => true,
     inspect: (target: Element, context?: AnimationTargetAdapterInspectionContext) => {
         const relation: 'selection-window' | 'interaction-window' | undefined = context?.evidenceWindow.relation
+        const purpose: 'local' | 'rum' | undefined = context?.inspectionPurpose
         void target
         void relation
+        void purpose
         return null
     },
 } satisfies AnimationTargetAdapter
@@ -27,6 +29,8 @@ const registry = createAnimationTargetAdapterRegistry('typecheck', '1')
 registry.register(element, () => null)
 registry.register(element, context => {
     const startedAt: number | undefined = context?.evidenceWindow.startedAt
+    const purpose: 'local' | 'rum' | undefined = context?.inspectionPurpose
     void startedAt
+    void purpose
     return null
 })
