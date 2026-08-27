@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common'
 import { AIClickhouseFallbackService } from './ai-clickhouse-fallback.service'
 import { AnimationRumClickhouseService } from './animation-rum-clickhouse.service'
 import { AnimationRumV2AdmissionService } from './animation-rum-v2-admission.service'
+import { AnimationRumV2OutboxDispatcherService } from './animation-rum-v2-outbox-dispatcher.service'
 import { ClickhouseFallbackService } from './clickhouse-fallback.service'
 import { InboundFilterService } from './inbound-filter.service'
 import { IngestWriterService } from './ingest-writer.service'
@@ -16,6 +17,7 @@ import { RateLimiterService } from './rate-limiter.service'
         AIClickhouseFallbackService,
         AnimationRumClickhouseService,
         AnimationRumV2AdmissionService,
+        AnimationRumV2OutboxDispatcherService,
         IngestWriterService,
         InboundFilterService,
         RateLimiterService,
