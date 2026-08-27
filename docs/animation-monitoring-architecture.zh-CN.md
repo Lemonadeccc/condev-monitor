@@ -375,7 +375,9 @@ Firefox/WebKit 请求 trace 或 Lighthouse 时，会保留 0-duration 的显式 
 
 上传语义把每个被测动作拆成 `actionId + trigger + subject + outcome + timestamps`，并把 renderer/framework/motion/browser 证据作为可多值技术轴，而不是猜一个“框架名称”。指标使用闭集 `metricId + scope + aggregation + budgetRefs + evidenceRefs + limitations`。平台详情页按左侧动作、右侧证据展示触发方式、主题/表面、时间窗、技术证据、指标、阈值、发现与建议；页面右下角浮层则消费 SDK 的本地 Target/host adapter 证据。没有框架 adapter 的原生页面仍可测帧、主线程、交互和 DOM/SVG/Canvas 表面，但 owner、真实 GPU 时间等必须显示 `unsupported`/`not-instrumented`，不能填 0。
 
-默认诊断合同固定为 60 Hz（16.666667 ms），不是根据已经变慢的页面自校准。兼容指标 `frame.refresh.inferred` 的准确含义是“可见页面 rAF 帧间隔 p50 推算出的回调节奏”，不是物理屏幕刷新率、compositor presentation FPS 或 GPU FPS；平台会显示这一限制，不能用它自动放宽预算。内置调查规则是 frame p95 `<=1.5×frame budget`（至少 120 帧）、slow-frame rate `<=5%`（至少 120 帧）、jank burst `<=0`（至少 120 帧）、Long Task count `<=0`（至少 1 个样本）和 input delay p95 `<=100 ms`（至少 3 个事件）。这些是版本化项目预算，不是浏览器标准或跨业务统一评分；高刷场景应在 scenario 明确写入 refresh contract。
+默认诊断合同固定为 60 Hz（16.666667 ms），不是根据已经变慢的页面自校准。兼容指标 `frame.refresh.inferred` 的准确含义是“可见页面 rAF 帧间隔 p50 推算出的回调节奏”，不是物理屏幕刷新率、compositor presentation FPS 或 GPU FPS；平台会显示这一限制，不能用它自动放宽预算。省略 `measurementContract` 时继续使用 `condev.animation.default@1`：frame p95 `<=1.5×frame budget`（至少 120 帧）、slow-frame rate `<=5%`（至少 120 帧）、jank burst `<=0`（至少 120 帧）、Long Task count `<=0`（至少 1 个已观察任务）和 input delay p95 `<=100 ms`（至少 3 个事件）。
+
+示例场景显式选择 `condev.animation.default@2`。@2 只改变 Long Task 的零事件证据语义：完整的 run-level `measured` 观察且 `value: 0 / samples: 0` 可以证明该观察窗口没有 Long Task；正值和正样本仍产生 finding。`partial`、`unsupported`、`unknown`、`not-observed`、缺失、样本溢出以及 `value`/`samples` 的零值状态不一致都保持证据不足，不能伪造一个样本。@1 与 @2 的规则身份进入 protocol hash，跨版本比较属于预算合同漂移，不能直接评价改善或退化。平台后端会为历史兼容原样保留一致的未知预算引用，但前端不会猜测其阈值；本地 Runner 只执行已知版本。这些是版本化项目预算，不是浏览器标准或跨业务统一评分；高刷场景应在 scenario 明确写入 refresh contract。
 
 Event Timing 使用 `durationThreshold: 16` 观测，所以事件总时长、input delay、processing 和 presentation delay 的 p95（包括动作窗口）都是“浏览器在该阈值下暴露的条件样本分布”，不是全部输入事件的分位数。`interaction.count` 统计保留的 `PerformanceEventTiming` 条目，也没有按 `interactionId` 去重，不能解释成独立交互次数。Runner 会把这两项限制作为闭集代码保留到跨次聚合和 input-delay finding；数值仍可标为已测量，但 UI 必须同时展示样本边界。
 
