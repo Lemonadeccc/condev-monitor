@@ -337,6 +337,42 @@ function animationReportV2() {
     }
 }
 
+function completeZeroLongTaskReportV2() {
+    const report = animationReportV2()
+    const budgetRef = { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 2, ruleId: 'long-task-count' }
+    const metricFor = (scope: Record<string, unknown>, aggregation: Record<string, unknown>) =>
+        expandedMetric({
+            family: 'mainThread',
+            name: 'longTaskCount',
+            stat: 'count',
+            unit: 'count',
+            value: 0,
+            samples: 0,
+            metricId: 'main.long-task.count',
+            scope,
+            aggregation,
+            budgetRefs: [budgetRef],
+            limitations: [],
+        })
+    const source = report.attempts[0]!
+    report.measurementContract.budgetRef.budgetVersion = 2
+    report.measurementContract.metricCatalogVersion = 2
+    report.attempts = Array.from({ length: 3 }, (_, index) => {
+        const attemptId = `attempt_${index + 1}`
+        return {
+            ...source,
+            attemptId,
+            index,
+            capabilities: { ...source.capabilities, longtask: true },
+            metrics: [metricFor({ level: 'attempt', attemptId }, { population: 'tasks', method: 'count' })],
+            actionWindows: [actionWindow()],
+        }
+    })
+    report.aggregateMetrics = [metricFor({ level: 'run' }, { population: 'attempts', method: 'median-of-attempts' })]
+    report.findings = []
+    return report
+}
+
 function slowFrameMetric(overrides: Record<string, unknown> = {}) {
     return expandedMetric({
         family: 'frameCadence',
@@ -749,6 +785,97 @@ describe('lab platform artifact projections', () => {
         const forgedProtocol = animationReportV2()
         Object.assign(forgedProtocol.scenario, { protocolHash: 'A'.repeat(64) })
         expect(() => parseAnimationReportArtifact(forgedProtocol)).toThrow('Invalid animation-report.scenario.protocolHash')
+    })
+
+    it('accepts a complete budget-v2 zero-event Long Task report without changing the compact summary shape', () => {
+        const parsed = parseAnimationReportArtifact(completeZeroLongTaskReportV2())
+
+        expect(parsed.analysis?.measurementContract.budgetRef.budgetVersion).toBe(2)
+        expect(parsed.analysis?.metrics).toEqual([
+            expect.objectContaining({
+                metricId: 'main.long-task.count',
+                value: 0,
+                samples: 0,
+                status: 'measured',
+                budgetRefs: [expect.objectContaining({ budgetVersion: 2, ruleId: 'long-task-count' })],
+            }),
+        ])
+        expect(parsed.analysis?.findings).toEqual([])
+        expect(parsed.measuredAttempts).toHaveLength(3)
+        expect(parsed.measuredAttempts.every(attempt => attempt.capabilities.longtask === true)).toBe(true)
+        expect(parsed.compactSummary.metrics?.[0]).not.toHaveProperty('metricId')
+        expect(parsed.compactSummary.metrics?.[0]).not.toHaveProperty('budgetRefs')
+    })
+
+    it('preserves opaque budget references and rejects mixed references or mismatched canonical rules', () => {
+        const unknownVersion = completeZeroLongTaskReportV2()
+        unknownVersion.measurementContract.budgetRef.budgetVersion = 3
+        for (const attempt of unknownVersion.attempts) {
+            for (const metric of attempt.metrics) {
+                for (const ref of metric.budgetRefs) ref.budgetVersion = 3
+            }
+        }
+        for (const metric of unknownVersion.aggregateMetrics) {
+            for (const ref of metric.budgetRefs) ref.budgetVersion = 3
+        }
+        const parsedUnknownVersion = parseAnimationReportArtifact(unknownVersion)
+        expect(parsedUnknownVersion.analysis?.measurementContract.budgetRef.budgetVersion).toBe(3)
+        expect(parsedUnknownVersion.analysis?.metrics[0]?.budgetRefs[0]?.budgetVersion).toBe(3)
+
+        const unknownId = completeZeroLongTaskReportV2()
+        unknownId.measurementContract.budgetRef.budgetId = 'unknown-budget'
+        for (const attempt of unknownId.attempts) {
+            for (const metric of attempt.metrics) {
+                for (const ref of metric.budgetRefs) ref.budgetId = 'unknown-budget'
+            }
+        }
+        for (const metric of unknownId.aggregateMetrics) {
+            for (const ref of metric.budgetRefs) ref.budgetId = 'unknown-budget'
+        }
+        const parsedUnknownId = parseAnimationReportArtifact(unknownId)
+        expect(parsedUnknownId.analysis?.measurementContract.budgetRef.budgetId).toBe('unknown-budget')
+        expect(parsedUnknownId.analysis?.metrics[0]?.budgetRefs[0]?.budgetId).toBe('unknown-budget')
+
+        const mixedMetric = completeZeroLongTaskReportV2()
+        mixedMetric.aggregateMetrics[0]!.budgetRefs[0]!.budgetVersion = 1
+        expect(() => parseAnimationReportArtifact(mixedMetric)).toThrow('budgetRef conflicts with measurementContract')
+
+        const mixedAttempt = completeZeroLongTaskReportV2()
+        mixedAttempt.attempts[0]!.metrics[0]!.budgetRefs[0]!.budgetVersion = 1
+        expect(() => parseAnimationReportArtifact(mixedAttempt)).toThrow('budgetRef conflicts with measurementContract')
+
+        const reverseMixedMetric = completeZeroLongTaskReportV2()
+        reverseMixedMetric.measurementContract.budgetRef.budgetVersion = 1
+        expect(() => parseAnimationReportArtifact(reverseMixedMetric)).toThrow('budgetRef conflicts with measurementContract')
+
+        const unknownRule = completeZeroLongTaskReportV2()
+        unknownRule.aggregateMetrics[0]!.budgetRefs[0]!.ruleId = 'unknown-rule'
+        expect(() => parseAnimationReportArtifact(unknownRule)).toThrow('unknown canonical budget rule')
+
+        const wrongMetric = completeZeroLongTaskReportV2()
+        wrongMetric.aggregateMetrics[0]!.budgetRefs[0]!.ruleId = 'frame-tail'
+        expect(() => parseAnimationReportArtifact(wrongMetric)).toThrow('budget rule does not apply to metricId')
+
+        const mixedFinding = animationReportV2()
+        mixedFinding.measurementContract.budgetRef.budgetVersion = 2
+        for (const attempt of mixedFinding.attempts) {
+            for (const metric of attempt.metrics) {
+                for (const ref of metric.budgetRefs) ref.budgetVersion = 2
+            }
+        }
+        for (const metric of mixedFinding.aggregateMetrics) {
+            for (const ref of metric.budgetRefs) ref.budgetVersion = 2
+        }
+        expect(() => parseAnimationReportArtifact(mixedFinding)).toThrow('budgetRef conflicts with measurementContract')
+
+        const wrongFindingRule = animationReportV2()
+        wrongFindingRule.findings[0]!.ruleId = 'slow-frame-rate'
+        expect(() => parseAnimationReportArtifact(wrongFindingRule)).toThrow('ruleId conflicts with budgetRef')
+
+        const wrongFindingMetric = animationReportV2()
+        wrongFindingMetric.findings[0]!.ruleId = 'long-task-count'
+        wrongFindingMetric.findings[0]!.budgetRefs[0]!.ruleId = 'long-task-count'
+        expect(() => parseAnimationReportArtifact(wrongFindingMetric)).toThrow('budget rule does not apply to metricIds')
     })
 
     it('keeps a real-scale action catalog in raw analysis without overflowing the persisted summary', () => {

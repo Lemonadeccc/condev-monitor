@@ -20,6 +20,12 @@ const DEFAULT_BUDGET_RULE_METRICS: Readonly<Record<string, string>> = {
     'long-task-count': 'main.long-task.count',
     'input-delay': 'interaction.input-delay.p95',
 }
+const DEFAULT_BUDGET_ID = 'condev.animation.default'
+const DEFAULT_BUDGET_VERSIONS = new Set([1, 2])
+
+function isKnownDefaultBudget(ref: { budgetId: string; budgetVersion: number }): boolean {
+    return ref.budgetId === DEFAULT_BUDGET_ID && DEFAULT_BUDGET_VERSIONS.has(ref.budgetVersion)
+}
 
 const ACTION_KINDS = ['wait', 'click', 'hover', 'pointer-path', 'scroll', 'resize', 'drag', 'press'] as const
 const SUBJECT_SCOPES = ['page', 'route', 'frame', 'subject', 'renderer-surface', 'media'] as const
@@ -371,8 +377,8 @@ function budgetRef(value: unknown, label: string, requireRule: boolean): LabBudg
     }
     if (!requireRule) return parsed
     const ruleId = stringToken(raw.ruleId, `${label}.ruleId`, 120)
-    if (parsed.budgetId === 'condev.animation.default' && parsed.budgetVersion === 1) {
-        if (!DEFAULT_BUDGET_RULE_METRICS[ruleId]) throw new BadRequestException(`${label} references an unknown canonical budget rule`)
+    if (isKnownDefaultBudget(parsed) && !DEFAULT_BUDGET_RULE_METRICS[ruleId]) {
+        throw new BadRequestException(`${label} references an unknown canonical budget rule`)
     }
     return { ...parsed, ruleId }
 }
@@ -580,11 +586,7 @@ export function parseAnimationLabMetricV2(
         budgetRef(item, `${label}.budgetRefs[${index}]`, true)
     )
     for (const ref of budgetRefs) {
-        if (
-            ref.budgetId === 'condev.animation.default' &&
-            ref.budgetVersion === 1 &&
-            DEFAULT_BUDGET_RULE_METRICS[ref.ruleId] !== metricId
-        ) {
+        if (isKnownDefaultBudget(ref) && DEFAULT_BUDGET_RULE_METRICS[ref.ruleId] !== metricId) {
             throw new BadRequestException(`${label} budget rule does not apply to metricId`)
         }
     }
@@ -837,10 +839,30 @@ export function parseAnimationLabSemanticsV2FromReport(reportValue: RecordValue)
         if (metric.scope.attemptId && metric.scope.attemptId !== attemptId) {
             throw new BadRequestException(`animation-report attempt metric ${metric.metricId} references a different attemptId`)
         }
+        for (const ref of metric.budgetRefs) {
+            if (
+                ref.catalogVersion !== parsedMeasurementContract.budgetRef.catalogVersion ||
+                ref.budgetId !== parsedMeasurementContract.budgetRef.budgetId ||
+                ref.budgetVersion !== parsedMeasurementContract.budgetRef.budgetVersion
+            ) {
+                throw new BadRequestException(
+                    `animation-report attempt metric ${metric.metricId} budgetRef conflicts with measurementContract`
+                )
+            }
+        }
     }
 
     for (const metric of parsedMetrics) {
         assertScopeReferences(metric.scope, actionIds, attemptIds, `animation-report metric ${metric.metricId}`)
+        for (const ref of metric.budgetRefs) {
+            if (
+                ref.catalogVersion !== parsedMeasurementContract.budgetRef.catalogVersion ||
+                ref.budgetId !== parsedMeasurementContract.budgetRef.budgetId ||
+                ref.budgetVersion !== parsedMeasurementContract.budgetRef.budgetVersion
+            ) {
+                throw new BadRequestException(`animation-report metric ${metric.metricId} budgetRef conflicts with measurementContract`)
+            }
+        }
         for (const evidenceRef of metric.evidenceRefs) {
             if (!evidenceIds.has(evidenceRef))
                 throw new BadRequestException(`animation-report metric ${metric.metricId} has an unknown evidenceRef`)
@@ -862,6 +884,22 @@ export function parseAnimationLabSemanticsV2FromReport(reportValue: RecordValue)
         }
         if (item.actionIds.some(actionId => !actionIds.has(actionId))) {
             throw new BadRequestException(`animation-report finding ${item.findingId} has an unknown actionId`)
+        }
+        for (const ref of item.budgetRefs) {
+            if (
+                ref.catalogVersion !== parsedMeasurementContract.budgetRef.catalogVersion ||
+                ref.budgetId !== parsedMeasurementContract.budgetRef.budgetId ||
+                ref.budgetVersion !== parsedMeasurementContract.budgetRef.budgetVersion
+            ) {
+                throw new BadRequestException(`animation-report finding ${item.findingId} budgetRef conflicts with measurementContract`)
+            }
+            if (item.ruleId !== ref.ruleId) {
+                throw new BadRequestException(`animation-report finding ${item.findingId} ruleId conflicts with budgetRef`)
+            }
+            const expectedMetricId = DEFAULT_BUDGET_RULE_METRICS[ref.ruleId]
+            if (isKnownDefaultBudget(ref) && (!expectedMetricId || !item.metricIds.includes(expectedMetricId))) {
+                throw new BadRequestException(`animation-report finding ${item.findingId} budget rule does not apply to metricIds`)
+            }
         }
     }
 
