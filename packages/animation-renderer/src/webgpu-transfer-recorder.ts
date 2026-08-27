@@ -54,6 +54,7 @@ export interface WebGpuTransferRecorderOptions {
 }
 
 export interface WebGpuTransferTargetInspectionContext {
+    readonly inspectionPurpose: 'local' | 'rum'
     readonly evidenceWindow: {
         readonly startedAt: number
         readonly endedAt: number
@@ -142,7 +143,7 @@ export interface WebGpuTransferRecorder {
     observeReadback<T>(evidence: WebGpuReadbackEvidence, operation: () => Promise<T>): Promise<T>
     inspectWindow(window: WebGpuTransferTargetInspectionContext['evidenceWindow']): WebGpuTransferTargetRendererInspection
     /** Bound callback for Browser animation.registerTarget(). Only one provider may own a canvas registration. */
-    inspect(context?: WebGpuTransferTargetInspectionContext): WebGpuTransferTargetAdapterInspection
+    inspect(context?: WebGpuTransferTargetInspectionContext): WebGpuTransferTargetAdapterInspection | null
     getSnapshot(): WebGpuTransferRecorderSnapshot
     dispose(): void
 }
@@ -889,37 +890,48 @@ export function createWebGpuTransferRecorder(options: WebGpuTransferRecorderOpti
             return attachmentFailed ? result : observedResult
         },
         inspectWindow,
-        inspect(context): WebGpuTransferTargetAdapterInspection {
-            let renderer: WebGpuTransferTargetRendererInspection
-            if (operationDepth > 0) {
-                renderer = unobserved('WebGPU transfer evidence is changing')
-            } else if (inspectionDepth > 0) {
+        inspect(context): WebGpuTransferTargetAdapterInspection | null {
+            if (operationDepth > 0) return null
+            if (inspectionDepth > 0) {
                 inspectionInvalidated = true
-                renderer = unobserved('Nested WebGPU transfer inspection is unavailable')
-            } else if (!context) renderer = unobserved('An SDK target inspection context is required')
-            else {
-                let evidenceWindow: WebGpuTransferTargetInspectionContext['evidenceWindow'] | undefined
-                const initialMutationVersion = mutationVersion
-                inspectionInvalidated = false
-                inspectionDepth += 1
+                return null
+            }
+            if (!context) return null
+            let inspectionPurpose: WebGpuTransferTargetInspectionContext['inspectionPurpose'] | undefined
+            const purposeMutationVersion = mutationVersion
+            inspectionInvalidated = false
+            inspectionDepth += 1
+            try {
+                inspectionPurpose = context.inspectionPurpose
+            } catch {
+                return null
+            } finally {
+                inspectionDepth = Math.max(0, inspectionDepth - 1)
+            }
+            if (inspectionInvalidated || mutationVersion !== purposeMutationVersion) return null
+            if (inspectionPurpose !== 'local') return null
+            let renderer: WebGpuTransferTargetRendererInspection
+            let evidenceWindow: WebGpuTransferTargetInspectionContext['evidenceWindow'] | undefined
+            const initialMutationVersion = mutationVersion
+            inspectionInvalidated = false
+            inspectionDepth += 1
+            try {
+                evidenceWindow = context.evidenceWindow
+            } catch {
+                renderer = unobserved('Target inspection context was unreadable')
+            } finally {
+                inspectionDepth = Math.max(0, inspectionDepth - 1)
+            }
+            if (inspectionInvalidated || mutationVersion !== initialMutationVersion) {
+                renderer = unobserved('WebGPU transfer evidence changed during target context inspection')
+            } else if (evidenceWindow) {
                 try {
-                    evidenceWindow = context.evidenceWindow
+                    renderer = inspectWindow(evidenceWindow)
                 } catch {
                     renderer = unobserved('Target inspection context was unreadable')
-                } finally {
-                    inspectionDepth = Math.max(0, inspectionDepth - 1)
                 }
-                if (inspectionInvalidated || mutationVersion !== initialMutationVersion) {
-                    renderer = unobserved('WebGPU transfer evidence changed during target context inspection')
-                } else if (evidenceWindow) {
-                    try {
-                        renderer = inspectWindow(evidenceWindow)
-                    } catch {
-                        renderer = unobserved('Target inspection context was unreadable')
-                    }
-                } else {
-                    renderer = unobserved('An SDK target evidence window is required')
-                }
+            } else {
+                renderer = unobserved('An SDK target evidence window is required')
             }
             return {
                 inventory: { renderers: ['webgpu'] },
