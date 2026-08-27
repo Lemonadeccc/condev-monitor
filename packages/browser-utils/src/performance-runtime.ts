@@ -167,9 +167,10 @@ export type PerformanceObserverSubscription = PerformanceRuntimeUnsubscribe & {
     readonly state: PerformanceRuntimeCapabilityState
     readonly buffered: boolean
     /**
-     * Browser-reported PerformanceObserver entries dropped during this logical
-     * subscription. null means the callback evidence was unavailable or became
-     * inconsistent; it must not be interpreted as zero.
+     * Quality evidence for buffered Performance Timeline history delivered to
+     * this logical subscription. Positive values are the browser's one-shot
+     * history-drop count, not an exact count of live entries missed by the SDK.
+     * null means the callback evidence was unavailable and is not zero.
      */
     readonly droppedEntriesCount: number | null
     readonly reason?: string
@@ -190,11 +191,10 @@ type LifecycleSubscriber = {
 type ObserverSubscriber = {
     callback: RuntimeEntrySubscriber
     durationThreshold: number
-    droppedEntriesBaseline: number | null
     droppedEntriesCount: number | null
 }
 
-type ObserverDroppedEntriesState = 'unseen' | 'valid' | 'invalid'
+type ObserverDroppedEntriesState = 'pending' | 'captured' | 'unavailable'
 
 type ObserverState = {
     observer: PerformanceObserver
@@ -202,7 +202,6 @@ type ObserverState = {
     buffered: boolean
     lastDrainSucceeded: boolean | null
     droppedEntriesState: ObserverDroppedEntriesState
-    lastDroppedEntriesCount: number | null
 }
 
 function disconnectSafely(observer: PerformanceObserver | null | undefined): void {
@@ -284,15 +283,13 @@ function getRegistry(): PerformanceRuntimeRegistry {
         projector: null,
     }
     // A runtime module can be replaced while the symbol-backed observer remains
-    // active. An observer created by an older runtime has no trustworthy drop
-    // baseline, so preserve its entries but make the new evidence explicitly
-    // unknown instead of manufacturing a zero.
+    // active. An observer created by an older runtime has no trustworthy record
+    // of the standard's one-shot callback option, so preserve its entries but
+    // make existing subscribers' evidence explicitly unknown.
     for (const state of root[REGISTRY_KEY].observers.values()) {
-        if (!['unseen', 'valid', 'invalid'].includes(state.droppedEntriesState)) {
-            state.droppedEntriesState = 'invalid'
-            state.lastDroppedEntriesCount = null
+        if (!['pending', 'captured', 'unavailable'].includes(state.droppedEntriesState)) {
+            state.droppedEntriesState = 'unavailable'
             for (const subscriber of state.subscribers) {
-                subscriber.droppedEntriesBaseline = null
                 subscriber.droppedEntriesCount = null
             }
         }
@@ -1034,8 +1031,7 @@ function createObserverState(
         subscribers: new Set([firstSubscriber]),
         buffered: false,
         lastDrainSucceeded: null,
-        droppedEntriesState: 'unseen' as ObserverDroppedEntriesState,
-        lastDroppedEntriesCount: null,
+        droppedEntriesState: 'pending' as ObserverDroppedEntriesState,
     }
 
     try {
@@ -1044,7 +1040,7 @@ function createObserverState(
             _observer: PerformanceObserver,
             callbackOptions?: { droppedEntriesCount?: unknown }
         ) => {
-            updateDroppedEntriesCount(state, callbackOptions)
+            captureInitialDroppedEntriesCount(state, callbackOptions)
             let entries: PerformanceEntry[]
             try {
                 entries = list.getEntries()
@@ -1059,20 +1055,19 @@ function createObserverState(
             type: entryType,
             buffered: options.buffered ?? true,
         }
-        firstSubscriber.droppedEntriesBaseline = observerOptions.buffered === true ? 0 : null
         if (entryType === 'event') {
             ;(observerOptions as PerformanceObserverInit & { durationThreshold: number }).durationThreshold = 16
         }
 
+        state.buffered = observerOptions.buffered === true
         try {
             state.observer.observe(observerOptions)
-            state.buffered = observerOptions.buffered === true
         } catch {
-            // The entryTypes fallback cannot request buffered history. Its first
-            // callback establishes the logical subscription baseline.
-            firstSubscriber.droppedEntriesBaseline = null
-            state.observer.observe({ entryTypes: [entryType] })
+            // The entryTypes fallback cannot request buffered history. The
+            // browser's global dropped-history count therefore does not describe
+            // live entries delivered to this logical subscription.
             state.buffered = false
+            state.observer.observe({ entryTypes: [entryType] })
         }
 
         return state
@@ -1082,36 +1077,34 @@ function createObserverState(
     }
 }
 
-function invalidateDroppedEntriesCount(state: ObserverState): void {
-    state.droppedEntriesState = 'invalid'
-    state.lastDroppedEntriesCount = null
+function makeDroppedEntriesCountUnavailable(state: ObserverState): void {
+    state.droppedEntriesState = 'unavailable'
     for (const subscriber of state.subscribers) {
-        subscriber.droppedEntriesBaseline = null
         subscriber.droppedEntriesCount = null
     }
 }
 
-function updateDroppedEntriesCount(state: ObserverState, callbackOptions?: { droppedEntriesCount?: unknown }): void {
-    if (state.droppedEntriesState === 'invalid') return
+/**
+ * The Performance Timeline standard supplies droppedEntriesCount only on the
+ * first callback after observe(), then clears the observer's "requires dropped
+ * entries" flag. Preserve that one-shot evidence; later callbacks normally omit
+ * the field and must not erase it.
+ */
+function captureInitialDroppedEntriesCount(state: ObserverState, callbackOptions?: { droppedEntriesCount?: unknown }): void {
+    if (state.droppedEntriesState !== 'pending') return
 
     const rawCount = callbackOptions?.droppedEntriesCount
     if (!Number.isSafeInteger(rawCount) || (rawCount as number) < 0) {
-        invalidateDroppedEntriesCount(state)
+        makeDroppedEntriesCountUnavailable(state)
         return
     }
 
-    const count = rawCount as number
-    if (state.droppedEntriesState === 'valid' && state.lastDroppedEntriesCount !== null && count < state.lastDroppedEntriesCount) {
-        invalidateDroppedEntriesCount(state)
-        return
-    }
-
-    state.droppedEntriesState = 'valid'
-    state.lastDroppedEntriesCount = count
+    state.droppedEntriesState = 'captured'
+    // entryTypes fallback has no buffered history to lose. Its global timeline
+    // count is unrelated to entries delivered live to this subscription.
+    const relevantCount = state.buffered ? (rawCount as number) : 0
     for (const subscriber of state.subscribers) {
-        if (subscriber.droppedEntriesCount === null) continue
-        subscriber.droppedEntriesBaseline ??= count
-        subscriber.droppedEntriesCount = count - subscriber.droppedEntriesBaseline
+        subscriber.droppedEntriesCount = relevantCount
     }
 }
 
@@ -1207,17 +1200,17 @@ export function observePerformanceEntries<T extends PerformanceRuntimeEntryType>
     const subscriber: ObserverSubscriber = {
         callback: callback as RuntimeEntrySubscriber,
         durationThreshold: Math.max(16, options.durationThreshold ?? 16),
-        droppedEntriesBaseline: null,
-        droppedEntriesCount: 0,
+        droppedEntriesCount: null,
     }
 
     let state = registry.observers.get(entryType)
+    let logicalBuffered = false
     if (state) {
-        if (state.droppedEntriesState === 'invalid') {
-            subscriber.droppedEntriesCount = null
-        } else if (state.droppedEntriesState === 'valid') {
-            subscriber.droppedEntriesBaseline = state.lastDroppedEntriesCount
-        }
+        // Once the shared observer's first callback has run, a later logical
+        // subscriber receives only live entries from its own start boundary; it
+        // does not inherit historical buffer loss from the first subscriber.
+        logicalBuffered = state.buffered && state.droppedEntriesState === 'pending'
+        if (state.droppedEntriesState !== 'pending') subscriber.droppedEntriesCount = 0
         state.subscribers.add(subscriber)
     } else {
         state = createObserverState(entryType, subscriber, options) ?? undefined
@@ -1230,6 +1223,7 @@ export function observePerformanceEntries<T extends PerformanceRuntimeEntryType>
             )
         }
         registry.observers.set(entryType, state)
+        logicalBuffered = state.buffered
     }
 
     let active = true
@@ -1243,5 +1237,5 @@ export function observePerformanceEntries<T extends PerformanceRuntimeEntryType>
             registry.observers.delete(entryType)
         }
     }
-    return createObserverSubscription(unsubscribe, 'supported', state.buffered, undefined, () => subscriber.droppedEntriesCount)
+    return createObserverSubscription(unsubscribe, 'supported', logicalBuffered, undefined, () => subscriber.droppedEntriesCount)
 }

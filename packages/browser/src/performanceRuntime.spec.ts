@@ -239,7 +239,7 @@ describe('shared performance runtime', () => {
         expect(observers[0]!.disconnect).toHaveBeenCalledTimes(1)
     })
 
-    it('reports browser-dropped entries from each subscription boundary and freezes after unsubscribe', () => {
+    it('preserves the standard one-shot buffered-history drop evidence and freezes after unsubscribe', () => {
         let observer: FakePerformanceObserver | undefined
 
         class FakePerformanceObserver {
@@ -251,11 +251,11 @@ describe('shared performance runtime', () => {
                 observer = this
             }
 
-            emit(droppedEntriesCount: number): void {
+            emit(droppedEntriesCount?: number): void {
                 ;(this.callback as PerformanceObserverCallbackWithOptions)(
                     { getEntries: () => [] } as unknown as PerformanceObserverEntryList,
                     this as unknown as PerformanceObserver,
-                    { droppedEntriesCount }
+                    droppedEntriesCount === undefined ? undefined : { droppedEntriesCount }
                 )
             }
         }
@@ -264,27 +264,34 @@ describe('shared performance runtime', () => {
         const first = observePerformanceEntries('longtask', jest.fn())
         const countDescriptor = Object.getOwnPropertyDescriptor(first, 'droppedEntriesCount')
 
-        expect(first.droppedEntriesCount).toBe(0)
+        expect(first.droppedEntriesCount).toBeNull()
         expect(countDescriptor?.get).toEqual(expect.any(Function))
         expect(countDescriptor?.set).toBeUndefined()
 
+        const joinedBeforeFirstCallback = observePerformanceEntries('longtask', jest.fn())
+        expect(joinedBeforeFirstCallback.buffered).toBe(true)
+        expect(joinedBeforeFirstCallback.droppedEntriesCount).toBeNull()
         observer!.emit(3)
         expect(first.droppedEntriesCount).toBe(3)
+        expect(joinedBeforeFirstCallback.droppedEntriesCount).toBe(3)
 
-        const second = observePerformanceEntries('longtask', jest.fn())
-        expect(second.droppedEntriesCount).toBe(0)
-        observer!.emit(5)
-        expect(first.droppedEntriesCount).toBe(5)
-        expect(second.droppedEntriesCount).toBe(2)
+        const joinedAfterFirstCallback = observePerformanceEntries('longtask', jest.fn())
+        expect(joinedAfterFirstCallback.buffered).toBe(false)
+        expect(joinedAfterFirstCallback.droppedEntriesCount).toBe(0)
+        // The standard normally omits callback options after the first callback.
+        observer!.emit()
+        expect(first.droppedEntriesCount).toBe(3)
+        expect(joinedBeforeFirstCallback.droppedEntriesCount).toBe(3)
+        expect(joinedAfterFirstCallback.droppedEntriesCount).toBe(0)
 
         first()
-        observer!.emit(8)
-        expect(first.droppedEntriesCount).toBe(5)
-        expect(second.droppedEntriesCount).toBe(5)
-        second()
+        observer!.emit()
+        expect(first.droppedEntriesCount).toBe(3)
+        joinedBeforeFirstCallback()
+        joinedAfterFirstCallback()
     })
 
-    it('uses the first callback as the drop baseline when observation falls back to non-buffered entryTypes', () => {
+    it('does not attribute global buffered-history loss to the non-buffered entryTypes fallback', () => {
         let observer: FakePerformanceObserver | undefined
 
         class FakePerformanceObserver {
@@ -299,11 +306,11 @@ describe('shared performance runtime', () => {
                 if (options.type) throw new Error('type observation unavailable')
             }
 
-            emit(droppedEntriesCount: number): void {
+            emit(droppedEntriesCount?: number): void {
                 ;(this.callback as PerformanceObserverCallbackWithOptions)(
                     { getEntries: () => [] } as unknown as PerformanceObserverEntryList,
                     this as unknown as PerformanceObserver,
-                    { droppedEntriesCount }
+                    droppedEntriesCount === undefined ? undefined : { droppedEntriesCount }
                 )
             }
         }
@@ -312,11 +319,11 @@ describe('shared performance runtime', () => {
         const subscription = observePerformanceEntries('resource', jest.fn())
 
         expect(subscription.buffered).toBe(false)
-        expect(subscription.droppedEntriesCount).toBe(0)
+        expect(subscription.droppedEntriesCount).toBeNull()
         observer!.emit(7)
         expect(subscription.droppedEntriesCount).toBe(0)
-        observer!.emit(9)
-        expect(subscription.droppedEntriesCount).toBe(2)
+        observer!.emit()
+        expect(subscription.droppedEntriesCount).toBe(0)
         subscription()
     })
 
@@ -351,10 +358,14 @@ describe('shared performance runtime', () => {
         observer!.emit()
 
         expect(subscription.droppedEntriesCount).toBeNull()
+        const laterSubscription = observePerformanceEntries('event', jest.fn())
+        expect(laterSubscription.buffered).toBe(false)
+        expect(laterSubscription.droppedEntriesCount).toBe(0)
+        laterSubscription()
         subscription()
     })
 
-    it('makes a decreasing browser drop counter permanently unknown for current and later subscribers', () => {
+    it('ignores unexpected repeat callback options after capturing the one-shot value', () => {
         let observer: FakePerformanceObserver | undefined
 
         class FakePerformanceObserver {
@@ -382,8 +393,8 @@ describe('shared performance runtime', () => {
         const second = observePerformanceEntries('longtask', jest.fn())
         observer!.emit(6)
 
-        expect(first.droppedEntriesCount).toBeNull()
-        expect(second.droppedEntriesCount).toBeNull()
+        expect(first.droppedEntriesCount).toBe(5)
+        expect(second.droppedEntriesCount).toBe(0)
         first()
         second()
     })
@@ -424,7 +435,7 @@ describe('shared performance runtime', () => {
         drainPerformanceEntries('longtask')
 
         expect(onEntry).toHaveBeenCalledTimes(1)
-        expect(subscription.droppedEntriesCount).toBe(0)
+        expect(subscription.droppedEntriesCount).toBeNull()
         subscription()
     })
 
