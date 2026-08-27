@@ -1861,6 +1861,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
                 source.selectElement?.(element, {
                     mode: options.targetSelectionMode ?? 'subtree',
                     adapters: options.targetAdapters,
+                    inspectionPurpose: 'local',
                 }) ?? null
             targetSnapshot = targetSelection?.snapshot() ?? null
         } catch {

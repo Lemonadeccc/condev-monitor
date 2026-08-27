@@ -793,11 +793,16 @@ export interface AnimationTargetAdapterRendererInspection {
 }
 
 /**
- * SDK-owned bounds for one target-adapter inspection. Adapters may use this
- * window to filter already-recorded evidence, but must not mutate it or choose
- * a different clock domain.
+ * SDK-owned destination and bounds for one target-adapter inspection. Adapters
+ * may use this window to filter already-recorded evidence, but must not mutate
+ * it or choose a different clock domain.
  */
 export interface AnimationTargetAdapterInspectionContext {
+    /**
+     * SDK-owned destination boundary. Local developer selections may expose
+     * richer evidence than a privacy-bounded RUM target sidecar.
+     */
+    readonly inspectionPurpose: 'local' | 'rum'
     readonly evidenceWindow: {
         readonly startedAt: number
         readonly endedAt: number
@@ -834,6 +839,8 @@ export interface AnimationTargetAdapterRegistry {
 export interface AnimationElementSelectionOptions {
     mode?: AnimationElementSelectionMode
     adapters?: readonly AnimationTargetAdapter[]
+    /** SDK-owned adapter destination. Defaults to `local`. */
+    inspectionPurpose?: AnimationTargetAdapterInspectionContext['inspectionPurpose']
 }
 
 export interface AnimationElementSelectionSnapshot {

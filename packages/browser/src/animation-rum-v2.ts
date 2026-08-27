@@ -406,7 +406,7 @@ export function createBrowserAnimationRumV2Controller(options: AnimationRumV2Con
             if (targetByElement.has(element))
                 throw new TypeError('The same Element cannot be registered under multiple Animation RUM target keys')
             if (targets.size >= MAX_RUM_TARGETS) throw new Error(`Animation RUM v2 supports at most ${MAX_RUM_TARGETS} targets per page`)
-            const selection = sampled ? options.selectElement(element, targetOptions) : null
+            const selection = sampled ? options.selectElement(element, { ...targetOptions, inspectionPurpose: 'rum' }) : null
             const target = new RegisteredRumTarget(
                 targetKey,
                 selection,

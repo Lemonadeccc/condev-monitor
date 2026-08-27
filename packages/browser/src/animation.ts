@@ -182,7 +182,9 @@ export interface BrowserAnimationSnapshot extends AnimationSnapshot {
     pageEvidence: BrowserAnimationPageEvidenceSnapshot
 }
 
-export interface BrowserAnimationRumTargetOptions extends AnimationElementSelectionOptions {}
+export interface BrowserAnimationElementSelectionOptions extends Omit<AnimationElementSelectionOptions, 'inspectionPurpose'> {}
+
+export interface BrowserAnimationRumTargetOptions extends BrowserAnimationElementSelectionOptions {}
 
 export interface BrowserAnimationRumTargetHandle {
     readonly targetKey: string
@@ -205,7 +207,7 @@ export interface AnimationClientHandle {
     snapshot(): BrowserAnimationSnapshot
     recommendations(): ReturnType<typeof recommendAnimationImprovements>
     beginInteraction(kind: AnimationInteractionKind, label?: string): AnimationInteractionHandle
-    selectElement(element: Element, options?: AnimationElementSelectionOptions): AnimationElementSelectionHandle
+    selectElement(element: Element, options?: BrowserAnimationElementSelectionOptions): AnimationElementSelectionHandle
     recordFrameworkStats(sample: AnimationFrameworkStatsSample): boolean
     recordRenderStats(sample: AnimationRenderStatsSample): boolean
     recordLifecycleStats(sample: AnimationLifecycleStatsSample): boolean
@@ -956,9 +958,21 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         return this.integration.beginInteraction(kind, label)
     }
 
-    selectElement(element: Element, options: AnimationElementSelectionOptions = {}): AnimationElementSelectionHandle {
+    selectElement(element: Element, options: BrowserAnimationElementSelectionOptions = {}): AnimationElementSelectionHandle {
+        return this.selectElementForPurpose(element, options, 'local')
+    }
+
+    selectElementForRum(element: Element, options: BrowserAnimationRumTargetOptions = {}): AnimationElementSelectionHandle {
+        return this.selectElementForPurpose(element, options, 'rum')
+    }
+
+    private selectElementForPurpose(
+        element: Element,
+        options: AnimationElementSelectionOptions,
+        inspectionPurpose: 'local' | 'rum'
+    ): AnimationElementSelectionHandle {
         const adapters = [this.targetRegistry.adapter, ...(options.adapters ?? [])]
-        return this.integration.selectElement(element, { ...options, adapters })
+        return this.integration.selectElement(element, { ...options, adapters, inspectionPurpose })
     }
 
     recordFrameworkStats(sample: AnimationFrameworkStatsSample): boolean {
@@ -1290,7 +1304,7 @@ export function init(options: BrowserAnimationInitOptions = {}): AnimationBrowse
                 runtime: sharedRuntime,
                 context: resolveAnimationOptions(animationOptions, options, dsn, sharedRuntime).context,
                 getPageSnapshot: () => animation.snapshotForRumBoundary(),
-                selectElement: (element, targetOptions) => animation.selectElement(element, targetOptions),
+                selectElement: (element, targetOptions) => animation.selectElementForRum(element, targetOptions),
                 beginInteraction: (kind, label) => animation.beginInteraction(kind, label),
             })
             rumV2Controller = rumV2

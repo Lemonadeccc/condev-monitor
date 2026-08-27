@@ -802,6 +802,7 @@ export function createAnimationElementSelection(
     options: AnimationElementSelectionOptions = {}
 ): AnimationElementSelectionHandle {
     const mode = options.mode ?? 'subtree'
+    const inspectionPurpose = options.inspectionPurpose === 'rum' ? 'rum' : 'local'
     const selectionId = `animation-target-${(++selectionSequence).toString(36)}`
     const selectedAt = dependencies.now()
     let cleared = false
@@ -958,6 +959,7 @@ export function createAnimationElementSelection(
                               relation: 'selection-window',
                           }
                     const inspection = adapter.inspect(element, {
+                        inspectionPurpose,
                         evidenceWindow: { ...adapterEvidenceWindow },
                     })
                     if (!inspection) continue
