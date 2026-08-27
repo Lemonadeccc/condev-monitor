@@ -1,9 +1,9 @@
-import { ValidationPipe } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { HttpAdapterHost, NestFactory } from '@nestjs/core'
 
 import { AppModule } from './app.module'
 import { AllExceptionFilter } from './common/filters/all-exception.filter'
+import { createMonitorValidationPipe } from './common/validation/monitor-validation.pipe'
 
 async function bootstrap() {
     const app = await NestFactory.create(AppModule, {
@@ -13,16 +13,7 @@ async function bootstrap() {
     const configService = app.get(ConfigService)
 
     // Enable validation globally
-    app.useGlobalPipes(
-        new ValidationPipe({
-            transform: true,
-            whitelist: true,
-            forbidNonWhitelisted: true,
-            transformOptions: {
-                enableImplicitConversion: true,
-            },
-        })
-    )
+    app.useGlobalPipes(createMonitorValidationPipe())
 
     const cors = configService.get('CORS', true)
     if (cors === 'true') {
