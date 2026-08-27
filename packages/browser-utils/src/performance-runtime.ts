@@ -191,15 +191,17 @@ type LifecycleSubscriber = {
 type ObserverSubscriber = {
     callback: RuntimeEntrySubscriber
     durationThreshold: number
+    initialHistoryDropEligible: boolean
     droppedEntriesCount: number | null
 }
 
-type ObserverDroppedEntriesState = 'pending' | 'captured' | 'unavailable'
+type ObserverDroppedEntriesState = 'pending' | 'captured' | 'unavailable' | 'invalid'
 
 type ObserverState = {
     observer: PerformanceObserver
     subscribers: Set<ObserverSubscriber>
     buffered: boolean
+    initialHistoryPending: boolean
     lastDrainSucceeded: boolean | null
     droppedEntriesState: ObserverDroppedEntriesState
 }
@@ -283,13 +285,22 @@ function getRegistry(): PerformanceRuntimeRegistry {
         projector: null,
     }
     // A runtime module can be replaced while the symbol-backed observer remains
-    // active. An observer created by an older runtime has no trustworthy record
-    // of the standard's one-shot callback option, so preserve its entries but
-    // make existing subscribers' evidence explicitly unknown.
+    // active. Data migration cannot replace its old callback closure. The
+    // rolling-count implementation recognizes `invalid` as terminal, and the
+    // one-shot implementations only process `pending`; use that common terminal
+    // sentinel and fail existing evidence closed.
     for (const state of root[REGISTRY_KEY].observers.values()) {
-        if (!['pending', 'captured', 'unavailable'].includes(state.droppedEntriesState)) {
-            state.droppedEntriesState = 'unavailable'
+        const rawState = state.droppedEntriesState as string | undefined
+        const hasCurrentHistoryState = typeof state.initialHistoryPending === 'boolean'
+        const subscribersHaveCurrentState = [...state.subscribers].every(
+            subscriber => typeof subscriber.initialHistoryDropEligible === 'boolean'
+        )
+        const hasKnownState = ['pending', 'captured', 'unavailable', 'invalid'].includes(rawState ?? '')
+        if (!hasCurrentHistoryState || !subscribersHaveCurrentState || !hasKnownState) {
+            state.droppedEntriesState = 'invalid'
+            state.initialHistoryPending = false
             for (const subscriber of state.subscribers) {
+                subscriber.initialHistoryDropEligible = false
                 subscriber.droppedEntriesCount = null
             }
         }
@@ -1030,6 +1041,7 @@ function createObserverState(
         observer: null as unknown as PerformanceObserver,
         subscribers: new Set([firstSubscriber]),
         buffered: false,
+        initialHistoryPending: false,
         lastDrainSucceeded: null,
         droppedEntriesState: 'pending' as ObserverDroppedEntriesState,
     }
@@ -1041,6 +1053,9 @@ function createObserverState(
             callbackOptions?: { droppedEntriesCount?: unknown }
         ) => {
             captureInitialDroppedEntriesCount(state, callbackOptions)
+            // The standard invokes the callback only for a non-empty observer
+            // delivery. Any initial buffered history is consumed at this point.
+            state.initialHistoryPending = false
             let entries: PerformanceEntry[]
             try {
                 entries = list.getEntries()
@@ -1060,6 +1075,8 @@ function createObserverState(
         }
 
         state.buffered = observerOptions.buffered === true
+        state.initialHistoryPending = state.buffered
+        firstSubscriber.initialHistoryDropEligible = state.buffered
         try {
             state.observer.observe(observerOptions)
         } catch {
@@ -1067,6 +1084,10 @@ function createObserverState(
             // browser's global dropped-history count therefore does not describe
             // live entries delivered to this logical subscription.
             state.buffered = false
+            state.initialHistoryPending = false
+            firstSubscriber.initialHistoryDropEligible = false
+            state.droppedEntriesState = 'pending'
+            firstSubscriber.droppedEntriesCount = null
             state.observer.observe({ entryTypes: [entryType] })
         }
 
@@ -1080,21 +1101,21 @@ function createObserverState(
 function makeDroppedEntriesCountUnavailable(state: ObserverState): void {
     state.droppedEntriesState = 'unavailable'
     for (const subscriber of state.subscribers) {
-        subscriber.droppedEntriesCount = null
+        subscriber.droppedEntriesCount = subscriber.initialHistoryDropEligible ? null : 0
     }
 }
 
 /**
  * The Performance Timeline standard supplies droppedEntriesCount only on the
- * first callback after observe(), then clears the observer's "requires dropped
- * entries" flag. Preserve that one-shot evidence; later callbacks normally omit
- * the field and must not erase it.
+ * first non-empty observer delivery after observe(), then clears the observer's
+ * "requires dropped entries" flag. Preserve that one-shot evidence; later
+ * callbacks normally omit the field and must not erase it.
  */
 function captureInitialDroppedEntriesCount(state: ObserverState, callbackOptions?: { droppedEntriesCount?: unknown }): void {
     if (state.droppedEntriesState !== 'pending') return
 
     const rawCount = callbackOptions?.droppedEntriesCount
-    if (!Number.isSafeInteger(rawCount) || (rawCount as number) < 0) {
+    if (typeof rawCount !== 'number' || !Number.isFinite(rawCount) || !Number.isInteger(rawCount) || rawCount < 0) {
         makeDroppedEntriesCountUnavailable(state)
         return
     }
@@ -1102,9 +1123,12 @@ function captureInitialDroppedEntriesCount(state: ObserverState, callbackOptions
     state.droppedEntriesState = 'captured'
     // entryTypes fallback has no buffered history to lose. Its global timeline
     // count is unrelated to entries delivered live to this subscription.
-    const relevantCount = state.buffered ? (rawCount as number) : 0
+    // WebIDL exposes unsigned long long as a JS Number. Saturate values whose
+    // exact integer is no longer representable so known-positive loss never
+    // becomes an apparently complete capture.
+    const relevantCount = state.buffered ? Math.min(Number.MAX_SAFE_INTEGER, rawCount) : 0
     for (const subscriber of state.subscribers) {
-        subscriber.droppedEntriesCount = relevantCount
+        subscriber.droppedEntriesCount = subscriber.initialHistoryDropEligible ? relevantCount : 0
     }
 }
 
@@ -1143,6 +1167,11 @@ function dispatchPerformanceEntries(
 function drainObserverState(entryType: PerformanceRuntimeEntryType, state: ObserverState): boolean {
     try {
         const entries = state.observer.takeRecords()
+        // takeRecords consumes the physical observer's current buffer without
+        // exposing callback options. Existing subscribers retain eligibility for
+        // the later one-shot quality signal; subscribers added after this drain
+        // must not claim that they received the consumed history.
+        state.initialHistoryPending = false
         dispatchPerformanceEntries(entryType, state, entries)
         state.lastDrainSucceeded = true
         return true
@@ -1200,6 +1229,7 @@ export function observePerformanceEntries<T extends PerformanceRuntimeEntryType>
     const subscriber: ObserverSubscriber = {
         callback: callback as RuntimeEntrySubscriber,
         durationThreshold: Math.max(16, options.durationThreshold ?? 16),
+        initialHistoryDropEligible: false,
         droppedEntriesCount: null,
     }
 
@@ -1209,8 +1239,11 @@ export function observePerformanceEntries<T extends PerformanceRuntimeEntryType>
         // Once the shared observer's first callback has run, a later logical
         // subscriber receives only live entries from its own start boundary; it
         // does not inherit historical buffer loss from the first subscriber.
-        logicalBuffered = state.buffered && state.droppedEntriesState === 'pending'
-        if (state.droppedEntriesState !== 'pending') subscriber.droppedEntriesCount = 0
+        subscriber.initialHistoryDropEligible = state.buffered && state.initialHistoryPending
+        logicalBuffered = subscriber.initialHistoryDropEligible
+        if (!subscriber.initialHistoryDropEligible || state.droppedEntriesState !== 'pending') {
+            subscriber.droppedEntriesCount = 0
+        }
         state.subscribers.add(subscriber)
     } else {
         state = createObserverState(entryType, subscriber, options) ?? undefined

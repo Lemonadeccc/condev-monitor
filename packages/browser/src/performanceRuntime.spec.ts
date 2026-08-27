@@ -15,6 +15,23 @@ type PerformanceObserverCallbackWithOptions = (
     options?: { droppedEntriesCount?: unknown }
 ) => void
 
+const PERFORMANCE_RUNTIME_REGISTRY_KEY = Symbol.for('@condev-monitor/performance-runtime/v1')
+
+type MigratingObserverSubscriber = {
+    initialHistoryDropEligible?: boolean
+    droppedEntriesCount: number | null
+}
+
+type MigratingObserverState = {
+    droppedEntriesState: string
+    initialHistoryPending?: boolean
+    subscribers: Set<MigratingObserverSubscriber>
+}
+
+type MigratingPerformanceRuntimeRegistry = {
+    observers: Map<string, MigratingObserverState>
+}
+
 class FakeEventTarget {
     private listeners = new Map<string, Set<Listener>>()
 
@@ -291,6 +308,121 @@ describe('shared performance runtime', () => {
         joinedAfterFirstCallback()
     })
 
+    it('does not assign history consumed by takeRecords to a later logical subscriber', () => {
+        let observer: FakePerformanceObserver | undefined
+
+        class FakePerformanceObserver {
+            static supportedEntryTypes = ['longtask']
+            readonly observe = jest.fn()
+            readonly disconnect = jest.fn()
+            private records: PerformanceEntry[] = [
+                {
+                    entryType: 'longtask',
+                    name: 'self',
+                    startTime: 1,
+                    duration: 60,
+                    toJSON: () => ({}),
+                } as PerformanceEntry,
+            ]
+
+            constructor(readonly callback: PerformanceObserverCallback) {
+                observer = this
+            }
+
+            takeRecords(): PerformanceEntryList {
+                return this.records.splice(0) as PerformanceEntryList
+            }
+
+            emit(entries: PerformanceEntry[], droppedEntriesCount: number): void {
+                ;(this.callback as PerformanceObserverCallbackWithOptions)(
+                    { getEntries: () => entries } as unknown as PerformanceObserverEntryList,
+                    this as unknown as PerformanceObserver,
+                    { droppedEntriesCount }
+                )
+            }
+        }
+
+        Object.assign(globalThis, { PerformanceObserver: FakePerformanceObserver })
+        const firstCallback = jest.fn()
+        const first = observePerformanceEntries('longtask', firstCallback)
+        drainPerformanceEntries('longtask')
+        expect(firstCallback).toHaveBeenCalledTimes(1)
+        expect(first.droppedEntriesCount).toBeNull()
+
+        const laterCallback = jest.fn()
+        const later = observePerformanceEntries('longtask', laterCallback)
+        expect(later.buffered).toBe(false)
+        expect(later.droppedEntriesCount).toBe(0)
+
+        observer!.emit(
+            [
+                {
+                    entryType: 'longtask',
+                    name: 'self',
+                    startTime: 100,
+                    duration: 70,
+                    toJSON: () => ({}),
+                } as PerformanceEntry,
+            ],
+            4
+        )
+        expect(first.droppedEntriesCount).toBe(4)
+        expect(later.droppedEntriesCount).toBe(0)
+        expect(firstCallback).toHaveBeenCalledTimes(2)
+        expect(laterCallback).toHaveBeenCalledTimes(1)
+        first()
+        later()
+    })
+
+    it('fails old rolling observer state closed across a module reload without reviving its callback', () => {
+        let observer: FakePerformanceObserver | undefined
+
+        class FakePerformanceObserver {
+            static supportedEntryTypes = ['longtask']
+            readonly observe = jest.fn()
+            readonly disconnect = jest.fn()
+
+            constructor(readonly callback: PerformanceObserverCallback) {
+                observer = this
+            }
+
+            emit(droppedEntriesCount: number): void {
+                ;(this.callback as PerformanceObserverCallbackWithOptions)(
+                    { getEntries: () => [] } as unknown as PerformanceObserverEntryList,
+                    this as unknown as PerformanceObserver,
+                    { droppedEntriesCount }
+                )
+            }
+        }
+
+        Object.assign(globalThis, { PerformanceObserver: FakePerformanceObserver })
+        const originalSubscription = observePerformanceEntries('longtask', jest.fn())
+        const registry = (globalThis as unknown as Record<symbol, MigratingPerformanceRuntimeRegistry>)[PERFORMANCE_RUNTIME_REGISTRY_KEY]
+        const sharedState = registry.observers.get('longtask')!
+        sharedState.droppedEntriesState = 'unseen'
+        delete sharedState.initialHistoryPending
+        for (const subscriber of sharedState.subscribers) delete subscriber.initialHistoryDropEligible
+
+        jest.resetModules()
+        const reloadedRuntime =
+            require('@condev-monitor/monitor-sdk-browser-utils/performance-runtime') as typeof import('@condev-monitor/monitor-sdk-browser-utils/performance-runtime')
+        const reloadedSubscription = reloadedRuntime.observePerformanceEntries('longtask', jest.fn())
+
+        // `invalid` is the terminal literal understood by the old rolling
+        // callback closure and by the new one-shot state machine.
+        expect(sharedState.droppedEntriesState).toBe('invalid')
+        expect(sharedState.initialHistoryPending).toBe(false)
+        expect(originalSubscription.droppedEntriesCount).toBeNull()
+        expect(reloadedSubscription.buffered).toBe(false)
+        expect(reloadedSubscription.droppedEntriesCount).toBe(0)
+        observer!.emit(7)
+        expect(originalSubscription.droppedEntriesCount).toBeNull()
+        expect(reloadedSubscription.droppedEntriesCount).toBe(0)
+
+        originalSubscription()
+        reloadedSubscription()
+    })
+
     it('does not attribute global buffered-history loss to the non-buffered entryTypes fallback', () => {
         let observer: FakePerformanceObserver | undefined
 
@@ -325,13 +457,48 @@ describe('shared performance runtime', () => {
         observer!.emit()
         expect(subscription.droppedEntriesCount).toBe(0)
         subscription()
+
+        const missingOptionSubscription = observePerformanceEntries('resource', jest.fn())
+        observer!.emit()
+        expect(missingOptionSubscription.buffered).toBe(false)
+        expect(missingOptionSubscription.droppedEntriesCount).toBe(0)
+        missingOptionSubscription()
+    })
+
+    it('treats an explicit non-buffered registration as live-only quality evidence', () => {
+        let observer: FakePerformanceObserver | undefined
+
+        class FakePerformanceObserver {
+            static supportedEntryTypes = ['longtask']
+            readonly observe = jest.fn()
+            readonly disconnect = jest.fn()
+
+            constructor(readonly callback: PerformanceObserverCallback) {
+                observer = this
+            }
+
+            emit(droppedEntriesCount: number): void {
+                ;(this.callback as PerformanceObserverCallbackWithOptions)(
+                    { getEntries: () => [] } as unknown as PerformanceObserverEntryList,
+                    this as unknown as PerformanceObserver,
+                    { droppedEntriesCount }
+                )
+            }
+        }
+
+        Object.assign(globalThis, { PerformanceObserver: FakePerformanceObserver })
+        const subscription = observePerformanceEntries('longtask', jest.fn(), { buffered: false })
+        expect(subscription.buffered).toBe(false)
+        expect(subscription.droppedEntriesCount).toBeNull()
+        observer!.emit(9)
+        expect(subscription.droppedEntriesCount).toBe(0)
+        subscription()
     })
 
     it.each([
         ['missing callback options', undefined, false],
         ['negative count', -1, true],
         ['fractional count', 1.5, true],
-        ['unsafe count', Number.MAX_SAFE_INTEGER + 1, true],
     ])('marks dropped-entry evidence unknown for %s', (_label, rawCount, includeOptions) => {
         let observer: FakePerformanceObserver | undefined
 
@@ -362,6 +529,35 @@ describe('shared performance runtime', () => {
         expect(laterSubscription.buffered).toBe(false)
         expect(laterSubscription.droppedEntriesCount).toBe(0)
         laterSubscription()
+        subscription()
+    })
+
+    it('saturates an unsafe positive WebIDL count without losing the known-loss signal', () => {
+        let observer: FakePerformanceObserver | undefined
+
+        class FakePerformanceObserver {
+            static supportedEntryTypes = ['event']
+            readonly observe = jest.fn()
+            readonly disconnect = jest.fn()
+
+            constructor(readonly callback: PerformanceObserverCallback) {
+                observer = this
+            }
+
+            emit(): void {
+                ;(this.callback as PerformanceObserverCallbackWithOptions)(
+                    { getEntries: () => [] } as unknown as PerformanceObserverEntryList,
+                    this as unknown as PerformanceObserver,
+                    { droppedEntriesCount: Number.MAX_SAFE_INTEGER + 1 }
+                )
+            }
+        }
+
+        Object.assign(globalThis, { PerformanceObserver: FakePerformanceObserver })
+        const subscription = observePerformanceEntries('event', jest.fn())
+        observer!.emit()
+
+        expect(subscription.droppedEntriesCount).toBe(Number.MAX_SAFE_INTEGER)
         subscription()
     })
 
