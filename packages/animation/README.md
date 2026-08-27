@@ -329,9 +329,11 @@ Native DOM/Web Components are first-class and are reported as `uiFrameworks: ['v
 
 For Canvas, the native layer can read CSS dimensions, backing-store dimensions, pixel area, total/CSS/backing resize counts, viewport intersection, and per-axis `backingScaleX`/`backingScaleY` without calling `canvas.getContext()`. `backingAspectRatioMismatch` reports a meaningful per-axis scale mismatch. The compatibility field `effectivePixelRatio` remains the geometric mean of the two scales, so consumers that need accurate non-uniform geometry should use the per-axis fields. The native layer deliberately cannot infer the existing Canvas2D/WebGL/WebGPU context, engine, scene, draw calls, GPU time, resources, uploads, readbacks, or inner scene object. Pass an identity-based adapter in `targetAdapters`; Three should match `renderer.domElement`, R3F should register `useThree().gl.domElement`, Pixi should register `app.canvas`, and Babylon should register `engine.getRenderingCanvas()`.
 
+Every SDK-driven adapter inspection now receives an optional second `AnimationTargetAdapterInspectionContext` argument. Its immutable-by-contract `evidenceWindow` contains the SDK clock's `startedAt`, `endedAt`, and either `selection-window` or `interaction-window`. Registry and Browser `client.animation.registerTarget()` callbacks receive the same context. The parameter remains optional so existing one-argument adapters and zero-argument registry callbacks remain source-compatible. Context-aware adapters should filter already-recorded samples to these bounds and return the actual retained sample endpoints; they must not reset a recorder because the overlay can snapshot the same selection repeatedly.
+
 Renderer adapters must provide already aggregated, non-blocking evidence. The input `evidence` remains optional for backward compatibility and adapters that explicitly report `observed: false`; an observed renderer, retained sample, or non-null metric requires both window endpoints. Those endpoints must use the same `AnimationRuntime.now()` clock domain as the target collector—normally the selected document's `performance.now()`. Do not mix that clock with `Date.now()`, `performance.timeOrigin + performance.now()`, Three Clock seconds, raw GPU ticks, or an iframe/worker with another time origin. If the runtime itself has fallen back because `performance.now()` is unavailable, the adapter must use the same fallback basis.
 
-The renderer window must be wholly contained in the effective target window. Before a completed target interaction, that is `[selectedAt, capturedAt]`; afterward it is the SDK-owned `[correlatedWindow.startedAt, correlatedWindow.endedAt]`. Mere overlap is rejected because an already aggregated percentile cannot be clipped to remove out-of-window samples. Adapter inspection completes before the SDK records the final `capturedAt`, so a same-clock endpoint read during synchronous `inspect()` is valid. Missing, reversed, pre-selection, future, foreign-scale, or only partially overlapping windows clear the complete renderer metric set and add a local `renderer-evidence-window-invalid` error. RUM v2 independently checks the selection, correlation, renderer containment, and duration arithmetic; invalid or legacy correlated snapshots without `correlatedWindow` become `unknown`/`not-observed`, never measured, and register no renderer provider evidence.
+The renderer window must be wholly contained in the effective target window. Before a completed target interaction, that is `[selectedAt, capturedAt]`; afterward it is the SDK-owned `[correlatedWindow.startedAt, correlatedWindow.endedAt]`. Mere overlap is rejected because an already aggregated percentile cannot be clipped to remove out-of-window samples. During selection-mode inspection the SDK samples the context's safe query end immediately before running adapters, then retains the existing behavior of recording final `capturedAt` after all adapters finish. Context-aware adapters therefore get a conservative included bound, while a legacy adapter that synchronously reads the same clock can still return an endpoint up to final `capturedAt`. After a completed interaction the context is the fixed exact interaction window. Missing, reversed, pre-selection, future, foreign-scale, or only partially overlapping windows clear the complete renderer metric set and add a local `renderer-evidence-window-invalid` error. RUM v2 independently checks the selection, correlation, renderer containment, and duration arithmetic; invalid or legacy correlated snapshots without `correlatedWindow` become `unknown`/`not-observed`, never measured, and register no renderer provider evidence.
 
 Valid input evidence is normalized into a bounded output object: unknown windows and sample counts remain `null`; retained plus dropped samples must equal accepted samples; rejected samples remain independent; and truncation is explicit. GPU timing is fail-closed. `gpuFrameMsP95` is retained only when the adapter explicitly reports `valid: true`, `disjoint: false`, `contextLost: false`, and a source compatible with its renderer family: `webgl-timer-query` for `webgl`/`webgl2`, `webgpu-timestamp-query` for `webgpu`, or backend-neutral `host-summary` for any valid renderer family. `unknown`, host-only source names, missing flags, invalid/disjoint queries, a lost context, or a backend/source mismatch produce `null` plus a closed `rejectionReason`; mismatches use `backend-source-mismatch`. The RUM v2 projection repeats this closed-set check before emitting a value. CPU submission time must not be labelled GPU time.
 
@@ -340,31 +342,29 @@ import { createAnimationTargetAdapterRegistry } from '@condev-monitor/monitor-sd
 import { createAnimationDevOverlay } from '@condev-monitor/monitor-sdk-animation/devtools'
 
 const threeTargets = createAnimationTargetAdapterRegistry('three-renderer', '1.0.0')
-// Reset this recorder at the same boundary as selection.beginInteraction(). Its
-// endpoints use the selected document's performance.now() clock.
-const unregister = threeTargets.register(renderer.domElement, () => ({
-    inventory: { renderers: ['webgl'] },
-    owners: [{ relation: 'renderer-host', label: 'registered Three renderer' }],
-    renderer: {
-        family: 'webgl',
-        capability: { state: 'supported', observed: true, buffered: false },
-        metrics: localRendererRecorder.summary(),
-        evidence: {
-            window: { startedAt: localRendererRecorder.startedAt, endedAt: localRendererRecorder.endedAt },
-            acceptedSampleCount: localRendererRecorder.acceptedCount,
-            retainedSampleCount: localRendererRecorder.retainedCount,
-            droppedSampleCount: localRendererRecorder.droppedCount,
-            rejectedSampleCount: localRendererRecorder.rejectedCount,
-            truncated: localRendererRecorder.droppedCount > 0,
-            gpu: {
-                valid: localRendererRecorder.gpuTimerValid,
-                disjoint: localRendererRecorder.gpuTimerDisjoint,
-                contextLost: localRendererRecorder.contextLost,
-                source: 'webgl-timer-query',
+// Filter a bounded recorder using the SDK-owned window. Its timestamps use the
+// selected document's performance.now() clock.
+const unregister = threeTargets.register(renderer.domElement, context => {
+    const summary = localRendererRecorder.summary(context?.evidenceWindow)
+    return {
+        inventory: { renderers: ['webgl'] },
+        owners: [{ relation: 'renderer-host', label: 'registered Three renderer' }],
+        renderer: {
+            family: 'webgl',
+            capability: summary.capability,
+            metrics: summary.metrics,
+            evidence: {
+                ...summary.evidence,
+                gpu: {
+                    valid: summary.gpuTimerValid,
+                    disjoint: summary.gpuTimerDisjoint,
+                    contextLost: summary.contextLost,
+                    source: 'webgl-timer-query',
+                },
             },
         },
-    },
-}))
+    }
+})
 
 createAnimationDevOverlay(animation, { production: false, targetAdapters: [threeTargets.adapter] })
 

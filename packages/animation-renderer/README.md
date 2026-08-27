@@ -1,8 +1,80 @@
 # Condev Monitor Animation Renderer
 
-Optional, framework-neutral renderer instrumentation for Condev Monitor animation monitoring. It supplies explicit GPU command-interval timers for WebGL 1/2 and for a host-attested complete single-pass WebGPU renderer-frame command interval.
+Optional, framework-neutral renderer instrumentation for Condev Monitor animation monitoring. It supplies an explicit Canvas2D logical-frame recorder, GPU command-interval timers for WebGL 1/2, and a host-attested complete single-pass WebGPU renderer-frame command interval.
 
-This package is intentionally separate from the Browser SDK. A Browser client cannot know an application's real renderer boundaries, so the application owns the integration: WebGL places explicit begin/end calls around its render, while WebGPU instruments the complete pass descriptor, encodes resolve/copy, and confirms the associated submit. `pnpm build:sdk` already includes this package through the existing `@condev-monitor/monitor-sdk-*` filter; no extra root build script is required.
+This package is intentionally separate from the Browser SDK. A Browser client cannot know an application's real renderer boundaries, so the application owns the integration: Canvas2D explicitly brackets one logical frame and reports only commands/transfers it can attest, WebGL places explicit begin/end calls around its render, while WebGPU instruments the complete pass descriptor, encodes resolve/copy, and confirms the associated submit. `pnpm build:sdk` already includes this package through the existing `@condev-monitor/monitor-sdk-*` filter; no extra root build script is required.
+
+## Canvas2D logical-frame recorder
+
+```ts
+import { init } from '@condev-monitor/monitor-sdk-browser/animation'
+import { createCanvas2dRecorder } from '@condev-monitor/monitor-sdk-animation-renderer'
+
+const client = init()
+const canvas = document.querySelector('canvas')!
+const context = canvas.getContext('2d')!
+const recorder = createCanvas2dRecorder({
+    context,
+    frameBoundary: 'complete-canvas-frame',
+    // Include this attestation only when every drawing command in the logical
+    // frame is represented by recordDraw()/recordOperations().
+    drawCallCoverage: 'complete-frame',
+    // Include only after verifying this Canvas/browser delivers Canvas2D
+    // contextlost/contextrestored events for the complete recorder window.
+    contextLossEventCoverage: 'complete-window',
+})
+
+// The Browser client supplies the current selection/interaction bounds to the
+// recorder. No selector, pixel, text, URL, or Canvas state is retained.
+const unregisterTarget = client.animation.registerTarget(canvas, recorder.inspect)
+const rendererProbe = client.animation.createRendererProbe({
+    backend: recorder.backend,
+    read: recorder.takeRendererHostReading,
+})
+
+function drawFrame() {
+    if (!recorder.beginFrame()) {
+        drawScene(context)
+        return
+    }
+    try {
+        drawScene(context)
+        recorder.recordOperations({ path: 12, text: 2, image: 1 })
+
+        // Wrap only real synchronous transfer calls. Values are metadata, not
+        // retained pixels; the callback result/error is preserved exactly.
+        recorder.measureUpload({ pixels: width * height, bytes: width * height * 4 }, () => {
+            context.putImageData(imageData, 0, 0)
+        })
+        const sample = recorder.measureReadback({ pixels: 16, bytes: 64 }, () => context.getImageData(0, 0, 4, 4))
+        consumeSample(sample)
+    } catch (error) {
+        // Do not turn an incomplete/throwing business frame into evidence.
+        recorder.cancelFrame()
+        throw error
+    }
+    recorder.endFrame()
+    rendererProbe.capture()
+}
+
+function destroyMonitoring() {
+    unregisterTarget()
+    rendererProbe.dispose()
+    recorder.dispose()
+}
+```
+
+`beginFrame()`/`endFrame()` measure synchronous CPU time for the caller-attested complete logical Canvas2D frame. This is not GPU time, browser presentation time, or display latency. Canvas2D has no renderer-independent GPU timer, so the recorder never emits `gpuFrameMs` and its generic host reading explicitly reports an unsupported GPU timer.
+
+`recordDraw()` and `recordOperations()` never call or wrap the drawing context. The `drawCallCoverage: 'complete-frame'` attestation is required before their closed path/text/image/pixel-write/clear/other command total can become `drawCallsP95` or a generic host reading. Without it, the local recorder can still measure CPU and explicitly wrapped transfer evidence, but draw-call metrics remain absent rather than becoming zero. These are Canvas2D command counts, not hardware GPU draw calls.
+
+`measureReadback()`/`measureUpload()` execute the business callback exactly once and return its exact value or rethrow its original error. Only a synchronous callback can produce timing evidence; a returned same-realm `Promise` is passed through unchanged but excluded because the observed interval would cover scheduling rather than completion. The recorder deliberately does not read an arbitrary object's `then` property, so callers must still honor the synchronous contract for foreign-realm or custom thenables. Missing byte/pixel metadata leaves that aggregate unknown. The recorder retains at most 512 complete numeric frame records by default (configurable up to 4096) and keeps a real measured `0` distinct from missing or invalid evidence. A query that contains the complete known evicted prefix reports exact accepted/retained/dropped counts and `truncated: true`; a window that only partly intersects forgotten history becomes not observed because its exact drop count cannot be proven. Invalid draw or transfer evidence omits only that metric family and never masquerades as ring truncation.
+
+Target inspection includes only frames wholly contained in the SDK window. A frame crossing an interaction boundary is omitted because its already-aggregated CPU/command/transfer values cannot be clipped without inventing causality. This intentionally differs from page-level frame overlap evidence: short interactions may have no complete Canvas frame and remain not observed until the caller chooses a wider representative interaction window.
+
+The recorder observes only its context's Canvas width/height at explicit frame boundaries and passive `contextlost`/`contextrestored` events when the surface exposes listeners. Because every `EventTarget` accepts arbitrary event names, listener registration alone is not treated as proof of Canvas2D loss-event support: a measured zero requires `contextLossEventCoverage: 'complete-window'` or at least one event that proves delivery. Without either, the target metric remains absent. The recorder never calls `getContext()`, patches `CanvasRenderingContext2D`/`HTMLCanvasElement`, proxies a context, schedules rAF/timers, prevents context loss, stores image data, or scans application state. Resize counts are boundary-visible changes, not proof that every intermediate assignment was observed. `inspect()` requires the SDK-supplied selection/interaction window; calling it directly without that context stays not observed. Worker/OffscreenCanvas clocks need an explicit same-domain bridge before their evidence can be correlated with a document target.
+
+The target sidecar currently exposes Canvas2D `cpuFrameMsP95`, complete command `drawCallsP95`, explicit upload bytes, synchronous readback p95, and observed context-loss count. The recorder snapshot additionally keeps closed path/text/image/pixel-write/clear/other p95 and transfer totals. RUM v2 projects only fields already present in its versioned closed catalog; it never spreads the richer local snapshot.
 
 ## WebGL GPU frame timer
 
@@ -163,4 +235,4 @@ Call `poll()` at most once in each later task/frame. Never use a synchronous tig
 
 WebGL 1 uses extension query methods; WebGL 2 uses core query methods with the WebGL 2 extension constants. An extension returning `null` or zero counter bits is `unsupported`. An advertised but malformed API is `error`.
 
-The implementation follows the official [WebGL 1 timer-query extension](https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query/) and [WebGL 2 timer-query extension](https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query_webgl2/). Canvas2D GPU timing, engine object hit-testing, multi-pass WebGPU coordination, upload/readback attribution, and real-device browser coverage remain separate adapters/work.
+The implementation follows the official [WebGL 1 timer-query extension](https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query/) and [WebGL 2 timer-query extension](https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query_webgl2/). Canvas2D GPU timing, engine object hit-testing, multi-pass WebGPU coordination, renderer-specific resource attribution, Worker/OffscreenCanvas clock bridging, and real-device browser coverage remain separate adapters/work.
