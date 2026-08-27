@@ -44,8 +44,8 @@ async function bootstrap() {
 
     app.setGlobalPrefix('api')
 
-    const errorFilterFlag = configService.get<string>('ERROR_FILTER')
-    if (errorFilterFlag) {
+    const errorFilterFlag = configService.get<string | boolean>('ERROR_FILTER')
+    if (errorFilterFlag === true || errorFilterFlag === 'true') {
         const httpAdapter = app.get(HttpAdapterHost)
         app.useGlobalFilters(new AllExceptionFilter(httpAdapter))
     }

@@ -365,9 +365,6 @@ importers:
       reflect-metadata:
         specifier: ^0.2.2
         version: 0.2.2
-      request-ip:
-        specifier: ^3.3.0
-        version: 3.3.0
       rxjs:
         specifier: ^7.8.1
         version: 7.8.2
@@ -12693,9 +12690,6 @@ packages:
 
   remend@1.0.1:
     resolution: {integrity: sha512-152puVH0qMoRJQFnaMG+rVDdf01Jq/CaED+MBuXExurJgdbkLp0c3TIe4R12o28Klx8uyGsjvFNG05aFG69G9w==}
-
-  request-ip@3.3.0:
-    resolution: {integrity: sha512-cA6Xh6e0fDBBBwH77SLJaJPBmD3nWVAcF9/XAcsrIHdjhFzFiB5aNQFytdjCGPezU3ROwrR11IddKAM08vohxA==}
 
   request@2.88.0:
     resolution: {integrity: sha512-NAqBSrijGLZdM0WZNsInLJpkJokL72XYjUpnB0iwsRgxh7dB6COrHnTBNwN0E+lHDAJzu7kLAkDeY08z2/A0hg==}
@@ -29035,8 +29029,6 @@ snapshots:
       unified: 11.0.5
 
   remend@1.0.1: {}
-
-  request-ip@3.3.0: {}
 
   request@2.88.0:
     dependencies:
