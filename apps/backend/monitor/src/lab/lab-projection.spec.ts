@@ -1120,6 +1120,80 @@ describe('lab platform artifact projections', () => {
         expect(() => parseAnimationReportArtifact(forged)).toThrow('conflicts with unsupported capabilities')
     })
 
+    it('accepts only disclosed aggregate sample overflow without manufacturing a capped count', () => {
+        const report = animationReportV2()
+        const baseAttempt = report.attempts[0]!
+        report.attempts = [0.1, 0.2, 0.3].map((value, index) => {
+            const attemptId = `attempt_${index + 1}`
+            return {
+                ...baseAttempt,
+                attemptId,
+                index,
+                capabilities: { ...baseAttempt.capabilities },
+                limitations: [...baseAttempt.limitations],
+                actionWindows: [actionWindow()],
+                metrics: [
+                    expandedMetric({
+                        value,
+                        samples: 4_000_000,
+                        scope: { level: 'attempt', attemptId },
+                        aggregation: { population: 'frames', method: 'nearest-rank' },
+                        limitations: [],
+                    }),
+                ],
+            }
+        })
+        report.aggregateMetrics = [
+            expandedMetric({
+                value: 0.2,
+                samples: null,
+                limitations: ['eligible-attempts-3', 'total-attempts-3', 'aggregate-sample-count-exceeds-contract-bound'],
+            }),
+        ]
+        report.findings = []
+
+        const parsed = parseAnimationReportArtifact(report)
+        expect(parsed.analysis?.metrics[0]?.samples).toBeNull()
+        expect(parsed.analysis?.metrics[0]?.limitations).toContain('aggregate-sample-count-exceeds-contract-bound')
+        expect(parsed.compactSummary.metrics?.[0]?.samples).toBeNull()
+
+        report.aggregateMetrics[0]!.samples = 10_000_000
+        expect(() => parseAnimationReportArtifact(report)).toThrow('conflicts with measured attempts')
+
+        Object.assign(report.aggregateMetrics[0]!, { samples: null })
+        report.aggregateMetrics[0]!.limitations = ['eligible-attempts-3', 'total-attempts-3']
+        expect(() => parseAnimationReportArtifact(report)).toThrow('conflicts with measured attempts')
+
+        const boundarySamples = [3_333_333, 3_333_333, 3_333_334]
+        report.attempts.forEach((attempt, index) => {
+            attempt.metrics[0]!.samples = boundarySamples[index]!
+        })
+        report.aggregateMetrics[0]!.samples = 10_000_000
+        expect(parseAnimationReportArtifact(report).analysis?.metrics[0]?.samples).toBe(10_000_000)
+
+        Object.assign(report.aggregateMetrics[0]!, { samples: null })
+        expect(() => parseAnimationReportArtifact(report)).toThrow('conflicts with measured attempts')
+
+        report.aggregateMetrics[0]!.samples = 10_000_000
+        report.aggregateMetrics[0]!.limitations.push('aggregate-sample-count-exceeds-contract-bound')
+        expect(() => parseAnimationReportArtifact(report)).toThrow('conflicts with measured attempts')
+
+        report.attempts = report.attempts.slice(0, 2)
+        report.attempts.forEach(attempt => {
+            attempt.metrics[0]!.samples = 6_000_000
+        })
+        Object.assign(report.aggregateMetrics[0]!, {
+            value: 0.15,
+            samples: null,
+            status: 'partial',
+            limitations: ['eligible-attempts-2', 'total-attempts-2', 'aggregate-sample-count-exceeds-contract-bound'],
+        })
+        expect(parseAnimationReportArtifact(report).analysis?.metrics[0]?.samples).toBeNull()
+
+        report.aggregateMetrics[0]!.samples = 10_000_000
+        expect(() => parseAnimationReportArtifact(report)).toThrow('conflicts with measured attempts')
+    })
+
     it('requires every measured attempt to back action aggregates with the matching metric and capability', () => {
         const report = animationReportV2()
         report.measurementContract.metricCatalogVersion = 2

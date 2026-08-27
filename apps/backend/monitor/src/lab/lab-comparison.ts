@@ -1,6 +1,7 @@
 import type { LabRunStatus } from './lab.contracts'
 import type { ParsedAnimationReport } from './lab-projection'
 import {
+    ANIMATION_LAB_METRIC_SAMPLES_MAX,
     type AnimationLabMetricV2Projection,
     type AnimationLabSemanticsV2,
     assertAnimationLabMetricCatalogTupleV2,
@@ -314,7 +315,7 @@ function validMetric(metric: AnimationLabMetricV2Projection, attemptId: string, 
     }
     if (!['measured', 'partial', 'not-observed', 'unsupported', 'unknown'].includes(metric.status)) return false
     if (!['controlled-lab-measurement', 'runtime-observation', 'unsupported-or-unknown'].includes(metric.evidenceLevel)) return false
-    if (metric.samples !== null && !integer(metric.samples, 0, 10_000_000)) return false
+    if (metric.samples !== null && !integer(metric.samples, 0, ANIMATION_LAB_METRIC_SAMPLES_MAX)) return false
     if (metric.status === 'measured' || metric.status === 'partial') {
         return finite(metric.value, 0, Number.MAX_VALUE) && metric.evidenceLevel !== 'unsupported-or-unknown'
     }

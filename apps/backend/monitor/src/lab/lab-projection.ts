@@ -2,6 +2,8 @@ import { BadRequestException, PayloadTooLargeException } from '@nestjs/common'
 
 import { LAB_RUN_SUMMARY_MAX_BYTES, type LabRunSummary, type LabSummaryMetric } from './lab.contracts'
 import {
+    ANIMATION_LAB_AGGREGATE_SAMPLE_OVERFLOW_LIMITATION,
+    ANIMATION_LAB_METRIC_SAMPLES_MAX,
     type AnimationLabMetricV2Projection,
     type AnimationLabSemanticsV2,
     assertAnimationLabMetricCatalogTupleV2,
@@ -485,11 +487,22 @@ function assertV2AggregateMetrics(
         if (requiresCompleteSources && (measuredAttempts.length === 0 || sourceMetrics.length !== measuredAttempts.length)) {
             throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} is missing measured-attempt evidence`)
         }
+        const rawSamples = sourceMetrics.reduce((total, item) => total + (typeof item.samples === 'number' ? item.samples : 0), 0)
+        const samplesOverflow = rawSamples > ANIMATION_LAB_METRIC_SAMPLES_MAX
+        const expectedSamples = samplesOverflow ? null : rawSamples
+        const disclosesSamplesOverflow = metricValue.limitations.includes(ANIMATION_LAB_AGGREGATE_SAMPLE_OVERFLOW_LIMITATION)
+        if (
+            (sourceMetrics.length > 0 &&
+                ((samplesOverflow && (metricValue.samples !== null || !disclosesSamplesOverflow)) ||
+                    (!samplesOverflow && disclosesSamplesOverflow))) ||
+            (sourceMetrics.length === 0 && disclosesSamplesOverflow)
+        ) {
+            throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} conflicts with measured attempts`)
+        }
         if (measuredAttempts.length >= 3 && sourceMetrics.length === measuredAttempts.length) {
             const values = sourceMetrics
                 .map(item => item.value)
                 .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
-            const samples = sourceMetrics.reduce((total, item) => total + (typeof item.samples === 'number' ? item.samples : 0), 0)
             const expectedStatus: AnimationLabMetricV2Projection['status'] =
                 values.length >= 3 && values.length === measuredAttempts.length && sourceMetrics.every(item => item.status === 'measured')
                     ? 'measured'
@@ -501,7 +514,7 @@ function assertV2AggregateMetrics(
                           ? 'not-observed'
                           : 'unknown'
             const expectedValue = values.length > 0 ? roundedMedian(values) : null
-            if (metricValue.status !== expectedStatus || metricValue.value !== expectedValue || metricValue.samples !== samples) {
+            if (metricValue.status !== expectedStatus || metricValue.value !== expectedValue || metricValue.samples !== expectedSamples) {
                 throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} conflicts with measured attempts`)
             }
         }

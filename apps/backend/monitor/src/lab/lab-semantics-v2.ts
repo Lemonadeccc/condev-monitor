@@ -1,5 +1,8 @@
 import { BadRequestException, PayloadTooLargeException } from '@nestjs/common'
 
+export const ANIMATION_LAB_METRIC_SAMPLES_MAX = 10_000_000
+export const ANIMATION_LAB_AGGREGATE_SAMPLE_OVERFLOW_LIMITATION = 'aggregate-sample-count-exceeds-contract-bound'
+
 const MAX_ACTIONS = 100
 const MAX_WINDOWS = 100
 const MAX_METRICS = 256
@@ -591,7 +594,7 @@ export function parseAnimationLabMetricV2(
         stat,
         unit,
         value: valueNumber,
-        samples: raw.samples === null ? null : integer(raw.samples, `${label}.samples`, 0, 10_000_000),
+        samples: raw.samples === null ? null : integer(raw.samples, `${label}.samples`, 0, ANIMATION_LAB_METRIC_SAMPLES_MAX),
         status,
         evidenceLevel,
         metricId,
