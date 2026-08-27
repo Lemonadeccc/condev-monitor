@@ -55,6 +55,24 @@ function v2Envelope(receivedAt = new Date(), capturedAt = new Date(receivedAt.ge
     })
 }
 
+function useUnsupportedGpuReport(report: ReturnType<typeof createAnimationRumV2GoldenReport>): void {
+    report.capabilities['renderer-adapter'] = 'supported'
+    report.capabilities['gpu-timer-query'] = 'unsupported'
+    report.providerEvidence = {}
+    report.metrics = [
+        {
+            metricId: 'renderer.gpu-frame.p95',
+            relation: 'adapter',
+            owner: 'renderer-adapter',
+            value: null,
+            samples: null,
+            status: 'unsupported',
+        },
+    ]
+    report.coverage.frameCadence = { status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' }
+    report.coverage.renderer = { status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' }
+}
+
 function kafkaContext(rawEnvelope: unknown, messageKey: string | null = 'app-12345678') {
     return { rawEnvelope, messageKey }
 }
@@ -83,6 +101,7 @@ describe('AnimationRumProjectorService', () => {
 
     it('revalidates and projects a normalized v2 envelope', async () => {
         const value = v2Envelope()
+        useUnsupportedGpuReport(value.info.animationRum)
         const writer = {
             insertAnimationRum: jest.fn(),
             insertAnimationRumV2: jest.fn().mockResolvedValue(undefined),
@@ -93,6 +112,10 @@ describe('AnimationRumProjectorService', () => {
 
         expect(writer.insertAnimationRum).not.toHaveBeenCalled()
         expect(writer.insertAnimationRumV2).toHaveBeenCalledWith(value)
+        expect(value.info.animationRum).toMatchObject({
+            capabilities: { 'gpu-timer-query': 'unsupported' },
+            metrics: [expect.objectContaining({ metricId: 'renderer.gpu-frame.p95', status: 'unsupported' })],
+        })
     })
 
     it('requires raw Kafka context and the actual appId message key for v2', async () => {
