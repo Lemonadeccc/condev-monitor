@@ -1,9 +1,15 @@
+import { randomUUID } from 'node:crypto'
+
 import { createClient } from '@clickhouse/client'
 
 import { AnimationRumV2QueryService } from './animation-rum-v2-query.service'
 
 const RUN_INTEGRATION = process.env.RUN_CLICKHOUSE_INTEGRATION === '1'
 const describeIntegration = RUN_INTEGRATION ? describe : describe.skip
+const CLICKHOUSE_TABLES = ['animation_rum_provider_evidence_v2', 'animation_rum_metrics_v2', 'animation_rum_captures_v2'] as const
+const GPU_STATUSES = ['measured', 'partial', 'not-observed', 'not-instrumented', 'unsupported', 'unknown'] as const
+
+type GpuStatus = (typeof GPU_STATUSES)[number]
 
 const captureRow = (scope: 'page' | 'target') => ({
     event_id: 'event_query_syntax_1',
@@ -52,10 +58,202 @@ const captureRow = (scope: 'page' | 'target') => ({
     projection_complete: 1,
 })
 
+function clickHouseTimestamp(date: Date): string {
+    return date.toISOString().replace('T', ' ').replace('Z', '')
+}
+
+function gpuCapability(status: GpuStatus): 'supported' | 'disabled' | 'unsupported' | 'unknown' {
+    if (status === 'measured' || status === 'partial' || status === 'not-observed') return 'supported'
+    if (status === 'not-instrumented') return 'disabled'
+    return status
+}
+
+function gpuCoverage(status: GpuStatus): { status: GpuStatus; evidenceLevel: 'runtime-observation' | 'unsupported-or-unknown' } {
+    return {
+        status,
+        evidenceLevel:
+            status === 'measured' || status === 'partial' || status === 'not-observed' ? 'runtime-observation' : 'unsupported-or-unknown',
+    }
+}
+
+function gpuFixtureRows(appId: string, suffix: string, capturedAt: Date, receivedAt: Date) {
+    const capturedTimestamp = clickHouseTimestamp(capturedAt)
+    const receivedTimestamp = clickHouseTimestamp(receivedAt)
+    const common = {
+        app_id: appId,
+        scope: 'page',
+        captured_at: capturedTimestamp,
+        received_at: receivedTimestamp,
+        release: 'gpu-gate-1.0.0',
+        dist: '1',
+        environment: 'integration',
+        sample_rate: 1,
+        sampling_policy_version: 1,
+        route_key: 'gpu-release-gate',
+        target_key: '',
+        runtime_framework: 'vanilla',
+        runtime_renderer: 'canvas',
+        runtime_backend: 'webgpu',
+    }
+    const captures: Record<string, unknown>[] = []
+    const metrics: Record<string, unknown>[] = []
+    const providers: Record<string, unknown>[] = []
+
+    for (const [index, status] of GPU_STATUSES.entries()) {
+        const eventId = `event_gpu_${index}_${suffix.slice(0, 16)}`
+        const captureId = `capture_gpu_${index}_${suffix.slice(0, 16)}`
+        const available = status === 'measured' || status === 'partial'
+        const hasProvider = available
+        const partial = status === 'partial'
+        captures.push({
+            event_id: eventId,
+            capture_id: captureId,
+            parent_capture_id: '',
+            ...common,
+            contract_version: 2,
+            snapshot_schema_version: 1,
+            sdk_version: '0.1.0',
+            monitor_version: '0.1.0',
+            visibility_state: 'visible',
+            reduced_motion: 0,
+            viewport_bucket: 'large',
+            dpr_bucket: '2',
+            refresh_hz: 60,
+            refresh_budget_source: 'explicit',
+            refresh_budget_confidence: 'explicit',
+            window_duration_ms: 10_000,
+            window_duration_capped: 0,
+            capabilities_json: JSON.stringify({
+                'renderer-adapter': 'supported',
+                'gpu-timer-query': gpuCapability(status),
+            }),
+            coverage_json: JSON.stringify({ renderer: gpuCoverage(status) }),
+            capture_sufficiency: 'sufficient',
+            capture_integrity: partial ? 'partial' : 'complete',
+            capture_quality_reasons: partial ? ['adapter-error'] : [],
+            adapter_error_count: partial ? 1 : 0,
+            provider_evidence_count: hasProvider ? 1 : 0,
+            metric_count: 1,
+        })
+        metrics.push({
+            event_id: eventId,
+            capture_id: captureId,
+            ...common,
+            metric_id: 'renderer.gpu-frame.p95',
+            family: 'renderer',
+            name: 'gpuFrameMs',
+            stat: 'p95',
+            unit: 'ms',
+            relation: 'adapter',
+            owner: 'renderer-adapter',
+            value: status === 'measured' ? 0 : status === 'partial' ? 12 : null,
+            samples: available ? 8 : null,
+            status,
+        })
+        if (hasProvider) {
+            providers.push({
+                event_id: eventId,
+                capture_id: captureId,
+                app_id: appId,
+                scope: 'page',
+                captured_at: capturedTimestamp,
+                received_at: receivedTimestamp,
+                release: common.release,
+                environment: common.environment,
+                route_key: common.route_key,
+                target_key: '',
+                owner: 'renderer-adapter',
+                family: 'renderer',
+                provider_version: '0.1.0',
+                accepted: 8,
+                retained: 8,
+                evidence: 8,
+                dropped: 0,
+                rejected: 0,
+                truncated: 0,
+            })
+        }
+    }
+
+    const mismatchEventId = `event_gpu_mismatch_${suffix.slice(0, 16)}`
+    const mismatchCaptureId = `capture_gpu_mismatch_${suffix.slice(0, 16)}`
+    captures.push({
+        event_id: mismatchEventId,
+        capture_id: mismatchCaptureId,
+        parent_capture_id: '',
+        ...common,
+        contract_version: 2,
+        snapshot_schema_version: 1,
+        sdk_version: '0.1.0',
+        monitor_version: '0.1.0',
+        visibility_state: 'visible',
+        reduced_motion: 0,
+        viewport_bucket: 'large',
+        dpr_bucket: '2',
+        refresh_hz: 60,
+        refresh_budget_source: 'explicit',
+        refresh_budget_confidence: 'explicit',
+        window_duration_ms: 10_000,
+        window_duration_capped: 0,
+        capabilities_json: JSON.stringify({ 'renderer-adapter': 'supported', 'gpu-timer-query': 'unsupported' }),
+        coverage_json: JSON.stringify({ renderer: gpuCoverage('unsupported') }),
+        capture_sufficiency: 'sufficient',
+        capture_integrity: 'complete',
+        capture_quality_reasons: [],
+        adapter_error_count: 0,
+        provider_evidence_count: 0,
+        metric_count: 1,
+    })
+    metrics.push({
+        event_id: `event_gpu_stale_${suffix.slice(0, 16)}`,
+        capture_id: mismatchCaptureId,
+        ...common,
+        metric_id: 'renderer.gpu-frame.p95',
+        family: 'renderer',
+        name: 'gpuFrameMs',
+        stat: 'p95',
+        unit: 'ms',
+        relation: 'adapter',
+        owner: 'renderer-adapter',
+        value: null,
+        samples: null,
+        status: 'unsupported',
+    })
+
+    return { captures, metrics, providers, mismatchCaptureId }
+}
+
+async function cleanupApp(client: ReturnType<typeof createClient>, database: string, appId: string): Promise<void> {
+    const errors: unknown[] = []
+    for (const table of CLICKHOUSE_TABLES) {
+        try {
+            await client.command({
+                query: `ALTER TABLE ${database}.${table} DELETE WHERE app_id = {appId:String}`,
+                query_params: { appId },
+                clickhouse_settings: { mutations_sync: '2' },
+            })
+            const result = await client.query({
+                query: `SELECT count() AS count FROM ${database}.${table} FINAL WHERE app_id = {appId:String}`,
+                query_params: { appId },
+                format: 'JSON',
+            })
+            const body = await result.json<{ count: number | string }>()
+            if (Number(body.data[0]?.count ?? Number.NaN) !== 0) throw new Error(`ClickHouse cleanup left rows in ${table}`)
+        } catch (error) {
+            errors.push(error)
+        }
+    }
+    if (errors.length > 0) throw new AggregateError(errors, `Failed to clean Animation RUM v2 rows for ${appId}`)
+}
+
 describeIntegration('Animation RUM v2 query ClickHouse syntax', () => {
-    const required = (name: string): string => {
+    jest.setTimeout(60_000)
+
+    const required = (name: string, allowEmpty = false): string => {
         const value = process.env[name]
-        if (!value) throw new Error(`${name} is required for the ClickHouse integration suite`)
+        if (value === undefined || (!allowEmpty && value.trim() === '')) {
+            throw new Error(`${name} is required for the ClickHouse integration suite`)
+        }
         return value
     }
 
@@ -70,10 +268,13 @@ describeIntegration('Animation RUM v2 query ClickHouse syntax', () => {
 
     beforeAll(() => {
         database = required('TEST_CLICKHOUSE_DATABASE')
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(database)) {
+            throw new Error('TEST_CLICKHOUSE_DATABASE must be a simple ClickHouse identifier')
+        }
         client = createClient({
             url: required('TEST_CLICKHOUSE_URL'),
             username: required('TEST_CLICKHOUSE_USERNAME'),
-            password: required('TEST_CLICKHOUSE_PASSWORD'),
+            password: required('TEST_CLICKHOUSE_PASSWORD', true),
             database,
         })
     })
@@ -91,6 +292,121 @@ describeIntegration('Animation RUM v2 query ClickHouse syntax', () => {
         await expect(service.captures(41, window)).resolves.toEqual(
             expect.objectContaining({ contractVersion: 2, captures: expect.any(Array) })
         )
+    })
+
+    it('preserves GPU zero and six statuses in summary and trend while excluding incomplete projections', async () => {
+        const suffix = randomUUID().replaceAll('-', '')
+        const appId = `rumV2GpuGate${suffix.slice(0, 16)}`
+        const receivedAt = new Date()
+        const capturedAt = new Date(receivedAt.getTime() - 60_000)
+        const rows = gpuFixtureRows(appId, suffix, capturedAt, receivedAt)
+        const queryWindow = {
+            appId,
+            from: new Date(capturedAt.getTime() - 60_000).toISOString(),
+            to: new Date(receivedAt.getTime() + 60_000).toISOString(),
+        }
+        const service = new AnimationRumV2QueryService(client, { get: () => database } as any, applications as any)
+
+        try {
+            await client.insert({
+                table: `${database}.animation_rum_provider_evidence_v2`,
+                values: rows.providers,
+                format: 'JSONEachRow',
+            })
+            await client.insert({
+                table: `${database}.animation_rum_metrics_v2`,
+                values: rows.metrics,
+                format: 'JSONEachRow',
+            })
+            await client.insert({
+                table: `${database}.animation_rum_captures_v2`,
+                values: rows.captures,
+                format: 'JSONEachRow',
+            })
+
+            const summary = await service.summary(41, queryWindow)
+            expect(summary.projectionIntegrity).toEqual({
+                semantics: 'completion-marker-child-row-counts',
+                status: 'mismatch',
+                completionMarkers: 7,
+                verified: 6,
+                mismatched: 1,
+                excludedFromAnalytics: 1,
+                metricCountMismatches: 0,
+                providerEvidenceCountMismatches: 0,
+                childIdentityMismatches: 1,
+            })
+            expect(summary.captures).toEqual(expect.objectContaining({ observed: 6, page: 6, target: 0, adapterErrors: 1 }))
+
+            const gpu = summary.metrics.find(metric => metric?.metricId === 'renderer.gpu-frame.p95')
+            expect(gpu).toEqual(
+                expect.objectContaining({
+                    scope: 'page',
+                    relation: 'adapter',
+                    owner: 'renderer-adapter',
+                    captureCount: 6,
+                    statusCounts: {
+                        measured: 1,
+                        partial: 1,
+                        notObserved: 1,
+                        notInstrumented: 1,
+                        unsupported: 1,
+                        unknown: 1,
+                    },
+                    capturesWithValue: 2,
+                    measuredCaptures: 1,
+                    partialCaptures: 1,
+                    excludedPartialCaptures: 1,
+                    reportedSamples: 16,
+                    measuredReportedSamples: 8,
+                    partialReportedSamples: 8,
+                    captureValue: {
+                        aggregation: 'distribution-of-capture-aggregates',
+                        measuredCaptures: 1,
+                        partialCaptures: 1,
+                        excludedPartialCaptures: 1,
+                        average: 0,
+                        p50: 0,
+                        p75: 0,
+                        p95: 0,
+                        min: 0,
+                        max: 0,
+                    },
+                    valuePerMinute: null,
+                })
+            )
+            expect(summary.trend.points).toHaveLength(1)
+            expect(summary.trend.points[0]).toEqual(
+                expect.objectContaining({
+                    observedCaptures: 6,
+                    pageCaptures: 6,
+                    targetCaptures: 0,
+                    gpuFrameP95: {
+                        page: {
+                            statusCounts: {
+                                measured: 1,
+                                partial: 1,
+                                notObserved: 1,
+                                notInstrumented: 1,
+                                unsupported: 1,
+                                unknown: 1,
+                            },
+                            measuredCaptures: 1,
+                            partialCaptures: 1,
+                            excludedPartialCaptures: 1,
+                            captureValue: { p50: 0, p75: 0, p95: 0 },
+                        },
+                        target: null,
+                    },
+                })
+            )
+            await expect(service.capture(41, appId, rows.mismatchCaptureId)).rejects.toMatchObject({
+                status: 409,
+                response: expect.objectContaining({ error: 'ANIMATION_RUM_V2_PROJECTION_INCOMPLETE' }),
+            })
+        } finally {
+            await cleanupApp(client, database, appId)
+        }
     })
 
     it.each(['page', 'target'] as const)('executes %s list enrichment and relationship SQL without writes', async scope => {

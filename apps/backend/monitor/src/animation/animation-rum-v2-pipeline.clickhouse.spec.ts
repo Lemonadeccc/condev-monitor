@@ -9,9 +9,11 @@ const describeClickhouse = process.env.RUN_CLICKHOUSE_INTEGRATION === '1' ? desc
 describeClickhouse('AnimationRumV2PipelineService ClickHouse integration', () => {
     jest.setTimeout(30_000)
 
-    const required = (name: string): string => {
+    const required = (name: string, allowEmpty = false): string => {
         const value = process.env[name]
-        if (!value) throw new Error(`${name} is required for the ClickHouse integration suite`)
+        if (value === undefined || (!allowEmpty && value.trim() === '')) {
+            throw new Error(`${name} is required for the ClickHouse integration suite`)
+        }
         return value
     }
 
@@ -23,7 +25,7 @@ describeClickhouse('AnimationRumV2PipelineService ClickHouse integration', () =>
         client = createClient({
             url: required('TEST_CLICKHOUSE_URL'),
             username: required('TEST_CLICKHOUSE_USERNAME'),
-            password: required('TEST_CLICKHOUSE_PASSWORD'),
+            password: required('TEST_CLICKHOUSE_PASSWORD', true),
             database,
         })
     })
