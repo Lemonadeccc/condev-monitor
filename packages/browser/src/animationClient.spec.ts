@@ -485,7 +485,7 @@ describe('browser animation single-init entry', () => {
         )
     })
 
-    it('creates framework, GSAP, Three, and video probes without a second init', async () => {
+    it('creates framework, GSAP, generic renderer, Three, and video probes without a second init', async () => {
         const { init } = require('./animation') as typeof import('./animation')
         const client = init({ animation: { runtime: runtime() } })
         const frameworkRecord = jest.spyOn(client.animation.integration, 'recordFrameworkStats')
@@ -501,6 +501,12 @@ describe('browser animation single-init entry', () => {
         })
         expect(gsap.capture('mount')?.animations.status).toBe('measured')
 
+        const renderer = client.animation.createRendererProbe({
+            backend: 'webgpu',
+            read: () => ({ drawCalls: 0, points: 24 }),
+        })
+        expect(renderer.capture()).toMatchObject({ source: 'renderer-host', backend: 'webgpu', drawCalls: 0, points: 24 })
+
         const three = client.animation.createThreeProbe({
             renderer: { info: { render: { calls: 2, triangles: 12 } } },
             backend: 'webgl2',
@@ -511,7 +517,7 @@ describe('browser animation single-init entry', () => {
         expect(video.start()).toBe(false)
         expect(frameworkRecord).toHaveBeenCalledTimes(1)
         expect(lifecycleRecord).toHaveBeenCalledTimes(1)
-        expect(rendererRecord).toHaveBeenCalledTimes(1)
+        expect(rendererRecord).toHaveBeenCalledTimes(2)
         await client.destroy()
     })
 
@@ -576,10 +582,14 @@ describe('browser animation single-init entry', () => {
         expect(probe.start()).toBe(true)
         probe.dispose()
         expect(cancelVideoFrameCallback).toHaveBeenCalledTimes(1)
+        const renderer = client.animation.createRendererProbe({ read: () => ({ drawCalls: 1 }) })
+        expect(renderer.capture()?.drawCalls).toBe(1)
 
         await client.destroy()
         expect(cancelVideoFrameCallback).toHaveBeenCalledTimes(1)
+        expect(renderer.capture()).toBeNull()
         expect(() => client.animation.createVideoProbe(video)).toThrow('after the client was destroyed')
+        expect(() => client.animation.createRendererProbe({ read: () => ({ drawCalls: 1 }) })).toThrow('after the client was destroyed')
         expect(() => client.animation.registerTarget({} as Element, () => null)).toThrow('after the client was destroyed')
     })
 

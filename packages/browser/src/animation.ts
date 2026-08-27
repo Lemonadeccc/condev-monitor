@@ -4,6 +4,7 @@ import {
     createBrowserAnimationRuntime,
     createFrameworkCommitProbe,
     createGsapLifecycleProbe,
+    createRendererHostProbe,
     createThreeRendererProbe,
     createVideoFrameProbe,
     recommendAnimationImprovements,
@@ -32,6 +33,8 @@ import {
     type GsapLifecycleProbeOptions,
     type InputFrameSchedulingRecorder,
     type InputFrameSchedulingMarker,
+    type RendererHostProbe,
+    type RendererHostProbeOptions,
     type ThreeRendererProbe,
     type ThreeRendererProbeOptions,
     type VideoFrameProbe,
@@ -209,6 +212,7 @@ export interface AnimationClientHandle {
     recordMediaStats(sample: AnimationMediaStatsSample): boolean
     createFrameworkProbe(framework: AnimationHostFramework): FrameworkCommitProbe
     createGsapProbe(options: Omit<GsapLifecycleProbeOptions, 'sink'>): GsapLifecycleProbe
+    createRendererProbe(options: Omit<RendererHostProbeOptions, 'sink'>): RendererHostProbe
     createThreeProbe(options: Omit<ThreeRendererProbeOptions, 'sink'>): ThreeRendererProbe
     createVideoProbe(video: VideoFrameSourceLike): VideoFrameProbe
     /** Registers one caller-owned semantic target for RUM v2. Picker/overlay selections are never uploaded. */
@@ -979,6 +983,10 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
 
     createGsapProbe(options: Omit<GsapLifecycleProbeOptions, 'sink'>): GsapLifecycleProbe {
         return this.trackProbe(createGsapLifecycleProbe({ ...options, sink: this }))
+    }
+
+    createRendererProbe(options: Omit<RendererHostProbeOptions, 'sink'>): RendererHostProbe {
+        return this.trackProbe(createRendererHostProbe({ ...options, sink: this }))
     }
 
     createThreeProbe(options: Omit<ThreeRendererProbeOptions, 'sink'>): ThreeRendererProbe {
