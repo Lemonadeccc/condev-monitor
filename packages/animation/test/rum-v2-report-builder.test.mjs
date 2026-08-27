@@ -498,6 +498,74 @@ test('page builder maps Browser page evidence and the exact browser-utils LoAF d
     assert.equal(metric(report, 'interaction.input-to-visual.p95').value, 14)
 })
 
+test('page runtime stays canvas-backed when page evidence is disabled but a host renderer proves WebGL', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime, explicitRefreshHz: 60, maxFrames: 128 }).start()
+    runtime.tick(0)
+    for (let index = 0; index < 70; index += 1) runtime.tick(16)
+    assert.equal(
+        collector.recordRenderStats({
+            source: 'renderer-host',
+            backend: 'webgl2',
+            timestampMs: runtime.time,
+            drawCalls: 0,
+            gpu: { status: 'not-provided' },
+        }),
+        true
+    )
+
+    const report = toAnimationRumV2PageReport(collector.stop(), projectionOptions(runtime))
+
+    assert.equal(validateNormalizedAnimationRumV2(report, { nowEpochMs: runtime.wallNow() }).ok, true)
+    assert.deepEqual(report.context.runtime, { framework: 'unknown', renderer: 'canvas', backend: 'webgl2' })
+    assert.deepEqual([metric(report, 'renderer.draw-calls.p95').value, metric(report, 'renderer.draw-calls.p95').status], [0, 'measured'])
+})
+
+test('page runtime requires retained host measurements and recognizes Canvas2D without page evidence', () => {
+    const metadataRuntime = new FakeRuntime()
+    const metadataCollector = new AnimationCollector({ runtime: metadataRuntime, explicitRefreshHz: 60 }).start()
+    metadataRuntime.tick(0)
+    assert.equal(
+        metadataCollector.recordRenderStats({
+            source: 'renderer-host',
+            backend: 'webgl2',
+            timestampMs: metadataRuntime.time,
+            gpu: { status: 'not-provided' },
+        }),
+        true
+    )
+    const metadataReport = toAnimationRumV2PageReport(metadataCollector.stop(), projectionOptions(metadataRuntime))
+    assert.deepEqual(metadataReport.context.runtime, { framework: 'unknown', renderer: 'unknown', backend: 'unknown' })
+
+    const canvasRuntime = new FakeRuntime()
+    const canvasCollector = new AnimationCollector({ runtime: canvasRuntime, explicitRefreshHz: 60 }).start()
+    canvasRuntime.tick(0)
+    assert.equal(
+        canvasCollector.recordRenderStats({
+            source: 'renderer-host',
+            backend: 'webgl2',
+            timestampMs: canvasRuntime.time,
+            gpu: { status: 'not-provided' },
+        }),
+        true
+    )
+    assert.equal(
+        canvasCollector.recordRenderStats({
+            source: 'renderer-host',
+            backend: 'canvas2d',
+            timestampMs: canvasRuntime.time,
+            drawCalls: 0,
+            gpu: { status: 'not-provided' },
+        }),
+        true
+    )
+    const canvasSnapshot = canvasCollector.stop()
+    assert.deepEqual(canvasSnapshot.hostEvidence.renderer.backends, ['canvas2d', 'webgl2'])
+    assert.deepEqual(canvasSnapshot.hostEvidence.renderer.evidenceBackends, ['canvas2d'])
+    const canvasReport = toAnimationRumV2PageReport(canvasSnapshot, projectionOptions(canvasRuntime))
+    assert.deepEqual(canvasReport.context.runtime, { framework: 'unknown', renderer: 'canvas', backend: 'canvas2d' })
+})
+
 test('target builder requires an explicit semantic target key and keeps direct, overlap, and adapter relations separate', () => {
     const { runtime, snapshot } = capturePage()
     const target = targetSnapshot()

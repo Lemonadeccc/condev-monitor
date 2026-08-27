@@ -1856,7 +1856,8 @@ function resolvedRuntime(
 
 function inferPageRuntime(snapshot: AnimationSnapshot, pageEvidence: AnimationRumV2PageEvidenceSource | undefined) {
     const frameworks = snapshot.hostEvidence.framework.frameworks
-    const backends: string[] = [...snapshot.hostEvidence.renderer.backends]
+    const hostRenderer = snapshot.hostEvidence.renderer
+    const backends: string[] = [...hostRenderer.evidenceBackends]
     const surfaces = pageEvidence?.rendererSurfaces.current
     const rendererValues: string[] = []
     if (surfaces) {
@@ -1867,6 +1868,12 @@ function inferPageRuntime(snapshot: AnimationSnapshot, pageEvidence: AnimationRu
         if (surfaces.webgl > 0) backends.push('webgl')
         if (surfaces.webgl2 > 0) backends.push('webgl2')
         if (surfaces.webgpu > 0) backends.push('webgpu')
+    }
+    if (
+        rendererValues.length === 0 &&
+        backends.some(backend => backend === 'canvas2d' || backend === 'webgl' || backend === 'webgl2' || backend === 'webgpu')
+    ) {
+        rendererValues.push('canvas')
     }
     if (rendererValues.length === 0 && frameworks.length > 0) rendererValues.push('dom')
     return {
