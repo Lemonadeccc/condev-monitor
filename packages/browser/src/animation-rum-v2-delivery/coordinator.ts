@@ -346,17 +346,10 @@ export class AnimationRumV2DeliveryCoordinator {
         )
         if (reports.length === 0) return { ...EMPTY_ATTEMPT }
 
-        let result: AnimationRumV2SendResult
-        try {
-            result = await this.sender.send(this.scope, reports)
-        } catch {
-            result = { kind: 'retry' }
-        }
+        const result = await this.send(reports)
 
         if (result.kind === 'terminal') {
-            const applied = await this.store.settle(this.scope, this.ownerId, terminalSettlements(reports, result.reason), this.now())
-            assertAppliedKeys(reports, applied)
-            return { attempted: reports.length, confirmed: 0, terminal: reports.length, retried: 0 }
+            return this.isolateTerminalBatch(reports, result.reason)
         }
 
         if (result.kind === 'settled' && validateSettledResult(result, reports)) {
@@ -372,6 +365,99 @@ export class AnimationRumV2DeliveryCoordinator {
         }
 
         return this.retry(reports, result.kind === 'retry' ? result.retryAfterMs : undefined)
+    }
+
+    private async send(reports: readonly AnimationRumV2QueuedReport[]): Promise<AnimationRumV2SendResult> {
+        try {
+            return await this.sender.send(this.scope, reports)
+        } catch {
+            return { kind: 'retry' }
+        }
+    }
+
+    private async isolateTerminalBatch(
+        reports: readonly AnimationRumV2QueuedReport[],
+        initialReason: Extract<AnimationRumV2Settlement['terminalReason'], `http-${number}`>
+    ): Promise<AnimationRumV2AttemptResult> {
+        const unresolved = new Map(reports.map(report => [report.key, report] as const))
+        const outcome = { confirmed: 0, terminal: 0, retried: 0 }
+        let lifecycleDeferred = false
+        const complete = (completed: readonly AnimationRumV2QueuedReport[], result: AnimationRumV2AttemptResult): void => {
+            for (const report of completed) unresolved.delete(report.key)
+            outcome.confirmed += result.confirmed
+            outcome.terminal += result.terminal
+            outcome.retried += result.retried
+        }
+        const renewUnresolved = async (): Promise<void> => {
+            const pending = [...unresolved.values()]
+            const applied = await this.store.renewLeases(
+                this.scope,
+                this.ownerId,
+                pending.map(report => report.key),
+                this.now(),
+                this.config.leaseDurationMs
+            )
+            assertAppliedKeys(pending, applied)
+        }
+        const deferUnresolvedIfInactive = async (): Promise<boolean> => {
+            if (!this.stopped && !this.suspended) return false
+            if (!lifecycleDeferred) {
+                lifecycleDeferred = true
+                const pending = [...unresolved.values()]
+                if (pending.length > 0) complete(pending, await this.retry(pending, undefined))
+            }
+            return true
+        }
+        const resolve = async (subset: readonly AnimationRumV2QueuedReport[], result: AnimationRumV2SendResult): Promise<void> => {
+            if (result.kind === 'terminal') {
+                if (subset.length === 1) {
+                    const applied = await this.store.settle(
+                        this.scope,
+                        this.ownerId,
+                        terminalSettlements(subset, result.reason),
+                        this.now()
+                    )
+                    assertAppliedKeys(subset, applied)
+                    complete(subset, { attempted: 1, confirmed: 0, terminal: 1, retried: 0 })
+                    return
+                }
+
+                const children =
+                    result.reason === 'http-403'
+                        ? subset.map(report => [report] as readonly AnimationRumV2QueuedReport[])
+                        : [subset.slice(0, Math.ceil(subset.length / 2)), subset.slice(Math.ceil(subset.length / 2))]
+                for (const child of children) {
+                    if (await deferUnresolvedIfInactive()) return
+                    await renewUnresolved()
+                    if (await deferUnresolvedIfInactive()) return
+                    await resolve(child, await this.send(child))
+                    if (lifecycleDeferred) return
+                }
+                return
+            }
+
+            if (result.kind === 'settled' && validateSettledResult(result, subset)) {
+                const applied = await this.store.settle(this.scope, this.ownerId, result.settlements, this.now())
+                assertAppliedKeys(subset, applied)
+                const terminal = result.settlements.filter(settlement => settlement.state === 'terminal').length
+                complete(subset, {
+                    attempted: subset.length,
+                    confirmed: subset.length - terminal,
+                    terminal,
+                    retried: 0,
+                })
+                return
+            }
+
+            const retried = await this.retry(subset, result.kind === 'retry' ? result.retryAfterMs : undefined)
+            complete(subset, retried)
+        }
+
+        await resolve(reports, { kind: 'terminal', reason: initialReason })
+        if (unresolved.size !== 0 || outcome.confirmed + outcome.terminal + outcome.retried !== reports.length) {
+            throw new Error('Animation RUM v2 terminal batch isolation produced an incomplete outcome')
+        }
+        return { attempted: reports.length, ...outcome }
     }
 
     private async retry(reports: readonly AnimationRumV2QueuedReport[], retryAfterMs: number | undefined) {

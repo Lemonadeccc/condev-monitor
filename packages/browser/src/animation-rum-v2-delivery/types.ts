@@ -92,6 +92,14 @@ export interface AnimationRumV2DeliveryStore {
         leaseDurationMs: number,
         maxBatchBytes: number
     ): Promise<AnimationRumV2QueuedReport[]>
+    /** Extends every requested lease atomically, or returns no keys and changes none of them. */
+    renewLeases(
+        scope: AnimationRumV2DeliveryScope,
+        ownerId: string,
+        keys: readonly string[],
+        now: number,
+        leaseDurationMs: number
+    ): Promise<string[]>
     settle(
         scope: AnimationRumV2DeliveryScope,
         ownerId: string,

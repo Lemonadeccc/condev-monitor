@@ -332,6 +332,56 @@ export class IndexedDbAnimationRumV2DeliveryStore implements AnimationRumV2Deliv
         return leased
     }
 
+    async renewLeases(
+        scope: AnimationRumV2DeliveryScope,
+        ownerId: string,
+        keys: readonly string[],
+        now: number,
+        leaseDurationMs: number
+    ): Promise<string[]> {
+        if (keys.length === 0) return []
+        assertNow(now)
+        assertOwnerId(ownerId)
+        if (!Number.isSafeInteger(leaseDurationMs) || leaseDurationMs < 1) {
+            throw new TypeError('Invalid Animation RUM v2 lease duration')
+        }
+        const renewedUntil = now + leaseDurationMs
+        if (!Number.isSafeInteger(renewedUntil)) throw new TypeError('Invalid Animation RUM v2 lease expiry')
+
+        const uniqueKeys = new Set<string>()
+        for (const key of keys) {
+            if (typeof key !== 'string' || key.length === 0 || uniqueKeys.has(key)) {
+                throw new TypeError('Invalid Animation RUM v2 lease renewal identity')
+            }
+            uniqueKeys.add(key)
+        }
+
+        const database = await this.getDatabase()
+        const transaction = database.transaction(STORE_NAME, 'readwrite', { durability: 'strict' })
+        const reports: AnimationRumV2QueuedReport[] = []
+        for (const key of keys) {
+            const report = await transaction.store.get(key)
+            if (!report || !sameScope(report, scope) || report.state !== 'pending' || report.leaseOwner !== ownerId) {
+                // Validate the complete ownership set before writing anything.
+                // An expired lease may still be renewed when this owner has not
+                // lost the atomic IndexedDB race to another tab.
+                await transaction.done
+                return []
+            }
+            reports.push(report)
+        }
+
+        for (const report of reports) {
+            await transaction.store.put({
+                ...report,
+                leaseUntil: Math.max(report.leaseUntil, renewedUntil),
+                updatedAt: now,
+            })
+        }
+        await transaction.done
+        return [...keys]
+    }
+
     async settle(
         scope: AnimationRumV2DeliveryScope,
         ownerId: string,

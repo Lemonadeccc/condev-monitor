@@ -116,6 +116,61 @@ describe('IndexedDbAnimationRumV2DeliveryStore', () => {
         ])
     })
 
+    it('atomically renews an expired lease that its owner has not lost', async () => {
+        const store = new IndexedDbAnimationRumV2DeliveryStore()
+        const scope = createAnimationRumV2DeliveryScope('appOne123', 'https://collector.test/tracking/appOne123')
+        const first = prepareAnimationRumV2QueuedReport(scope, pageReport('renew001'), 100)
+        const second = prepareAnimationRumV2QueuedReport(scope, pageReport('renew002'), 100)
+        await store.persist(scope, [first, second], { maxItems: 10, maxAgeMs: 10_000 }, 100)
+        await store.leaseReady(scope, 'tab-one', 100, 2, 50, 65_536)
+
+        await expect(store.renewLeases(scope, 'tab-one', [first.key, second.key], 160, 500)).resolves.toEqual([first.key, second.key])
+        await expect(store.leaseReady(scope, 'tab-two', 160, 2, 100, 65_536)).resolves.toEqual([])
+        await expect(store.leaseReady(scope, 'tab-two', 659, 2, 100, 65_536)).resolves.toEqual([])
+        await expect(store.leaseReady(scope, 'tab-two', 660, 2, 100, 65_536)).resolves.toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({ key: first.key, leaseOwner: 'tab-two' }),
+                expect.objectContaining({ key: second.key, leaseOwner: 'tab-two' }),
+            ])
+        )
+    })
+
+    it('renews all requested leases or none when a sibling has another owner', async () => {
+        const store = new IndexedDbAnimationRumV2DeliveryStore()
+        const scope = createAnimationRumV2DeliveryScope('appOne123', 'https://collector.test/tracking/appOne123')
+        const first = prepareAnimationRumV2QueuedReport(scope, pageReport('cas00001'), 100)
+        const second = prepareAnimationRumV2QueuedReport(scope, pageReport('cas00002'), 100)
+        await store.persist(scope, [first, second], { maxItems: 10, maxAgeMs: 10_000 }, 100)
+        await store.leaseReady(scope, 'tab-one', 100, 2, 50, 65_536)
+        const stolen = await store.leaseReady(scope, 'tab-two', 150, 1, 100, 65_536)
+        const stolenKey = stolen[0]!.key
+        const siblingKey = stolenKey === first.key ? second.key : first.key
+
+        await expect(store.renewLeases(scope, 'tab-one', [stolenKey, siblingKey], 150, 500)).resolves.toEqual([])
+        await expect(store.leaseReady(scope, 'tab-three', 150, 2, 100, 65_536)).resolves.toEqual([
+            expect.objectContaining({ key: siblingKey, leaseOwner: 'tab-three' }),
+        ])
+    })
+
+    it('rejects invalid renewal identities and keeps cross-scope renewal all-or-none', async () => {
+        const store = new IndexedDbAnimationRumV2DeliveryStore()
+        const scope = createAnimationRumV2DeliveryScope('appOne123', 'https://collector-a.test/tracking/appOne123')
+        const otherScope = createAnimationRumV2DeliveryScope('appOne123', 'https://collector-b.test/tracking/appOne123')
+        const report = prepareAnimationRumV2QueuedReport(scope, pageReport('renew003'), 100)
+        const other = prepareAnimationRumV2QueuedReport(otherScope, pageReport('renew004'), 100)
+        await store.persist(scope, [report], { maxItems: 10, maxAgeMs: 10_000 }, 100)
+        await store.persist(otherScope, [other], { maxItems: 10, maxAgeMs: 10_000 }, 100)
+        await store.leaseReady(scope, 'tab-one', 100, 1, 50, 65_536)
+        await store.leaseReady(otherScope, 'tab-one', 100, 1, 50, 65_536)
+
+        await expect(store.renewLeases(scope, 'tab-one', [report.key, other.key], 150, 500)).resolves.toEqual([])
+        await expect(store.leaseReady(scope, 'tab-two', 150, 1, 100, 65_536)).resolves.toEqual([
+            expect.objectContaining({ key: report.key }),
+        ])
+        await expect(store.renewLeases(scope, 'tab-one', [report.key, report.key], 150, 500)).rejects.toThrow('renewal identity')
+        await expect(store.renewLeases(scope, 'tab-one', [report.key], Number.MAX_SAFE_INTEGER, 1)).rejects.toThrow('lease expiry')
+    })
+
     it('closes the current connection without deleting reports and lazily reopens on the next operation', async () => {
         const database = new AtomicFakeDatabase()
         ;(openDB as jest.Mock).mockResolvedValue(database)

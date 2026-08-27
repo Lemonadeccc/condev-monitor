@@ -113,6 +113,27 @@ class MemoryDeliveryStore implements AnimationRumV2DeliveryStore {
         })
     }
 
+    async renewLeases(scope: AnimationRumV2DeliveryScope, ownerId: string, keys: readonly string[], now: number, leaseDurationMs: number) {
+        this.calls.push(`renew:${ownerId}`)
+        const reports = keys.map(key => this.records.get(key))
+        if (
+            new Set(keys).size !== keys.length ||
+            reports.some(
+                report => !report || report.scopeKey !== scope.scopeKey || report.state !== 'pending' || report.leaseOwner !== ownerId
+            )
+        ) {
+            return []
+        }
+        for (const report of reports as AnimationRumV2QueuedReport[]) {
+            this.records.set(report.key, {
+                ...report,
+                leaseUntil: Math.max(report.leaseUntil, now + leaseDurationMs),
+                updatedAt: now,
+            })
+        }
+        return [...keys]
+    }
+
     async settle(scope: AnimationRumV2DeliveryScope, ownerId: string, settlements: readonly AnimationRumV2Settlement[], now: number) {
         this.calls.push(`settle:${ownerId}`)
         const applied: string[] = []
@@ -363,6 +384,165 @@ describe('AnimationRumV2DeliveryCoordinator', () => {
         now = 10_100
         await expect(coordinator.flush()).resolves.toEqual({ attempted: 1, confirmed: 0, terminal: 1, retried: 0 })
         expect([...store.records.values()][0]).toEqual(expect.objectContaining({ state: 'terminal', terminalReason: 'http-403' }))
+    })
+
+    it.each(['http-400', 'http-403', 'http-409'] as const)(
+        'isolates %s to the rejected report without poisoning a valid sibling',
+        async reason => {
+            const store = new MemoryDeliveryStore()
+            const batches: string[][] = []
+            const send = jest.fn(async (_scope, reports: readonly AnimationRumV2QueuedReport[]) => {
+                batches.push(reports.map(report => report.eventId))
+                if (reports.length > 1 || reports[0]!.eventId === 'event_bad_item') return { kind: 'terminal', reason } as const
+                return settled(reports)
+            })
+            const coordinator = new AnimationRumV2DeliveryCoordinator(options(store, send, () => 100))
+            const valid = pageReport('valid_item')
+            const rejected = pageReport('bad_item')
+
+            await expect(coordinator.flush([valid, rejected])).resolves.toEqual({
+                attempted: 2,
+                confirmed: 1,
+                terminal: 1,
+                retried: 0,
+            })
+            expect(batches).toEqual([['event_valid_item', 'event_bad_item'], ['event_valid_item'], ['event_bad_item']])
+            expect(store.records.get(JSON.stringify([coordinator.scope.scopeKey, valid.eventId]))).toEqual(
+                expect.objectContaining({ state: 'confirmed', terminalReason: null })
+            )
+            expect(store.records.get(JSON.stringify([coordinator.scope.scopeKey, rejected.eventId]))).toEqual(
+                expect.objectContaining({ state: 'terminal', terminalReason: reason })
+            )
+        }
+    )
+
+    it('splits an aggregate HTTP 413 and confirms every smaller accepted subset', async () => {
+        const store = new MemoryDeliveryStore()
+        const batchSizes: number[] = []
+        const send = jest.fn(async (_scope, reports: readonly AnimationRumV2QueuedReport[]) => {
+            batchSizes.push(reports.length)
+            return reports.length > 2 ? ({ kind: 'terminal', reason: 'http-413' } as const) : settled(reports)
+        })
+        const coordinator = new AnimationRumV2DeliveryCoordinator(options(store, send, () => 100))
+
+        await expect(
+            coordinator.flush([pageReport('size_001'), pageReport('size_002'), pageReport('size_003'), pageReport('size_004')])
+        ).resolves.toEqual({ attempted: 4, confirmed: 4, terminal: 0, retried: 0 })
+        expect(batchSizes).toEqual([4, 2, 2])
+        expect([...store.records.values()].every(report => report.state === 'confirmed')).toBe(true)
+    })
+
+    it('bounds a global HTTP 403 denial to the original request plus one request per report', async () => {
+        const store = new MemoryDeliveryStore()
+        const batchSizes: number[] = []
+        const send = jest.fn(async (_scope, reports: readonly AnimationRumV2QueuedReport[]) => {
+            batchSizes.push(reports.length)
+            return { kind: 'terminal', reason: 'http-403' } as const
+        })
+        const coordinator = new AnimationRumV2DeliveryCoordinator(options(store, send, () => 100))
+
+        await expect(
+            coordinator.flush([pageReport('deny_001'), pageReport('deny_002'), pageReport('deny_003'), pageReport('deny_004')])
+        ).resolves.toEqual({ attempted: 4, confirmed: 0, terminal: 4, retried: 0 })
+        expect(batchSizes).toEqual([4, 1, 1, 1, 1])
+        expect([...store.records.values()].every(report => report.state === 'terminal')).toBe(true)
+    })
+
+    it('retries only an isolated subset whose settled response has invalid receipts', async () => {
+        const store = new MemoryDeliveryStore()
+        const batches: string[][] = []
+        const send = jest.fn(async (_scope, reports: readonly AnimationRumV2QueuedReport[]) => {
+            batches.push(reports.map(report => report.eventId))
+            if (batches.length === 1) return { kind: 'terminal', reason: 'http-400' } as const
+            if (batches.length === 2) return { kind: 'settled', settlements: [], receipts: [] } as AnimationRumV2SendResult
+            return settled(reports)
+        })
+        const coordinator = new AnimationRumV2DeliveryCoordinator(options(store, send, () => 100))
+
+        await expect(
+            coordinator.flush([pageReport('mixed_01'), pageReport('mixed_02'), pageReport('mixed_03'), pageReport('mixed_04')])
+        ).resolves.toEqual({ attempted: 4, confirmed: 2, terminal: 0, retried: 2 })
+        expect(batches.map(batch => batch.length)).toEqual([4, 2, 2])
+        expect([...store.records.values()].filter(report => report.state === 'confirmed')).toHaveLength(2)
+        expect([...store.records.values()].filter(report => report.state === 'pending' && report.attemptCount === 1)).toHaveLength(2)
+    })
+
+    it('preserves parent-before-child delivery while isolating a terminal page sibling', async () => {
+        const store = new MemoryDeliveryStore()
+        const send = jest.fn(async (_scope, reports: readonly AnimationRumV2QueuedReport[]) => {
+            if (reports.length > 1 || reports[0]!.eventId === 'event_bad_page') {
+                return { kind: 'terminal', reason: 'http-403' } as const
+            }
+            return settled(reports)
+        })
+        const coordinator = new AnimationRumV2DeliveryCoordinator(options(store, send, () => 100))
+        const validPage = pageReport('valid_page')
+        const rejectedPage = pageReport('bad_page')
+        const validTarget = targetReport(validPage.captureId, 'valid_child')
+        const rejectedTarget = targetReport(rejectedPage.captureId, 'bad_child')
+
+        await expect(coordinator.flush([validTarget, rejectedTarget, validPage, rejectedPage])).resolves.toEqual({
+            attempted: 2,
+            confirmed: 1,
+            terminal: 1,
+            retried: 0,
+        })
+        expect(store.records.get(JSON.stringify([coordinator.scope.scopeKey, validTarget.eventId]))).toEqual(
+            expect.objectContaining({ state: 'pending', parentConfirmed: true })
+        )
+        expect(store.records.get(JSON.stringify([coordinator.scope.scopeKey, rejectedTarget.eventId]))).toEqual(
+            expect.objectContaining({ state: 'terminal', terminalReason: 'parent-terminal' })
+        )
+
+        await expect(coordinator.flush()).resolves.toEqual({ attempted: 1, confirmed: 1, terminal: 0, retried: 0 })
+        expect(send.mock.calls.at(-1)?.[1]).toEqual([expect.objectContaining({ eventId: validTarget.eventId })])
+    })
+
+    it('stops terminal isolation before another request when lease renewal loses ownership', async () => {
+        const store = new MemoryDeliveryStore()
+        const renewLeases = store.renewLeases.bind(store)
+        store.renewLeases = jest.fn().mockImplementationOnce(renewLeases).mockResolvedValueOnce([])
+        const send = jest.fn(async (_scope, reports: readonly AnimationRumV2QueuedReport[]) =>
+            reports.length > 1 ? ({ kind: 'terminal', reason: 'http-403' } as const) : settled(reports)
+        )
+        const coordinator = new AnimationRumV2DeliveryCoordinator(options(store, send, () => 100))
+
+        await expect(coordinator.flush([pageReport('lease_01'), pageReport('lease_02')])).rejects.toThrow('lease changed')
+        expect(send).toHaveBeenCalledTimes(2)
+        expect([...store.records.values()].filter(report => report.state === 'confirmed')).toHaveLength(1)
+        expect([...store.records.values()].filter(report => report.state === 'pending')).toHaveLength(1)
+    })
+
+    it.each(['stop', 'suspend'] as const)('does not start another isolation request after %s', async lifecycleMethod => {
+        const store = new MemoryDeliveryStore()
+        let finishFirstChild!: (result: AnimationRumV2SendResult) => void
+        let markFirstChildStarted!: () => void
+        const firstChildStarted = new Promise<void>(resolve => {
+            markFirstChildStarted = resolve
+        })
+        const firstChildResult = new Promise<AnimationRumV2SendResult>(resolve => {
+            finishFirstChild = resolve
+        })
+        const send = jest.fn(async (_scope, reports: readonly AnimationRumV2QueuedReport[]) => {
+            if (send.mock.calls.length === 1) return { kind: 'terminal', reason: 'http-403' } as const
+            if (send.mock.calls.length === 2) {
+                markFirstChildStarted()
+                return firstChildResult
+            }
+            return settled(reports)
+        })
+        const coordinator = new AnimationRumV2DeliveryCoordinator(options(store, send, () => 100))
+        const flushing = coordinator.flush([pageReport(`lifecycle_${lifecycleMethod}_1`), pageReport(`lifecycle_${lifecycleMethod}_2`)])
+        await firstChildStarted
+
+        const lifecycle = coordinator[lifecycleMethod]()
+        finishFirstChild(settled(send.mock.calls[1]![1]))
+
+        await expect(flushing).resolves.toEqual({ attempted: 2, confirmed: 1, terminal: 0, retried: 1 })
+        await expect(lifecycle).resolves.toBeUndefined()
+        expect(send).toHaveBeenCalledTimes(2)
+        expect([...store.records.values()].filter(report => report.state === 'confirmed')).toHaveLength(1)
+        expect([...store.records.values()].filter(report => report.state === 'pending' && report.attemptCount === 1)).toHaveLength(1)
     })
 
     it('marks retry exhaustion terminal and does not send it again', async () => {
