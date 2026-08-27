@@ -15,6 +15,32 @@ function envelopeFor(mutator?: (report: ReturnType<typeof createAnimationRumV2Go
     })
 }
 
+function gpuUnavailableEnvelope(
+    timerState: 'supported' | 'unsupported' | 'disabled' | 'unknown',
+    status: 'not-observed' | 'not-instrumented' | 'unsupported' | 'unknown'
+) {
+    return envelopeFor(report => {
+        report.capabilities['renderer-adapter'] = 'supported'
+        report.capabilities['gpu-timer-query'] = timerState
+        report.providerEvidence = {}
+        report.metrics = [
+            {
+                metricId: 'renderer.gpu-frame.p95',
+                relation: 'adapter',
+                owner: 'renderer-adapter',
+                value: null,
+                samples: null,
+                status,
+            },
+        ]
+        report.coverage.frameCadence = { status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' }
+        report.coverage.renderer = {
+            status,
+            evidenceLevel: status === 'not-observed' ? 'runtime-observation' : 'unsupported-or-unknown',
+        }
+    })
+}
+
 function serviceWithInsert(insert: jest.Mock) {
     const clickhouse = { insert }
     const config = { get: (key: string) => (key === 'CLICKHOUSE_DATABASE' ? 'lemonade' : undefined) }
@@ -74,5 +100,34 @@ describe('AnimationRumClickhouseService v2 projection', () => {
             codes: expect.arrayContaining(['unknown_metric_id']),
         })
         expect(insert).not.toHaveBeenCalled()
+    })
+
+    it.each([
+        ['supported', 'not-observed'],
+        ['disabled', 'not-instrumented'],
+        ['unsupported', 'unsupported'],
+        ['unknown', 'unknown'],
+    ] as const)('preserves GPU timer capability %s and metric status %s on the direct ClickHouse path', async (timerState, status) => {
+        const insert = jest.fn().mockResolvedValue(undefined)
+        const service = serviceWithInsert(insert)
+
+        await service.insertV2(gpuUnavailableEnvelope(timerState, status))
+
+        const metricInsert = insert.mock.calls.find(call => call[0].table.endsWith('.animation_rum_metrics_v2'))?.[0]
+        expect(metricInsert?.values).toEqual([
+            expect.objectContaining({
+                metric_id: 'renderer.gpu-frame.p95',
+                owner: 'renderer-adapter',
+                relation: 'adapter',
+                value: null,
+                samples: null,
+                status,
+            }),
+        ])
+        const captureInsert = insert.mock.calls.find(call => call[0].table.endsWith('.animation_rum_captures_v2'))?.[0]
+        expect(JSON.parse(captureInsert?.values[0].capabilities_json)).toMatchObject({
+            'renderer-adapter': 'supported',
+            'gpu-timer-query': timerState,
+        })
     })
 })
