@@ -95,6 +95,7 @@ test('records synchronous void upload scheduling without changing the business r
     assert.equal(snapshot.aggregate.retainedMeasuredUploadKinds['queue-write-buffer'], 1)
 
     const target = harness.recorder.inspect({
+        inspectionPurpose: 'local',
         evidenceWindow: { startedAt: 0, endedAt: 2, relation: 'selection-window' },
     })
     assert.deepEqual(target.inventory, { renderers: ['webgpu'] })
@@ -107,6 +108,43 @@ test('records synchronous void upload scheduling without changing the business r
         rejectedSampleCount: 0,
         truncated: false,
     })
+    harness.recorder.dispose()
+})
+
+test('keeps transfer target evidence local without inspecting a RUM window', () => {
+    const harness = createHarness()
+    upload(harness, { start: 0, end: 2, bytes: 8 })
+    const before = harness.recorder.getSnapshot()
+    let evidenceWindowReads = 0
+    const unavailableWindow = inspectionPurpose =>
+        Object.defineProperty(inspectionPurpose === undefined ? {} : { inspectionPurpose }, 'evidenceWindow', {
+            get() {
+                evidenceWindowReads += 1
+                throw new Error('RUM must not inspect local transfer evidence')
+            },
+        })
+
+    assert.equal(harness.recorder.inspect(unavailableWindow('rum')), null)
+    assert.equal(harness.recorder.inspect(unavailableWindow()), null)
+    assert.equal(harness.recorder.inspect(unavailableWindow('invalid-purpose')), null)
+    assert.equal(
+        harness.recorder.inspect(
+            Object.defineProperty({}, 'inspectionPurpose', {
+                get() {
+                    throw new Error('unreadable purpose')
+                },
+            })
+        ),
+        null
+    )
+    assert.equal(evidenceWindowReads, 0)
+    assert.deepEqual(harness.recorder.getSnapshot(), before)
+
+    const local = harness.recorder.inspect({
+        inspectionPurpose: 'local',
+        evidenceWindow: { startedAt: 0, endedAt: 2, relation: 'selection-window' },
+    })
+    assert.deepEqual(local.renderer.metrics, { uploadBytes: 8 })
     harness.recorder.dispose()
 })
 
@@ -793,6 +831,7 @@ test('a target context getter cannot inject upload or readback evidence before w
     let uploadCalls = 0
     let readbackCalls = 0
     const target = harness.recorder.inspect({
+        inspectionPurpose: 'local',
         get evidenceWindow() {
             harness.recorder.measureUpload({ kind: 'queue-write-buffer', bytes: 4 }, () => {
                 uploadCalls += 1
@@ -852,6 +891,7 @@ test('inspection requested during transfer work never evaluates a target context
     uploadHarness.setTime(0)
     uploadHarness.recorder.measureUpload({ kind: 'queue-write-buffer', bytes: 4 }, () => {
         uploadInspection = uploadHarness.recorder.inspect({
+            inspectionPurpose: 'local',
             get evidenceWindow() {
                 uploadGetterReads += 1
                 uploadHarness.recorder.observeReadback(
@@ -872,8 +912,7 @@ test('inspection requested during transfer work never evaluates a target context
     })
     assert.equal(uploadGetterReads, 0)
     assert.equal(nestedReadbackCalls, 0)
-    assert.equal(uploadInspection.renderer.capability.observed, false)
-    assert.match(uploadInspection.renderer.capability.reason, /evidence is changing/u)
+    assert.equal(uploadInspection, null)
     const uploadSnapshot = uploadHarness.recorder.getSnapshot()
     assert.equal(uploadSnapshot.acceptedUploadCount, 1)
     assert.equal(uploadSnapshot.uploadCorrelationInvalid, false)
@@ -894,6 +933,7 @@ test('inspection requested during transfer work never evaluates a target context
         },
         () => {
             readbackInspection = readbackHarness.recorder.inspect({
+                inspectionPurpose: 'local',
                 get evidenceWindow() {
                     readbackGetterReads += 1
                     readbackHarness.recorder.measureUpload({ kind: 'queue-write-buffer', bytes: 4 }, () => {
@@ -907,8 +947,7 @@ test('inspection requested during transfer work never evaluates a target context
     )
     assert.equal(readbackGetterReads, 0)
     assert.equal(nestedUploadCalls, 0)
-    assert.equal(readbackInspection.renderer.capability.observed, false)
-    assert.match(readbackInspection.renderer.capability.reason, /evidence is changing/u)
+    assert.equal(readbackInspection, null)
     readbackHarness.setTime(1)
     mapping.resolve(undefined)
     await observed

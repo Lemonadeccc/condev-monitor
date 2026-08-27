@@ -67,6 +67,8 @@ const contradictoryHybrid: RendererHostGpuTimingReading = {
 void contradictoryHybrid
 
 declare const targetContext: AnimationTargetAdapterInspectionContext
+const targetInspectionPurpose: 'local' | 'rum' = targetContext.inspectionPurpose
+void targetInspectionPurpose
 const webGlSpecificTargetContext: WebGlGpuTimerTargetInspectionContext = targetContext
 void webGlSpecificTargetContext
 declare const webGlContext: WebGLRenderingContext
@@ -246,8 +248,8 @@ const webGpuTransferSpecificRenderer: WebGpuTransferTargetRendererInspection = w
     webGpuTransferContext.evidenceWindow
 )
 const webGpuTransferRenderer: AnimationTargetAdapterRendererInspection = webGpuTransferSpecificRenderer
-const webGpuTransferSpecificInspection: WebGpuTransferTargetAdapterInspection = webGpuTransfers.inspect(targetContext)
-const webGpuTransferInspection: AnimationTargetAdapterInspection = webGpuTransferSpecificInspection
+const webGpuTransferSpecificInspection: WebGpuTransferTargetAdapterInspection | null = webGpuTransfers.inspect(targetContext)
+const webGpuTransferInspection: AnimationTargetAdapterInspection | null = webGpuTransferSpecificInspection
 const webGpuTransferProvider: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null =
     webGpuTransfers.inspect
 void uploadResult
@@ -255,6 +257,12 @@ void readbackPromise
 void webGpuTransferRenderer
 void webGpuTransferInspection
 void webGpuTransferProvider
+
+webGpuTransfers.inspect({
+    // @ts-expect-error transfer target evidence accepts only SDK-owned closed purposes
+    inspectionPurpose: 'upload',
+    evidenceWindow: targetContext.evidenceWindow,
+})
 
 webGpuTransfers.observeReadback(
     {
