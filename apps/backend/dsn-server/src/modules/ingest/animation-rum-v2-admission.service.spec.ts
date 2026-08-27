@@ -22,6 +22,26 @@ function trackingPayload(report = createAnimationRumV2GoldenReport()) {
     }
 }
 
+function unsupportedGpuReport() {
+    const report = createAnimationRumV2GoldenReport()
+    report.capabilities['renderer-adapter'] = 'supported'
+    report.capabilities['gpu-timer-query'] = 'unsupported'
+    report.providerEvidence = {}
+    report.metrics = [
+        {
+            metricId: 'renderer.gpu-frame.p95',
+            relation: 'adapter',
+            owner: 'renderer-adapter',
+            value: null,
+            samples: null,
+            status: 'unsupported',
+        },
+    ]
+    report.coverage.frameCadence = { status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' }
+    report.coverage.renderer = { status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' }
+    return report
+}
+
 function createService(query: jest.Mock, overrides: Record<string, string | undefined> = {}) {
     const client = { query, release: jest.fn() }
     const pool = {
@@ -71,7 +91,7 @@ describe('AnimationRumV2AdmissionService', () => {
     it('atomically reserves a page receipt and its exact Kafka outbox envelope', async () => {
         const query = successfulPageQuery()
         const { client, service } = createService(query)
-        const report = createAnimationRumV2GoldenReport()
+        const report = unsupportedGpuReport()
 
         const result = await service.admitBatch(APP_ID, [trackingPayload(report)], {
             nowEpochMs: ANIMATION_RUM_V2_GOLDEN_NOW,
@@ -127,7 +147,23 @@ describe('AnimationRumV2AdmissionService', () => {
             appId: APP_ID,
             eventId: report.eventId,
             source: 'animation-rum-v2',
-            info: { animationRum: { captureId: report.captureId } },
+            info: {
+                animationRum: {
+                    captureId: report.captureId,
+                    capabilities: {
+                        'renderer-adapter': 'supported',
+                        'gpu-timer-query': 'unsupported',
+                    },
+                    metrics: [
+                        expect.objectContaining({
+                            metricId: 'renderer.gpu-frame.p95',
+                            value: null,
+                            samples: null,
+                            status: 'unsupported',
+                        }),
+                    ],
+                },
+            },
         })
         expect(calls.find(call => call.sql.includes('UPDATE public.animation_rum_v2_policy'))?.values).toEqual([101, '2'])
         expect(client.release).toHaveBeenCalledTimes(1)

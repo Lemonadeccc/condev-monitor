@@ -21,6 +21,34 @@ const ENVELOPE_TEXT = serializeAnimationRumV2KafkaEnvelope(
     { nowEpochMs: ANIMATION_RUM_V2_GOLDEN_NOW }
 )
 
+function unsupportedGpuEnvelopeText(): string {
+    const report = createAnimationRumV2GoldenReport()
+    report.capabilities['renderer-adapter'] = 'supported'
+    report.capabilities['gpu-timer-query'] = 'unsupported'
+    report.providerEvidence = {}
+    report.metrics = [
+        {
+            metricId: 'renderer.gpu-frame.p95',
+            relation: 'adapter',
+            owner: 'renderer-adapter',
+            value: null,
+            samples: null,
+            status: 'unsupported',
+        },
+    ]
+    report.coverage.frameCadence = { status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' }
+    report.coverage.renderer = { status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' }
+    return serializeAnimationRumV2KafkaEnvelope(
+        buildAnimationRumV2KafkaEnvelope({
+            appId: APP_ID,
+            report,
+            receivedAt: RECEIVED_AT,
+            nowEpochMs: ANIMATION_RUM_V2_GOLDEN_NOW,
+        }),
+        { nowEpochMs: ANIMATION_RUM_V2_GOLDEN_NOW }
+    )
+}
+
 type QueryResultLike = {
     rows: unknown[]
     rowCount: number | null
@@ -314,7 +342,8 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
     })
 
     it('commits the claim before sending the exact stored Kafka message and then records the ACK', async () => {
-        const item = outboxFixture()
+        const gpuEnvelopeText = unsupportedGpuEnvelopeText()
+        const item = outboxFixture({ envelopeText: gpuEnvelopeText })
         const harness = createHarness([
             advisoryLockStep(),
             ...claimSteps(item, [{ captureId: item.captureId, deliveryState: 'pending' }]),
@@ -327,7 +356,15 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
         expect(result).toEqual(expectedStats({ published: 1 }))
         expect(harness.kafka.publishDurableBatch).toHaveBeenCalledWith({
             topic: TOPIC,
-            messages: [{ key: APP_ID, value: ENVELOPE_TEXT }],
+            messages: [{ key: APP_ID, value: gpuEnvelopeText }],
+        })
+        expect(JSON.parse(gpuEnvelopeText)).toMatchObject({
+            info: {
+                animationRum: {
+                    capabilities: { 'gpu-timer-query': 'unsupported' },
+                    metrics: [expect.objectContaining({ metricId: 'renderer.gpu-frame.p95', status: 'unsupported' })],
+                },
+            },
         })
         expect(harness.timeline.indexOf('claim-commit')).toBeLessThan(harness.timeline.indexOf('kafka'))
         expect(harness.timeline.indexOf('kafka')).toBeLessThan(harness.timeline.indexOf('ack-begin'))
