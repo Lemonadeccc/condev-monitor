@@ -80,6 +80,12 @@ importers:
       '@clickhouse/client':
         specifier: ^1.12.1
         version: 1.13.0
+      '@condev-monitor/animation-rum-contract':
+        specifier: workspace:*
+        version: link:../../../packages/animation-rum-contract
+      '@condev-monitor/animation-rum-ingest':
+        specifier: workspace:*
+        version: link:../../../packages/animation-rum-ingest
       '@jridgewell/trace-mapping':
         specifier: ^0.3.28
         version: 0.3.31

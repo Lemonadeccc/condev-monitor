@@ -13,6 +13,7 @@
         "start:debug": "nest start --debug --watch",
         "start:prod": "node dist/main",
         "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+        "pretest": "pnpm turbo build --filter=@condev-monitor/animation-rum-ingest",
         "test": "jest",
         "test:watch": "jest --watch",
         "test:cov": "jest --coverage",
@@ -21,6 +22,8 @@
     },
     "dependencies": {
         "@clickhouse/client": "^1.12.1",
+        "@condev-monitor/animation-rum-contract": "workspace:*",
+        "@condev-monitor/animation-rum-ingest": "workspace:*",
         "@jridgewell/trace-mapping": "^0.3.28",
         "@nestjs/common": "^11.0.1",
         "@nestjs/config": "^4.0.2",
