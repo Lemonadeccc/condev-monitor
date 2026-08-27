@@ -57,6 +57,52 @@ function assertValidationCode(callback, code) {
     })
 }
 
+const GPU_METRIC_CASES = [
+    ['supported', 'measured', 6.25, 8],
+    ['supported', 'not-observed', null, null],
+    ['unsupported', 'unsupported', null, null],
+    ['unknown', 'unknown', null, null],
+]
+
+function gpuReport([capability, status, value, samples]) {
+    const report = createAnimationRumV2GoldenReport()
+    report.context.runtime = { framework: 'vanilla', renderer: 'canvas', backend: 'webgl2' }
+    report.capabilities['renderer-adapter'] = 'supported'
+    report.capabilities['gpu-timer-query'] = capability
+    report.coverage.frameCadence = { status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' }
+    report.coverage.renderer = {
+        status,
+        evidenceLevel: status === 'measured' || status === 'not-observed' ? 'runtime-observation' : 'unsupported-or-unknown',
+    }
+    report.providerEvidence =
+        status === 'measured'
+            ? {
+                  'renderer-adapter': {
+                      renderer: {
+                          version: '0.1.0',
+                          accepted: 8,
+                          retained: 8,
+                          evidence: 8,
+                          dropped: 0,
+                          rejected: 0,
+                          truncated: false,
+                      },
+                  },
+              }
+            : {}
+    report.metrics = [
+        {
+            metricId: 'renderer.gpu-frame.p95',
+            relation: 'adapter',
+            owner: 'renderer-adapter',
+            value,
+            samples,
+            status,
+        },
+    ]
+    return report
+}
+
 test('strictly unwraps BrowserTransport metadata before canonical hashing', () => {
     const report = createAnimationRumV2GoldenReport()
     const direct = prepare(report)
@@ -431,6 +477,39 @@ test('projects exact closed ClickHouse rows and derives metric identity from the
             metric_count: 1,
         },
     })
+})
+
+test('preserves every valid GPU capability and metric state through canonical ingest and ClickHouse projection', () => {
+    for (const [capability, status, value, samples] of GPU_METRIC_CASES) {
+        const report = gpuReport([capability, status, value, samples])
+        const prepared = prepare(report)
+        const canonicalMetric = prepared.report.metrics.find(metric => metric.metricId === 'renderer.gpu-frame.p95')
+        const serialized = JSON.parse(prepared.canonicalText)
+        const serializedMetric = serialized.metrics.find(metric => metric.metricId === 'renderer.gpu-frame.p95')
+        const rows = projectAnimationRumV2Rows(envelopeFor(report), GOLDEN_VALIDATION_OPTIONS)
+        const metricRow = rows.metricRows.find(row => row.metric_id === 'renderer.gpu-frame.p95')
+
+        assert.equal(prepared.report.capabilities['gpu-timer-query'], capability)
+        assert.deepEqual(canonicalMetric, {
+            metricId: 'renderer.gpu-frame.p95',
+            relation: 'adapter',
+            owner: 'renderer-adapter',
+            value,
+            samples,
+            status,
+        })
+        assert.equal(serialized.capabilities['gpu-timer-query'], capability)
+        assert.deepEqual(serializedMetric, canonicalMetric)
+        assert.equal(JSON.parse(rows.captureRow.capabilities_json)['gpu-timer-query'], capability)
+        assert.deepEqual(
+            {
+                value: metricRow.value,
+                samples: metricRow.samples,
+                status: metricRow.status,
+            },
+            { value, samples, status }
+        )
+    }
 })
 
 test('preserves target identity and creates a children-first completion plan', () => {
