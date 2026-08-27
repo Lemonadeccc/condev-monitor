@@ -10,7 +10,7 @@ init({
   animation: {
     autoStart: import.meta.env.DEV || Boolean(dsn),
     devtools: import.meta.env.DEV,
-    rum: dsn ? { sampleRate: 1 } : false,
+    rum: dsn ? { contractVersion: 2, sampleRate: 1 } : false,
     context: {
       routeKey: "lemon-bureau",
       environment: import.meta.env.MODE,

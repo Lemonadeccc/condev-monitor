@@ -8,7 +8,7 @@ init({
   animation: {
     autoStart: development || Boolean(dsn),
     devtools: development,
-    rum: dsn ? { sampleRate: 1 } : false,
+    rum: dsn ? { contractVersion: 2, sampleRate: 1 } : false,
     context: {
       routeKey: "salle-blanche",
       environment: development ? "development" : "production",
