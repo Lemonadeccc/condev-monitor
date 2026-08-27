@@ -1,6 +1,6 @@
 # Condev Monitor Animation Renderer
 
-Optional, framework-neutral renderer instrumentation for Condev Monitor animation monitoring. It supplies an explicit Canvas2D logical-frame recorder, GPU command-interval timers for WebGL 1/2, and host-attested single- or multi-pass WebGPU renderer-frame command intervals.
+Optional, framework-neutral renderer instrumentation for Condev Monitor animation monitoring. It supplies an explicit Canvas2D logical-frame recorder, GPU command-interval timers for WebGL 1/2, host-attested single- or multi-pass WebGPU renderer-frame command intervals, and explicit WebGPU transfer/readback observation.
 
 This package is intentionally separate from the Browser SDK. A Browser client cannot know an application's real renderer boundaries, so the application owns the integration: Canvas2D explicitly brackets one logical frame and reports only commands/transfers it can attest, WebGL places explicit begin/end calls around its render, while WebGPU instruments either one complete pass or the first/last pass boundaries of one command buffer, encodes resolve/copy, and confirms the associated submit. `pnpm build:sdk` already includes this package through the existing `@condev-monitor/monitor-sdk-*` filter; no extra root build script is required.
 
@@ -254,6 +254,72 @@ Device loss is terminal for an instance and maps to the existing host `unknown +
 The single-pass timer covers only its instrumented pass. The multi-pass timer measures the GPU timestamp interval from the first pass beginning through the last pass ending, including ordered middle passes and copy commands between those two boundaries in the same command buffer. It is not a sum of per-pass durations and cannot attribute time to an individual pass. Both timers exclude commands outside their timestamp boundaries, CPU encoding/submission, queue wait outside the timestamps, browser composition, presentation, scanout, INP, and the whole page frame. Coordination across command buffers or submits, engine-private encoders, renderer resources/uploads/readbacks, and real-device browser validation remain separate adapter work.
 
 The implementation follows the official [WebGPU timestamp query](https://www.w3.org/TR/webgpu/#timestamp), [`resolveQuerySet()`](https://www.w3.org/TR/webgpu/#dom-gpucommandencoder-resolvequeryset), and [`mapAsync()`](https://www.w3.org/TR/webgpu/#dom-gpubuffer-mapasync) contracts.
+
+## WebGPU transfer recorder
+
+The transfer recorder is intentionally separate from the timestamp timer. It records only operations the application explicitly wraps; it does not discover renderer resources, patch WebGPU prototypes, infer texture allocation or VRAM residency, or turn a synchronous queue call into proof that GPU work completed.
+
+```ts
+import { init } from '@condev-monitor/monitor-sdk-browser/animation'
+import { createWebGpuTransferRecorder } from '@condev-monitor/monitor-sdk-animation-renderer'
+
+const client = init()
+const transfers = createWebGpuTransferRecorder({ device })
+
+// This is the only target provider registered for this Canvas. The local
+// Overlay can display webgpu.uploadBytes and webgpu.readbackMsP95.
+const unregisterTarget = client.animation.registerTarget(canvas, transfers.inspect)
+
+function writeFrameUniforms(data: Float32Array) {
+    transfers.measureUpload(
+        {
+            kind: 'queue-write-buffer',
+            // Derive this from the exact requested source range. The recorder
+            // never reads data, descriptors, labels, buffers, or textures.
+            bytes: data.byteLength,
+        },
+        () => device.queue.writeBuffer(uniformBuffer, 0, data)
+    )
+}
+
+async function readTexture(copyByteLength: number) {
+    const encoder = device.createCommandEncoder()
+    encoder.copyTextureToBuffer(source, destination, extent)
+    device.queue.submit([encoder.finish()])
+
+    // Use the returned Promise. It is normally a fresh native Promise with the
+    // same settlement; hostile constructor/species state falls back to the
+    // exact source Promise and rejects the monitoring evidence instead.
+    await transfers.observeReadback(
+        {
+            kind: 'texture-to-buffer-map-read',
+            bytes: copyByteLength,
+            submissionAttestation: 'caller-attests-associated-copy-command-stream-submitted',
+        },
+        () => readbackBuffer.mapAsync(GPUMapMode.READ)
+    )
+
+    consumeMappedBytes(readbackBuffer.getMappedRange())
+    readbackBuffer.unmap()
+}
+
+function destroyMonitoring() {
+    unregisterTarget()
+    transfers.dispose()
+}
+```
+
+`measureUpload()` preserves the exact synchronous callback result or exception, but accepts evidence only when that result is exactly `undefined`, matching the four native synchronous WebGPU operations in its closed set. A non-void result, Promise, foreign-realm Promise, or custom thenable is returned unchanged but the evidence is rejected without reading an arbitrary `then` property. A successful sample means only that the wrapped host-side call returned normally. `scheduledUploadBytes` in the local recorder snapshot and `uploadBytes` in the existing local target field are caller-attested source/request bytes; neither proves GPU completion, bus traffic, texture residency, allocation size, or GPU duration. `uploadCallMsP95` is synchronous JavaScript/API call time. Missing byte metadata keeps the byte total unknown instead of guessing from a format, extent, external image, row padding, mip count, or compression mode.
+
+The closed upload kinds are queue `writeBuffer`, `writeTexture`, `copyExternalImageToTexture`, and an explicitly wrapped mapped-buffer write plus unmap. Encoder buffer/texture copy commands by themselves are GPU-internal copies and are not automatically classified as uploads. For the mapped-buffer kind, the callback must enclose the caller's complete known write/unmap boundary; the recorder still cannot prove a later copy or submit.
+
+`observeReadback()` requires the caller's explicit but unverified `submissionAttestation`; the recorder cannot prove that a particular encoder, copy, buffer, and submit belong together. When native Promise subscription succeeds, the method returns a fresh native Promise with the same fulfillment value or exact rejection object. If hostile `constructor`/`Symbol.species` state makes standard subscription throw synchronously, the recorder invalidates readback correlation and returns the exact source Promise instead of replacing business settlement with a monitoring error. `hostObservedReadbackReadyMsP95` is the host-observed upper bound from the timestamp taken immediately before invoking the callback/`mapAsync(READ)` until the recorder's Promise reaction runs. It can include the callback and `mapAsync` call, queue wait, GPU copy work, validation, mapping readiness, main-thread work, and microtask scheduling. Target `readbackMsP95` uses the same bounded meaning. Neither value is isolated GPU-copy time, frame GPU time, exact browser-internal fulfillment time, presentation latency, or time spent later reading mapped bytes. `attestedReadbackBytes` is only the caller-declared requested/mapped range. A rejected `mapAsync`, including an `AbortError`, remains rejected evidence; only the device's `lost` promise is authoritative device-loss evidence.
+
+Readback observation is asynchronous and bounded (`maxPendingReadbacks: 2` by default, maximum 8). Capacity pressure never prevents the application's `mapAsync`; it skips monitoring that attempt and makes readback aggregation fail closed. Any pending candidate suppresses the recorder-wide readback aggregate so fast completions cannot bias the percentile; a pending candidate in a requested target window makes the shared renderer Target provider unobserved until settlement because the current Target contract has no pending count. Completed operations are retained in a bounded ring (`maxRetainedOperations: 512` by default, maximum 4096). Only operations wholly contained in the SDK-owned evidence window are attributed. Measured and rejected counts remain separate, `accepted = retained + dropped`, and `truncated` is true only when an accepted sample was evicted. Partial intersection with forgotten history becomes unavailable rather than estimated. `retainedMeasuredUploadKinds` and `retainedMeasuredReadbackKinds` are explicitly current-ring inventories, not lifetime totals; they may remain non-zero while quantitative aggregates fail closed. Target `evidence.window` reports the requested SDK window whose retained/dropped/rejected counts were proven, rather than only the surviving record bounds.
+
+The recorder never calls `mapAsync`, `getMappedRange`, `unmap`, `destroy`, `finish`, `submit`, `onSubmittedWorkDone`, queue write methods, or an error scope. It never stores WebGPU objects, resource labels, descriptors, shader text, URLs, mapped bytes, pixels, or application identifiers. Device loss/disposal only clears recorder-owned references and ignores late Promise settlement.
+
+This first integration is a local selected-target adapter. The current `animation_rum` v1/v2 catalogs do not upload transfer bytes or readback latency, and no backend/database/platform schema is changed. Register only one target provider for a Canvas: a later `registerTarget()` replaces the previous provider. Any family-wide correlation gap makes the whole shared Target provider unobserved; it never combines one valid family with incomplete shared counts. Do not also opt this Canvas into `registerRumTarget()` when you require the transfer recorder to have zero influence on production RUM provider counts/quality. A future composite WebGPU target adapter needs per-family evidence counts plus an enforceable local-only/RUM-exclusion contract before it can merge timestamp-frame and transfer-operation samples honestly.
 
 ## WebGL integrity and ownership boundary
 
