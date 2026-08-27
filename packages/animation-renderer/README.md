@@ -1,8 +1,8 @@
 # Condev Monitor Animation Renderer
 
-Optional, framework-neutral renderer instrumentation for Condev Monitor animation monitoring. It supplies an explicit Canvas2D logical-frame recorder, GPU command-interval timers for WebGL 1/2, and a host-attested complete single-pass WebGPU renderer-frame command interval.
+Optional, framework-neutral renderer instrumentation for Condev Monitor animation monitoring. It supplies an explicit Canvas2D logical-frame recorder, GPU command-interval timers for WebGL 1/2, and host-attested single- or multi-pass WebGPU renderer-frame command intervals.
 
-This package is intentionally separate from the Browser SDK. A Browser client cannot know an application's real renderer boundaries, so the application owns the integration: Canvas2D explicitly brackets one logical frame and reports only commands/transfers it can attest, WebGL places explicit begin/end calls around its render, while WebGPU instruments the complete pass descriptor, encodes resolve/copy, and confirms the associated submit. `pnpm build:sdk` already includes this package through the existing `@condev-monitor/monitor-sdk-*` filter; no extra root build script is required.
+This package is intentionally separate from the Browser SDK. A Browser client cannot know an application's real renderer boundaries, so the application owns the integration: Canvas2D explicitly brackets one logical frame and reports only commands/transfers it can attest, WebGL places explicit begin/end calls around its render, while WebGPU instruments either one complete pass or the first/last pass boundaries of one command buffer, encodes resolve/copy, and confirms the associated submit. `pnpm build:sdk` already includes this package through the existing `@condev-monitor/monitor-sdk-*` filter; no extra root build script is required.
 
 ## Canvas2D logical-frame recorder
 
@@ -128,7 +128,7 @@ function destroyMonitoring() {
 
 `beginFrame()` and `endFrame()` must synchronously enclose one complete renderer frame. Do not put an `await` between them, and do not use the result for an arbitrary sub-region while naming it GPU frame time. The result measures completion of the enclosed GPU command interval; it does not measure browser composition, display scanout, INP, CPU submission time, or the entire page frame.
 
-## WebGPU single-pass frame timer
+## WebGPU frame timers
 
 The device must be created with the optional `timestamp-query` feature. An existing device cannot enable it later; a device without the feature remains a normal `unsupported` capability and allocates no timer resources.
 
@@ -189,7 +189,53 @@ function destroyMonitoring() {
 }
 ```
 
-Modern browser WebGPU writes timestamps only through a render/compute pass descriptor's `timestampWrites`; it has no standard `GPUCommandEncoder.writeTimestamp()` and no browser `timestampPeriod` multiplier. `instrumentPassDescriptor()` returns a shallow copy and never overwrites existing host `timestampWrites`. A conflict skips that sample so the application or engine remains the owner.
+For a renderer frame made from multiple render/compute passes in one command encoder and one command buffer, use the separate multi-pass factory. The first and last descriptors must be different objects; a one-pass frame must keep using the single-pass timer.
+
+```ts
+import { createWebGpuMultiPassTimestampTimer } from '@condev-monitor/monitor-sdk-animation-renderer'
+
+const gpuTimer = createWebGpuMultiPassTimestampTimer({
+    device,
+    frameBoundary: 'multi-pass-single-command-buffer-complete-frame',
+    sampleEvery: 60,
+})
+
+function renderFrame() {
+    const ticket = gpuTimer.beginFrame()
+    const encoder = device.createCommandEncoder()
+    const firstBase = createFirstComputePassDescriptor()
+    const lastBase = createLastRenderPassDescriptor()
+    const boundaries = ticket ? gpuTimer.instrumentFrameBoundaryPasses(ticket, firstBase, lastBase) : null
+    let submitted = false
+
+    try {
+        const firstPass = encoder.beginComputePass(boundaries?.firstPassDescriptor ?? firstBase)
+        encodeFirstPass(firstPass)
+        firstPass.end()
+
+        encodeMiddlePassesAndCopies(encoder)
+
+        const lastPass = encoder.beginRenderPass(boundaries?.lastPassDescriptor ?? lastBase)
+        encodeLastPass(lastPass)
+        lastPass.end()
+
+        const timerEncoded =
+            ticket && boundaries ? gpuTimer.endFrame(ticket, encoder, 'all-frame-passes-ended-on-associated-encoder') : false
+        const commandBuffer = encoder.finish()
+        device.queue.submit([commandBuffer])
+        submitted = true
+
+        if (ticket && timerEncoded) {
+            gpuTimer.notifySubmitted(ticket, 'associated-command-stream-submitted')
+        }
+    } catch (error) {
+        if (ticket && !submitted) gpuTimer.cancelFrame(ticket, 'will-not-submit')
+        throw error
+    }
+}
+```
+
+Modern browser WebGPU writes timestamps only through a render/compute pass descriptor's `timestampWrites`; it has no standard `GPUCommandEncoder.writeTimestamp()` and no browser `timestampPeriod` multiplier. `instrumentPassDescriptor()` and `instrumentFrameBoundaryPasses()` return shallow copies and never overwrite existing host `timestampWrites`. Multi-pass instrumentation is one atomic transaction: a conflict, invalid pair, throwing accessor, or re-entrant callback returns neither descriptor. A conflict skips that sample so the application or engine remains the owner.
 
 `endFrame()` encodes `resolveQuerySet` followed by a copy into a separate `MAP_READ | COPY_DST` staging buffer. It never calls `finish()`, `queue.submit()`, `onSubmittedWorkDone()`, or an error scope. The application submits its own command buffer, then calls `notifySubmitted()` synchronously; only that method starts the non-blocking `mapAsync()` continuation. The defaults are `sampleEvery: 60` and `maxPendingFrames: 2`; a full bound skips new samples instead of waiting or expanding.
 
@@ -197,7 +243,7 @@ Resolved `uint64` values are already nanoseconds. The timer subtracts as `BigInt
 
 Device loss is terminal for an instance and maps to the existing host `unknown + context-lost` state. Recreate the adapter/device and timer; old query/buffer objects are never reused. Within one loaded package module, timers on one device share one loss subscription, and disposal unregisters each timer; duplicate bundles do not share that hub. If disposal occurs while an instrumented command stream might still be submitted, the timer deliberately does not destroy those referenced resources and records an abandoned command-frame diagnostic instead of poisoning the application's later submit.
 
-This timer covers only the instrumented pass. Even with the required complete-single-pass attestation, it excludes commands outside that pass, CPU encoding/submission, queue wait outside the timestamps, browser composition, presentation, scanout, INP, and the whole page frame. Multi-pass first/last-pass coordination, engine-owned WebGPU encoders, renderer resources/uploads/readbacks, and real-device browser validation remain separate adapter work.
+The single-pass timer covers only its instrumented pass. The multi-pass timer measures the GPU timestamp interval from the first pass beginning through the last pass ending, including ordered middle passes and copy commands between those two boundaries in the same command buffer. It is not a sum of per-pass durations and cannot attribute time to an individual pass. Both timers exclude commands outside their timestamp boundaries, CPU encoding/submission, queue wait outside the timestamps, browser composition, presentation, scanout, INP, and the whole page frame. Coordination across command buffers or submits, engine-private encoders, renderer resources/uploads/readbacks, and real-device browser validation remain separate adapter work.
 
 The implementation follows the official [WebGPU timestamp query](https://www.w3.org/TR/webgpu/#timestamp), [`resolveQuerySet()`](https://www.w3.org/TR/webgpu/#dom-gpucommandencoder-resolvequeryset), and [`mapAsync()`](https://www.w3.org/TR/webgpu/#dom-gpubuffer-mapasync) contracts.
 
@@ -235,4 +281,4 @@ Call `poll()` at most once in each later task/frame. Never use a synchronous tig
 
 WebGL 1 uses extension query methods; WebGL 2 uses core query methods with the WebGL 2 extension constants. An extension returning `null` or zero counter bits is `unsupported`. An advertised but malformed API is `error`.
 
-The implementation follows the official [WebGL 1 timer-query extension](https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query/) and [WebGL 2 timer-query extension](https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query_webgl2/). Canvas2D GPU timing, engine object hit-testing, multi-pass WebGPU coordination, renderer-specific resource attribution, Worker/OffscreenCanvas clock bridging, and real-device browser coverage remain separate adapters/work.
+The implementation follows the official [WebGL 1 timer-query extension](https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query/) and [WebGL 2 timer-query extension](https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query_webgl2/). Canvas2D GPU timing, engine object hit-testing, cross-command-buffer WebGPU coordination, renderer-specific resource attribution, Worker/OffscreenCanvas clock bridging, and real-device browser coverage remain separate adapters/work.
