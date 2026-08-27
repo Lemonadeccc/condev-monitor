@@ -9,6 +9,11 @@ import {
 } from '@condev-monitor/monitor-sdk-browser-utils/performance-runtime'
 
 type Listener = (event: Event) => void
+type PerformanceObserverCallbackWithOptions = (
+    list: PerformanceObserverEntryList,
+    observer: PerformanceObserver,
+    options?: { droppedEntriesCount?: unknown }
+) => void
 
 class FakeEventTarget {
     private listeners = new Map<string, Set<Listener>>()
@@ -232,6 +237,195 @@ describe('shared performance runtime', () => {
         expect(observers[0]!.disconnect).not.toHaveBeenCalled()
         unsubscribeSecond()
         expect(observers[0]!.disconnect).toHaveBeenCalledTimes(1)
+    })
+
+    it('reports browser-dropped entries from each subscription boundary and freezes after unsubscribe', () => {
+        let observer: FakePerformanceObserver | undefined
+
+        class FakePerformanceObserver {
+            static supportedEntryTypes = ['longtask']
+            readonly observe = jest.fn()
+            readonly disconnect = jest.fn()
+
+            constructor(readonly callback: PerformanceObserverCallback) {
+                observer = this
+            }
+
+            emit(droppedEntriesCount: number): void {
+                ;(this.callback as PerformanceObserverCallbackWithOptions)(
+                    { getEntries: () => [] } as unknown as PerformanceObserverEntryList,
+                    this as unknown as PerformanceObserver,
+                    { droppedEntriesCount }
+                )
+            }
+        }
+
+        Object.assign(globalThis, { PerformanceObserver: FakePerformanceObserver })
+        const first = observePerformanceEntries('longtask', jest.fn())
+        const countDescriptor = Object.getOwnPropertyDescriptor(first, 'droppedEntriesCount')
+
+        expect(first.droppedEntriesCount).toBe(0)
+        expect(countDescriptor?.get).toEqual(expect.any(Function))
+        expect(countDescriptor?.set).toBeUndefined()
+
+        observer!.emit(3)
+        expect(first.droppedEntriesCount).toBe(3)
+
+        const second = observePerformanceEntries('longtask', jest.fn())
+        expect(second.droppedEntriesCount).toBe(0)
+        observer!.emit(5)
+        expect(first.droppedEntriesCount).toBe(5)
+        expect(second.droppedEntriesCount).toBe(2)
+
+        first()
+        observer!.emit(8)
+        expect(first.droppedEntriesCount).toBe(5)
+        expect(second.droppedEntriesCount).toBe(5)
+        second()
+    })
+
+    it('uses the first callback as the drop baseline when observation falls back to non-buffered entryTypes', () => {
+        let observer: FakePerformanceObserver | undefined
+
+        class FakePerformanceObserver {
+            static supportedEntryTypes = ['resource']
+            readonly disconnect = jest.fn()
+
+            constructor(readonly callback: PerformanceObserverCallback) {
+                observer = this
+            }
+
+            observe(options: PerformanceObserverInit): void {
+                if (options.type) throw new Error('type observation unavailable')
+            }
+
+            emit(droppedEntriesCount: number): void {
+                ;(this.callback as PerformanceObserverCallbackWithOptions)(
+                    { getEntries: () => [] } as unknown as PerformanceObserverEntryList,
+                    this as unknown as PerformanceObserver,
+                    { droppedEntriesCount }
+                )
+            }
+        }
+
+        Object.assign(globalThis, { PerformanceObserver: FakePerformanceObserver })
+        const subscription = observePerformanceEntries('resource', jest.fn())
+
+        expect(subscription.buffered).toBe(false)
+        expect(subscription.droppedEntriesCount).toBe(0)
+        observer!.emit(7)
+        expect(subscription.droppedEntriesCount).toBe(0)
+        observer!.emit(9)
+        expect(subscription.droppedEntriesCount).toBe(2)
+        subscription()
+    })
+
+    it.each([
+        ['missing callback options', undefined, false],
+        ['negative count', -1, true],
+        ['fractional count', 1.5, true],
+        ['unsafe count', Number.MAX_SAFE_INTEGER + 1, true],
+    ])('marks dropped-entry evidence unknown for %s', (_label, rawCount, includeOptions) => {
+        let observer: FakePerformanceObserver | undefined
+
+        class FakePerformanceObserver {
+            static supportedEntryTypes = ['event']
+            readonly observe = jest.fn()
+            readonly disconnect = jest.fn()
+
+            constructor(readonly callback: PerformanceObserverCallback) {
+                observer = this
+            }
+
+            emit(): void {
+                ;(this.callback as PerformanceObserverCallbackWithOptions)(
+                    { getEntries: () => [] } as unknown as PerformanceObserverEntryList,
+                    this as unknown as PerformanceObserver,
+                    includeOptions ? { droppedEntriesCount: rawCount } : undefined
+                )
+            }
+        }
+
+        Object.assign(globalThis, { PerformanceObserver: FakePerformanceObserver })
+        const subscription = observePerformanceEntries('event', jest.fn())
+        observer!.emit()
+
+        expect(subscription.droppedEntriesCount).toBeNull()
+        subscription()
+    })
+
+    it('makes a decreasing browser drop counter permanently unknown for current and later subscribers', () => {
+        let observer: FakePerformanceObserver | undefined
+
+        class FakePerformanceObserver {
+            static supportedEntryTypes = ['longtask']
+            readonly observe = jest.fn()
+            readonly disconnect = jest.fn()
+
+            constructor(readonly callback: PerformanceObserverCallback) {
+                observer = this
+            }
+
+            emit(droppedEntriesCount: number): void {
+                ;(this.callback as PerformanceObserverCallbackWithOptions)(
+                    { getEntries: () => [] } as unknown as PerformanceObserverEntryList,
+                    this as unknown as PerformanceObserver,
+                    { droppedEntriesCount }
+                )
+            }
+        }
+
+        Object.assign(globalThis, { PerformanceObserver: FakePerformanceObserver })
+        const first = observePerformanceEntries('longtask', jest.fn())
+        observer!.emit(5)
+        observer!.emit(4)
+        const second = observePerformanceEntries('longtask', jest.fn())
+        observer!.emit(6)
+
+        expect(first.droppedEntriesCount).toBeNull()
+        expect(second.droppedEntriesCount).toBeNull()
+        first()
+        second()
+    })
+
+    it('does not infer dropped-entry evidence while draining queued records', () => {
+        let observer: FakePerformanceObserver | undefined
+
+        class FakePerformanceObserver {
+            static supportedEntryTypes = ['longtask']
+            readonly observe = jest.fn()
+            readonly disconnect = jest.fn()
+            private records: PerformanceEntry[] = []
+
+            constructor(readonly callback: PerformanceObserverCallback) {
+                observer = this
+            }
+
+            queue(entry: PerformanceEntry): void {
+                this.records.push(entry)
+            }
+
+            takeRecords(): PerformanceEntryList {
+                return this.records.splice(0) as PerformanceEntryList
+            }
+        }
+
+        Object.assign(globalThis, { PerformanceObserver: FakePerformanceObserver })
+        const onEntry = jest.fn()
+        const subscription = observePerformanceEntries('longtask', onEntry)
+        observer!.queue({
+            entryType: 'longtask',
+            name: 'self',
+            startTime: 1,
+            duration: 60,
+            toJSON: () => ({}),
+        } as PerformanceEntry)
+
+        drainPerformanceEntries('longtask')
+
+        expect(onEntry).toHaveBeenCalledTimes(1)
+        expect(subscription.droppedEntriesCount).toBe(0)
+        subscription()
     })
 
     it('keeps Resource Timing useful without retaining resource names or URLs', () => {
