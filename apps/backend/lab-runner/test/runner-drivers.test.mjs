@@ -29,7 +29,7 @@ function metricForId(metricId, notObservedMetricId) {
         stat: entry.stat,
         unit: entry.unit,
         value: metricId === 'probe.dropped-samples.count' ? 0 : entry.unit === 'ratio' || entry.unit === 'score' ? 0.01 : 1,
-        samples: 120,
+        samples: metricId === 'media.video-elements.count' ? 1 : 120,
         status: 'measured',
         evidenceLevel: 'controlled-lab-measurement',
     }

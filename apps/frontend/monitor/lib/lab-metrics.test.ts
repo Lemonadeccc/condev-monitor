@@ -26,9 +26,16 @@ const V2_METRIC_IDS = [
 ] as const
 
 const V2_LIMITATION_CODES = [
+    'aggregate-sample-count-exceeds-contract-bound',
     'observed-page-raf-cadence-not-display-refresh-rate',
     'event-timing-duration-threshold-16ms',
     'event-timing-entry-count-not-distinct-interactions',
+    'video-playback-quality-partial-surface-coverage',
+    'video-playback-quality-cumulative-snapshot-not-measurement-window-delta',
+    'video-playback-quality-total-includes-displayed-and-dropped',
+    'video-playback-quality-read-error',
+    'video-playback-quality-no-video-elements',
+    'video-playback-quality-zero-total-frames',
     'input-capture-listener-to-next-raf-callback-proxy',
     'not-paint-or-presentation-timing',
     'trusted-discrete-input-only',
@@ -174,6 +181,14 @@ describe('Lab catalog v2 metric presentation', () => {
         )
         assert.match(getLabLimitationLabel('event-timing-duration-threshold-16ms').zhCN, /不代表全部输入事件/u)
         assert.match(getLabLimitationLabel('event-timing-entry-count-not-distinct-interactions').en, /not distinct interactions/u)
+        assert.match(getLabLimitationLabel('video-playback-quality-partial-surface-coverage').zhCN, /部分 video 元素/u)
+        assert.match(
+            getLabLimitationLabel('video-playback-quality-cumulative-snapshot-not-measurement-window-delta').en,
+            /not a start-to-end/u
+        )
+        assert.match(getLabLimitationLabel('video-playback-quality-total-includes-displayed-and-dropped').zhCN, /不是纯解码帧/u)
+        assert.match(getLabLimitationLabel('video-playback-quality-read-error').en, /no ratio was calculated/u)
+        assert.match(getLabLimitationLabel('aggregate-sample-count-exceeds-contract-bound').zhCN, /不保留精确总数/u)
         assert.equal(formatLabMetricValue(null, 'ms'), '未采集 / 未知')
         assert.equal(formatLabMetricValue(0, 'count'), '0 次')
         assert.equal(formatLabMetricValue(3, 'count'), '3 次')

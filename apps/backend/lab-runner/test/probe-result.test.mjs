@@ -67,6 +67,10 @@ const eventTimingMetricIds = [
     'interaction.presentation.p95',
     'interaction.count',
 ]
+const videoPlaybackQualityLimitations = [
+    'video-playback-quality-cumulative-snapshot-not-measurement-window-delta',
+    'video-playback-quality-total-includes-displayed-and-dropped',
+]
 const inputFrameSchedulingMetricIds = ['main.input-capture-to-next-raf-callback.count', 'main.input-capture-to-next-raf-callback.p95']
 const loafFirstUIEventMetricIds = ['interaction.loaf-first-ui-event-to-frame-end.count', 'interaction.loaf-first-ui-event-to-frame-end.p95']
 const loafForcedStyleLayoutMetricIds = [
@@ -187,6 +191,135 @@ test('discloses the conditional Event Timing population and entry-count semantic
     assert.ok(count.limitations.includes('event-timing-entry-count-not-distinct-interactions'))
     assert.equal(count.status, 'measured')
     assert.equal(count.value, 1)
+})
+
+test('keeps video playback quality populations distinct and uses media frames as samples', () => {
+    const cases = [
+        {
+            name: 'complete',
+            elements: 2,
+            rawMetric: { value: 0.1, samples: 150, status: 'measured' },
+            limitation: null,
+        },
+        {
+            name: 'partial',
+            elements: 2,
+            rawMetric: { value: 0.05, samples: 100, status: 'partial' },
+            limitation: 'video-playback-quality-partial-surface-coverage',
+        },
+        {
+            name: 'no-video',
+            elements: 0,
+            rawMetric: { value: null, samples: 0, status: 'not-observed' },
+            limitation: 'video-playback-quality-no-video-elements',
+        },
+        {
+            name: 'zero-frames',
+            elements: 1,
+            rawMetric: { value: null, samples: 0, status: 'not-observed' },
+            limitation: 'video-playback-quality-zero-total-frames',
+        },
+        {
+            name: 'read-error',
+            elements: 1,
+            rawMetric: { value: null, samples: null, status: 'not-observed' },
+            limitation: 'video-playback-quality-read-error',
+        },
+    ]
+
+    for (const fixture of cases) {
+        const raw = rawResult()
+        Object.assign(
+            raw.metrics.find(item => item.name === 'videoElementCount'),
+            { value: fixture.elements }
+        )
+        Object.assign(
+            raw.metrics.find(item => item.name === 'videoDroppedFrameRate'),
+            fixture.rawMetric
+        )
+        const decoded = decodePageProbeResult(raw, expectedActions)
+        const metric = decoded.metrics.find(item => item.name === 'videoDroppedFrameRate')
+        assert.deepEqual(
+            {
+                value: metric.value,
+                samples: metric.samples,
+                status: metric.status,
+                limitations: metric.limitations ?? [],
+            },
+            {
+                ...fixture.rawMetric,
+                limitations: [...videoPlaybackQualityLimitations, ...(fixture.limitation ? [fixture.limitation] : [])],
+            },
+            fixture.name
+        )
+    }
+
+    const unsupported = rawResult()
+    unsupported.capabilities.videoPlaybackQuality = false
+    Object.assign(
+        unsupported.metrics.find(item => item.name === 'videoDroppedFrameRate'),
+        {
+            value: null,
+            samples: null,
+            status: 'unsupported',
+        }
+    )
+    const unsupportedMetric = decodePageProbeResult(unsupported, expectedActions).metrics.find(
+        item => item.name === 'videoDroppedFrameRate'
+    )
+    assert.deepEqual(
+        {
+            value: unsupportedMetric.value,
+            samples: unsupportedMetric.samples,
+            status: unsupportedMetric.status,
+            limitations: unsupportedMetric.limitations,
+        },
+        { value: null, samples: null, status: 'unsupported', limitations: videoPlaybackQualityLimitations }
+    )
+})
+
+test('rejects partial status outside video quality and incoherent video sample states', () => {
+    const forgedPartial = rawResult()
+    forgedPartial.metrics[0].status = 'partial'
+    assert.throws(() => decodePageProbeResult(forgedPartial, expectedActions), TypeError)
+
+    for (const rawMetric of [
+        { value: 0.1, samples: 0, status: 'measured' },
+        { value: 0.1, samples: 0, status: 'partial' },
+        { value: null, samples: 1, status: 'not-observed' },
+    ]) {
+        const raw = rawResult()
+        Object.assign(
+            raw.metrics.find(item => item.name === 'videoDroppedFrameRate'),
+            rawMetric
+        )
+        assert.throws(() => decodePageProbeResult(raw, expectedActions), TypeError)
+    }
+
+    for (const fixture of [
+        { elements: 0, rawMetric: { value: 0.1, samples: 100, status: 'measured' } },
+        { elements: 0, rawMetric: { value: 0.1, samples: 100, status: 'partial' } },
+        { elements: 1, rawMetric: { value: 0.1, samples: 100, status: 'partial' } },
+        { elements: 0, rawMetric: { value: null, samples: null, status: 'not-observed' } },
+    ]) {
+        const raw = rawResult()
+        Object.assign(
+            raw.metrics.find(item => item.name === 'videoElementCount'),
+            { value: fixture.elements }
+        )
+        Object.assign(
+            raw.metrics.find(item => item.name === 'videoDroppedFrameRate'),
+            fixture.rawMetric
+        )
+        assert.throws(() => decodePageProbeResult(raw, expectedActions), TypeError)
+    }
+
+    const forgedElementPopulation = rawResult()
+    Object.assign(
+        forgedElementPopulation.metrics.find(item => item.name === 'videoElementCount'),
+        { samples: 2 }
+    )
+    assert.throws(() => decodePageProbeResult(forgedElementPopulation, expectedActions), TypeError)
 })
 
 test('decodes catalog v2 LoAF paint phases without changing the default v1 payload contract', () => {

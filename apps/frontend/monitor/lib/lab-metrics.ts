@@ -91,6 +91,10 @@ const METHOD_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
 }
 
 const LIMITATION_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
+    'aggregate-sample-count-exceeds-contract-bound': {
+        zhCN: '跨次样本数总和超过报告合同上限，因此不保留精确总数；聚合值仍是各次测量值的中位数。',
+        en: 'The across-attempt sample total exceeded the report-contract bound, so the exact total is omitted; the aggregate value remains the median of attempt values.',
+    },
     'observed-page-raf-cadence-not-display-refresh-rate': {
         zhCN: '该值由页面可见 rAF 帧间隔 p50 推算，不是物理屏幕刷新率、合成器呈现 FPS 或 GPU FPS。',
         en: 'Derived from the visible page rAF frame-interval p50; it is not the physical display refresh rate, compositor presentation FPS, or GPU FPS.',
@@ -102,6 +106,30 @@ const LIMITATION_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
     'event-timing-entry-count-not-distinct-interactions': {
         zhCN: '该计数是 PerformanceEventTiming 条目数，未按 interactionId 去重，不等于独立交互次数。',
         en: 'This is a count of PerformanceEventTiming entries, not distinct interactions deduplicated by interactionId.',
+    },
+    'video-playback-quality-partial-surface-coverage': {
+        zhCN: '只读取到部分 video 元素的播放质量；比率和帧样本不覆盖全部视频表面。',
+        en: 'Playback quality was readable for only some video elements; the ratio and frame samples do not cover every video surface.',
+    },
+    'video-playback-quality-cumulative-snapshot-not-measurement-window-delta': {
+        zhCN: '该指标可用时，比率来自测量结束时的累计 Playback Quality 计数器快照，不是测量窗口起止差值。',
+        en: 'When available, the ratio comes from cumulative Playback Quality counters sampled at measurement end, not a start-to-end measurement-window delta.',
+    },
+    'video-playback-quality-total-includes-displayed-and-dropped': {
+        zhCN: '该指标可用时，分母是 totalVideoFrames（已显示帧与丢弃帧的总计），不是纯解码帧或纯呈现帧计数。',
+        en: 'When available, the denominator is totalVideoFrames (displayed plus dropped frames), not a decoded-only or presented-only frame count.',
+    },
+    'video-playback-quality-read-error': {
+        zhCN: '页面包含 video 元素，但播放质量读取失败、计数关系无效或计数超出有界报告范围，无法计算比率。',
+        en: 'The page contains video elements, but playback quality could not be read, violated counter relationships, or exceeded report bounds, so no ratio was calculated.',
+    },
+    'video-playback-quality-no-video-elements': {
+        zhCN: '测量结束时页面中没有 video 元素，因此没有视频丢帧样本。',
+        en: 'No video elements existed when measurement ended, so no video dropped-frame sample was available.',
+    },
+    'video-playback-quality-zero-total-frames': {
+        zhCN: '页面包含可读取的 video 元素，但其 Playback Quality totalVideoFrames 总计仍为 0。',
+        en: 'Readable video elements existed, but their Playback Quality totalVideoFrames sum was still zero.',
     },
     'loaf-only-over-50ms': {
         zhCN: '仅覆盖超过 50 ms 的 LoAF，不代表全部帧。',

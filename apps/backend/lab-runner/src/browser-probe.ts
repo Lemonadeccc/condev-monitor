@@ -26,6 +26,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
     const startedAt = performance.now()
     const metricCatalogVersion = config.metricCatalogVersion === 2 ? 2 : 1
     const maximumSamples = 20_000
+    const maximumMetricSamples = 10_000_000
     const maximumPendingInputs = 256
     const maximumScriptsPerLoaf = 512
     const maximumMetricDurationMs = 60 * 60 * 1_000
@@ -306,8 +307,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         }),
         layoutShift: observe('layout-shift', entry => {
             const value = entry as PerformanceEntry & { value?: number; hadRecentInput?: boolean }
-            const shiftValue =
-                typeof value.value === 'number' && Number.isFinite(value.value) && value.value >= 0 ? value.value : null
+            const shiftValue = typeof value.value === 'number' && Number.isFinite(value.value) && value.value >= 0 ? value.value : null
             const startTime = Number.isFinite(entry.startTime) && entry.startTime >= 0 ? entry.startTime : null
             if (value.hadRecentInput || shiftValue === null || startTime === null) return
 
@@ -583,7 +583,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         unit: string,
         value: number | null,
         samples: number | null,
-        status?: 'measured' | 'not-observed' | 'unsupported' | 'unknown'
+        status?: 'measured' | 'partial' | 'not-observed' | 'unsupported' | 'unknown'
     ) => {
         const resolvedStatus = status ?? (value === null || !Number.isFinite(value) ? 'not-observed' : 'measured')
         return {
@@ -1001,19 +1001,45 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             const videos = Array.from(document.querySelectorAll('video'))
             let videoFrames = 0
             let droppedVideoFrames = 0
-            let videoQualitySamples = 0
+            let videoQualityReadErrors = 0
             for (const video of videos) {
                 try {
                     const quality = video.getVideoPlaybackQuality()
-                    if (Number.isFinite(quality.totalVideoFrames) && Number.isFinite(quality.droppedVideoFrames)) {
-                        videoFrames += quality.totalVideoFrames
-                        droppedVideoFrames += quality.droppedVideoFrames
-                        videoQualitySamples += 1
+                    const total = quality.totalVideoFrames
+                    const dropped = quality.droppedVideoFrames
+                    if (
+                        !Number.isSafeInteger(total) ||
+                        total < 0 ||
+                        !Number.isSafeInteger(dropped) ||
+                        dropped < 0 ||
+                        dropped > total ||
+                        total > maximumMetricSamples - videoFrames ||
+                        dropped > maximumMetricSamples - droppedVideoFrames
+                    ) {
+                        videoQualityReadErrors += 1
+                        continue
                     }
+                    videoFrames += total
+                    droppedVideoFrames += dropped
                 } catch {
                     // Keep unsupported/error separate from a zero dropped-frame rate.
+                    videoQualityReadErrors += 1
                 }
             }
+            const videoQualityStatus = !capabilities.videoPlaybackQuality
+                ? 'unsupported'
+                : videoFrames > 0
+                  ? videoQualityReadErrors > 0
+                      ? 'partial'
+                      : 'measured'
+                  : 'not-observed'
+            const videoQualitySamples = !capabilities.videoPlaybackQuality
+                ? null
+                : videoFrames > 0
+                  ? videoFrames
+                  : videoQualityReadErrors > 0
+                    ? null
+                    : 0
             const heap = (performance as Performance & { memory?: { usedJSHeapSize?: number } }).memory?.usedJSHeapSize
             const reducedMotion = capabilities.reducedMotion ? window.matchMedia('(prefers-reduced-motion: reduce)').matches : null
             const metrics = [
@@ -1283,7 +1309,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     'ratio',
                     videoFrames > 0 ? droppedVideoFrames / videoFrames : null,
                     videoQualitySamples,
-                    capabilities.videoPlaybackQuality ? undefined : 'unsupported'
+                    videoQualityStatus
                 ),
                 metric(
                     'memoryLifecycle',

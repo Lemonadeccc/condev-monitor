@@ -17,7 +17,7 @@ const MAX_SAFE_SCALAR = Number.MAX_SAFE_INTEGER
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,159}$/u
 
 const ACTION_KINDS = new Set<LabActionKind>(['wait', 'click', 'hover', 'pointer-path', 'scroll', 'resize', 'drag', 'press'])
-const METRIC_STATUSES = new Set(['measured', 'not-observed', 'unsupported', 'unknown'])
+const METRIC_STATUSES = new Set(['measured', 'partial', 'not-observed', 'unsupported', 'unknown'])
 const ACTION_OUTCOMES = new Set(['completed', 'failed', 'cancelled'])
 const CAPABILITY_KEYS_V1 = new Set([
     'longtask',
@@ -294,7 +294,7 @@ export const PAGE_PROBE_CAPABILITY_KEYS = [...CAPABILITY_KEYS_V1] as const
 export const PAGE_PROBE_CAPABILITY_KEYS_V2 = [...CAPABILITY_KEYS_V2] as const
 
 type RecordValue = Record<string, unknown>
-type ProbeMetricStatus = 'measured' | 'not-observed' | 'unsupported' | 'unknown'
+type ProbeMetricStatus = 'measured' | 'partial' | 'not-observed' | 'unsupported' | 'unknown'
 type ProbeActionOutcome = 'completed' | 'failed' | 'cancelled'
 
 export interface ExpectedPageProbeAction {
@@ -407,6 +407,12 @@ function metricValue(value: unknown, unit: AnimationLabMetric['unit'], label: st
 
 function metricLimitations(metricId: string): string[] {
     if (metricId === 'frame.refresh.inferred') return ['observed-page-raf-cadence-not-display-refresh-rate']
+    if (metricId === 'media.video-dropped-frame-rate') {
+        return [
+            'video-playback-quality-cumulative-snapshot-not-measurement-window-delta',
+            'video-playback-quality-total-includes-displayed-and-dropped',
+        ]
+    }
     if (metricId === 'interaction.count') {
         return ['event-timing-duration-threshold-16ms', 'event-timing-entry-count-not-distinct-interactions']
     }
@@ -463,6 +469,7 @@ function decodeMetrics(
         retainedTuples.add(tuple)
         if (typeof raw.status !== 'string' || !METRIC_STATUSES.has(raw.status)) fail(`${metricLabel} status`)
         const status = raw.status as ProbeMetricStatus
+        if (status === 'partial' && catalog.metricId !== 'media.video-dropped-frame-rate') fail(`${metricLabel} status`)
         if (status === 'unknown' && metricCatalogVersion !== 2) fail(`${metricLabel} status`)
         const expectedProducerEvidenceLevel =
             metricCatalogVersion === 2 && (status === 'unsupported' || status === 'unknown')
@@ -470,7 +477,9 @@ function decodeMetrics(
                 : 'controlled-lab-measurement'
         if (raw.evidenceLevel !== expectedProducerEvidenceLevel) fail(`${metricLabel} evidence level`)
         const parsedValue = metricValue(raw.value, catalog.unit, `${metricLabel} value`)
-        if (status === 'measured' ? parsedValue === null : parsedValue !== null) fail(`${metricLabel} status/value relationship`)
+        if (status === 'measured' || status === 'partial' ? parsedValue === null : parsedValue !== null) {
+            fail(`${metricLabel} status/value relationship`)
+        }
         const samples = raw.samples === null ? null : integer(raw.samples, `${metricLabel} samples`, 0, MAX_SAMPLES)
         const limitations = metricLimitations(catalog.metricId)
         output.push({
@@ -562,6 +571,63 @@ function addMetricLimitation(metric: AnimationLabMetric, limitation: string, der
         ...(derivePartial && metric.status === 'measured' ? { status: 'partial' as const } : {}),
         limitations: [...new Set([...(metric.limitations ?? []), limitation])],
     }
+}
+
+function enforceVideoPlaybackQualityContract(
+    metrics: readonly AnimationLabMetric[],
+    catalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
+    capability: boolean | null
+): AnimationLabMetric[] {
+    const metricById = new Map(
+        metrics.map((metric, index) => {
+            const entry = catalog.get(metricKey(metric.family, metric.name, metric.stat, metric.unit))
+            if (!entry) fail('video playback metric identity')
+            return [entry.metricId, { metric, index }] as const
+        })
+    )
+    const videoElements = metricById.get('media.video-elements.count')?.metric
+    const droppedFrameRate = metricById.get('media.video-dropped-frame-rate')
+    if (!videoElements || !droppedFrameRate) fail('video playback metric completeness')
+    if (
+        videoElements.status !== 'measured' ||
+        videoElements.value === null ||
+        !Number.isSafeInteger(videoElements.value) ||
+        videoElements.value < 0 ||
+        videoElements.samples !== 1
+    ) {
+        fail('video element count contract')
+    }
+    if (capability !== true) return [...metrics]
+
+    const metric = droppedFrameRate.metric
+    let limitation: string | null = null
+    if (metric.status === 'measured' || metric.status === 'partial') {
+        if (
+            videoElements.value === 0 ||
+            (metric.status === 'partial' && videoElements.value < 2) ||
+            metric.value === null ||
+            metric.samples === null ||
+            metric.samples <= 0 ||
+            !Number.isSafeInteger(metric.samples)
+        ) {
+            fail('video playback measured contract')
+        }
+        if (metric.status === 'partial') limitation = 'video-playback-quality-partial-surface-coverage'
+    } else if (metric.status === 'not-observed') {
+        if (metric.value !== null) fail('video playback unavailable contract')
+        if (metric.samples === null) {
+            if (videoElements.value === 0) fail('video playback unavailable contract')
+            limitation = 'video-playback-quality-read-error'
+        } else if (metric.samples === 0) {
+            limitation = videoElements.value === 0 ? 'video-playback-quality-no-video-elements' : 'video-playback-quality-zero-total-frames'
+        } else {
+            fail('video playback unavailable contract')
+        }
+    }
+    if (!limitation) return [...metrics]
+    const output = [...metrics]
+    output[droppedFrameRate.index] = addMetricLimitation(metric, limitation, false)
+    return output
 }
 
 function enforcePhasePairContracts(
@@ -761,10 +827,13 @@ export function decodePageProbeResult(
         const capability = SAMPLE_TRUNCATION_CONTRACT[stream].capability
         if (sampleDrops[stream] > 0 && capability && capabilities[capability] !== true) fail('sampleDrops capability coherence')
     }
+    const videoPlaybackQualityCapability = capabilities.videoPlaybackQuality
+    if (videoPlaybackQualityCapability === undefined) fail('video playback capability')
+    const videoMetrics = enforceVideoPlaybackQualityContract(rawMetrics, rootMetricCatalog, videoPlaybackQualityCapability)
     const rootPairs =
         metricCatalogVersion === 2
-            ? enforcePhasePairContracts(rawMetrics, rootMetricCatalog, sampleDrops)
-            : { metrics: rawMetrics, incompletePairs: new Set<PhasePairMetricId>() }
+            ? enforcePhasePairContracts(videoMetrics, rootMetricCatalog, sampleDrops)
+            : { metrics: videoMetrics, incompletePairs: new Set<PhasePairMetricId>() }
     const metrics = downgradeTruncatedMetrics(rootPairs.metrics, rootMetricCatalog, sampleDrops, false)
     const actionResults = decodeActionResults(
         raw.actionResults,

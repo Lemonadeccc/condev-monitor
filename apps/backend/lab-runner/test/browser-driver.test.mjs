@@ -242,6 +242,123 @@ test('resets the frame baseline across hidden page gaps for both metric catalogs
     }
 })
 
+test('distinguishes complete, partial, empty, and failed video playback quality populations', async () => {
+    const driver = createBrowserDriver('chromium')
+    const session = await driver.launch()
+    const context = await session.createContext(scenario())
+    const baseLimitations = [
+        'video-playback-quality-cumulative-snapshot-not-measurement-window-delta',
+        'video-playback-quality-total-includes-displayed-and-dropped',
+    ]
+    const cases = [
+        {
+            name: 'complete',
+            body: '<video data-quality="good-a"></video><video data-quality="good-b"></video>',
+            expected: { elements: 2, status: 'measured', value: 0.1, samples: 150, limitation: null },
+        },
+        {
+            name: 'partial',
+            body: '<video data-quality="good-a"></video><video data-quality="error"></video>',
+            expected: {
+                elements: 2,
+                status: 'partial',
+                value: 0.05,
+                samples: 100,
+                limitation: 'video-playback-quality-partial-surface-coverage',
+            },
+        },
+        {
+            name: 'no-video',
+            body: '<main>no video</main>',
+            expected: {
+                elements: 0,
+                status: 'not-observed',
+                value: null,
+                samples: 0,
+                limitation: 'video-playback-quality-no-video-elements',
+            },
+        },
+        {
+            name: 'zero-frames',
+            body: '<video data-quality="zero"></video>',
+            expected: {
+                elements: 1,
+                status: 'not-observed',
+                value: null,
+                samples: 0,
+                limitation: 'video-playback-quality-zero-total-frames',
+            },
+        },
+        {
+            name: 'read-error',
+            body: '<video data-quality="invalid"></video>',
+            expected: {
+                elements: 1,
+                status: 'not-observed',
+                value: null,
+                samples: null,
+                limitation: 'video-playback-quality-read-error',
+            },
+        },
+    ]
+    const videoHarness = `;(() => {
+      Object.defineProperty(HTMLVideoElement.prototype, 'getVideoPlaybackQuality', {
+        configurable: true,
+        value() {
+          const mode = this.dataset.quality;
+          if (mode === 'good-a') return { totalVideoFrames: 100, droppedVideoFrames: 5 };
+          if (mode === 'good-b') return { totalVideoFrames: 50, droppedVideoFrames: 10 };
+          if (mode === 'zero') return { totalVideoFrames: 0, droppedVideoFrames: 0 };
+          if (mode === 'invalid') return { totalVideoFrames: 5, droppedVideoFrames: 6 };
+          throw new Error('fixture-read-error');
+        },
+      });
+    })();`
+
+    try {
+        for (const fixture of cases) {
+            const page = await context.newPage()
+            const key = `__condevLabProbe_video_${fixture.name.replace('-', '_')}`
+            const capability = fixture.name.padEnd(43, 'x')
+            await page.addInitScript(
+                `${videoHarness}${browserProbeSource(key, {
+                    capability,
+                    expectedRefreshHz: 60,
+                    targetFrameMs: 1000 / 60,
+                    actions: [],
+                })}`
+            )
+            await page.navigate(`data:text/html,${encodeURIComponent(`<!doctype html>${fixture.body}`)}`, 10_000)
+            const raw = await page.collectProbeResult(key, capability, 0)
+            const result = decodePageProbeResult(raw, [])
+            const elementCount = result.metrics.find(item => item.name === 'videoElementCount')
+            const droppedFrameRate = result.metrics.find(item => item.name === 'videoDroppedFrameRate')
+
+            assert.equal(result.capabilities.videoPlaybackQuality, true, fixture.name)
+            assert.equal(elementCount.value, fixture.expected.elements, fixture.name)
+            assert.deepEqual(
+                {
+                    status: droppedFrameRate.status,
+                    value: droppedFrameRate.value,
+                    samples: droppedFrameRate.samples,
+                    limitations: droppedFrameRate.limitations ?? [],
+                },
+                {
+                    status: fixture.expected.status,
+                    value: fixture.expected.value,
+                    samples: fixture.expected.samples,
+                    limitations: [...baseLimitations, ...(fixture.expected.limitation ? [fixture.expected.limitation] : [])],
+                },
+                fixture.name
+            )
+            await page.close()
+        }
+    } finally {
+        await context.close().catch(() => undefined)
+        await session.close().catch(() => undefined)
+    }
+})
+
 test('derives catalog v2 LoAF paint phases only from complete browser boundaries', async () => {
     const driver = createBrowserDriver('chromium')
     const session = await driver.launch()
