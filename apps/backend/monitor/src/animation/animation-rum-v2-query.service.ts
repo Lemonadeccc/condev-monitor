@@ -49,6 +49,14 @@ type TrendBucket = {
 type JsonInteger = number | string | null
 
 type TrendMetric = {
+    statusCounts: {
+        measured: JsonInteger
+        partial: JsonInteger
+        notObserved: JsonInteger
+        notInstrumented: JsonInteger
+        unsupported: JsonInteger
+        unknown: JsonInteger
+    }
     measuredCaptures: JsonInteger
     partialCaptures: JsonInteger
     excludedPartialCaptures: JsonInteger
@@ -61,6 +69,7 @@ type TrendPoint = {
     pageCaptures: JsonInteger
     targetCaptures: JsonInteger
     frameP95: { page: TrendMetric | null; target: TrendMetric | null }
+    gpuFrameP95: { page: TrendMetric | null; target: TrendMetric | null }
 }
 
 const RETENTION_DAYS = 90
@@ -232,7 +241,7 @@ export class AnimationRumV2QueryService {
                 FROM projection_checked_captures
                 WHERE projection_complete = 1
             )`
-        const [captureResult, metricResult, qualityReasonResult, captureTrendResult, frameTrendResult] = await Promise.all([
+        const [captureResult, metricResult, qualityReasonResult, captureTrendResult, metricTrendResult] = await Promise.all([
             this.readQuery({
                 query: `
                     WITH ${projectionSql}
@@ -402,7 +411,14 @@ export class AnimationRumV2QueryService {
                     )
                     SELECT
                         ${this.trendBucketSql('capture.captured_at', trendBucket.kind)} AS bucket,
+                        metric.metric_id,
                         metric.scope,
+                        countIf(metric.status = 'measured') AS measured_capture_count,
+                        countIf(metric.status = 'partial') AS partial_capture_count,
+                        countIf(metric.status = 'not-observed') AS not_observed_capture_count,
+                        countIf(metric.status = 'not-instrumented') AS not_instrumented_capture_count,
+                        countIf(metric.status = 'unsupported') AS unsupported_capture_count,
+                        countIf(metric.status = 'unknown') AS unknown_capture_count,
                         countIf(metric.status = 'measured' AND metric.value IS NOT NULL) AS measured_captures_with_value,
                         countIf(metric.status = 'partial' AND metric.value IS NOT NULL) AS partial_captures_with_value,
                         quantileTDigestIf(0.50)(
@@ -415,25 +431,34 @@ export class AnimationRumV2QueryService {
                             assumeNotNull(metric.value), metric.status = 'measured' AND metric.value IS NOT NULL
                         ) AS capture_value_p95
                     FROM (
-                        SELECT event_id, capture_id, scope, relation, owner, value, status
+                        SELECT event_id, capture_id, metric_id, scope, relation, owner, value, status
                         FROM ${this.database}.animation_rum_metrics_v2 FINAL
                         WHERE (app_id, capture_id) IN (
                             SELECT app_id, capture_id
                             FROM completed_captures
                         )
-                          AND metric_id = {frameP95MetricId:String}
-                          AND owner = {frameP95Owner:String}
                           AND (
-                              (scope = 'page' AND relation = {frameP95PageRelation:String}) OR
-                              (scope = 'target' AND relation = {frameP95TargetRelation:String})
+                              (
+                                  metric_id = {frameP95MetricId:String}
+                                  AND owner = {frameP95Owner:String}
+                                  AND (
+                                      (scope = 'page' AND relation = {frameP95PageRelation:String}) OR
+                                      (scope = 'target' AND relation = {frameP95TargetRelation:String})
+                                  )
+                              ) OR (
+                                  metric_id = {gpuFrameP95MetricId:String}
+                                  AND owner = {gpuFrameP95Owner:String}
+                                  AND relation = {gpuFrameP95Relation:String}
+                                  AND scope IN ('page', 'target')
+                              )
                           )
                     ) AS metric
                     INNER JOIN completed_captures AS capture
                         ON metric.capture_id = capture.capture_id
                        AND metric.event_id = capture.event_id
                        AND metric.scope = capture.scope
-                    GROUP BY bucket, metric.scope
-                    ORDER BY bucket, metric.scope
+                    GROUP BY bucket, metric.metric_id, metric.scope
+                    ORDER BY bucket, metric.metric_id, metric.scope
                 `,
                 query_params: {
                     ...queryParams,
@@ -441,6 +466,9 @@ export class AnimationRumV2QueryService {
                     frameP95Owner: 'browser-core',
                     frameP95PageRelation: 'page-window',
                     frameP95TargetRelation: 'target-temporal-overlap',
+                    gpuFrameP95MetricId: 'renderer.gpu-frame.p95',
+                    gpuFrameP95Owner: 'renderer-adapter',
+                    gpuFrameP95Relation: 'adapter',
                 },
                 format: 'JSON',
             }),
@@ -450,7 +478,7 @@ export class AnimationRumV2QueryService {
         const metricJson = (await metricResult.json()) as { data?: Record<string, unknown>[] }
         const qualityReasonJson = (await qualityReasonResult.json()) as { data?: Record<string, unknown>[] }
         const captureTrendJson = (await captureTrendResult.json()) as { data?: Record<string, unknown>[] }
-        const frameTrendJson = (await frameTrendResult.json()) as { data?: Record<string, unknown>[] }
+        const metricTrendJson = (await metricTrendResult.json()) as { data?: Record<string, unknown>[] }
         const counts = captureJson.data?.[0] ?? {}
         const qualityReasonRows = (qualityReasonJson.data ?? []).filter(row => QUALITY_REASON_SET.has(String(row.reason ?? '')))
 
@@ -517,7 +545,7 @@ export class AnimationRumV2QueryService {
                 requiresMeasuredStatus: true,
                 appliesTo: 'closed event-flow count and sum metrics' as const,
             },
-            trend: this.trendView(trendBucket, captureTrendJson.data ?? [], frameTrendJson.data ?? []),
+            trend: this.trendView(trendBucket, captureTrendJson.data ?? [], metricTrendJson.data ?? []),
             metrics: (metricJson.data ?? []).map(row => this.summaryMetricView(row)).filter(row => row !== null),
         }
     }
@@ -1086,7 +1114,7 @@ export class AnimationRumV2QueryService {
         return `toStartOfDay(${column})`
     }
 
-    private trendView(bucket: TrendBucket, captureRows: Record<string, unknown>[], frameRows: Record<string, unknown>[]) {
+    private trendView(bucket: TrendBucket, captureRows: Record<string, unknown>[], metricRows: Record<string, unknown>[]) {
         const points = new Map<string, TrendPoint>()
         for (const row of captureRows) {
             const at = clickhouseUtcIso(row.bucket)
@@ -1097,16 +1125,31 @@ export class AnimationRumV2QueryService {
                 pageCaptures: jsonIntegerOrZero(row.page_capture_count),
                 targetCaptures: jsonIntegerOrZero(row.target_capture_count),
                 frameP95: { page: null, target: null },
+                gpuFrameP95: { page: null, target: null },
             })
         }
-        for (const row of frameRows) {
+        for (const row of metricRows) {
             const at = clickhouseUtcIso(row.bucket)
             const scope = closedString(row.scope, SCOPES, '')
+            const metricId = String(row.metric_id ?? '')
             const point = at ? points.get(at) : undefined
-            if (!point || (scope !== 'page' && scope !== 'target')) continue
+            if (
+                !point ||
+                (scope !== 'page' && scope !== 'target') ||
+                (metricId !== 'frame.duration.p95' && metricId !== 'renderer.gpu-frame.p95')
+            )
+                continue
             const measuredCaptures = jsonIntegerOrZero(row.measured_captures_with_value)
             const partialCaptures = jsonIntegerOrZero(row.partial_captures_with_value)
-            point.frameP95[scope] = {
+            const trendMetric: TrendMetric = {
+                statusCounts: {
+                    measured: jsonIntegerOrZero(row.measured_capture_count),
+                    partial: jsonIntegerOrZero(row.partial_capture_count),
+                    notObserved: jsonIntegerOrZero(row.not_observed_capture_count),
+                    notInstrumented: jsonIntegerOrZero(row.not_instrumented_capture_count),
+                    unsupported: jsonIntegerOrZero(row.unsupported_capture_count),
+                    unknown: jsonIntegerOrZero(row.unknown_capture_count),
+                },
                 measuredCaptures,
                 partialCaptures,
                 excludedPartialCaptures: partialCaptures,
@@ -1116,12 +1159,18 @@ export class AnimationRumV2QueryService {
                     p95: integerIsPositive(measuredCaptures) ? finiteNumber(row.capture_value_p95) : null,
                 },
             }
+            if (metricId === 'frame.duration.p95') point.frameP95[scope] = trendMetric
+            else point.gpuFrameP95[scope] = trendMetric
         }
         const orderedPoints = [...points.values()].sort((left, right) => left.at.localeCompare(right.at))
         return {
             bucket: { ...bucket, timezone: 'UTC' as const },
             metric: {
                 metricId: 'frame.duration.p95' as const,
+                aggregationSemantics: 'distribution-of-capture-aggregates' as const,
+            },
+            gpuMetric: {
+                metricId: 'renderer.gpu-frame.p95' as const,
                 aggregationSemantics: 'distribution-of-capture-aggregates' as const,
             },
             points: orderedPoints,

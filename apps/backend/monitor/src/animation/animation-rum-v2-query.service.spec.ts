@@ -204,7 +204,14 @@ describe('AnimationRumV2QueryService', () => {
                     result([
                         {
                             bucket: '2026-08-26 08:00:00.000',
+                            metric_id: 'frame.duration.p95',
                             scope: 'target',
+                            measured_capture_count: 1,
+                            partial_capture_count: 1,
+                            not_observed_capture_count: 0,
+                            not_instrumented_capture_count: 0,
+                            unsupported_capture_count: 0,
+                            unknown_capture_count: 0,
                             measured_captures_with_value: 1,
                             partial_captures_with_value: 1,
                             capture_value_p50: 18,
@@ -260,11 +267,23 @@ describe('AnimationRumV2QueryService', () => {
                 normalization: expect.objectContaining({ appliesTo: 'closed event-flow count and sum metrics' }),
                 trend: expect.objectContaining({
                     bucket: expect.objectContaining({ kind: 'hour', maximumPoints: 49, timezone: 'UTC' }),
+                    gpuMetric: {
+                        metricId: 'renderer.gpu-frame.p95',
+                        aggregationSemantics: 'distribution-of-capture-aggregates',
+                    },
                     points: [
                         expect.objectContaining({
                             observedCaptures: 2,
                             frameP95: expect.objectContaining({
                                 target: {
+                                    statusCounts: {
+                                        measured: 1,
+                                        partial: 1,
+                                        notObserved: 0,
+                                        notInstrumented: 0,
+                                        unsupported: 0,
+                                        unknown: 0,
+                                    },
                                     measuredCaptures: 1,
                                     partialCaptures: 1,
                                     excludedPartialCaptures: 1,
@@ -330,11 +349,18 @@ describe('AnimationRumV2QueryService', () => {
         }
         expect(queries[4].query).toContain("metric.status = 'measured' AND metric.value IS NOT NULL")
         expect(queries[4].query).toContain('owner = {frameP95Owner:String}')
+        expect(queries[4].query).toContain('metric_id = {gpuFrameP95MetricId:String}')
+        expect(queries[4].query).toContain('owner = {gpuFrameP95Owner:String}')
+        expect(queries[4].query).toContain("countIf(metric.status = 'unsupported') AS unsupported_capture_count")
+        expect(queries[4].query).toContain('GROUP BY bucket, metric.metric_id, metric.scope')
         expect(queries[4].query_params).toEqual(
             expect.objectContaining({
                 frameP95Owner: 'browser-core',
                 frameP95PageRelation: 'page-window',
                 frameP95TargetRelation: 'target-temporal-overlap',
+                gpuFrameP95MetricId: 'renderer.gpu-frame.p95',
+                gpuFrameP95Owner: 'renderer-adapter',
+                gpuFrameP95Relation: 'adapter',
             })
         )
         expect(queries.every(query => query.clickhouse_settings?.max_execution_time === 15)).toBe(true)
@@ -498,6 +524,75 @@ describe('AnimationRumV2QueryService', () => {
                 valuePerMinute: null,
             })
         )
+    })
+
+    it('keeps page and target GPU trend evidence separate across all six states', () => {
+        const { service } = createService({ query: jest.fn() })
+        const bucket = { kind: 'hour', durationMs: 3_600_000, maximumPoints: 49 }
+        const captureRows = [
+            {
+                bucket: '2026-08-26 08:00:00.000',
+                observed_capture_count: 12,
+                page_capture_count: 6,
+                target_capture_count: 6,
+            },
+        ]
+        const gpuRow = (scope: 'page' | 'target', p75: number) => ({
+            bucket: '2026-08-26 08:00:00.000',
+            metric_id: 'renderer.gpu-frame.p95',
+            scope,
+            measured_capture_count: 1,
+            partial_capture_count: 1,
+            not_observed_capture_count: 1,
+            not_instrumented_capture_count: 1,
+            unsupported_capture_count: 1,
+            unknown_capture_count: 1,
+            measured_captures_with_value: 1,
+            partial_captures_with_value: 1,
+            capture_value_p50: p75,
+            capture_value_p75: p75,
+            capture_value_p95: p75,
+        })
+
+        const trend = (service as any).trendView(bucket, captureRows, [
+            gpuRow('page', 0),
+            gpuRow('target', 2.4),
+            { ...gpuRow('target', 99), metric_id: 'private.metric' },
+        ])
+
+        expect(trend.gpuMetric).toEqual({
+            metricId: 'renderer.gpu-frame.p95',
+            aggregationSemantics: 'distribution-of-capture-aggregates',
+        })
+        expect(trend.points).toEqual([
+            expect.objectContaining({
+                observedCaptures: 12,
+                pageCaptures: 6,
+                targetCaptures: 6,
+                frameP95: { page: null, target: null },
+                gpuFrameP95: {
+                    page: {
+                        statusCounts: {
+                            measured: 1,
+                            partial: 1,
+                            notObserved: 1,
+                            notInstrumented: 1,
+                            unsupported: 1,
+                            unknown: 1,
+                        },
+                        measuredCaptures: 1,
+                        partialCaptures: 1,
+                        excludedPartialCaptures: 1,
+                        captureValue: { p50: 0, p75: 0, p95: 0 },
+                    },
+                    target: expect.objectContaining({
+                        measuredCaptures: 1,
+                        partialCaptures: 1,
+                        captureValue: { p50: 2.4, p75: 2.4, p95: 2.4 },
+                    }),
+                },
+            }),
+        ])
     })
 
     it('keeps every possible non-aligned trend bucket instead of slicing off time', () => {
