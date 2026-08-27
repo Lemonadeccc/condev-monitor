@@ -13,6 +13,8 @@ ENV PNPM_CONFIG_PRODUCTION=false
 # Monorepo manifests
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/backend/dsn-server/package.json ./apps/backend/dsn-server/package.json
+COPY packages/animation-rum-contract/package.json ./packages/animation-rum-contract/package.json
+COPY packages/animation-rum-ingest/package.json ./packages/animation-rum-ingest/package.json
 
 RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i --frozen-lockfile
 
@@ -20,10 +22,11 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY --from=deps /app/apps/backend/dsn-server/node_modules ./apps/backend/dsn-server/node_modules
+COPY --from=deps /app/packages/animation-rum-ingest/node_modules ./packages/animation-rum-ingest/node_modules
 COPY --from=deps /corepack /corepack
 COPY . .
 
-RUN corepack enable pnpm && pnpm --filter dsn-server build
+RUN corepack enable pnpm && pnpm turbo build --filter=dsn-server
 
 FROM base AS prod-deps
 RUN apk add --no-cache libc6-compat
@@ -35,6 +38,8 @@ ENV PNPM_CONFIG_PRODUCTION=true
 # Install runtime dependencies only.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/backend/dsn-server/package.json ./apps/backend/dsn-server/package.json
+COPY packages/animation-rum-contract/package.json ./packages/animation-rum-contract/package.json
+COPY packages/animation-rum-ingest/package.json ./packages/animation-rum-ingest/package.json
 
 RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i --prod --frozen-lockfile --ignore-scripts
 
@@ -46,8 +51,13 @@ ENV PORT=8082
 
 COPY --from=builder /app/apps/backend/dsn-server/dist ./dist
 COPY --from=builder /app/apps/backend/dsn-server/package.json ./package.json
+COPY --from=builder /app/packages/animation-rum-contract/package.json /app/packages/animation-rum-contract/package.json
+COPY --from=builder /app/packages/animation-rum-contract/build /app/packages/animation-rum-contract/build
+COPY --from=builder /app/packages/animation-rum-ingest/package.json /app/packages/animation-rum-ingest/package.json
+COPY --from=builder /app/packages/animation-rum-ingest/build /app/packages/animation-rum-ingest/build
 COPY --from=prod-deps /app/node_modules /app/node_modules
 COPY --from=prod-deps /app/apps/backend/dsn-server/node_modules ./node_modules
+COPY --from=prod-deps /app/packages/animation-rum-ingest/node_modules /app/packages/animation-rum-ingest/node_modules
 
 EXPOSE 8082
 CMD ["node", "dist/main.js"]
