@@ -105,6 +105,7 @@ const rendererProbe = client.animation.createRendererProbe({
         ...gpuTimer.takeRendererHostTiming(),
     }),
 })
+const unregisterTarget = client.animation.registerTarget(renderer.domElement, gpuTimer.inspect)
 
 function renderFrame() {
     // Poll before beginFrame. One call examines at most the oldest pending query.
@@ -119,6 +120,7 @@ function renderFrame() {
 }
 
 function destroyMonitoring() {
+    unregisterTarget()
     rendererProbe.dispose()
     gpuTimer.dispose()
 }
@@ -127,6 +129,12 @@ function destroyMonitoring() {
 `takeLatestEvidence()` remains available for low-level consumers. Prefer `takeRendererHostTiming()` with the generic renderer probe because it keeps an enabled-but-not-yet-resolved timer distinct from an unsupported or disabled timer. Legacy Three GPU readings with `valid/disjoint/contextLost` flags remain supported.
 
 `beginFrame()` and `endFrame()` must synchronously enclose one complete renderer frame. Do not put an `await` between them, and do not use the result for an arbitrary sub-region while naming it GPU frame time. The result measures completion of the enclosed GPU command interval; it does not measure browser composition, display scanout, INP, CPU submission time, or the entire page frame.
+
+The same timer can provide local selected-target evidence through its bound `inspect` callback, so a host can pass `gpuTimer.inspect` directly to `client.animation.registerTarget(canvas, ...)`. `inspectWindow()` and `inspect()` read a separate bounded history and do not consume or reset `takeLatestEvidence()` / `takeRendererHostTiming()`; repeated Overlay snapshots therefore do not manufacture new query samples. The target path reports the existing target-side source `webgl-timer-query`, while page host evidence keeps the more specific `webgl-disjoint-timer-query` source.
+
+Each sampled query retains the caller-clock bounds captured by `beginFrame()`/`endFrame()`. An asynchronous result is eligible only when that complete renderer-frame interval is wholly contained in the SDK selection or interaction window; merely overlapping a boundary is excluded, and a pending query remains not observed until it resolves. The normal same-document default uses `performance.now()` (with the existing fallback), while a custom `now` must share the target collector's clock domain. `maxRetainedFrames` bounds the local history. Eviction and rejected query evidence remain explicit through sample counts and truncation; forgotten evidence that cannot support exact window arithmetic is not converted into a partial percentile or zero.
+
+GPU validity remains fail-closed. Unsupported or pending queries, invalid results, a disjoint epoch, context loss, API errors, and a retained mixture whose validity cannot support one aggregate do not emit `gpuFrameMsP95`. Target inspection observes the registered WebGL canvas as one renderer surface; it does not identify or attribute Three meshes, Pixi display objects, Babylon meshes, shaders, textures, or pixels. The timer still does not patch the context or renderer, schedule rAF/timers, call `gl.finish()`/`gl.flush()`, or alter application rendering.
 
 ## WebGPU frame timers
 
