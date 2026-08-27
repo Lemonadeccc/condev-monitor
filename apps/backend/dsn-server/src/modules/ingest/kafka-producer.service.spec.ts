@@ -13,7 +13,12 @@ function createService(enabled = true) {
     const connect = jest.fn<Promise<void>, []>()
     const disconnect = jest.fn<Promise<void>, []>().mockResolvedValue(undefined)
     const send = jest.fn<Promise<unknown>, [unknown]>().mockResolvedValue([])
-    const producer = { connect, disconnect, send }
+    let disconnectListener: (() => void) | undefined
+    const on = jest.fn((_event: string, listener: () => void) => {
+        disconnectListener = listener
+        return () => undefined
+    })
+    const producer = { connect, disconnect, send, on, events: { DISCONNECT: 'producer.disconnect' } }
     const producerFactory = jest.fn().mockReturnValue(producer)
     MockedKafka.mockImplementation(() => ({ producer: producerFactory }) as never)
     const config = {
@@ -25,6 +30,8 @@ function createService(enabled = true) {
     return {
         connect,
         disconnect,
+        emitDisconnect: () => disconnectListener?.(),
+        on,
         send,
         service: new KafkaProducerService(config as never),
     }
@@ -86,6 +93,44 @@ describe('KafkaProducerService reconnects', () => {
         expect(connect).toHaveBeenCalledTimes(2)
         expect(send).toHaveBeenCalledTimes(2)
         expect(service.isConnected()).toBe(true)
+    })
+
+    it('forces a reconnect after KafkaJS reports a disconnect', async () => {
+        const { service, connect, emitDisconnect, on, send } = createService()
+        connect.mockResolvedValue(undefined)
+        await service.onModuleInit()
+
+        emitDisconnect()
+        expect(service.isConnected()).toBe(false)
+        await service.publishBatch(batch)
+
+        expect(on).toHaveBeenCalledTimes(1)
+        expect(connect).toHaveBeenCalledTimes(2)
+        expect(send).toHaveBeenCalledTimes(1)
+    })
+
+    it('disconnects once during application shutdown and rejects later reconnects', async () => {
+        const { service, connect, disconnect, send } = createService()
+        connect.mockResolvedValue(undefined)
+        await service.onModuleInit()
+
+        await service.onApplicationShutdown()
+        await service.onApplicationShutdown()
+        await expect(service.publishBatch(batch)).rejects.toThrow('Kafka producer is shutting down')
+
+        expect(disconnect).toHaveBeenCalledTimes(1)
+        expect(connect).toHaveBeenCalledTimes(1)
+        expect(send).not.toHaveBeenCalled()
+    })
+
+    it('still disconnects the producer after its startup connection failed', async () => {
+        const { service, connect, disconnect } = createService()
+        connect.mockRejectedValueOnce(new Error('broker unavailable'))
+
+        await service.onModuleInit()
+        await service.onApplicationShutdown()
+
+        expect(disconnect).toHaveBeenCalledTimes(1)
     })
 
     it('does not initialize or reconnect when Kafka is disabled', async () => {

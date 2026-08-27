@@ -1,14 +1,16 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common'
+import { Injectable, Logger, OnApplicationShutdown, OnModuleInit } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { CompressionTypes, Kafka, Producer } from 'kafkajs'
 
 @Injectable()
-export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
+export class KafkaProducerService implements OnModuleInit, OnApplicationShutdown {
     private readonly logger = new Logger(KafkaProducerService.name)
     private producer: Producer | null = null
     private connected = false
     private connecting: Promise<void> | null = null
+    private disconnecting: Promise<void> | null = null
     private enabled = false
+    private shuttingDown = false
 
     constructor(private readonly config: ConfigService) {}
 
@@ -34,6 +36,9 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
         this.producer = kafka.producer({
             allowAutoTopicCreation: false,
         })
+        this.producer.on(this.producer.events.DISCONNECT, () => {
+            this.connected = false
+        })
 
         try {
             await this.ensureConnected()
@@ -43,7 +48,8 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
         }
     }
 
-    async onModuleDestroy() {
+    async onApplicationShutdown() {
+        this.shuttingDown = true
         if (this.connecting) {
             try {
                 await this.connecting
@@ -51,11 +57,17 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
                 // A failed startup connection does not need a disconnect.
             }
         }
-        if (this.producer && this.connected) {
-            await this.producer.disconnect()
-            this.logger.log('Kafka producer disconnected')
+        if (this.producer && !this.disconnecting) {
+            this.disconnecting = this.producer.disconnect()
+            try {
+                await this.disconnecting
+                this.logger.log('Kafka producer disconnected')
+            } finally {
+                this.connected = false
+            }
+        } else if (this.disconnecting) {
+            await this.disconnecting
         }
-        this.connected = false
         this.connecting = null
     }
 
@@ -84,6 +96,7 @@ export class KafkaProducerService implements OnModuleInit, OnModuleDestroy {
     }
 
     private async ensureConnected(): Promise<void> {
+        if (this.shuttingDown) throw new Error('Kafka producer is shutting down')
         if (!this.enabled) throw new Error('Kafka producer is disabled')
         if (!this.producer) throw new Error('Kafka producer is not initialized')
         if (this.connected) return

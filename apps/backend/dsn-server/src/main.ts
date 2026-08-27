@@ -6,6 +6,7 @@ import { AppModule } from './app.module'
 
 async function bootstrap() {
     const app = await NestFactory.create(AppModule)
+    app.enableShutdownHooks()
     const configService = app.get(ConfigService)
     const bodyLimit = configService.get<string>('DSN_BODY_LIMIT') ?? '2mb'
 
