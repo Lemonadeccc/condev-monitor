@@ -4,12 +4,14 @@ import type {
     AnimationRumV2Family,
     AnimationRumV2JsonInteger,
     AnimationRumV2MetricStatus,
+    AnimationRumV2MetricStatusCounts,
     AnimationRumV2MetricUnit,
     AnimationRumV2ProviderOwner,
     AnimationRumV2QualityReason,
     AnimationRumV2Relation,
     AnimationRumV2Scope,
     AnimationRumV2SummaryMetric,
+    AnimationRumV2TrendPoint,
 } from '../types/animation-v2'
 
 const DECIMAL_INTEGER = /^\d+$/
@@ -147,15 +149,26 @@ const METRIC_STATUS_COUNT_FIELDS = [
     ['not-instrumented', 'notInstrumented'],
     ['unsupported', 'unsupported'],
     ['unknown', 'unknown'],
-] as const satisfies readonly [AnimationRumV2MetricStatus, keyof AnimationRumV2SummaryMetric['statusCounts']][]
+] as const satisfies readonly [AnimationRumV2MetricStatus, keyof AnimationRumV2MetricStatusCounts][]
 
 /** Closed six-state view model; unavailable GPU evidence must never collapse into zero or generic unknown. */
-export function animationRumV2MetricStatusCountEntries(statusCounts: AnimationRumV2SummaryMetric['statusCounts']) {
+export function animationRumV2MetricStatusCountEntries(statusCounts: AnimationRumV2MetricStatusCounts) {
     return METRIC_STATUS_COUNT_FIELDS.map(([status, field]) => ({
         status,
         label: animationRumV2StatusLabel(status),
         count: statusCounts[field],
     }))
+}
+
+export function animationRumV2GpuTrendScopeState(
+    point: AnimationRumV2TrendPoint,
+    scope: AnimationRumV2Scope,
+    queryScope?: AnimationRumV2Scope
+) {
+    if (queryScope && queryScope !== scope) return { kind: 'not-queried' as const }
+    const captures = scope === 'page' ? point.pageCaptures : point.targetCaptures
+    const metric = point.gpuFrameP95?.[scope] ?? null
+    return metric ? { kind: 'metric' as const, captures, metric } : { kind: 'no-record' as const, captures }
 }
 
 export function animationRumV2CaptureAggregatePercentile(

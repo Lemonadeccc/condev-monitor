@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import type { AnimationRumV2SummaryMetric } from '../types/animation-v2'
+import type { AnimationRumV2SummaryMetric, AnimationRumV2TrendMetric, AnimationRumV2TrendPoint } from '../types/animation-v2'
 import {
     animationRumV2CaptureAggregatePercentile,
+    animationRumV2GpuTrendScopeState,
     animationRumV2MetricDisplay,
     animationRumV2MetricStatusCountEntries,
     animationRumV2MissingGpuMetricMessage,
@@ -57,6 +58,36 @@ function summaryMetric(overrides: Partial<AnimationRumV2SummaryMetric> = {}): An
             max: 25,
         },
         valuePerMinute: null,
+        ...overrides,
+    }
+}
+
+function trendMetric(p75: number, overrides: Partial<AnimationRumV2TrendMetric> = {}): AnimationRumV2TrendMetric {
+    return {
+        statusCounts: {
+            measured: 1,
+            partial: 1,
+            notObserved: 1,
+            notInstrumented: 1,
+            unsupported: 1,
+            unknown: 1,
+        },
+        measuredCaptures: 1,
+        partialCaptures: 1,
+        excludedPartialCaptures: 1,
+        captureValue: { p50: p75, p75, p95: p75 },
+        ...overrides,
+    }
+}
+
+function trendPoint(overrides: Partial<AnimationRumV2TrendPoint> = {}): AnimationRumV2TrendPoint {
+    return {
+        at: '2026-08-26T08:00:00.000Z',
+        observedCaptures: 12,
+        pageCaptures: 6,
+        targetCaptures: 6,
+        frameP95: { page: null, target: null },
+        gpuFrameP95: { page: trendMetric(0), target: trendMetric(2.4) },
         ...overrides,
     }
 }
@@ -154,6 +185,22 @@ describe('Animation RUM v2 presentation helpers', () => {
     it('distinguishes a scope excluded by the query from an observed window with no GPU metric row', () => {
         assert.equal(animationRumV2MissingGpuMetricMessage('target', 'page'), '当前只查询页面级范围，未查询此范围；这不是 0。')
         assert.equal(animationRumV2MissingGpuMetricMessage('page'), '当前窗口没有返回此范围的 GPU 指标记录，不能按零解释。')
+    })
+
+    it('keeps GPU trend scopes, missing rows, and a measured zero distinct', () => {
+        const point = trendPoint()
+        const page = animationRumV2GpuTrendScopeState(point, 'page')
+        const target = animationRumV2GpuTrendScopeState(point, 'target')
+
+        assert.equal(page.kind, 'metric')
+        assert.equal(page.kind === 'metric' ? page.metric.captureValue.p75 : null, 0)
+        assert.equal(target.kind, 'metric')
+        assert.equal(target.kind === 'metric' ? target.metric.captureValue.p75 : null, 2.4)
+        assert.deepEqual(animationRumV2GpuTrendScopeState(point, 'target', 'page'), { kind: 'not-queried' })
+        assert.deepEqual(animationRumV2GpuTrendScopeState(trendPoint({ gpuFrameP95: { page: null, target: null } }), 'page'), {
+            kind: 'no-record',
+            captures: 6,
+        })
     })
 
     it('keeps the GPU summary on capture aggregates even if a normalized distribution is present', () => {

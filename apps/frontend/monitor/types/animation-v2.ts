@@ -118,6 +118,15 @@ export type AnimationRumV2ScopeCounts = {
     adapterErrors: AnimationRumV2JsonInteger
 }
 
+export type AnimationRumV2MetricStatusCounts = {
+    measured: AnimationRumV2JsonInteger
+    partial: AnimationRumV2JsonInteger
+    notObserved: AnimationRumV2JsonInteger
+    notInstrumented: AnimationRumV2JsonInteger
+    unsupported: AnimationRumV2JsonInteger
+    unknown: AnimationRumV2JsonInteger
+}
+
 export type AnimationRumV2SummaryMetric = {
     metricId: string
     family: AnimationRumV2Family
@@ -129,14 +138,7 @@ export type AnimationRumV2SummaryMetric = {
     relation: AnimationRumV2Relation
     owner: AnimationRumV2ProviderOwner
     captureCount: AnimationRumV2JsonInteger
-    statusCounts: {
-        measured: AnimationRumV2JsonInteger
-        partial: AnimationRumV2JsonInteger
-        notObserved: AnimationRumV2JsonInteger
-        notInstrumented: AnimationRumV2JsonInteger
-        unsupported: AnimationRumV2JsonInteger
-        unknown: AnimationRumV2JsonInteger
-    }
+    statusCounts: AnimationRumV2MetricStatusCounts
     capturesWithValue: AnimationRumV2JsonInteger
     measuredCaptures: AnimationRumV2JsonInteger
     partialCaptures: AnimationRumV2JsonInteger
@@ -168,6 +170,7 @@ export type AnimationRumV2SummaryMetric = {
 }
 
 export type AnimationRumV2TrendMetric = {
+    statusCounts: AnimationRumV2MetricStatusCounts
     measuredCaptures: AnimationRumV2JsonInteger
     partialCaptures: AnimationRumV2JsonInteger
     excludedPartialCaptures: AnimationRumV2JsonInteger
@@ -180,6 +183,10 @@ export type AnimationRumV2TrendPoint = {
     pageCaptures: AnimationRumV2JsonInteger
     targetCaptures: AnimationRumV2JsonInteger
     frameP95: {
+        page: AnimationRumV2TrendMetric | null
+        target: AnimationRumV2TrendMetric | null
+    }
+    gpuFrameP95?: {
         page: AnimationRumV2TrendMetric | null
         target: AnimationRumV2TrendMetric | null
     }
@@ -243,6 +250,10 @@ export type AnimationRumV2SummaryApiResponse = {
             }
             metric: {
                 metricId: 'frame.duration.p95'
+                aggregationSemantics: 'distribution-of-capture-aggregates'
+            }
+            gpuMetric?: {
+                metricId: 'renderer.gpu-frame.p95'
                 aggregationSemantics: 'distribution-of-capture-aggregates'
             }
             points: AnimationRumV2TrendPoint[]

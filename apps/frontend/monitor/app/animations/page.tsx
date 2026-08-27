@@ -17,6 +17,7 @@ import { clampAnimationTimeWindow } from '@/lib/animation-metrics'
 import {
     animationRumV2CaptureAggregatePercentile,
     animationRumV2FamilyLabel,
+    animationRumV2GpuTrendScopeState,
     animationRumV2MetricDisplay,
     animationRumV2MetricStatusCountEntries,
     animationRumV2MissingGpuMetricMessage,
@@ -37,6 +38,7 @@ import type {
     AnimationRumV2Scope,
     AnimationRumV2SummaryApiResponse,
     AnimationRumV2SummaryMetric,
+    AnimationRumV2TrendPoint,
 } from '@/types/animation-v2'
 
 async function fetchAnimationRumV2<T>(url: string, signal: AbortSignal): Promise<T> {
@@ -115,6 +117,48 @@ function GpuEvidenceScopeSummary({
                 <p className="mt-4 text-sm text-muted-foreground">{animationRumV2MissingGpuMetricMessage(scope, queryScope)}</p>
             )}
         </section>
+    )
+}
+
+function GpuTrendRow({
+    point,
+    scope,
+    queryScope,
+}: {
+    point: AnimationRumV2TrendPoint
+    scope: AnimationRumV2Scope
+    queryScope?: AnimationRumV2Scope
+}) {
+    const state = animationRumV2GpuTrendScopeState(point, scope, queryScope)
+    const unavailableMessage = state.kind === 'not-queried' ? '未查询' : '无指标记录（非 0）'
+
+    return (
+        <tr className="hover:bg-muted/20">
+            <td className="whitespace-nowrap px-6 py-3">{formatDateTime(point.at)}</td>
+            <td className="px-6 py-3">
+                <AnimationRumV2ScopeBadge scope={scope} />
+            </td>
+            <td className="px-6 py-3 text-right font-mono tabular-nums">
+                {state.kind === 'not-queried' ? '未查询' : formatAnimationRumV2Integer(state.captures)}
+            </td>
+            <td className="whitespace-nowrap px-6 py-3 text-right font-mono tabular-nums">
+                {state.kind === 'metric' ? formatAnimationRumV2Metric(state.metric.captureValue.p75, 'ms') : unavailableMessage}
+            </td>
+            <td className="min-w-[34rem] px-6 py-3">
+                {state.kind === 'metric' ? (
+                    <div className="grid grid-cols-6 gap-1.5 text-xs tabular-nums">
+                        {animationRumV2MetricStatusCountEntries(state.metric.statusCounts).map(entry => (
+                            <div key={entry.status} className="rounded-md bg-muted/30 px-2 py-1.5 text-center">
+                                <div className="whitespace-nowrap text-muted-foreground">{entry.label}</div>
+                                <div className="mt-0.5 font-mono font-medium">{formatAnimationRumV2Integer(entry.count)}</div>
+                            </div>
+                        ))}
+                    </div>
+                ) : (
+                    <span className="text-xs text-muted-foreground">{unavailableMessage}</span>
+                )}
+            </td>
+        </tr>
     )
 }
 
@@ -562,27 +606,96 @@ export default function AnimationsPage() {
                                     <tr key={point.at} className="hover:bg-muted/20">
                                         <td className="whitespace-nowrap px-6 py-3">{formatDateTime(point.at)}</td>
                                         <td className="px-6 py-3 text-right font-mono tabular-nums">
-                                            {formatAnimationRumV2Integer(point.pageCaptures)} /{' '}
-                                            {formatAnimationRumV2Integer(point.targetCaptures)}
+                                            {summary.filters.scope === 'target'
+                                                ? '未查询'
+                                                : formatAnimationRumV2Integer(point.pageCaptures)}{' '}
+                                            /{' '}
+                                            {summary.filters.scope === 'page'
+                                                ? '未查询'
+                                                : formatAnimationRumV2Integer(point.targetCaptures)}
                                         </td>
                                         <td className="px-6 py-3 text-right font-mono tabular-nums">
-                                            {formatAnimationRumV2Metric(point.frameP95.page?.captureValue.p75, 'ms')}
+                                            {summary.filters.scope === 'target'
+                                                ? '未查询'
+                                                : formatAnimationRumV2Metric(point.frameP95.page?.captureValue.p75, 'ms')}
                                         </td>
                                         <td className="px-6 py-3 text-right font-mono tabular-nums">
-                                            {formatAnimationRumV2Integer(point.frameP95.page?.measuredCaptures ?? null)} /{' '}
-                                            {formatAnimationRumV2Integer(point.frameP95.page?.partialCaptures ?? null)}
+                                            {summary.filters.scope === 'target' ? (
+                                                '未查询'
+                                            ) : (
+                                                <>
+                                                    {formatAnimationRumV2Integer(point.frameP95.page?.measuredCaptures ?? null)} /{' '}
+                                                    {formatAnimationRumV2Integer(point.frameP95.page?.partialCaptures ?? null)}
+                                                </>
+                                            )}
                                         </td>
                                         <td className="px-6 py-3 text-right font-mono tabular-nums">
-                                            {formatAnimationRumV2Metric(point.frameP95.target?.captureValue.p75, 'ms')}
+                                            {summary.filters.scope === 'page'
+                                                ? '未查询'
+                                                : formatAnimationRumV2Metric(point.frameP95.target?.captureValue.p75, 'ms')}
                                         </td>
                                         <td className="px-6 py-3 text-right font-mono tabular-nums">
-                                            {formatAnimationRumV2Integer(point.frameP95.target?.measuredCaptures ?? null)} /{' '}
-                                            {formatAnimationRumV2Integer(point.frameP95.target?.partialCaptures ?? null)}
+                                            {summary.filters.scope === 'page' ? (
+                                                '未查询'
+                                            ) : (
+                                                <>
+                                                    {formatAnimationRumV2Integer(point.frameP95.target?.measuredCaptures ?? null)} /{' '}
+                                                    {formatAnimationRumV2Integer(point.frameP95.target?.partialCaptures ?? null)}
+                                                </>
+                                            )}
                                         </td>
                                     </tr>
                                 ))}
                             </tbody>
                         </table>
+                    </div>
+                ) : (
+                    <AIStateMessage>当前窗口没有趋势点。</AIStateMessage>
+                )}
+            </AIPanelCard>
+
+            <AIPanelCard
+                title="GPU 命令区间趋势"
+                description="每个点展示采集级 renderer.gpu-frame.p95 的分布；仅已测量值进入分位数，部分值和四种不可用状态分别保留。"
+                contentClassName="px-0"
+                headerBorder
+            >
+                {summaryQuery.isLoading ? (
+                    <AIStateMessage>正在读取 GPU 趋势…</AIStateMessage>
+                ) : summaryQuery.isError ? (
+                    <AIStateMessage tone="destructive">{queryErrorMessage(summaryQuery.error)}</AIStateMessage>
+                ) : summary && !summary.trend.gpuMetric ? (
+                    <AIStateMessage>当前后端尚未提供 GPU 趋势字段，不能按零解释。</AIStateMessage>
+                ) : summary?.trend.points.length ? (
+                    <div>
+                        <div className="max-h-[30rem] overflow-auto">
+                            <table className="w-full text-sm">
+                                <thead className="sticky top-0 bg-muted text-xs text-muted-foreground">
+                                    <tr className="[&_th]:font-medium">
+                                        <th className="px-6 py-3 text-left">UTC 时间桶</th>
+                                        <th className="px-6 py-3 text-left">范围</th>
+                                        <th className="px-6 py-3 text-right">采集数</th>
+                                        <th className="px-6 py-3 text-right">GPU 帧 p95 · 采集 p75</th>
+                                        <th className="px-6 py-3 text-left">六状态分布</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y">
+                                    {summary.trend.points.flatMap(point =>
+                                        (['page', 'target'] as const).map(trendScope => (
+                                            <GpuTrendRow
+                                                key={`${point.at}-${trendScope}`}
+                                                point={point}
+                                                scope={trendScope}
+                                                queryScope={summary.filters.scope ?? undefined}
+                                            />
+                                        ))
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
+                        <p className="border-t px-6 py-3 text-xs text-muted-foreground">
+                            GPU timer 表示 renderer adapter 测得的 GPU 命令执行区间，不等同于浏览器合成、最终呈现或屏幕真实显示时间。
+                        </p>
                     </div>
                 ) : (
                     <AIStateMessage>当前窗口没有趋势点。</AIStateMessage>
