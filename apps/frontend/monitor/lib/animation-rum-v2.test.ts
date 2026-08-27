@@ -3,8 +3,10 @@ import { describe, it } from 'node:test'
 
 import type { AnimationRumV2SummaryMetric } from '../types/animation-v2'
 import {
+    animationRumV2CaptureAggregatePercentile,
     animationRumV2MetricDisplay,
     animationRumV2MetricStatusCountEntries,
+    animationRumV2MissingGpuMetricMessage,
     animationRumV2QualityReasonLabel,
     animationRumV2RelationLabel,
     animationRumV2StatusLabel,
@@ -80,6 +82,7 @@ describe('Animation RUM v2 presentation helpers', () => {
 
     it('distinguishes unavailable evidence from a real zero', () => {
         assert.equal(formatAnimationRumV2Metric(null, 'ms'), '未采集 / 未知')
+        assert.equal(formatAnimationRumV2Metric(0, 'ms'), '0 ms')
         assert.equal(formatAnimationRumV2Metric(0, 'count'), '0')
         assert.equal(formatAnimationRumV2Metric(0, 'ratio'), '0%')
         assert.equal(animationRumV2StatusLabel('partial'), '部分测量')
@@ -131,11 +134,60 @@ describe('Animation RUM v2 presentation helpers', () => {
     it('finds metrics by scope and relation instead of merging page and target evidence', () => {
         const page = summaryMetric()
         const target = summaryMetric({ scope: 'target', relation: 'target-temporal-overlap' })
-        const metrics = [page, target]
+        const pageGpu = summaryMetric({
+            metricId: 'renderer.gpu-frame.p95',
+            family: 'renderer',
+            name: 'gpuFrameMs',
+            relation: 'adapter',
+            owner: 'renderer-adapter',
+        })
+        const targetGpu = summaryMetric({ ...pageGpu, scope: 'target' })
+        const metrics = [page, target, pageGpu, targetGpu]
 
         assert.equal(findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'page', 'page-window'), page)
         assert.equal(findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'target', 'target-temporal-overlap'), target)
         assert.equal(findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'target', 'target-direct'), undefined)
+        assert.equal(findAnimationRumV2SummaryMetric(metrics, 'renderer.gpu-frame.p95', 'page', 'adapter'), pageGpu)
+        assert.equal(findAnimationRumV2SummaryMetric(metrics, 'renderer.gpu-frame.p95', 'target', 'adapter'), targetGpu)
+    })
+
+    it('distinguishes a scope excluded by the query from an observed window with no GPU metric row', () => {
+        assert.equal(animationRumV2MissingGpuMetricMessage('target', 'page'), '当前只查询页面级范围，未查询此范围；这不是 0。')
+        assert.equal(animationRumV2MissingGpuMetricMessage('page'), '当前窗口没有返回此范围的 GPU 指标记录，不能按零解释。')
+    })
+
+    it('keeps the GPU summary on capture aggregates even if a normalized distribution is present', () => {
+        const gpuMetric = summaryMetric({
+            metricId: 'renderer.gpu-frame.p95',
+            family: 'renderer',
+            name: 'gpuFrameMs',
+            relation: 'adapter',
+            owner: 'renderer-adapter',
+            captureValue: {
+                aggregation: 'distribution-of-capture-aggregates',
+                measuredCaptures: 2,
+                partialCaptures: 0,
+                excludedPartialCaptures: 0,
+                average: 2,
+                p50: 1.8,
+                p75: 2.25,
+                p95: 2.5,
+                min: 1.5,
+                max: 3,
+            },
+            valuePerMinute: {
+                capturesWithValue: 2,
+                average: 90,
+                p50: 80,
+                p75: 99,
+                p95: 110,
+                min: 70,
+                max: 120,
+            },
+        })
+
+        assert.equal(animationRumV2CaptureAggregatePercentile(gpuMetric, 'p75'), 2.25)
+        assert.equal(animationRumV2MetricDisplay(gpuMetric).p75, 99)
     })
 
     it('uses normalized rates only when the API supplies a measured per-minute distribution', () => {

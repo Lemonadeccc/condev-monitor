@@ -158,6 +158,20 @@ export function animationRumV2MetricStatusCountEntries(statusCounts: AnimationRu
     }))
 }
 
+export function animationRumV2CaptureAggregatePercentile(
+    metric: AnimationRumV2SummaryMetric,
+    percentile: 'p50' | 'p75' | 'p95'
+): number | null {
+    return metric.captureValue[percentile]
+}
+
+export function animationRumV2MissingGpuMetricMessage(scope: AnimationRumV2Scope, queryScope?: AnimationRumV2Scope): string {
+    if (queryScope && queryScope !== scope) {
+        return `当前只查询${queryScope === 'page' ? '页面级' : '目标级'}范围，未查询此范围；这不是 0。`
+    }
+    return '当前窗口没有返回此范围的 GPU 指标记录，不能按零解释。'
+}
+
 export function animationRumV2CapabilityStateLabel(state: AnimationRumV2CapabilityState): string {
     switch (state) {
         case 'supported':

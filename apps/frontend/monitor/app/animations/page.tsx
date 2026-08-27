@@ -15,9 +15,11 @@ import { useApplications } from '@/hooks/use-applications'
 import { buildMonitorScopeHref, resolveMonitorAppId, resolveMonitorTimeWindow, useMonitorScope } from '@/hooks/use-monitor-scope'
 import { clampAnimationTimeWindow } from '@/lib/animation-metrics'
 import {
+    animationRumV2CaptureAggregatePercentile,
     animationRumV2FamilyLabel,
     animationRumV2MetricDisplay,
     animationRumV2MetricStatusCountEntries,
+    animationRumV2MissingGpuMetricMessage,
     animationRumV2OwnerLabel,
     animationRumV2RelationLabel,
     findAnimationRumV2SummaryMetric,
@@ -77,6 +79,45 @@ function PipelineStage({ icon: Icon, title, value, children }: { icon: LucideIco
     )
 }
 
+function GpuEvidenceScopeSummary({
+    scope,
+    metric,
+    queryScope,
+}: {
+    scope: AnimationRumV2Scope
+    metric?: AnimationRumV2SummaryMetric
+    queryScope?: AnimationRumV2Scope
+}) {
+    return (
+        <section className="rounded-lg border p-4">
+            <div className="flex items-center justify-between gap-3">
+                <h3 className="font-medium">{scope === 'page' ? '页面级 GPU' : '目标级 GPU'}</h3>
+                <AnimationRumV2ScopeBadge scope={scope} />
+            </div>
+            {metric ? (
+                <>
+                    <div className="mt-4">
+                        <div className="text-xs text-muted-foreground">GPU 帧 p95 · 采集 p75</div>
+                        <div className="mt-1 text-2xl font-semibold tabular-nums">
+                            {formatAnimationRumV2Metric(animationRumV2CaptureAggregatePercentile(metric, 'p75'), metric.unit)}
+                        </div>
+                    </div>
+                    <div className="mt-4 grid grid-cols-2 gap-x-5 gap-y-2 text-xs tabular-nums sm:grid-cols-3">
+                        {animationRumV2MetricStatusCountEntries(metric.statusCounts).map(entry => (
+                            <div key={entry.status} className="flex items-center justify-between gap-2 rounded-md bg-muted/30 px-2.5 py-2">
+                                <span className="text-muted-foreground">{entry.label}</span>
+                                <span className="font-mono font-medium">{formatAnimationRumV2Integer(entry.count)}</span>
+                            </div>
+                        ))}
+                    </div>
+                </>
+            ) : (
+                <p className="mt-4 text-sm text-muted-foreground">{animationRumV2MissingGpuMetricMessage(scope, queryScope)}</p>
+            )}
+        </section>
+    )
+}
+
 export default function AnimationsPage() {
     const { user, loading } = useAuth()
     const enabled = !loading && Boolean(user)
@@ -122,6 +163,8 @@ export default function AnimationsPage() {
     const captures = capturesQuery.data?.data.captures ?? []
     const pageFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'page', 'page-window')
     const targetFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'target', 'target-temporal-overlap')
+    const pageGpuFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'renderer.gpu-frame.p95', 'page', 'adapter')
+    const targetGpuFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'renderer.gpu-frame.p95', 'target', 'adapter')
     const pipeline = pipelineQuery.data
     const pipelineStatus = pipeline ? animationRumV2PipelineStatusMeta(pipeline) : null
     const summaryProjectionIntegrity = summary?.projectionIntegrity
@@ -188,6 +231,33 @@ export default function AnimationsPage() {
             {!effectiveAppId ? (
                 <AIPanelCard>
                     <AIStateMessage>请先创建或选择一个应用。</AIStateMessage>
+                </AIPanelCard>
+            ) : null}
+
+            {effectiveAppId ? (
+                <AIPanelCard
+                    title="GPU 帧计时证据"
+                    description="来自显式 renderer adapter 的 GPU 命令区间；部分及不可用状态不会进入采集分位数。"
+                    headerBorder
+                >
+                    {summaryQuery.isLoading ? (
+                        <AIStateMessage className="px-0">正在读取 GPU 计时证据…</AIStateMessage>
+                    ) : summaryQuery.isError ? (
+                        <AIStateMessage className="px-0" tone="destructive">
+                            {queryErrorMessage(summaryQuery.error)}
+                        </AIStateMessage>
+                    ) : (
+                        <div className="space-y-4">
+                            <div className="grid gap-4 lg:grid-cols-2">
+                                <GpuEvidenceScopeSummary scope="page" metric={pageGpuFrameP95} queryScope={scope} />
+                                <GpuEvidenceScopeSummary scope="target" metric={targetGpuFrameP95} queryScope={scope} />
+                            </div>
+                            <p className="text-xs text-muted-foreground">
+                                GPU timer 不等同于浏览器呈现、合成或屏幕显示时间；“支持但未观测”表示窗口内没有可用结果，“未知”还可能来自
+                                disjoint、无效或被拒绝的 query。
+                            </p>
+                        </div>
+                    )}
                 </AIPanelCard>
             ) : null}
 
