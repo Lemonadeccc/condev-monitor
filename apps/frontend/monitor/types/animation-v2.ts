@@ -75,6 +75,21 @@ export type AnimationRumV2QualityReason =
     | 'visible-window-too-short'
     | 'window-capped'
 
+export type AnimationRumV2ProjectionIntegrityStatus = 'verified' | 'mismatch' | 'not-observed'
+
+export type AnimationRumV2CaptureProjectionIntegrity = {
+    semantics: 'completion-marker-child-row-counts'
+    status: 'verified'
+    expected: {
+        metrics: number
+        providerEvidence: number
+    }
+    observed: {
+        metrics: AnimationRumV2JsonInteger
+        providerEvidence: AnimationRumV2JsonInteger
+    }
+}
+
 export type AnimationRumV2Window = {
     from: string
     to: string
@@ -180,6 +195,17 @@ export type AnimationRumV2SummaryApiResponse = {
         aggregationSemantics: 'distribution-of-capture-aggregates'
         window: AnimationRumV2Window
         filters: AnimationRumV2Filters
+        projectionIntegrity?: {
+            semantics: 'completion-marker-child-row-counts'
+            status: AnimationRumV2ProjectionIntegrityStatus
+            completionMarkers: AnimationRumV2JsonInteger
+            verified: AnimationRumV2JsonInteger
+            mismatched: AnimationRumV2JsonInteger
+            excludedFromAnalytics: AnimationRumV2JsonInteger
+            metricCountMismatches: AnimationRumV2JsonInteger
+            providerEvidenceCountMismatches: AnimationRumV2JsonInteger
+            childIdentityMismatches: AnimationRumV2JsonInteger
+        }
         captures: {
             observed: AnimationRumV2JsonInteger
             page: AnimationRumV2JsonInteger
@@ -225,14 +251,7 @@ export type AnimationRumV2SummaryApiResponse = {
     }
 }
 
-export type AnimationRumV2PipelineStatus =
-    | 'idle'
-    | 'in-flight'
-    | 'healthy'
-    | 'delayed'
-    | 'quarantined'
-    | 'inconsistent'
-    | 'unknown'
+export type AnimationRumV2PipelineStatus = 'idle' | 'in-flight' | 'healthy' | 'delayed' | 'quarantined' | 'inconsistent' | 'unknown'
 
 export type AnimationRumV2PipelineDiagnostic = {
     diagnosticSchemaVersion: 1
@@ -271,6 +290,10 @@ export type AnimationRumV2PipelineDiagnostic = {
         matched: number | null
         missingAfterGrace: number | null
         identityMismatch: number | null
+        /** Additive schema-v1 extension. All three fields are either absent together or present together. */
+        storageComplete?: number | null
+        childCountMismatch?: number | null
+        childIdentityMismatch?: number | null
     }
     semantics: {
         publishedMeans: 'kafka-broker-ack-only'
@@ -323,6 +346,8 @@ export type AnimationRumV2CaptureBase = {
     }
     providerEvidenceCount: number | null
     metricCount: number | null
+    /** Missing when reading an older Monitor backend. Missing never means verified. */
+    projectionIntegrity?: AnimationRumV2CaptureProjectionIntegrity
 }
 
 export type AnimationRumV2Metric = {

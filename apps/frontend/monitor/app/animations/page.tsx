@@ -1,7 +1,7 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { Activity, ArrowUpRight, Database, History, Inbox, Radio, Send, Settings2, type LucideIcon } from 'lucide-react'
+import { Activity, ArrowUpRight, Database, History, Inbox, type LucideIcon, Radio, Send, Settings2 } from 'lucide-react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { type ReactNode, useMemo } from 'react'
@@ -122,7 +122,8 @@ export default function AnimationsPage() {
     const pageFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'page', 'page-window')
     const targetFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'target', 'target-temporal-overlap')
     const pipeline = pipelineQuery.data
-    const pipelineStatus = pipeline ? animationRumV2PipelineStatusMeta(pipeline.status) : null
+    const pipelineStatus = pipeline ? animationRumV2PipelineStatusMeta(pipeline) : null
+    const summaryProjectionIntegrity = summary?.projectionIntegrity
 
     const scopeHref = (nextScope?: AnimationRumV2Scope) =>
         buildMonitorScopeHref(nextScope ? `/animations?scope=${nextScope}` : '/animations', searchParams)
@@ -192,7 +193,7 @@ export default function AnimationsPage() {
             {effectiveAppId ? (
                 <AIPanelCard
                     title="采集链路 · 最近 60 分钟"
-                    description="每 30 秒读取一次 PostgreSQL Outbox / receipt 与 ClickHouse completion marker；所有比较均限制为最多 500 条。"
+                    description="每 30 秒读取一次 PostgreSQL Outbox / receipt、ClickHouse completion marker 与子行计数；所有比较均限制为最多 500 条。"
                     headerBorder
                     headerActions={
                         pipelineStatus ? (
@@ -225,7 +226,9 @@ export default function AnimationsPage() {
                                     </p>
                                     <p>
                                         最近变更{' '}
-                                        {pipeline.receipts.latestTransitionAt ? formatDateTime(pipeline.receipts.latestTransitionAt) : '暂无'}
+                                        {pipeline.receipts.latestTransitionAt
+                                            ? formatDateTime(pipeline.receipts.latestTransitionAt)
+                                            : '暂无'}
                                     </p>
                                 </PipelineStage>
                                 <PipelineStage
@@ -238,19 +241,18 @@ export default function AnimationsPage() {
                                     </p>
                                     <p>最大尝试次数 {pipeline.outbox.maxAttemptCount ?? '—'}</p>
                                     <p>
-                                        最早待发送 {pipeline.outbox.oldestPendingAt ? formatDateTime(pipeline.outbox.oldestPendingAt) : '暂无'}
+                                        最早待发送{' '}
+                                        {pipeline.outbox.oldestPendingAt ? formatDateTime(pipeline.outbox.oldestPendingAt) : '暂无'}
                                     </p>
                                 </PipelineStage>
                                 <PipelineStage icon={Radio} title="Kafka Broker ACK" value={pipeline.receipts.byState.published}>
                                     <p>这里只证明 Broker 已确认消息，不证明 Event Worker 已消费。</p>
                                     <p>状态配对异常 {pipeline.receipts.statePairMismatch}</p>
-                                    <p>
-                                        最近隔离 Outbox {formatAnimationRumV2PipelineCount(pipeline.outbox.recentQuarantined)}
-                                    </p>
+                                    <p>最近隔离 Outbox {formatAnimationRumV2PipelineCount(pipeline.outbox.recentQuarantined)}</p>
                                 </PipelineStage>
                                 <PipelineStage
                                     icon={Database}
-                                    title="ClickHouse Completion"
+                                    title="ClickHouse 投影"
                                     value={
                                         pipeline.projection.availability === 'available'
                                             ? `${pipeline.projection.matched ?? 0} / ${formatAnimationRumV2PipelineCount(
@@ -261,7 +263,22 @@ export default function AnimationsPage() {
                                 >
                                     <p>查询状态 {pipeline.projection.availability}</p>
                                     <p>超过宽限期仍缺失 {pipeline.projection.missingAfterGrace ?? '—'}</p>
-                                    <p>事件身份不一致 {pipeline.projection.identityMismatch ?? '—'}</p>
+                                    <p>completion identity 不一致 {pipeline.projection.identityMismatch ?? '—'}</p>
+                                    {pipeline.projection.availability === 'not-checked' ? (
+                                        <p>没有超过投影宽限期的待核对样本。</p>
+                                    ) : pipeline.projection.availability === 'unavailable' ? (
+                                        <p className="font-medium text-amber-700 dark:text-amber-300">ClickHouse 子行核对暂不可用</p>
+                                    ) : pipeline.projection.storageComplete === undefined ? (
+                                        <p className="font-medium text-amber-700 dark:text-amber-300">子行未核对（旧后端响应）</p>
+                                    ) : (
+                                        <>
+                                            <p>子行计数已核对 {pipeline.projection.storageComplete ?? '—'}</p>
+                                            <p>
+                                                子行数量不一致 {pipeline.projection.childCountMismatch ?? '—'} · 子行身份不一致{' '}
+                                                {pipeline.projection.childIdentityMismatch ?? '—'}
+                                            </p>
+                                        </>
+                                    )}
                                 </PipelineStage>
                             </div>
                             <div className="flex flex-col gap-3 rounded-lg border border-dashed p-4 text-sm sm:flex-row sm:items-start sm:justify-between">
@@ -284,7 +301,7 @@ export default function AnimationsPage() {
                 </AIPanelCard>
             ) : null}
 
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
                 <AIStatCard
                     label="观测采集数"
                     value={formatAnimationRumV2Integer(summary?.captures.observed ?? null)}
@@ -302,7 +319,26 @@ export default function AnimationsPage() {
                     value={`${formatAnimationRumV2Integer(summary?.captures.complete ?? null)} / ${formatAnimationRumV2Integer(
                         summary?.captures.partial ?? null
                     )}`}
-                    description="部分采集不会进入已测量百分位"
+                    description="SDK 采集证据完整性；不代表存储子行已经核对"
+                />
+                <AIStatCard
+                    label="ClickHouse 子行核对"
+                    value={
+                        !summaryProjectionIntegrity
+                            ? '未返回'
+                            : summaryProjectionIntegrity.status === 'verified'
+                              ? '已核对'
+                              : summaryProjectionIntegrity.status === 'mismatch'
+                                ? `${formatAnimationRumV2Integer(summaryProjectionIntegrity.mismatched)} 不一致`
+                                : '无可核对采集'
+                    }
+                    description={
+                        summaryProjectionIntegrity
+                            ? `可分析 ${formatAnimationRumV2Integer(summaryProjectionIntegrity.verified)} · 排除 ${formatAnimationRumV2Integer(
+                                  summaryProjectionIntegrity.excludedFromAnalytics
+                              )}`
+                            : '旧后端未返回子行计数核对结果，不能据此判定投影完整'
+                    }
                 />
                 <AIStatCard
                     label="页面帧 p95 · 采集 p75"
@@ -317,6 +353,23 @@ export default function AnimationsPage() {
                     description="仅表示目标选中窗口与帧证据重叠，不证明因果"
                 />
             </div>
+
+            {summaryProjectionIntegrity?.status === 'mismatch' ? (
+                <AIPanelCard className="border-destructive/50" contentClassName="pt-4">
+                    <div className="space-y-1 text-sm text-destructive">
+                        <p className="font-medium">
+                            有 {formatAnimationRumV2Integer(summaryProjectionIntegrity.mismatched)} 个 completion marker 的 ClickHouse
+                            子行不一致。
+                        </p>
+                        <p>
+                            这些采集已从指标分布和趋势中排除；指标数量不一致{' '}
+                            {formatAnimationRumV2Integer(summaryProjectionIntegrity.metricCountMismatches)}，提供方数量不一致{' '}
+                            {formatAnimationRumV2Integer(summaryProjectionIntegrity.providerEvidenceCountMismatches)}，子行身份不一致{' '}
+                            {formatAnimationRumV2Integer(summaryProjectionIntegrity.childIdentityMismatches)}。
+                        </p>
+                    </div>
+                </AIPanelCard>
+            ) : null}
 
             <AIPanelCard title="数据质量与覆盖边界" description="质量原因用于解释缺失或部分证据，不是性能严重度评分。" headerBorder>
                 {summaryQuery.isLoading ? (
@@ -575,7 +628,7 @@ export default function AnimationsPage() {
                                         `/animations/v2/${encodeURIComponent(capture.captureId)}`,
                                         searchParams
                                     )
-                                    const qualityGood =
+                                    const sdkQualityGood =
                                         capture.quality.sufficiency === 'sufficient' && capture.quality.integrity === 'complete'
                                     return (
                                         <tr key={capture.captureId} className="hover:bg-muted/20">
@@ -605,8 +658,14 @@ export default function AnimationsPage() {
                                                 </div>
                                             </td>
                                             <td className="px-6 py-4">
-                                                <Badge variant={qualityGood ? 'success' : 'warning'}>
-                                                    {qualityGood ? '充分且完整' : '证据有边界'}
+                                                <Badge variant={sdkQualityGood ? 'success' : 'warning'}>
+                                                    {sdkQualityGood ? 'SDK 证据充分且完整' : 'SDK 证据有边界'}
+                                                </Badge>
+                                                <Badge
+                                                    className="ml-1.5"
+                                                    variant={capture.projectionIntegrity?.status === 'verified' ? 'success' : 'outline'}
+                                                >
+                                                    {capture.projectionIntegrity?.status === 'verified' ? '子行计数已核对' : '子行未核对'}
                                                 </Badge>
                                                 {capture.quality.reasons.length ? (
                                                     <div className="mt-2 max-w-80">

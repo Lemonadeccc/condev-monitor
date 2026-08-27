@@ -27,21 +27,41 @@ import {
     animationRumV2OwnerLabel,
     animationRumV2RelationLabel,
     decodeAnimationRumV2CaptureId,
+    formatAnimationRumV2Integer,
     formatAnimationRumV2Metric,
 } from '@/lib/animation-rum-v2'
 import { formatDateTime } from '@/lib/datetime'
 import type { AnimationRumV2CaptureBase, AnimationRumV2CaptureDetailApiResponse, AnimationRumV2Metric } from '@/types/animation-v2'
 import { ANIMATION_RUM_V2_CAPABILITIES, ANIMATION_RUM_V2_FAMILIES } from '@/types/animation-v2'
 
+class AnimationRumV2CaptureApiError extends Error {
+    readonly status: number
+
+    constructor(message: string, status: number) {
+        super(message)
+        this.name = 'AnimationRumV2CaptureApiError'
+        this.status = status
+    }
+}
+
 async function fetchAnimationRumV2Capture(url: string, signal: AbortSignal): Promise<AnimationRumV2CaptureDetailApiResponse> {
     const response = await fetch(url, { cache: 'no-store', signal })
     if (!response.ok) {
-        if (response.status === 404) throw new Error('没有找到该采集，可能已超过 90 天保留期。')
+        if (response.status === 404) throw new AnimationRumV2CaptureApiError('没有找到该采集，可能已超过 90 天保留期。', 404)
+        if (response.status === 409) {
+            throw new AnimationRumV2CaptureApiError(
+                '该采集的 ClickHouse 指标或提供方子行与 completion marker 不一致。平台已停止展示局部证据，避免把不完整投影误认为完整采集。',
+                409
+            )
+        }
         if (response.status === 429) {
             const retryAfter = response.headers.get('Retry-After')
-            throw new Error(retryAfter ? `读取频率过高，请在 ${retryAfter} 秒后重试。` : '读取频率过高，请稍后重试。')
+            throw new AnimationRumV2CaptureApiError(
+                retryAfter ? `读取频率过高，请在 ${retryAfter} 秒后重试。` : '读取频率过高，请稍后重试。',
+                429
+            )
         }
-        throw new Error(`读取动效 RUM v2 采集失败（HTTP ${response.status}）。`)
+        throw new AnimationRumV2CaptureApiError(`读取动效 RUM v2 采集失败（HTTP ${response.status}）。`, response.status)
     }
     return (await response.json()) as AnimationRumV2CaptureDetailApiResponse
 }
@@ -75,6 +95,8 @@ export default function AnimationRumV2CapturePage() {
                 signal
             )
         },
+        retry: (failureCount, error) =>
+            !(error instanceof AnimationRumV2CaptureApiError && [404, 409, 429].includes(error.status)) && failureCount < 2,
     })
 
     const detail = captureQuery.data?.data
@@ -87,6 +109,7 @@ export default function AnimationRumV2CapturePage() {
         family,
         metrics: metrics.filter(metric => metric.family === family),
     })).filter(group => group.metrics.length > 0)
+    const projectionIntegrity = capture?.projectionIntegrity
 
     const backHref = buildMonitorScopeHref('/animations', searchParams)
     const relationshipHref = (item: AnimationRumV2CaptureBase) =>
@@ -131,7 +154,7 @@ export default function AnimationRumV2CapturePage() {
                 </AIPanelCard>
             ) : (
                 <>
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-6">
                         <AIStatCard
                             label="证据范围"
                             value={<AnimationRumV2ScopeBadge scope={capture.scope} />}
@@ -153,9 +176,22 @@ export default function AnimationRumV2CapturePage() {
                             description={longTaskP95 ? <AnimationRumV2StatusBadge status={longTaskP95.status} /> : '未采集 / 未知'}
                         />
                         <AIStatCard
-                            label="质量状态"
+                            label="SDK 证据质量"
                             value={capture.quality.integrity === 'complete' ? '完整' : '部分'}
                             description={capture.quality.sufficiency === 'sufficient' ? '证据充分' : '证据不足'}
+                        />
+                        <AIStatCard
+                            label="ClickHouse 子行核对"
+                            value={projectionIntegrity?.status === 'verified' ? '已核对' : '未核对'}
+                            description={
+                                projectionIntegrity?.status === 'verified'
+                                    ? `指标 ${formatAnimationRumV2Integer(projectionIntegrity.observed.metrics)} / ${formatAnimationRumV2Integer(
+                                          projectionIntegrity.expected.metrics
+                                      )} · 提供方 ${formatAnimationRumV2Integer(
+                                          projectionIntegrity.observed.providerEvidence
+                                      )} / ${formatAnimationRumV2Integer(projectionIntegrity.expected.providerEvidence)}`
+                                    : '旧后端未返回核对结果；不能由 SDK 质量状态推断存储完整'
+                            }
                         />
                     </div>
 
@@ -205,14 +241,19 @@ export default function AnimationRumV2CapturePage() {
                     </AIPanelCard>
 
                     <AIPanelCard
-                        title="质量原因"
-                        description="部分指标存在时也不会混入“已测量”百分位；下列原因解释为什么证据被降级。"
+                        title="SDK 采集质量原因"
+                        description="这是浏览器侧采集证据的充分性和完整性，不等于 ClickHouse 子行计数核对；部分指标不会混入“已测量”百分位。"
                         headerBorder
                     >
                         <AnimationRumV2QualityBadges reasons={capture.quality.reasons} />
                         <p className="mt-3 text-xs text-muted-foreground">
-                            适配器错误 {capture.quality.adapterErrorCount ?? '未知'} · 提供方证据 {capture.providerEvidenceCount ?? '未知'}{' '}
-                            · 指标 {capture.metricCount ?? '未知'}
+                            适配器错误 {capture.quality.adapterErrorCount ?? '未知'} · marker 声明提供方{' '}
+                            {capture.providerEvidenceCount ?? '未知'} · marker 声明指标 {capture.metricCount ?? '未知'}
+                        </p>
+                        <p className="mt-2 text-xs text-muted-foreground">
+                            {projectionIntegrity?.status === 'verified'
+                                ? 'ClickHouse 子行计数已与 completion marker 核对；这不代表原始事件内容或用户行为经过完整性校验。'
+                                : '当前响应没有 ClickHouse 子行核对证据，因此不能把“SDK 完整”理解为“存储投影完整”。'}
                         </p>
                     </AIPanelCard>
 
@@ -272,8 +313,18 @@ export default function AnimationRumV2CapturePage() {
                                                                     : 'warning'
                                                             }
                                                         >
-                                                            {target.quality.integrity === 'complete' ? '完整' : '部分'} ·{' '}
+                                                            SDK {target.quality.integrity === 'complete' ? '完整' : '部分'} ·{' '}
                                                             {target.quality.sufficiency === 'sufficient' ? '充分' : '不足'}
+                                                        </Badge>
+                                                        <Badge
+                                                            className="ml-1.5"
+                                                            variant={
+                                                                target.projectionIntegrity?.status === 'verified' ? 'success' : 'outline'
+                                                            }
+                                                        >
+                                                            {target.projectionIntegrity?.status === 'verified'
+                                                                ? '子行已核对'
+                                                                : '子行未核对'}
                                                         </Badge>
                                                     </td>
                                                     <td className="px-4 py-3 text-right">

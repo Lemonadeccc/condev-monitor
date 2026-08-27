@@ -43,6 +43,9 @@ const diagnostic: AnimationRumV2PipelineDiagnostic = {
         matched: 3,
         missingAfterGrace: 0,
         identityMismatch: 0,
+        storageComplete: 3,
+        childCountMismatch: 0,
+        childIdentityMismatch: 0,
     },
     semantics: {
         publishedMeans: 'kafka-broker-ack-only',
@@ -98,6 +101,33 @@ describe('Animation RUM v2 pipeline client', () => {
         )
     })
 
+    it('accepts a legacy schema-v1 response but never presents marker-only health as verified storage', async () => {
+        const legacyDiagnostic: AnimationRumV2PipelineDiagnostic = {
+            ...diagnostic,
+            projection: {
+                availability: diagnostic.projection.availability,
+                eligible: diagnostic.projection.eligible,
+                matched: diagnostic.projection.matched,
+                missingAfterGrace: diagnostic.projection.missingAfterGrace,
+                identityMismatch: diagnostic.projection.identityMismatch,
+            },
+        }
+
+        await withFetchStub(
+            async () => jsonResponse({ success: true, data: legacyDiagnostic }),
+            async () => {
+                const result = await getAnimationRumV2Pipeline('application-1')
+                assert.deepEqual(result, legacyDiagnostic)
+                assert.equal(result.projection.storageComplete, undefined)
+                assert.deepEqual(animationRumV2PipelineStatusMeta(result), {
+                    label: '子行未核对',
+                    variant: 'warning',
+                    description: '旧后端只确认了 ClickHouse completion marker，尚未核对指标与提供方子行，不能判定投影完整。',
+                })
+            }
+        )
+    })
+
     it('surfaces throttling without exposing arbitrary backend error text', async () => {
         await withFetchStub(
             async () => jsonResponse({ message: 'private backend detail' }, 429, { 'Retry-After': '17' }),
@@ -147,6 +177,76 @@ describe('Animation RUM v2 pipeline client', () => {
                     projection: { ...diagnostic.projection, availability: 'unavailable', matched: 3 },
                 },
             },
+            {
+                success: true,
+                data: {
+                    ...diagnostic,
+                    projection: { ...diagnostic.projection, childCountMismatch: undefined },
+                },
+            },
+            {
+                success: true,
+                data: {
+                    ...diagnostic,
+                    projection: {
+                        ...diagnostic.projection,
+                        storageComplete: 2,
+                        childCountMismatch: 0,
+                        childIdentityMismatch: 0,
+                    },
+                },
+            },
+            {
+                success: true,
+                data: {
+                    ...diagnostic,
+                    projection: {
+                        ...diagnostic.projection,
+                        storageComplete: 2,
+                        childCountMismatch: 1,
+                    },
+                },
+            },
+            {
+                success: true,
+                data: {
+                    ...diagnostic,
+                    projection: {
+                        ...diagnostic.projection,
+                        availability: 'unavailable',
+                        matched: null,
+                        missingAfterGrace: null,
+                        identityMismatch: null,
+                    },
+                },
+            },
+            {
+                success: true,
+                data: {
+                    ...diagnostic,
+                    projection: {
+                        ...diagnostic.projection,
+                        eligible: { count: 0, truncated: false },
+                        matched: 0,
+                        storageComplete: 0,
+                    },
+                },
+            },
+            {
+                success: true,
+                data: {
+                    ...diagnostic,
+                    receipts: { ...diagnostic.receipts, recent: { count: 500, truncated: true } },
+                    projection: { ...diagnostic.projection, eligible: { count: 3, truncated: true } },
+                },
+            },
+            {
+                success: true,
+                data: {
+                    ...diagnostic,
+                    projection: { ...diagnostic.projection, eligible: { count: 3, truncated: true } },
+                },
+            },
         ]
 
         for (const invalid of invalidBodies) {
@@ -174,7 +274,8 @@ describe('Animation RUM v2 pipeline client', () => {
         ]
         assert.equal(new Set(statuses.map(status => animationRumV2PipelineStatusMeta(status).label)).size, statuses.length)
         assert.equal(animationRumV2PipelineStatusMeta('idle').variant, 'outline')
-        assert.equal(animationRumV2PipelineStatusMeta('healthy').variant, 'success')
+        assert.equal(animationRumV2PipelineStatusMeta('healthy').variant, 'warning')
+        assert.equal(animationRumV2PipelineStatusMeta(diagnostic).variant, 'success')
         assert.equal(animationRumV2PipelineStatusMeta('inconsistent').variant, 'destructive')
         assert.equal(formatAnimationRumV2PipelineCount({ count: 499, truncated: false }), '499')
         assert.equal(formatAnimationRumV2PipelineCount({ count: 500, truncated: true }), '500+')
