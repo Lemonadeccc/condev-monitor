@@ -135,9 +135,9 @@ export interface WebGpuTransferRecorder {
     /** Wraps one synchronous host-to-WebGPU transfer call and preserves its exact result/error. */
     measureUpload<T>(evidence: WebGpuUploadEvidence, operation: () => T): T
     /**
-     * Observes one newly-created mapAsync promise. It returns a transparent
-     * derived promise so fulfillment values and rejection objects are preserved
-     * without hiding an unhandled rejection on the returned chain.
+     * Observes one newly-created mapAsync promise. It normally returns a fresh
+     * native Promise with the same settlement. If hostile constructor/species
+     * state prevents attachment, evidence fails closed and the source is returned.
      */
     observeReadback<T>(evidence: WebGpuReadbackEvidence, operation: () => Promise<T>): Promise<T>
     inspectWindow(window: WebGpuTransferTargetInspectionContext['evidenceWindow']): WebGpuTransferTargetRendererInspection
@@ -308,13 +308,15 @@ function attachPromise<T>(value: PromiseLike<T>, onFulfilled: (result: T) => voi
 }
 
 function passThroughPromise<T>(value: PromiseLike<T>): Promise<T> {
-    return new PromiseConstructor<T>((resolve, reject) => {
+    let attachmentFailed = false
+    const derived = new PromiseConstructor<T>((resolve, reject) => {
         try {
             attachPromise(value, resolve, reject)
-        } catch (error) {
-            reject(error)
+        } catch {
+            attachmentFailed = true
         }
     })
+    return attachmentFailed ? (value as Promise<T>) : derived
 }
 
 function subscribeDeviceLost(device: object, lost: PromiseLike<WebGpuDeviceLostInfoLike>, listener: DeviceLostListener): () => void {
@@ -333,11 +335,15 @@ function subscribeDeviceLost(device: object, lost: PromiseLike<WebGpuDeviceLostI
                 else current.onError()
             }
         }
-        attachPromise(
-            lost,
-            () => settle('lost'),
-            () => settle('error')
-        )
+        try {
+            attachPromise(
+                lost,
+                () => settle('lost'),
+                () => settle('error')
+            )
+        } catch {
+            settle('error')
+        }
     }
     if (hub.state === 'lost') listener.onLost()
     else if (hub.state === 'error') listener.onError()
@@ -868,9 +874,8 @@ export function createWebGpuTransferRecorder(options: WebGpuTransferRecorderOpti
                             reject(error)
                         }
                     )
-                } catch (error) {
+                } catch {
                     attachmentFailed = true
-                    reject(error)
                 }
             })
             if (attachmentFailed) {
@@ -881,7 +886,7 @@ export function createWebGpuTransferRecorder(options: WebGpuTransferRecorderOpti
             }
             const invalidated = endOperation()
             if (invalidated && capability === 'supported') invalidateFamilyCorrelation('readback')
-            return observedResult
+            return attachmentFailed ? result : observedResult
         },
         inspectWindow,
         inspect(context): WebGpuTransferTargetAdapterInspection {
