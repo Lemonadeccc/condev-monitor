@@ -7,6 +7,8 @@ import { Repository } from 'typeorm'
 import { resolveClickhouseDatabase } from '../shared/clickhouse-utils'
 import { ApplicationEntity } from './entity/application.entity'
 
+const APP_ID_GENERATION_ATTEMPTS = 5
+
 @Injectable()
 export class ApplicationService {
     constructor(
@@ -23,6 +25,16 @@ export class ApplicationService {
 
     private normalizeName(name: string | undefined) {
         return (name ?? '').trim()
+    }
+
+    private isApplicationIdCollision(error: unknown): boolean {
+        if (!error || typeof error !== 'object') return false
+        const nested = 'driverError' in error ? error.driverError : undefined
+        return [error, nested].some(candidate => {
+            if (!candidate || typeof candidate !== 'object') return false
+            const details = candidate as { code?: unknown; constraint?: unknown }
+            return details.code === '23505' && details.constraint === 'application_app_id_unique'
+        })
     }
 
     private async readLatestAppSettingsMap() {
@@ -77,7 +89,7 @@ export class ApplicationService {
         }
     }
 
-    async create(application: ApplicationEntity) {
+    async create(application: ApplicationEntity, options: { appIdFactory?: () => string } = {}) {
         application.name = this.normalizeName(application.name)
 
         const existing = await this.applicationRepository.findOne({
@@ -87,7 +99,31 @@ export class ApplicationService {
             throw new HttpException({ message: 'Application name already exists', error: 'NAME_EXISTS' }, HttpStatus.CONFLICT)
         }
 
-        await this.applicationRepository.save(application)
+        const shouldGenerateAppId = !application.appId
+        if (shouldGenerateAppId && !options.appIdFactory) {
+            throw new HttpException(
+                { message: 'Application ID generator is required', error: 'APP_ID_GENERATOR_REQUIRED' },
+                HttpStatus.INTERNAL_SERVER_ERROR
+            )
+        }
+        let saved = false
+        for (let attempt = 0; attempt < APP_ID_GENERATION_ATTEMPTS; attempt += 1) {
+            if (shouldGenerateAppId) application.appId = options.appIdFactory!()
+            try {
+                await this.applicationRepository.save(application)
+                saved = true
+                break
+            } catch (error) {
+                if (!shouldGenerateAppId || !this.isApplicationIdCollision(error)) throw error
+            }
+        }
+
+        if (!saved) {
+            throw new HttpException(
+                { message: 'Could not allocate a unique application ID', error: 'APP_ID_ALLOCATION_FAILED' },
+                HttpStatus.SERVICE_UNAVAILABLE
+            )
+        }
         try {
             await this.syncReplaySetting({
                 appId: application.appId,

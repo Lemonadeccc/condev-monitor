@@ -18,9 +18,11 @@ export class ApplicationController {
         const admin = new AdminEntity()
         admin.id = req.user.id
         const application = new ApplicationEntity(body)
-        application.appId = application.type + nanoid(6)
 
-        const newUser = await this.applicationService.create({ ...application, user: admin })
+        const newUser = await this.applicationService.create(
+            { ...application, user: admin },
+            { appIdFactory: () => `${application.type}${nanoid(6)}` }
+        )
         return { data: newUser, success: true }
     }
 
