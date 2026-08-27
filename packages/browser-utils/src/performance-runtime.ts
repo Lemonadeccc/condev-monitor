@@ -1080,8 +1080,8 @@ function createObserverState(
         try {
             state.observer.observe(observerOptions)
         } catch {
-            // The entryTypes fallback cannot request buffered history. The
-            // browser's global dropped-history count therefore does not describe
+            // The entryTypes fallback cannot request buffered history. This
+            // entry type's timeline-buffer drop count therefore does not describe
             // live entries delivered to this logical subscription.
             state.buffered = false
             state.initialHistoryPending = false
@@ -1121,8 +1121,8 @@ function captureInitialDroppedEntriesCount(state: ObserverState, callbackOptions
     }
 
     state.droppedEntriesState = 'captured'
-    // entryTypes fallback has no buffered history to lose. Its global timeline
-    // count is unrelated to entries delivered live to this subscription.
+    // entryTypes fallback has no buffered history to lose. The subscribed entry
+    // type's timeline count is unrelated to entries delivered live here.
     // WebIDL exposes unsigned long long as a JS Number. Saturate values whose
     // exact integer is no longer representable so known-positive loss never
     // becomes an apparently complete capture.
