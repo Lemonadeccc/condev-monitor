@@ -390,6 +390,8 @@ export interface AnimationHostEvidenceFamilySummary {
     rejectedSampleCount: number
     /** Samples containing at least one usable numeric measurement. */
     evidenceSampleCount: number
+    /** Usable numeric samples still present in the bounded retained tail. */
+    retainedEvidenceSampleCount: number
     capacity: number
     truncated: boolean
     /** Percentiles and categorical detail below are computed from the retained bounded tail. */
@@ -813,6 +815,8 @@ export interface AnimationElementSelectionSnapshot {
     activeInteractionId: string | null
     correlated: InteractionPerformanceSummary | null
     correlationRelation: 'temporal-overlap' | null
+    /** Duration of the completed interaction represented by `correlated`; never the selection lifetime. */
+    correlatedDurationMs?: number | null
     adapterErrors: readonly string[]
 }
 

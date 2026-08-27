@@ -80,6 +80,7 @@ function countRecord<T extends string>(values: readonly T[]): Record<T, number> 
 
 class HostFamily<T extends { capturedAt: number }> {
     readonly samples: BoundedRing<T>
+    private readonly retainedEvidence: BoundedRing<boolean>
     private firstAcceptedAt: number | null = null
     private lastAcceptedAt: number | null = null
     rejectedSampleCount = 0
@@ -87,10 +88,12 @@ class HostFamily<T extends { capturedAt: number }> {
 
     constructor(capacity: number) {
         this.samples = new BoundedRing<T>(capacity)
+        this.retainedEvidence = new BoundedRing<boolean>(capacity)
     }
 
     accept(sample: T, capturedAt: number, evidence: boolean): true {
         this.samples.push(sample)
+        this.retainedEvidence.push(evidence)
         this.firstAcceptedAt ??= capturedAt
         this.lastAcceptedAt = capturedAt
         if (evidence) this.evidenceSampleCount = Math.min(MAX_COUNT, this.evidenceSampleCount + 1)
@@ -117,6 +120,7 @@ class HostFamily<T extends { capturedAt: number }> {
             droppedSampleCount: this.samples.droppedCount,
             rejectedSampleCount: this.rejectedSampleCount,
             evidenceSampleCount: this.evidenceSampleCount,
+            retainedEvidenceSampleCount: this.retainedEvidence.toArray().filter(Boolean).length,
             capacity: this.samples.capacity,
             truncated: this.samples.droppedCount > 0,
             detailScope: 'retained-samples',

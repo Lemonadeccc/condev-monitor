@@ -763,6 +763,7 @@ export function createAnimationElementSelection(
     let recording = false
     let activeInteraction: InteractionHandle | null = null
     let correlated: InteractionMeasurement['performance'] | null = null
+    let correlatedDurationMs: number | null = null
     const resizeCounts: ElementResizeCounts = { total: 0, css: 0, backing: 0 }
     let lastResizeDimensions = readElementResizeDimensions(element)
     const recordResizeChanges = (current: ElementResizeDimensions): void => {
@@ -831,6 +832,7 @@ export function createAnimationElementSelection(
 
     const completeInteraction = (measurement: InteractionMeasurement): InteractionMeasurement => {
         correlated = measurement.performance
+        correlatedDurationMs = measurement.durationMs
         activeInteraction = null
         recording = false
         return measurement
@@ -852,6 +854,7 @@ export function createAnimationElementSelection(
             activeInteraction = interaction
             recording = true
             correlated = null
+            correlatedDurationMs = null
             return {
                 id: interaction.id,
                 kind: interaction.kind,
@@ -940,6 +943,7 @@ export function createAnimationElementSelection(
                 activeInteractionId: activeInteraction?.id ?? null,
                 correlated,
                 correlationRelation: correlated ? 'temporal-overlap' : null,
+                correlatedDurationMs,
                 adapterErrors,
             }
             return snapshot
