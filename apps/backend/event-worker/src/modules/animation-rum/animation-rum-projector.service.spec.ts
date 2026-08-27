@@ -1,4 +1,5 @@
 import { createAnimationRumV2GoldenReport } from '@condev-monitor/animation-rum-contract/testing'
+import { AnimationRumV2IngestValidationError, buildAnimationRumV2KafkaEnvelope } from '@condev-monitor/animation-rum-ingest'
 
 import { ANIMATION_RUM_FAMILIES } from '../../shared/animation-rum-v1'
 import { AnimationRumProjectorService, AnimationRumValidationError } from './animation-rum-projector.service'
@@ -44,6 +45,20 @@ function envelope(overrides: Record<string, unknown> = {}) {
     }
 }
 
+function v2Envelope(receivedAt = new Date(), capturedAt = new Date(receivedAt.getTime() - 60_000)) {
+    const rum = createAnimationRumV2GoldenReport()
+    rum.capturedAt = capturedAt.toISOString()
+    return buildAnimationRumV2KafkaEnvelope({
+        appId: 'app-12345678',
+        report: rum,
+        receivedAt: receivedAt.toISOString(),
+    })
+}
+
+function kafkaContext(rawEnvelope: unknown, messageKey: string | null = 'app-12345678') {
+    return { rawEnvelope, messageKey }
+}
+
 describe('AnimationRumProjectorService', () => {
     it('revalidates and projects a normalized envelope', async () => {
         const writer = { insertAnimationRum: jest.fn().mockResolvedValue(undefined) }
@@ -67,34 +82,69 @@ describe('AnimationRumProjectorService', () => {
     })
 
     it('revalidates and projects a normalized v2 envelope', async () => {
-        const rum = createAnimationRumV2GoldenReport()
-        rum.capturedAt = new Date().toISOString()
+        const value = v2Envelope()
         const writer = {
             insertAnimationRum: jest.fn(),
             insertAnimationRumV2: jest.fn().mockResolvedValue(undefined),
         }
         const service = new AnimationRumProjectorService(writer as any)
 
-        await service.handleEnvelope({
-            schemaVersion: 1,
-            eventId: rum.eventId,
-            appId: 'app-12345678',
-            eventType: 'animation_rum',
-            message: '',
-            info: { animationRum: rum },
-            sdkVersion: rum.sdkVersion,
-            environment: rum.environment,
-            release: rum.release,
-            receivedAt: new Date().toISOString(),
-            source: 'animation-rum-v2',
-        })
+        await service.handleEnvelope(value, kafkaContext(value))
 
         expect(writer.insertAnimationRum).not.toHaveBeenCalled()
-        expect(writer.insertAnimationRumV2).toHaveBeenCalledWith(
-            'app-12345678',
-            expect.objectContaining({ contractVersion: 2, captureId: 'capture_12345678' }),
-            expect.stringMatching(/Z$/)
-        )
+        expect(writer.insertAnimationRumV2).toHaveBeenCalledWith(value)
+    })
+
+    it('requires raw Kafka context and the actual appId message key for v2', async () => {
+        const value = v2Envelope()
+        const writer = { insertAnimationRumV2: jest.fn() }
+        const service = new AnimationRumProjectorService(writer as any)
+
+        await expect(service.handleEnvelope(value)).rejects.toThrow('Kafka context is required')
+        await expect(service.handleEnvelope(value, kafkaContext(value, 'wrong-app'))).rejects.toMatchObject({
+            codes: expect.arrayContaining(['message_key_mismatch']),
+        })
+        await expect(service.handleEnvelope(value, kafkaContext(value, null))).rejects.toMatchObject({
+            codes: expect.arrayContaining(['message_key_mismatch']),
+        })
+        expect(writer.insertAnimationRumV2).not.toHaveBeenCalled()
+    })
+
+    it.each(['message', 'sdkVersion', 'environment', 'release', 'receivedAt'] as const)(
+        'validates original v2 JSON missing %s before legacy normalization',
+        async field => {
+            const value = v2Envelope()
+            const rawEnvelope = { ...value } as Partial<typeof value> & Record<string, unknown>
+            delete rawEnvelope[field]
+            const writer = { insertAnimationRumV2: jest.fn() }
+            const service = new AnimationRumProjectorService(writer as any)
+
+            await expect(service.handleEnvelope(value, kafkaContext(rawEnvelope))).rejects.toMatchObject({
+                codes: expect.arrayContaining(['missing_envelope_field']),
+            })
+            expect(writer.insertAnimationRumV2).not.toHaveBeenCalled()
+        }
+    )
+
+    it('accepts a delayed v2 replay using its original receivedAt clock', async () => {
+        const value = v2Envelope(new Date('2025-01-01T00:01:00.000Z'), new Date('2025-01-01T00:00:00.000Z'))
+        const writer = { insertAnimationRumV2: jest.fn().mockResolvedValue(undefined) }
+        const service = new AnimationRumProjectorService(writer as any)
+
+        await service.handleEnvelope(value, kafkaContext(value))
+
+        expect(writer.insertAnimationRumV2).toHaveBeenCalledWith(value)
+    })
+
+    it('propagates post-validation shared invariant errors as retryable worker failures', async () => {
+        const value = v2Envelope()
+        const invariantError = new AnimationRumV2IngestValidationError(['unknown_metric_id'])
+        const writer = {
+            insertAnimationRumV2: jest.fn().mockRejectedValue(invariantError),
+        }
+        const service = new AnimationRumProjectorService(writer as any)
+
+        await expect(service.handleEnvelope(value, kafkaContext(value))).rejects.toBe(invariantError)
     })
 
     it('fails closed on unknown animation source versions', async () => {
@@ -111,8 +161,9 @@ describe('AnimationRumProjectorService', () => {
     it('rejects source and normalized contract version mismatches', async () => {
         const writer = { insertAnimationRum: jest.fn(), insertAnimationRumV2: jest.fn() }
         const service = new AnimationRumProjectorService(writer as any)
+        const value = envelope({ source: 'animation-rum-v2' })
 
-        await expect(service.handleEnvelope(envelope({ source: 'animation-rum-v2' }) as any)).rejects.toMatchObject({
+        await expect(service.handleEnvelope(value as any, kafkaContext(value))).rejects.toMatchObject({
             codes: expect.arrayContaining(['unsupported_contract_version']),
         })
         expect(writer.insertAnimationRum).not.toHaveBeenCalled()

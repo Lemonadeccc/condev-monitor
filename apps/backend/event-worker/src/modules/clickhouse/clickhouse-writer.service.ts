@@ -1,5 +1,5 @@
 import { ClickHouseClient, createClient } from '@clickhouse/client'
-import { AnimationRumV2Report } from '@condev-monitor/animation-rum-contract'
+import { type AnimationRumV2KafkaEnvelope, createAnimationRumV2ClickHouseInsertPlan } from '@condev-monitor/animation-rum-ingest'
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 
@@ -7,7 +7,6 @@ import { AnimationRumV1Report } from '../../shared/animation-rum-v1'
 import { resolveClickhouseDatabase } from '../../shared/clickhouse-utils'
 import { EventRow } from '../../shared/ingest-types'
 import { formatDateTimeForCH } from '../../utils/datetime'
-import { projectAnimationRumV2Rows } from '../animation-rum/animation-rum-v2-projection'
 
 export type IssueRow = {
     issue_id: string
@@ -125,33 +124,18 @@ export class ClickhouseWriterService implements OnModuleDestroy {
         })
     }
 
-    async insertAnimationRumV2(appId: string, report: AnimationRumV2Report, receivedAt: string): Promise<void> {
-        const rows = projectAnimationRumV2Rows(
-            appId,
-            report,
-            formatDateTimeForCH(new Date(report.capturedAt)),
-            formatDateTimeForCH(new Date(receivedAt))
-        )
+    async insertAnimationRumV2(envelope: AnimationRumV2KafkaEnvelope): Promise<void> {
+        const plan = createAnimationRumV2ClickHouseInsertPlan(envelope)
 
-        // Child rows are safe to retry. The capture completion marker is written
-        // last; every v2 platform query must anchor children to that marker.
-        if (rows.providerRows.length > 0) {
-            await this.client.insert({
-                table: `${this.database}.animation_rum_provider_evidence_v2`,
+        // The shared plan is already fully projected and validated before the
+        // first insert. Execute sequentially so the completion marker stays last.
+        for (const step of plan) {
+            await this.client.insert<unknown>({
+                table: `${this.database}.${step.table}`,
                 format: 'JSONEachRow',
-                values: rows.providerRows,
+                values: step.rows,
             })
         }
-        await this.client.insert({
-            table: `${this.database}.animation_rum_metrics_v2`,
-            format: 'JSONEachRow',
-            values: rows.metricRows,
-        })
-        await this.client.insert({
-            table: `${this.database}.animation_rum_captures_v2`,
-            format: 'JSONEachRow',
-            values: [rows.captureRow],
-        })
     }
 
     async queryJson<T>(query: string, query_params?: Record<string, unknown>): Promise<T[]> {

@@ -1,4 +1,4 @@
-import { AnimationRumV2Report, validateNormalizedAnimationRumV2 } from '@condev-monitor/animation-rum-contract'
+import { validateAnimationRumV2KafkaMessage } from '@condev-monitor/animation-rum-ingest'
 import { Injectable } from '@nestjs/common'
 
 import { AnimationRumV1Report, validateAnimationRumV1 } from '../../shared/animation-rum-v1'
@@ -18,6 +18,11 @@ const ENVELOPE_KEYS = new Set([
     'receivedAt',
     'source',
 ])
+
+export interface AnimationRumKafkaContext {
+    rawEnvelope: unknown
+    messageKey: string | null
+}
 
 export class AnimationRumValidationError extends Error {
     constructor(readonly codes: string[]) {
@@ -44,45 +49,49 @@ function isCanonicalUtcTimestamp(value: unknown): value is string {
 export class AnimationRumProjectorService {
     constructor(private readonly clickhouseWriter: ClickhouseWriterService) {}
 
-    async handleEnvelope(envelope: KafkaEventEnvelope): Promise<void> {
+    async handleEnvelope(envelope: KafkaEventEnvelope, context?: AnimationRumKafkaContext): Promise<void> {
+        if (envelope.source === 'animation-rum-v2') {
+            await this.handleV2Envelope(context)
+            return
+        }
+
         const errors: string[] = []
         if (Object.keys(envelope).some(key => !ENVELOPE_KEYS.has(key))) errors.push('unknown_envelope_field')
         if (envelope.schemaVersion !== 1) errors.push('unsupported_envelope_schema')
         if (envelope.eventType !== 'animation_rum') errors.push('invalid_event_type')
         if (envelope.message !== '') errors.push('invalid_message')
-        const contract = envelope.source === 'animation-rum-v1' ? 1 : envelope.source === 'animation-rum-v2' ? 2 : null
-        if (contract === null) errors.push('unsupported_animation_rum_source')
+        if (envelope.source !== 'animation-rum-v1') errors.push('unsupported_animation_rum_source')
         if (typeof envelope.appId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$/.test(envelope.appId)) {
             errors.push('invalid_app_id')
         }
-        if (!isCanonicalUtcTimestamp(envelope.receivedAt)) {
-            errors.push('invalid_received_at')
-        }
+        if (!isCanonicalUtcTimestamp(envelope.receivedAt)) errors.push('invalid_received_at')
         if (!isRecord(envelope.info) || Object.keys(envelope.info).length !== 1 || !('animationRum' in envelope.info)) {
             errors.push('invalid_info')
         }
 
         const candidate = isRecord(envelope.info) ? envelope.info.animationRum : null
-        let report: AnimationRumV1Report | AnimationRumV2Report | null = null
-        if (contract === 1) {
-            const validation = validateAnimationRumV1(candidate)
-            if ('errors' in validation) errors.push(...validation.errors)
-            else report = validation.value
-        } else if (contract === 2) {
-            const validation = validateNormalizedAnimationRumV2(candidate)
-            if (!validation.ok) errors.push(...validation.errors)
-            else report = validation.value
-        }
-        if (report) this.validateMetadata(envelope, report, errors)
+        const validation = validateAnimationRumV1(candidate)
+        let report: AnimationRumV1Report | null = null
+        if ('errors' in validation) errors.push(...validation.errors)
+        else report = validation.value
+        if (report) this.validateV1Metadata(envelope, report, errors)
         if (errors.length > 0) throw new AnimationRumValidationError([...new Set(errors)].slice(0, 16))
-        if (!report || contract === null) throw new AnimationRumValidationError(['invalid_animation_rum'])
+        if (!report) throw new AnimationRumValidationError(['invalid_animation_rum'])
 
-        if (contract === 1)
-            await this.clickhouseWriter.insertAnimationRum(envelope.appId, report as AnimationRumV1Report, envelope.receivedAt)
-        else await this.clickhouseWriter.insertAnimationRumV2(envelope.appId, report as AnimationRumV2Report, envelope.receivedAt)
+        await this.clickhouseWriter.insertAnimationRum(envelope.appId, report, envelope.receivedAt)
     }
 
-    private validateMetadata(envelope: KafkaEventEnvelope, report: AnimationRumV1Report | AnimationRumV2Report, errors: string[]): void {
+    private async handleV2Envelope(context?: AnimationRumKafkaContext): Promise<void> {
+        if (!context) throw new Error('Animation RUM v2 Kafka context is required')
+        const validation = validateAnimationRumV2KafkaMessage({
+            key: context.messageKey,
+            envelope: context.rawEnvelope,
+        })
+        if (!validation.ok) throw new AnimationRumValidationError(validation.errors)
+        await this.clickhouseWriter.insertAnimationRumV2(validation.value)
+    }
+
+    private validateV1Metadata(envelope: KafkaEventEnvelope, report: AnimationRumV1Report, errors: string[]): void {
         if (envelope.eventId !== report.eventId) errors.push('event_id_mismatch')
         if ((envelope.sdkVersion ?? '') !== report.sdkVersion) errors.push('sdk_version_mismatch')
         if ((envelope.environment ?? '') !== report.environment) errors.push('environment_mismatch')

@@ -186,6 +186,9 @@ importers:
       '@condev-monitor/animation-rum-contract':
         specifier: workspace:*
         version: link:../../../packages/animation-rum-contract
+      '@condev-monitor/animation-rum-ingest':
+        specifier: workspace:*
+        version: link:../../../packages/animation-rum-ingest
       '@huggingface/transformers':
         specifier: ^3.4.1
         version: 3.8.1

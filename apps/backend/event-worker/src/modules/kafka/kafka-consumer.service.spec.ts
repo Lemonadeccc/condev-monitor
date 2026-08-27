@@ -2,6 +2,8 @@ import type { EventRow, KafkaEventEnvelope } from '../../shared/ingest-types'
 import { AnimationRumValidationError } from '../animation-rum/animation-rum-projector.service'
 import { KafkaConsumerService } from './kafka-consumer.service'
 
+// cspell:ignore misroute
+
 describe('KafkaConsumerService', () => {
     const makeService = () => {
         const clickhouseWriter = {
@@ -167,18 +169,26 @@ describe('KafkaConsumerService', () => {
         const second = (service as any).safeParseEnvelope(value, fallback)
 
         expect(first).toEqual(second)
-        expect(first).toEqual({
-            ok: true,
-            value: expect.objectContaining({
-                schemaVersion: 1,
-                eventId: expect.stringMatching(/^legacy_/),
-                appId: 'app-1',
-                eventType: 'custom',
-                message: 'legacy',
-                source: 'legacy-kafka',
-                receivedAt: '2024-08-24T08:00:00.000Z',
-            }),
-        })
+        expect(first).toEqual(
+            expect.objectContaining({
+                ok: true,
+                rawEnvelope: {
+                    appId: 'app-1',
+                    eventType: 'custom',
+                    message: 'legacy',
+                    info: { counter: 1 },
+                },
+                value: expect.objectContaining({
+                    schemaVersion: 1,
+                    eventId: expect.stringMatching(/^legacy_/),
+                    appId: 'app-1',
+                    eventType: 'custom',
+                    message: 'legacy',
+                    source: 'legacy-kafka',
+                    receivedAt: '2024-08-24T08:00:00.000Z',
+                }),
+            })
+        )
     })
 
     it('keeps a legacy custom event named animation_rum on the generic worker lane', async () => {
@@ -257,11 +267,32 @@ describe('KafkaConsumerService', () => {
         expect(dlqProducer.publish).toHaveBeenCalledWith(
             expect.objectContaining({
                 reason: expect.stringContaining('INVALID_ANIMATION_RUM'),
+                key: null,
                 rawValue: null,
             })
         )
         expect(resolveOffset).toHaveBeenCalledWith('9')
         expect(bufferManager.route).not.toHaveBeenCalled()
+    })
+
+    it('does not retain an untrusted animation Kafka key in the redacted DLQ', async () => {
+        const { service, dlqProducer, animationRumProjector } = makeService()
+        animationRumProjector.handleEnvelope.mockRejectedValue(new AnimationRumValidationError(['message_key_mismatch']))
+        const { payload } = singleMessageBatch({
+            schemaVersion: 1,
+            eventId: 'event_12345678',
+            appId: 'app-1',
+            eventType: 'animation_rum',
+            message: '',
+            info: { animationRum: { contractVersion: 2 } },
+            receivedAt: new Date().toISOString(),
+            source: 'animation-rum-v2',
+        })
+        payload.batch.messages[0]!.key = Buffer.from('private-person@example.test')
+
+        await (service as any).handleBatch(payload)
+
+        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ key: null, rawValue: null }))
     })
 
     it('redacts malformed animation envelopes before generic JSON validation', async () => {
@@ -284,7 +315,7 @@ describe('KafkaConsumerService', () => {
             isStale: () => false,
         })
 
-        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', rawValue: null }))
+        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', key: null, rawValue: null }))
     })
 
     it('preserves the legacy DLQ raw body for malformed non-animation events', async () => {
@@ -329,7 +360,7 @@ describe('KafkaConsumerService', () => {
 
         expect(dlqProducer.publish).toHaveBeenCalledTimes(2)
         for (const call of dlqProducer.publish.mock.calls) {
-            expect(call[0]).toEqual(expect.objectContaining({ reason: 'INVALID_JSON', rawValue: null }))
+            expect(call[0]).toEqual(expect.objectContaining({ reason: 'INVALID_JSON', key: null, rawValue: null }))
         }
     })
 
@@ -369,7 +400,7 @@ describe('KafkaConsumerService', () => {
             isStale: () => false,
         })
 
-        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', rawValue: null }))
+        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', key: null, rawValue: null }))
     })
 
     it('routes a source-only animation marker through the strict projector', async () => {
@@ -408,7 +439,7 @@ describe('KafkaConsumerService', () => {
         expect(animationRumProjector.handleEnvelope).toHaveBeenCalledTimes(1)
         expect(bufferManager.route).not.toHaveBeenCalled()
         expect(dlqProducer.publish).toHaveBeenCalledWith(
-            expect.objectContaining({ reason: expect.stringContaining('INVALID_ANIMATION_RUM'), rawValue: null })
+            expect.objectContaining({ reason: expect.stringContaining('INVALID_ANIMATION_RUM'), key: null, rawValue: null })
         )
     })
 
@@ -442,7 +473,7 @@ describe('KafkaConsumerService', () => {
         })
 
         expect(bufferManager.route).not.toHaveBeenCalled()
-        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', rawValue: null }))
+        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', key: null, rawValue: null }))
     })
 
     it('does not retain structurally invalid SDK JSON with a Unicode-escaped animation event type', async () => {
@@ -462,7 +493,7 @@ describe('KafkaConsumerService', () => {
         })
 
         expect(bufferManager.route).not.toHaveBeenCalled()
-        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', rawValue: null }))
+        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', key: null, rawValue: null }))
     })
 
     it('does not retain malformed SDK JSON with a Unicode-escaped animation source', async () => {
@@ -482,12 +513,12 @@ describe('KafkaConsumerService', () => {
         })
 
         expect(bufferManager.route).not.toHaveBeenCalled()
-        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', rawValue: null }))
+        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', key: null, rawValue: null }))
     })
 
     it('routes a v2 payload inside the v1 Kafka transport envelope without touching generic events', async () => {
         const { service, dlqProducer, bufferManager, animationRumProjector } = makeService()
-        const { payload, resolveOffset } = singleMessageBatch({
+        const body = {
             schemaVersion: 1,
             eventId: 'event_12345678',
             appId: 'app-1',
@@ -496,14 +527,45 @@ describe('KafkaConsumerService', () => {
             info: { animationRum: { contractVersion: 2, snapshotSchemaVersion: 1 } },
             receivedAt: new Date().toISOString(),
             source: 'animation-rum-v2',
-        })
+        }
+        const { payload, resolveOffset } = singleMessageBatch(body)
 
         await (service as any).handleBatch(payload)
 
-        expect(animationRumProjector.handleEnvelope).toHaveBeenCalledWith(expect.objectContaining({ source: 'animation-rum-v2' }))
+        expect(animationRumProjector.handleEnvelope).toHaveBeenCalledWith(expect.objectContaining({ source: 'animation-rum-v2' }), {
+            rawEnvelope: body,
+            messageKey: 'app-1',
+        })
         expect(resolveOffset).toHaveBeenCalledWith('rum-v2')
         expect(bufferManager.route).not.toHaveBeenCalled()
         expect(dlqProducer.publish).not.toHaveBeenCalled()
+    })
+
+    it('passes original missing v2 fields to the strict projector before legacy defaults', async () => {
+        const { service, dlqProducer, bufferManager, animationRumProjector } = makeService()
+        animationRumProjector.handleEnvelope.mockRejectedValue(new AnimationRumValidationError(['missing_envelope_field']))
+        const body = {
+            schemaVersion: 1,
+            eventId: 'event_12345678',
+            appId: 'app-1',
+            eventType: 'animation_rum',
+            info: { animationRum: { contractVersion: 2, snapshotSchemaVersion: 1 } },
+            receivedAt: new Date().toISOString(),
+            source: 'animation-rum-v2',
+        }
+        const { payload, resolveOffset } = singleMessageBatch(body, 'rum-v2-missing')
+
+        await (service as any).handleBatch(payload)
+
+        expect(animationRumProjector.handleEnvelope).toHaveBeenCalledWith(expect.objectContaining({ message: '' }), {
+            rawEnvelope: body,
+            messageKey: 'app-1',
+        })
+        expect(dlqProducer.publish).toHaveBeenCalledWith(
+            expect.objectContaining({ reason: expect.stringContaining('missing_envelope_field'), key: null, rawValue: null })
+        )
+        expect(resolveOffset).toHaveBeenCalledWith('rum-v2-missing')
+        expect(bufferManager.route).not.toHaveBeenCalled()
     })
 
     it.each([
@@ -539,7 +601,7 @@ describe('KafkaConsumerService', () => {
         await (service as any).handleBatch(payload)
 
         expect(animationRumProjector.handleEnvelope).toHaveBeenCalledTimes(1)
-        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ rawValue: null }))
+        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ key: null, rawValue: null }))
         expect(resolveOffset).toHaveBeenCalledWith('rum-v2')
         expect(bufferManager.route).not.toHaveBeenCalled()
     })
@@ -550,7 +612,7 @@ describe('KafkaConsumerService', () => {
 
         await (service as any).handleBatch(payload)
 
-        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', rawValue: null }))
+        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', key: null, rawValue: null }))
         expect(bufferManager.route).not.toHaveBeenCalled()
     })
 
@@ -624,7 +686,9 @@ describe('KafkaConsumerService', () => {
 
         await (service as any).handleBatch(payload)
 
-        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'ANIMATION_RUM_WRONG_TOPIC', rawValue: null }))
+        expect(dlqProducer.publish).toHaveBeenCalledWith(
+            expect.objectContaining({ reason: 'ANIMATION_RUM_WRONG_TOPIC', key: null, rawValue: null })
+        )
         expect(resolveOffset).toHaveBeenCalledWith('ai-misroute')
         expect(aiProjector.handleMessage).not.toHaveBeenCalled()
         expect(animationRumProjector.handleEnvelope).not.toHaveBeenCalled()
@@ -644,7 +708,9 @@ describe('KafkaConsumerService', () => {
 
         await (service as any).handleBatch(payload)
 
-        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'ANIMATION_RUM_WRONG_TOPIC', rawValue: null }))
+        expect(dlqProducer.publish).toHaveBeenCalledWith(
+            expect.objectContaining({ reason: 'ANIMATION_RUM_WRONG_TOPIC', key: null, rawValue: null })
+        )
         expect(resolveOffset).toHaveBeenCalledWith('ai-snake-misroute')
         expect(aiProjector.handleMessage).not.toHaveBeenCalled()
     })
@@ -674,7 +740,9 @@ describe('KafkaConsumerService', () => {
 
         await (service as any).handleBatch(payload)
 
-        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'AI_PROCESSING_FAILED', rawValue: null }))
+        expect(dlqProducer.publish).toHaveBeenCalledWith(
+            expect.objectContaining({ reason: 'AI_PROCESSING_FAILED', key: null, rawValue: null })
+        )
         expect(aiProjector.handleMessage).not.toHaveBeenCalled()
     })
 })

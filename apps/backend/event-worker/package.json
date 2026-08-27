@@ -8,12 +8,13 @@
         "start": "nest start",
         "start:dev": "nest start --watch",
         "start:prod": "node dist/main",
-        "pretest": "pnpm --filter @condev-monitor/animation-rum-contract build",
+        "pretest": "pnpm turbo build --filter=@condev-monitor/animation-rum-ingest",
         "test": "jest --config jest.config.cjs --runInBand"
     },
     "dependencies": {
         "@clickhouse/client": "^1.12.1",
         "@condev-monitor/animation-rum-contract": "workspace:*",
+        "@condev-monitor/animation-rum-ingest": "workspace:*",
         "@huggingface/transformers": "^3.4.1",
         "@nestjs/common": "^11.0.1",
         "@nestjs/config": "^4.0.2",

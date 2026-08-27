@@ -4,6 +4,8 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config'
 import { Consumer, EachBatchPayload, Kafka } from 'kafkajs'
 
+// cspell:ignore animationrum contractversion snapshotschemaversion
+
 import { resolveClickhouseDatabase } from '../../shared/clickhouse-utils'
 import { EventRow, KafkaEventEnvelope } from '../../shared/ingest-types'
 import { formatDateTimeForCH } from '../../utils/datetime'
@@ -193,7 +195,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
     private safeParseEnvelope(
         value: Buffer | null,
         fallback?: LegacyEnvelopeFallback
-    ): { ok: true; value: KafkaEventEnvelope } | { ok: false } {
+    ): { ok: true; value: KafkaEventEnvelope; rawEnvelope: Record<string, unknown> } | { ok: false } {
         if (!value) return { ok: false }
         try {
             const raw = value.toString()
@@ -223,6 +225,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
                       : new Date(0).toISOString()
             return {
                 ok: true,
+                rawEnvelope: parsed as Record<string, unknown>,
                 value: {
                     ...parsed,
                     schemaVersion: parsed.schemaVersion ?? 1,
@@ -268,12 +271,13 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
             } catch (err) {
                 this.logger.warn(`AI event parsing failed at offset=${message.offset}: ${err instanceof Error ? err.message : String(err)}`)
                 try {
+                    const redactAnimationRum = shouldRedactInvalidEnvelope(message.value)
                     await this.dlqProducer.publish({
                         originalTopic: batch.topic,
                         originalOffset: message.offset,
-                        key: message.key?.toString() ?? null,
+                        key: redactAnimationRum ? null : (message.key?.toString() ?? null),
                         reason: 'AI_PROCESSING_FAILED',
-                        rawValue: shouldRedactInvalidEnvelope(message.value) ? null : rawValue,
+                        rawValue: redactAnimationRum ? null : rawValue,
                     })
                     resolveOffset(message.offset)
                     await markProcessed()
@@ -295,7 +299,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
                     await this.dlqProducer.publish({
                         originalTopic: batch.topic,
                         originalOffset: message.offset,
-                        key: message.key?.toString() ?? null,
+                        key: null,
                         reason: 'ANIMATION_RUM_WRONG_TOPIC',
                         rawValue: null,
                     })
@@ -319,12 +323,13 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
                     `AI event processing failed at offset=${message.offset}: ${err instanceof Error ? err.message : String(err)}`
                 )
                 try {
+                    const redactAnimationRum = shouldRedactInvalidEnvelope(message.value)
                     await this.dlqProducer.publish({
                         originalTopic: batch.topic,
                         originalOffset: message.offset,
-                        key: message.key?.toString() ?? null,
+                        key: redactAnimationRum ? null : (message.key?.toString() ?? null),
                         reason: 'AI_PROCESSING_FAILED',
-                        rawValue: shouldRedactInvalidEnvelope(message.value) ? null : rawValue,
+                        rawValue: redactAnimationRum ? null : rawValue,
                     })
                     resolveOffset(message.offset)
                 } catch (dlqErr) {
@@ -374,7 +379,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
                     await this.dlqProducer.publish({
                         originalTopic: batch.topic,
                         originalOffset: message.offset,
-                        key: message.key?.toString() ?? null,
+                        key: redactRawValue ? null : (message.key?.toString() ?? null),
                         reason: 'INVALID_JSON',
                         // Animation candidates can contain arbitrary PII, even when their marker is
                         // Unicode-escaped or the JSON is truncated. Generic malformed events keep the
@@ -393,9 +398,12 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
                 continue
             }
 
-            if (isAnimationRumEnvelopeCandidate(parsed.value, message.value?.toString())) {
+            if (isAnimationRumEnvelopeCandidate(parsed.rawEnvelope as AnimationRumCandidate, message.value?.toString())) {
                 try {
-                    await this.animationRumProjector.handleEnvelope(parsed.value)
+                    await this.animationRumProjector.handleEnvelope(parsed.value, {
+                        rawEnvelope: parsed.rawEnvelope,
+                        messageKey: message.key?.toString() ?? null,
+                    })
                     resolveOffset(message.offset)
                 } catch (err) {
                     if (!(err instanceof AnimationRumValidationError)) throw err
@@ -403,7 +411,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
                         await this.dlqProducer.publish({
                             originalTopic: batch.topic,
                             originalOffset: message.offset,
-                            key: message.key?.toString() ?? null,
+                            key: null,
                             reason: `INVALID_ANIMATION_RUM:${err.codes.join(',')}`.slice(0, 240),
                             // Invalid RUM may contain PII; never copy it into the DLQ.
                             rawValue: null,

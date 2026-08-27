@@ -4,7 +4,7 @@
     "private": true,
     "packageManager": "pnpm@10.10.0",
     "scripts": {
-        "prestart:dev": "pnpm --filter @condev-monitor/animation-rum-contract build",
+        "prestart:dev": "pnpm turbo build --filter=@condev-monitor/animation-rum-ingest",
         "start:dev": "turbo start:dev",
         "start:fro": "pnpm --filter @condev-monitor/monitor-client dev",
         "examples:aisdk-rag-chatbox": "pnpm turbo build --filter=@condev-monitor/nextjs && pnpm --filter aisdk-rag-chatbox dev",
