@@ -37,9 +37,49 @@ type LegacyEnvelopeFallback = {
  */
 function shouldRedactInvalidEnvelope(value: Buffer | null): boolean {
     if (!value) return false
-    const raw = value.toString()
-    const unicodeDecoded = raw.replace(/\\u([0-9a-fA-F]{4})/gu, (_match, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
-    return unicodeDecoded.includes('animation_rum') || unicodeDecoded.includes('animation-rum-v1')
+    const unicodeDecoded = decodeJsonUnicode(value.toString())
+    const normalized = unicodeDecoded.toLowerCase()
+    return normalized.includes('animation_rum') || normalized.includes('animation-rum') || normalized.includes('animationrum')
+}
+
+function decodeJsonUnicode(raw: string): string {
+    return raw.replace(/\\u([0-9a-fA-F]{4})/gu, (_match, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function hasReservedAnimationRumSource(source: unknown): source is string {
+    return typeof source === 'string' && /^animation-rum(?:-|$)/iu.test(source)
+}
+
+type AnimationRumCandidate = Partial<KafkaEventEnvelope> & { event_type?: unknown }
+
+function isAnimationRumEnvelopeCandidate(value: AnimationRumCandidate, raw?: string): boolean {
+    if (hasReservedAnimationRumSource(value.source)) return true
+    const isAnimationEvent = value.eventType === 'animation_rum' || value.event_type === 'animation_rum'
+    const hasRootVersionMarker =
+        Object.prototype.hasOwnProperty.call(value, 'contractVersion') ||
+        Object.prototype.hasOwnProperty.call(value, 'snapshotSchemaVersion')
+    if (isAnimationEvent && hasRootVersionMarker) return true
+    if (isRecord(value.info)) {
+        const hasDirectMarker =
+            Object.prototype.hasOwnProperty.call(value.info, 'animationRum') ||
+            (isAnimationEvent &&
+                (Object.prototype.hasOwnProperty.call(value.info, 'contractVersion') ||
+                    Object.prototype.hasOwnProperty.call(value.info, 'snapshotSchemaVersion')))
+        if (hasDirectMarker) return true
+    }
+    if (!raw) return false
+
+    // A syntactically valid generic envelope can still accidentally wrap a v2
+    // report several levels below info. Scan only closed marker keys/source
+    // values in the already-bounded Kafka body; never inspect or retain values.
+    const normalized = decodeJsonUnicode(raw).toLowerCase()
+    if (/"animationrum"\s*:/u.test(normalized)) return true
+    if (/"source"\s*:\s*"animation-rum(?:-|")/u.test(normalized)) return true
+    return isAnimationEvent && /"(?:contractversion|snapshotschemaversion)"\s*:/u.test(normalized)
 }
 
 @Injectable()
@@ -164,7 +204,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
             }
             if (parsed.source !== undefined && typeof parsed.source !== 'string') return { ok: false }
 
-            const isAnimationEnvelope = parsed.source === 'animation-rum-v1'
+            const isAnimationEnvelope = isAnimationRumEnvelopeCandidate(parsed, raw)
             if (isAnimationEnvelope && (parsed.schemaVersion !== 1 || typeof parsed.eventId !== 'string' || !parsed.eventId)) {
                 return { ok: false }
             }
@@ -206,16 +246,73 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
     private async handleAiBatch(payload: EachBatchPayload): Promise<void> {
         const { batch, resolveOffset, heartbeat, commitOffsetsIfNecessary, isRunning, isStale } = payload
         let processedSinceHeartbeat = 0
+        const markProcessed = async () => {
+            processedSinceHeartbeat += 1
+            if (processedSinceHeartbeat >= 100) {
+                await heartbeat()
+                processedSinceHeartbeat = 0
+            }
+        }
 
         for (const message of batch.messages) {
             if (!isRunning() || isStale()) break
             if (!message.value) {
                 resolveOffset(message.offset)
+                await markProcessed()
                 continue
             }
+            const rawValue = message.value.toString()
+            let decoded: unknown
             try {
-                const aiPayload = JSON.parse(message.value.toString()) as AiEventPayload
-                await this.aiProjector.handleMessage(aiPayload)
+                decoded = JSON.parse(rawValue) as unknown
+            } catch (err) {
+                this.logger.warn(`AI event parsing failed at offset=${message.offset}: ${err instanceof Error ? err.message : String(err)}`)
+                try {
+                    await this.dlqProducer.publish({
+                        originalTopic: batch.topic,
+                        originalOffset: message.offset,
+                        key: message.key?.toString() ?? null,
+                        reason: 'AI_PROCESSING_FAILED',
+                        rawValue: shouldRedactInvalidEnvelope(message.value) ? null : rawValue,
+                    })
+                    resolveOffset(message.offset)
+                    await markProcessed()
+                } catch (dlqErr) {
+                    this.logger.error(
+                        `DLQ publish failed for AI event at offset=${message.offset}, stopping batch`,
+                        dlqErr instanceof Error ? dlqErr.stack : String(dlqErr)
+                    )
+                    break
+                }
+                continue
+            }
+
+            const misplacedAnimationRum =
+                (isRecord(decoded) && isAnimationRumEnvelopeCandidate(decoded as AnimationRumCandidate, rawValue)) ||
+                (!isRecord(decoded) && shouldRedactInvalidEnvelope(message.value))
+            if (misplacedAnimationRum) {
+                try {
+                    await this.dlqProducer.publish({
+                        originalTopic: batch.topic,
+                        originalOffset: message.offset,
+                        key: message.key?.toString() ?? null,
+                        reason: 'ANIMATION_RUM_WRONG_TOPIC',
+                        rawValue: null,
+                    })
+                    resolveOffset(message.offset)
+                    await markProcessed()
+                } catch (dlqErr) {
+                    this.logger.error(
+                        `DLQ publish failed for misplaced animation RUM at offset=${message.offset}, stopping batch`,
+                        dlqErr instanceof Error ? dlqErr.stack : String(dlqErr)
+                    )
+                    break
+                }
+                continue
+            }
+
+            try {
+                await this.aiProjector.handleMessage(decoded as AiEventPayload)
                 resolveOffset(message.offset)
             } catch (err) {
                 this.logger.warn(
@@ -227,7 +324,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
                         originalOffset: message.offset,
                         key: message.key?.toString() ?? null,
                         reason: 'AI_PROCESSING_FAILED',
-                        rawValue: message.value.toString(),
+                        rawValue: shouldRedactInvalidEnvelope(message.value) ? null : rawValue,
                     })
                     resolveOffset(message.offset)
                 } catch (dlqErr) {
@@ -238,11 +335,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
                     break
                 }
             }
-            processedSinceHeartbeat += 1
-            if (processedSinceHeartbeat >= 100) {
-                await heartbeat()
-                processedSinceHeartbeat = 0
-            }
+            await markProcessed()
         }
 
         await commitOffsetsIfNecessary()
@@ -257,6 +350,13 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
         const { batch, resolveOffset, heartbeat, commitOffsetsIfNecessary, isRunning, isStale } = payload
 
         let processedSinceHeartbeat = 0
+        const markProcessed = async () => {
+            processedSinceHeartbeat += 1
+            if (processedSinceHeartbeat >= 100) {
+                await heartbeat()
+                processedSinceHeartbeat = 0
+            }
+        }
 
         for (const message of batch.messages) {
             if (!isRunning() || isStale()) break
@@ -282,6 +382,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
                         rawValue: redactRawValue ? null : (message.value?.toString() ?? null),
                     })
                     resolveOffset(message.offset)
+                    await markProcessed()
                 } catch (dlqErr) {
                     this.logger.error(
                         `DLQ publish failed, stopping batch to let Kafka redeliver offset=${message.offset}`,
@@ -292,7 +393,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
                 continue
             }
 
-            if (parsed.value.source === 'animation-rum-v1') {
+            if (isAnimationRumEnvelopeCandidate(parsed.value, message.value?.toString())) {
                 try {
                     await this.animationRumProjector.handleEnvelope(parsed.value)
                     resolveOffset(message.offset)
@@ -316,11 +417,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
                         break
                     }
                 }
-                processedSinceHeartbeat += 1
-                if (processedSinceHeartbeat >= 100) {
-                    await heartbeat()
-                    processedSinceHeartbeat = 0
-                }
+                await markProcessed()
                 continue
             }
 
@@ -349,11 +446,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
             await this.bufferManager.route(row)
             resolveOffset(message.offset)
 
-            processedSinceHeartbeat += 1
-            if (processedSinceHeartbeat >= 100) {
-                await heartbeat()
-                processedSinceHeartbeat = 0
-            }
+            await markProcessed()
         }
 
         // Critical lane: always flush immediately

@@ -11,6 +11,7 @@ ENV PNPM_CONFIG_PRODUCTION=false
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/backend/event-worker/package.json ./apps/backend/event-worker/package.json
+COPY packages/animation-rum-contract/package.json ./packages/animation-rum-contract/package.json
 
 RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i --frozen-lockfile
 
@@ -21,7 +22,7 @@ COPY --from=deps /app/apps/backend/event-worker/node_modules ./apps/backend/even
 COPY --from=deps /corepack /corepack
 COPY . .
 
-RUN corepack enable pnpm && pnpm --filter event-worker build
+RUN corepack enable pnpm && pnpm --filter @condev-monitor/animation-rum-contract build && pnpm --filter event-worker build
 
 FROM base AS prod-deps
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
@@ -32,6 +33,7 @@ ENV PNPM_CONFIG_PRODUCTION=true
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/backend/event-worker/package.json ./apps/backend/event-worker/package.json
+COPY packages/animation-rum-contract/package.json ./packages/animation-rum-contract/package.json
 
 RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i --prod --frozen-lockfile --ignore-scripts
 
@@ -44,6 +46,8 @@ ENV PORT=8083
 
 COPY --from=builder /app/apps/backend/event-worker/dist ./dist
 COPY --from=builder /app/apps/backend/event-worker/package.json ./package.json
+COPY --from=builder /app/packages/animation-rum-contract/package.json /app/packages/animation-rum-contract/package.json
+COPY --from=builder /app/packages/animation-rum-contract/build /app/packages/animation-rum-contract/build
 COPY --from=prod-deps /app/node_modules /app/node_modules
 COPY --from=prod-deps /app/apps/backend/event-worker/node_modules ./node_modules
 

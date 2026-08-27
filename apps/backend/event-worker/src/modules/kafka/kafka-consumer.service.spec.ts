@@ -66,6 +66,7 @@ describe('KafkaConsumerService', () => {
             clickhouseWriter,
             dlqProducer,
             bufferManager,
+            aiProjector,
             animationRumProjector,
         }
     }
@@ -91,6 +92,31 @@ describe('KafkaConsumerService', () => {
         info: { type: 'TypeError' },
         receivedAt: new Date().toISOString(),
         source: 'browser-sdk',
+    }
+
+    const singleMessageBatch = (body: unknown, offset = 'rum-v2') => {
+        const resolveOffset = jest.fn()
+        return {
+            resolveOffset,
+            payload: {
+                batch: {
+                    topic: 'monitor.sdk.events.v1',
+                    partition: 0,
+                    messages: [
+                        {
+                            offset,
+                            key: Buffer.from('app-1'),
+                            value: Buffer.from(typeof body === 'string' ? body : JSON.stringify(body)),
+                        },
+                    ],
+                },
+                resolveOffset,
+                heartbeat: jest.fn().mockResolvedValue(undefined),
+                commitOffsetsIfNecessary: jest.fn().mockResolvedValue(undefined),
+                isRunning: () => true,
+                isStale: () => false,
+            },
+        }
     }
 
     it('builds a deterministic issue id for the same appId + fingerprint pair', async () => {
@@ -457,5 +483,198 @@ describe('KafkaConsumerService', () => {
 
         expect(bufferManager.route).not.toHaveBeenCalled()
         expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', rawValue: null }))
+    })
+
+    it('routes a v2 payload inside the v1 Kafka transport envelope without touching generic events', async () => {
+        const { service, dlqProducer, bufferManager, animationRumProjector } = makeService()
+        const { payload, resolveOffset } = singleMessageBatch({
+            schemaVersion: 1,
+            eventId: 'event_12345678',
+            appId: 'app-1',
+            eventType: 'animation_rum',
+            message: '',
+            info: { animationRum: { contractVersion: 2, snapshotSchemaVersion: 1 } },
+            receivedAt: new Date().toISOString(),
+            source: 'animation-rum-v2',
+        })
+
+        await (service as any).handleBatch(payload)
+
+        expect(animationRumProjector.handleEnvelope).toHaveBeenCalledWith(expect.objectContaining({ source: 'animation-rum-v2' }))
+        expect(resolveOffset).toHaveBeenCalledWith('rum-v2')
+        expect(bufferManager.route).not.toHaveBeenCalled()
+        expect(dlqProducer.publish).not.toHaveBeenCalled()
+    })
+
+    it.each([
+        ['reserved unknown source', { source: 'animation-rum-v9', eventType: 'custom', info: { privateValue: 'secret' } }],
+        [
+            'nested v2 report on a generic source',
+            { source: 'browser-sdk', eventType: 'animation_rum', info: { animationRum: { contractVersion: 2 } } },
+        ],
+        [
+            'root v2 markers on a generic source',
+            { source: 'browser-sdk', eventType: 'animation_rum', info: { privateValue: 'secret' }, contractVersion: 2 },
+        ],
+        [
+            'a deeply wrapped v2 report on a generic custom event',
+            {
+                source: 'browser-sdk',
+                eventType: 'custom',
+                info: { payload: { animationRum: { contractVersion: 2, userEmail: 'must-not-copy@example.test' } } },
+            },
+        ],
+    ])('fails closed and redacts %s', async (_name, candidate) => {
+        const { service, dlqProducer, bufferManager, animationRumProjector } = makeService()
+        animationRumProjector.handleEnvelope.mockRejectedValue(new AnimationRumValidationError(['unsupported_animation_rum_source']))
+        const { payload, resolveOffset } = singleMessageBatch({
+            schemaVersion: 1,
+            eventId: 'event_12345678',
+            appId: 'app-1',
+            message: '',
+            receivedAt: new Date().toISOString(),
+            ...candidate,
+        })
+
+        await (service as any).handleBatch(payload)
+
+        expect(animationRumProjector.handleEnvelope).toHaveBeenCalledTimes(1)
+        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ rawValue: null }))
+        expect(resolveOffset).toHaveBeenCalledWith('rum-v2')
+        expect(bufferManager.route).not.toHaveBeenCalled()
+    })
+
+    it('redacts malformed v2 JSON with a Unicode-escaped reserved source', async () => {
+        const { service, dlqProducer, bufferManager } = makeService()
+        const { payload } = singleMessageBatch('{"source":"animation-rum-v\\u0032","userEmail":"must-not-copy@example.test"')
+
+        await (service as any).handleBatch(payload)
+
+        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'INVALID_JSON', rawValue: null }))
+        expect(bufferManager.route).not.toHaveBeenCalled()
+    })
+
+    it('leaves a v2 offset unresolved when ClickHouse projection fails', async () => {
+        const { service, dlqProducer, bufferManager, animationRumProjector } = makeService()
+        animationRumProjector.handleEnvelope.mockRejectedValue(new Error('clickhouse unavailable'))
+        const { payload, resolveOffset } = singleMessageBatch({
+            schemaVersion: 1,
+            eventId: 'event_12345678',
+            appId: 'app-1',
+            eventType: 'animation_rum',
+            message: '',
+            info: { animationRum: { contractVersion: 2 } },
+            receivedAt: new Date().toISOString(),
+            source: 'animation-rum-v2',
+        })
+
+        await expect((service as any).handleBatch(payload)).rejects.toThrow('clickhouse unavailable')
+        expect(resolveOffset).not.toHaveBeenCalled()
+        expect(dlqProducer.publish).not.toHaveBeenCalled()
+        expect(bufferManager.route).not.toHaveBeenCalled()
+    })
+
+    it('leaves an invalid v2 offset unresolved when redacted DLQ publication fails', async () => {
+        const { service, dlqProducer, bufferManager, animationRumProjector } = makeService()
+        animationRumProjector.handleEnvelope.mockRejectedValue(new AnimationRumValidationError(['forbidden_field']))
+        dlqProducer.publish.mockRejectedValue(new Error('dlq unavailable'))
+        const { payload, resolveOffset } = singleMessageBatch({
+            schemaVersion: 1,
+            eventId: 'event_12345678',
+            appId: 'app-1',
+            eventType: 'animation_rum',
+            message: '',
+            info: { animationRum: { userEmail: 'must-not-copy@example.test' } },
+            receivedAt: new Date().toISOString(),
+            source: 'animation-rum-v2',
+        })
+
+        await (service as any).handleBatch(payload)
+
+        expect(resolveOffset).not.toHaveBeenCalled()
+        expect(bufferManager.route).not.toHaveBeenCalled()
+    })
+
+    it('keeps ordinary AI events on the AI projector lane', async () => {
+        const { service, dlqProducer, aiProjector } = makeService()
+        const { payload, resolveOffset } = singleMessageBatch({ traceId: 'trace-123', eventType: 'ai_span' }, 'ai-normal')
+        payload.batch.topic = 'condev.ai.events'
+
+        await (service as any).handleBatch(payload)
+
+        expect(aiProjector.handleMessage).toHaveBeenCalledWith(expect.objectContaining({ traceId: 'trace-123' }))
+        expect(resolveOffset).toHaveBeenCalledWith('ai-normal')
+        expect(dlqProducer.publish).not.toHaveBeenCalled()
+    })
+
+    it('redacts animation RUM that is misplaced on the AI topic', async () => {
+        const { service, dlqProducer, aiProjector, animationRumProjector } = makeService()
+        const { payload, resolveOffset } = singleMessageBatch(
+            {
+                schemaVersion: 1,
+                eventId: 'event_12345678',
+                appId: 'app-1',
+                eventType: 'animation_rum',
+                info: { animationRum: { contractVersion: 2, userEmail: 'must-not-copy@example.test' } },
+                source: 'animation-rum-v2',
+            },
+            'ai-misroute'
+        )
+        payload.batch.topic = 'condev.ai.events'
+
+        await (service as any).handleBatch(payload)
+
+        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'ANIMATION_RUM_WRONG_TOPIC', rawValue: null }))
+        expect(resolveOffset).toHaveBeenCalledWith('ai-misroute')
+        expect(aiProjector.handleMessage).not.toHaveBeenCalled()
+        expect(animationRumProjector.handleEnvelope).not.toHaveBeenCalled()
+    })
+
+    it('redacts a snake-case tracking wrapper that is misplaced on the AI topic', async () => {
+        const { service, dlqProducer, aiProjector } = makeService()
+        const { payload, resolveOffset } = singleMessageBatch(
+            {
+                event_type: 'animation_rum',
+                contractVersion: 2,
+                userEmail: 'must-not-copy@example.test',
+            },
+            'ai-snake-misroute'
+        )
+        payload.batch.topic = 'condev.ai.events'
+
+        await (service as any).handleBatch(payload)
+
+        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'ANIMATION_RUM_WRONG_TOPIC', rawValue: null }))
+        expect(resolveOffset).toHaveBeenCalledWith('ai-snake-misroute')
+        expect(aiProjector.handleMessage).not.toHaveBeenCalled()
+    })
+
+    it('heartbeats while redacting a large batch of animation messages misplaced on the AI topic', async () => {
+        const { service, dlqProducer, aiProjector } = makeService()
+        const { payload, resolveOffset } = singleMessageBatch({ event_type: 'animation_rum', contractVersion: 2 }, 'ai-misroute-0')
+        payload.batch.topic = 'condev.ai.events'
+        payload.batch.messages = Array.from({ length: 100 }, (_, index) => ({
+            offset: `ai-misroute-${index}`,
+            key: Buffer.from('app-1'),
+            value: Buffer.from(JSON.stringify({ event_type: 'animation_rum', contractVersion: 2 })),
+        }))
+
+        await (service as any).handleBatch(payload)
+
+        expect(dlqProducer.publish).toHaveBeenCalledTimes(100)
+        expect(resolveOffset).toHaveBeenCalledTimes(100)
+        expect(payload.heartbeat).toHaveBeenCalledTimes(2)
+        expect(aiProjector.handleMessage).not.toHaveBeenCalled()
+    })
+
+    it('redacts malformed animation markers on the AI topic', async () => {
+        const { service, dlqProducer, aiProjector } = makeService()
+        const { payload } = singleMessageBatch('{"source":"animation-rum-v\\u0032","userEmail":"must-not-copy@example.test"', 'ai-bad')
+        payload.batch.topic = 'condev.ai.events'
+
+        await (service as any).handleBatch(payload)
+
+        expect(dlqProducer.publish).toHaveBeenCalledWith(expect.objectContaining({ reason: 'AI_PROCESSING_FAILED', rawValue: null }))
+        expect(aiProjector.handleMessage).not.toHaveBeenCalled()
     })
 })

@@ -1,3 +1,5 @@
+import { createAnimationRumV2GoldenReport } from '@condev-monitor/animation-rum-contract/testing'
+
 import { ANIMATION_RUM_FAMILIES } from '../../shared/animation-rum-v1'
 import { AnimationRumProjectorService, AnimationRumValidationError } from './animation-rum-projector.service'
 
@@ -62,6 +64,59 @@ describe('AnimationRumProjectorService', () => {
 
         await expect(service.handleEnvelope(envelope({ schemaVersion: 2 }) as any)).rejects.toBeInstanceOf(AnimationRumValidationError)
         expect(writer.insertAnimationRum).not.toHaveBeenCalled()
+    })
+
+    it('revalidates and projects a normalized v2 envelope', async () => {
+        const rum = createAnimationRumV2GoldenReport()
+        rum.capturedAt = new Date().toISOString()
+        const writer = {
+            insertAnimationRum: jest.fn(),
+            insertAnimationRumV2: jest.fn().mockResolvedValue(undefined),
+        }
+        const service = new AnimationRumProjectorService(writer as any)
+
+        await service.handleEnvelope({
+            schemaVersion: 1,
+            eventId: rum.eventId,
+            appId: 'app-12345678',
+            eventType: 'animation_rum',
+            message: '',
+            info: { animationRum: rum },
+            sdkVersion: rum.sdkVersion,
+            environment: rum.environment,
+            release: rum.release,
+            receivedAt: new Date().toISOString(),
+            source: 'animation-rum-v2',
+        })
+
+        expect(writer.insertAnimationRum).not.toHaveBeenCalled()
+        expect(writer.insertAnimationRumV2).toHaveBeenCalledWith(
+            'app-12345678',
+            expect.objectContaining({ contractVersion: 2, captureId: 'capture_12345678' }),
+            expect.stringMatching(/Z$/)
+        )
+    })
+
+    it('fails closed on unknown animation source versions', async () => {
+        const writer = { insertAnimationRum: jest.fn(), insertAnimationRumV2: jest.fn() }
+        const service = new AnimationRumProjectorService(writer as any)
+
+        await expect(service.handleEnvelope(envelope({ source: 'animation-rum-v9' }) as any)).rejects.toMatchObject({
+            codes: expect.arrayContaining(['unsupported_animation_rum_source']),
+        })
+        expect(writer.insertAnimationRum).not.toHaveBeenCalled()
+        expect(writer.insertAnimationRumV2).not.toHaveBeenCalled()
+    })
+
+    it('rejects source and normalized contract version mismatches', async () => {
+        const writer = { insertAnimationRum: jest.fn(), insertAnimationRumV2: jest.fn() }
+        const service = new AnimationRumProjectorService(writer as any)
+
+        await expect(service.handleEnvelope(envelope({ source: 'animation-rum-v2' }) as any)).rejects.toMatchObject({
+            codes: expect.arrayContaining(['unsupported_contract_version']),
+        })
+        expect(writer.insertAnimationRum).not.toHaveBeenCalled()
+        expect(writer.insertAnimationRumV2).not.toHaveBeenCalled()
     })
 
     it('rejects poison envelope metadata before it reaches ClickHouse', async () => {

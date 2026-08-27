@@ -183,6 +183,9 @@ importers:
       '@clickhouse/client':
         specifier: ^1.12.1
         version: 1.13.0
+      '@condev-monitor/animation-rum-contract':
+        specifier: workspace:*
+        version: link:../../../packages/animation-rum-contract
       '@huggingface/transformers':
         specifier: ^3.4.1
         version: 3.8.1
