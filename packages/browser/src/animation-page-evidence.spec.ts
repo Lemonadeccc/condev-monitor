@@ -168,6 +168,30 @@ function evidenceWindow(reducedMotion = true): Window {
 }
 
 describe('automatic animation page evidence', () => {
+    it('does not double-count the visibility event already sampled by a RUM boundary', async () => {
+        jest.useFakeTimers()
+        const windowValue = evidenceWindow(false)
+        const documentValue = new EvidenceDocument(windowValue)
+        const controller = createAutomaticAnimationPageEvidence({
+            document: documentValue as unknown as Document,
+            window: windowValue,
+            sink: { recordMediaStats: () => true },
+        })
+
+        controller.start()
+        expect(controller.snapshot().sampleCount).toBe(1)
+        expect(controller.captureBoundary().sampleCount).toBe(2)
+        documentValue.dispatch('visibilitychange')
+        expect(controller.snapshot().sampleCount).toBe(2)
+
+        await Promise.resolve()
+        documentValue.visibilityState = 'visible'
+        documentValue.dispatch('visibilitychange')
+        expect(controller.snapshot().sampleCount).toBe(3)
+        controller.dispose()
+        jest.useRealTimers()
+    })
+
     it('collects bounded anonymous page evidence, emits video samples, and cleans up every observer', () => {
         jest.useFakeTimers()
         const windowValue = evidenceWindow(true)
