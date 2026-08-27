@@ -32,6 +32,8 @@ test('package exports resolve for ESM, CommonJS, and declarations', async () => 
     assert.equal(typeof cjs.createWebGpuTimestampTimer, 'function')
     assert.equal(typeof esm.createCanvas2dRecorder, 'function')
     assert.equal(typeof cjs.createCanvas2dRecorder, 'function')
+    assert.equal(typeof esm.createWebGpuTransferRecorder, 'function')
+    assert.equal(typeof cjs.createWebGpuTransferRecorder, 'function')
 })
 
 test('runtime bundle contains no blocking, scheduling, or context-destroy calls', () => {
@@ -49,4 +51,12 @@ test('runtime bundle contains no blocking, scheduling, or context-destroy calls'
         assert.doesNotMatch(source, /@webgpu\/types/u)
         assert.doesNotMatch(source, /@condev-monitor\/monitor-sdk-(?:animation|browser)/u)
     }
+})
+
+test('WebGPU transfer recorder never owns application resource or queue methods', () => {
+    const source = readFileSync(resolve(packageDirectory, 'src/webgpu-transfer-recorder.ts'), 'utf8')
+    assert.doesNotMatch(source, /\.(?:mapAsync|getMappedRange|unmap|destroy|finish|submit|onSubmittedWorkDone)\s*\(/u)
+    assert.doesNotMatch(source, /\.(?:writeBuffer|writeTexture|copyExternalImageToTexture)\s*\(/u)
+    assert.doesNotMatch(source, /requestAnimationFrame|setInterval|setTimeout|new Proxy\s*\(/u)
+    assert.doesNotMatch(source, /GPUQueue\.prototype|GPUBuffer\.prototype|GPUCommandEncoder\.prototype/u)
 })
