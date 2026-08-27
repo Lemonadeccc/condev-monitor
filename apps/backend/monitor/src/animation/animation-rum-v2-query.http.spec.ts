@@ -7,6 +7,7 @@ import * as request from 'supertest'
 
 import { createMonitorValidationPipe } from '../common/validation/monitor-validation.pipe'
 import { AnimationRumV2JwtGuard } from './animation-rum-v2-jwt.guard'
+import { AnimationRumV2PipelineService } from './animation-rum-v2-pipeline.service'
 import { AnimationRumV2QueryController } from './animation-rum-v2-query.controller'
 import { AnimationRumV2QueryService } from './animation-rum-v2-query.service'
 import { AnimationRumV2ReadThrottleGuard } from './animation-rum-v2-read-throttle.guard'
@@ -36,6 +37,9 @@ describe('Animation RUM v2 query HTTP boundary', () => {
         captures: jest.fn(),
         capture: jest.fn(),
     }
+    const pipelineDiagnostics = {
+        read: jest.fn(),
+    }
     const throttle = {
         consume: jest.fn(),
     }
@@ -50,6 +54,7 @@ describe('Animation RUM v2 query HTTP boundary', () => {
                 FixtureJwtStrategy,
                 { provide: AnimationRumV2ReadThrottleService, useValue: throttle },
                 { provide: AnimationRumV2QueryService, useValue: queries },
+                { provide: AnimationRumV2PipelineService, useValue: pipelineDiagnostics },
             ],
         }).compile()
         app = module.createNestApplication()
@@ -62,6 +67,7 @@ describe('Animation RUM v2 query HTTP boundary', () => {
         queries.summary.mockReset().mockResolvedValue({ captures: { observed: 0 } })
         queries.captures.mockReset().mockResolvedValue({ captures: [] })
         queries.capture.mockReset().mockResolvedValue({ capture: { captureId: 'capture_12345678' } })
+        pipelineDiagnostics.read.mockReset().mockResolvedValue({ status: 'idle' })
         throttle.consume.mockReset().mockReturnValue({ allowed: true, remaining: 59, retryAfterSeconds: 0 })
     })
 
@@ -71,18 +77,37 @@ describe('Animation RUM v2 query HTTP boundary', () => {
 
     const auth = () => `Bearer ${new JwtService({ secret: JWT_SECRET }).sign({ sub: 41 })}`
 
-    it('rejects unauthenticated reads and marks them non-cacheable', async () => {
+    it.each(['/api/animation/rum-v2/summary?appId=vanillaFixture1', '/api/animation/rum-v2/pipeline?appId=vanillaFixture1'])(
+        'rejects unauthenticated reads and marks them non-cacheable: %s',
+        async endpoint => {
+            await request(app.getHttpServer())
+                .get(endpoint)
+                .expect(401)
+                .expect('Cache-Control', 'private, no-store')
+                .expect('Pragma', 'no-cache')
+            expect(queries.summary).not.toHaveBeenCalled()
+            expect(pipelineDiagnostics.read).not.toHaveBeenCalled()
+            expect(throttle.consume).not.toHaveBeenCalled()
+        }
+    )
+
+    it('returns the bounded pipeline diagnostic for the authenticated actor', async () => {
         await request(app.getHttpServer())
-            .get('/api/animation/rum-v2/summary?appId=vanillaFixture1')
-            .expect(401)
+            .get('/api/animation/rum-v2/pipeline?appId=vanillaFixture1')
+            .set('Authorization', auth())
+            .expect(200)
+            .expect('RateLimit-Remaining', '59')
             .expect('Cache-Control', 'private, no-store')
             .expect('Pragma', 'no-cache')
-        expect(queries.summary).not.toHaveBeenCalled()
-        expect(throttle.consume).not.toHaveBeenCalled()
+            .expect({ success: true, data: { status: 'idle' } })
+
+        expect(pipelineDiagnostics.read).toHaveBeenCalledWith(41, 'vanillaFixture1')
     })
 
     it.each([
         '/api/animation/rum-v2/summary?appId=vanillaFixture1&unexpected=value',
+        '/api/animation/rum-v2/pipeline?appId=vanillaFixture1&unexpected=value',
+        '/api/animation/rum-v2/pipeline',
         '/api/animation/rum-v2/summary?appId=vanillaFixture1&from=2026-08-26',
         '/api/animation/rum-v2/captures?appId=vanillaFixture1&limit=101',
         `/api/animation/rum-v2/captures/${encodeURIComponent('../events')}?appId=vanillaFixture1`,
@@ -96,6 +121,7 @@ describe('Animation RUM v2 query HTTP boundary', () => {
         expect(queries.summary).not.toHaveBeenCalled()
         expect(queries.captures).not.toHaveBeenCalled()
         expect(queries.capture).not.toHaveBeenCalled()
+        expect(pipelineDiagnostics.read).not.toHaveBeenCalled()
     })
 
     it('uses the JWT actor and typed pagination for a valid request', async () => {
@@ -126,6 +152,7 @@ describe('Animation RUM v2 query HTTP boundary', () => {
 
     it.each([
         ['/api/animation/rum-v2/summary?appId=vanillaFixture1', 'vanillaFixture1'],
+        ['/api/animation/rum-v2/pipeline?appId=vanillaFixture1', 'vanillaFixture1'],
         ['/api/animation/rum-v2/captures?appId=unknownFixture1', 'unknownFixture1'],
         ['/api/animation/rum-v2/captures/capture_12345678?appId=unknownFixture1', 'unknownFixture1'],
     ])('rate-limits every read route without revealing app ownership: %s', async (endpoint, appId) => {
@@ -145,5 +172,6 @@ describe('Animation RUM v2 query HTTP boundary', () => {
         expect(queries.summary).not.toHaveBeenCalled()
         expect(queries.captures).not.toHaveBeenCalled()
         expect(queries.capture).not.toHaveBeenCalled()
+        expect(pipelineDiagnostics.read).not.toHaveBeenCalled()
     })
 })

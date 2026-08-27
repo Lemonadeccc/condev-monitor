@@ -16,7 +16,7 @@
         "pretest": "pnpm --filter @condev-monitor/animation-rum-contract build",
         "test": "jest",
         "pretest:animation-rum-v2:postgres": "pnpm --filter @condev-monitor/animation-rum-contract build",
-        "test:animation-rum-v2:postgres": "cross-env RUN_POSTGRES_INTEGRATION=1 jest animation/animation-rum-v2-control.postgres.spec.ts --runInBand",
+        "test:animation-rum-v2:postgres": "cross-env RUN_POSTGRES_INTEGRATION=1 jest animation/animation-rum-v2-control.postgres.spec.ts animation/animation-rum-v2-pipeline.postgres.spec.ts --runInBand",
         "test:watch": "jest --watch",
         "test:cov": "jest --coverage",
         "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
