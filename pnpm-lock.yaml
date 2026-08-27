@@ -1125,6 +1125,8 @@ importers:
 
   packages/animation-lab-explorer: {}
 
+  packages/animation-rum-contract: {}
+
   packages/browser:
     dependencies:
       '@condev-monitor/monitor-sdk-animation':
