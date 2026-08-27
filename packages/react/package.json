@@ -19,6 +19,16 @@
                 "types": "./build/types/index.d.ts",
                 "default": "./build/cjs/index.js"
             }
+        },
+        "./animation": {
+            "import": {
+                "types": "./build/types/animation.d.ts",
+                "default": "./build/esm/animation.mjs"
+            },
+            "require": {
+                "types": "./build/types/animation.d.ts",
+                "default": "./build/cjs/animation.js"
+            }
         }
     },
     "scripts": {

@@ -6,6 +6,6 @@
         "emitDeclarationOnly": true,
         "outDir": "build/types"
     },
-    "include": ["src/index.ts"],
+    "include": ["src/index.ts", "src/animation.ts"],
     "exclude": ["src/**/*.spec.ts"]
 }

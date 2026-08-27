@@ -2,6 +2,7 @@ import { defineConfig } from 'tsup'
 
 const entry = {
     index: 'src/index.ts',
+    animation: 'src/animation.ts',
 }
 
 const banner = { js: '"use client";' }

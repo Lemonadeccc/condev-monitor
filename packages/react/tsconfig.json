@@ -5,6 +5,7 @@
         "types": ["node"],
         "lib": ["DOM", "ESNext"],
         "module": "ESNext",
+        "moduleResolution": "bundler",
         "jsx": "react-jsx"
     }
 }
