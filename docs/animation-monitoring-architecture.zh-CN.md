@@ -534,6 +534,27 @@ Monitor backend 的读接口包括：
 
 Animation RUM 与其他监控表统一使用 `CLICKHOUSE_DATABASE` 指定的库；默认值是 `lemonade`，旧 `CLICKHOUSE_DB` 仅作为兼容回退。初始化脚本会在执行未限定库名的 schema 前校验并选择该数据库，Monitor、DSN 与 Event Worker 使用同一解析和标识符校验规则。
 
+### Animation RUM v2 真实发布门禁
+
+`pnpm test:animation-rum-v2:release` 串行执行两层真实数据测试：先验证 DSN admission → PostgreSQL Outbox → Kafka/Event Worker → ClickHouse，再验证 Monitor 对真实 ClickHouse 表的 summary、trend 和 projection-integrity 查询。门禁覆盖 GPU `measured: 0 ms` 不被当作空值、`unsupported: null`、六种指标状态计数，以及 event identity 不匹配的陈旧子行不能进入统计且详情返回 409。
+
+该命令不会自动执行 `docker:start`、`start:dev`，不会读取或修改 `.env`，也不会硬编码数据库凭据。运行前必须确保基础设施、DSN 和 Event Worker 已启动，并通过当前 shell 一次性提供以下变量：
+
+```sh
+TEST_POSTGRES_URL='<与当前 DSN 服务相同的测试数据库连接>' \
+TEST_CLICKHOUSE_URL='<ClickHouse HTTP 地址>' \
+TEST_CLICKHOUSE_USERNAME='<ClickHouse 用户>' \
+TEST_CLICKHOUSE_PASSWORD='<ClickHouse 密码，可为空>' \
+TEST_CLICKHOUSE_DATABASE='<ClickHouse 数据库>' \
+TEST_DSN_BASE_URL='<DSN 服务基地址>' \
+TEST_ANIMATION_RUM_V2_PIPELINE_WRITE_SENTINEL='condev-animation-rum-v2-pipeline-e2e' \
+pnpm test:animation-rum-v2:release
+```
+
+DSN 测试默认要求 Kafka transport；显式测试 direct ClickHouse fallback 时可另传 `TEST_ANIMATION_RUM_V2_EXPECTED_TRANSPORT=clickhouse`。每次运行只创建带随机前缀的应用与 capture，`finally` 中按精确 application/appId 清理 PostgreSQL 和三个 v2 ClickHouse 表，并用同步 mutation 加 `FINAL count()=0` 验证没有残留。`TEST_POSTGRES_URL` 若指向与运行中 DSN 不同的数据库，服务会正确返回 `RUM_V2_NOT_ENABLED`；这属于环境连接不一致，不是报告 schema 失败。
+
+Kafka 是追加日志，门禁不会也不能从共享 topic 中删除已经发布的测试消息；这些消息会保留到 topic retention 到期。如果 consumer group 被重置为从头消费，旧夹具可能再次投影。因此这条命令只允许连接本地或隔离的一次性测试 Kafka/topic，绝不能指向共享生产基础设施；需要严格零留存的 CI 应为每次运行提供隔离 topic/cluster，并在任务结束后销毁它。
+
 ## 仍未实现的证据层
 
 当前的 `not-instrumented`/`unsupported` 不是遗漏的 0。下列能力还需要单独实现和验证：

@@ -21,6 +21,7 @@
         "docker:init-postgres": "sh ./scripts/init-postgres.sh",
         "docker:init-clickhouse": "sh ./scripts/init-clickhouse.sh",
         "test:clickhouse-config": "node --test scripts/init-clickhouse.test.mjs",
+        "test:animation-rum-v2:release": "pnpm --filter dsn-server test:animation-rum-v2:pipeline && pnpm --filter monitor test:animation-rum-v2:clickhouse",
         "docker:init-kafka": "sh ./scripts/init-kafka-topics.sh",
         "docker:deploy": "sh ./scripts/deploy-stack.sh",
         "docker:deploy:stop": "docker compose -p condev-monitor -f .devcontainer/docker-compose.deply.yml down",
