@@ -114,6 +114,12 @@ function safeCount(value: unknown): number | null {
     return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= MAX_COUNT ? value : null
 }
 
+function performanceObserverDropQuality(value: unknown): { valid: boolean; partial: boolean } {
+    if (value === undefined || value === null) return { valid: true, partial: false }
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) return { valid: false, partial: false }
+    return { valid: true, partial: value > 0 }
+}
+
 function safeNumber(value: unknown, maximum = MAX_VALUE): number | null {
     return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= maximum ? round(value, 6) : null
 }
@@ -403,6 +409,7 @@ function projectBoundedSignal(
         retainedCount: number | null
         totalObservedCount: number | null
         droppedSampleCount: number | null
+        performanceObserverDroppedEntryCount?: number | null
         totalDurationMs: number | null
         duration: DurationStatistics | null
     },
@@ -421,11 +428,13 @@ function projectBoundedSignal(
     const total = safeCount(input.totalObservedCount)
     const retained = safeCount(input.retainedCount)
     const dropped = safeCount(input.droppedSampleCount)
+    const observerDrops = performanceObserverDropQuality(input.performanceObserverDroppedEntryCount)
     const totalDuration = safeNumber(input.totalDurationMs)
     if (
         total === null ||
         retained === null ||
         dropped === null ||
+        !observerDrops.valid ||
         totalDuration === null ||
         retained + dropped !== total ||
         (total === 0 && totalDuration !== 0) ||
@@ -437,11 +446,12 @@ function projectBoundedSignal(
         }
         return
     }
-    registerProviderWindow(state, owner, family, total, retained)
-    putMetric(state, ids.count, total, total, 'measured')
-    putMetric(state, ids.sum, totalDuration, total, 'measured')
-    putDistribution(state, ids.p95, input.duration, 'p95', 'measured')
-    if (ids.max) putDistribution(state, ids.max, input.duration, 'max', 'measured')
+    registerProviderWindow(state, owner, family, total, retained, retained, 0, observerDrops.partial)
+    const status: AnimationRumV2MetricStatus = observerDrops.partial ? 'partial' : 'measured'
+    putMetric(state, ids.count, total, total, status)
+    putMetric(state, ids.sum, totalDuration, total, status)
+    putDistribution(state, ids.p95, input.duration, 'p95', status)
+    if (ids.max) putDistribution(state, ids.max, input.duration, 'max', status)
 }
 
 function projectLongAnimationFrames(state: ProjectionState, snapshot: AnimationSnapshot): void {
@@ -456,18 +466,26 @@ function projectLongAnimationFrames(state: ProjectionState, snapshot: AnimationS
     const loafTotal = safeCount(loaf.totalObservedCount)
     const loafRetained = safeCount(loaf.retainedCount)
     const loafDropped = safeCount(loaf.droppedSampleCount)
+    const observerDrops = performanceObserverDropQuality(loaf.performanceObserverDroppedEntryCount)
     const loafSourceValid =
         loaf.capability.state === 'supported' &&
         loafTotal !== null &&
         loafRetained !== null &&
         loafDropped !== null &&
+        observerDrops.valid &&
         loafRetained + loafDropped === loafTotal &&
         statisticsMatchRetainedCount(loaf.duration, loafRetained) &&
         statisticsCountWithin(loaf.blockingDuration, loafRetained) &&
         statisticsCountWithin(loaf.styleAndLayoutTailDuration, loafRetained)
     if (loaf.capability.state === 'supported' && !loafSourceValid) state.reasons.add('source-field-incomplete')
     const baseStatus: AnimationRumV2MetricStatus =
-        loaf.capability.state === 'supported' ? (loafSourceValid ? 'measured' : 'unknown') : unavailableStatus(loaf.capability)
+        loaf.capability.state === 'supported'
+            ? loafSourceValid
+                ? observerDrops.partial
+                    ? 'partial'
+                    : 'measured'
+                : 'unknown'
+            : unavailableStatus(loaf.capability)
     putDistribution(
         state,
         'main.loaf-blocking.p95',
@@ -485,7 +503,7 @@ function projectLongAnimationFrames(state: ProjectionState, snapshot: AnimationS
         loafSourceValid ? 'not-observed' : baseStatus
     )
     if (loafSourceValid) {
-        registerProviderWindow(state, 'browser-core', 'renderingPipeline', loafTotal, loafRetained)
+        registerProviderWindow(state, 'browser-core', 'renderingPipeline', loafTotal, loafRetained, loafRetained, 0, observerDrops.partial)
     }
 
     const paint = loaf.paintTiming
@@ -610,22 +628,24 @@ function projectEventTiming(state: ProjectionState, snapshot: AnimationSnapshot)
     const total = safeCount(event.totalObservedCount)
     const retained = safeCount(event.retainedCount)
     const dropped = safeCount(event.droppedSampleCount)
+    const observerDrops = performanceObserverDropQuality(event.performanceObserverDroppedEntryCount)
     const sourceValid =
         event.capability.state === 'supported' &&
         total !== null &&
         retained !== null &&
         dropped !== null &&
+        observerDrops.valid &&
         retained + dropped === total &&
         statisticsMatchRetainedCount(event.duration, retained) &&
         statisticsCountWithin(event.inputDelay, retained) &&
         statisticsCountWithin(event.processingDuration, retained) &&
         statisticsCountWithin(event.presentationDelay, retained)
     if (sourceValid) {
-        registerProviderWindow(state, 'browser-core', 'userOutcome', total, retained)
-        registerProviderWindow(state, 'browser-core', 'renderingPipeline', total, retained)
+        registerProviderWindow(state, 'browser-core', 'userOutcome', total, retained, retained, 0, observerDrops.partial)
+        registerProviderWindow(state, 'browser-core', 'renderingPipeline', total, retained, retained, 0, observerDrops.partial)
     } else if (event.capability.state === 'supported') state.reasons.add('source-field-incomplete')
     const measuredStatus: AnimationRumV2MetricStatus =
-        event.capability.state === 'supported' ? (sourceValid ? 'measured' : 'unknown') : capStatus
+        event.capability.state === 'supported' ? (sourceValid ? (observerDrops.partial ? 'partial' : 'measured') : 'unknown') : capStatus
     const fallbackStatus = sourceValid ? capStatus : measuredStatus
     putDistribution(state, 'outcome.event-duration.p95', sourceValid ? event.duration : null, 'p95', measuredStatus, fallbackStatus)
     putDistribution(state, 'outcome.input-delay.p95', sourceValid ? event.inputDelay : null, 'p95', measuredStatus, fallbackStatus)
@@ -805,6 +825,7 @@ function projectResources(state: ProjectionState, snapshot: AnimationSnapshot): 
     const total = safeCount(resources.totalObservedCount)
     const retained = safeCount(resources.retainedCount)
     const dropped = safeCount(resources.droppedSampleCount)
+    const observerDrops = performanceObserverDropQuality(resources.performanceObserverDroppedEntryCount)
     const rejected = safeCount(resources.rejectedEntryCount)
     const totalDuration = safeNumber(resources.totalDurationMs)
     const sourceValid =
@@ -812,16 +833,23 @@ function projectResources(state: ProjectionState, snapshot: AnimationSnapshot): 
         total !== null &&
         retained !== null &&
         dropped !== null &&
+        observerDrops.valid &&
         rejected !== null &&
         totalDuration !== null &&
         retained + dropped === total &&
         (total !== 0 || totalDuration === 0) &&
         statisticsMatchRetainedCount(resources.duration, retained)
     if (sourceValid) {
-        registerProviderWindow(state, 'resource-timing', 'resourcesMedia', total, retained, retained, rejected)
+        registerProviderWindow(state, 'resource-timing', 'resourcesMedia', total, retained, retained, rejected, observerDrops.partial)
     } else if (resources.capability.state === 'supported') state.reasons.add('source-field-incomplete')
     const status: AnimationRumV2MetricStatus =
-        resources.capability.state === 'supported' ? (sourceValid ? 'measured' : 'unknown') : capStatus
+        resources.capability.state === 'supported'
+            ? sourceValid
+                ? observerDrops.partial
+                    ? 'partial'
+                    : 'measured'
+                : 'unknown'
+            : capStatus
     putMetric(state, 'resource.count', sourceValid ? total : null, sourceValid ? total : null, status)
     putDistribution(
         state,
@@ -1996,6 +2024,7 @@ export function toAnimationRumV2PageReport(
     const pageEvidence = options.pageEvidence ?? snapshot.pageEvidence
     projectFrames(state, snapshot)
     projectLongAnimationFrames(state, snapshot)
+    state.capabilities.longtask = capabilityState(snapshot.longTasks.capability)
     projectBoundedSignal(state, snapshot.longTasks, 'browser-core', 'mainThread', {
         count: 'main.long-task.count',
         sum: 'main.long-task-duration.sum',

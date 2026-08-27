@@ -144,6 +144,9 @@ export function createBrowserAnimationRuntime(): AnimationRuntime {
                 state: subscription.state,
                 buffered: subscription.buffered,
                 ...(subscription.reason ? { reason: subscription.reason } : {}),
+                get droppedEntriesCount(): number | null {
+                    return subscription.droppedEntriesCount
+                },
                 disconnect: subscription,
             }
         },

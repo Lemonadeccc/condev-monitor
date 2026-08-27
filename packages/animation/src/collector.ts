@@ -603,7 +603,8 @@ function clampCount(value: number): number {
 function signalSummary<T extends { duration: number }>(
     ring: BoundedRing<T>,
     capability: CapabilityEvidence,
-    totalDurationMs: number
+    totalDurationMs: number,
+    performanceObserverDroppedEntryCount?: number | null
 ): BoundedSignalSummary {
     const samples = ring.toArray()
     const unavailable = capability.state !== 'supported' && !capability.observed
@@ -612,6 +613,7 @@ function signalSummary<T extends { duration: number }>(
         retainedCount: unavailable ? null : ring.retainedCount,
         totalObservedCount: unavailable ? null : ring.totalCount,
         droppedSampleCount: unavailable ? null : ring.droppedCount,
+        ...(performanceObserverDroppedEntryCount === undefined ? {} : { performanceObserverDroppedEntryCount }),
         capacity: ring.capacity,
         totalDurationMs: unavailable ? null : round(totalDurationMs),
         duration: durationStatistics(samples.map(sample => sample.duration)),
@@ -682,6 +684,7 @@ export class AnimationCollector {
     private readonly reportBuildSamples: BoundedRing<number>
     private readonly interactionSamples: BoundedRing<StoredInteractionMeasurement>
     private readonly inputFrameSchedulingSamples: BoundedRing<InputFrameSchedulingSample>
+    private readonly performanceObserverHandles = new Map<PerformanceSignalType, PerformanceObserverHandle>()
     private readonly activeInteractions = new Map<string, ActiveInteraction>()
     private readonly interactionKindCounts = createKindCounts()
     private readonly cleanupCallbacks = new Set<() => void>()
@@ -1162,8 +1165,23 @@ export class AnimationCollector {
         const handle = this.runtime.observePerformance(type, entries => {
             this.measureOverhead(() => ingest(entries))
         })
+        this.performanceObserverHandles.set(type, handle)
         this.addCleanup(() => handle.disconnect())
         return evidenceFromHandle(handle)
+    }
+
+    private performanceObserverDroppedEntryCount(type: PerformanceSignalType): number | null | undefined {
+        const handle = this.performanceObserverHandles.get(type)
+        if (!handle || !('droppedEntriesCount' in handle)) return undefined
+        try {
+            const value = handle.droppedEntriesCount
+            if (value === null) return null
+            return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value >= 0
+                ? Math.min(Number.MAX_SAFE_INTEGER, value)
+                : null
+        } catch {
+            return null
+        }
     }
 
     private drainPendingPerformanceEntries(): void {
@@ -1510,7 +1528,12 @@ export class AnimationCollector {
     }
 
     private loafSummary(): LongAnimationFrameSummary {
-        const base = signalSummary(this.loafSamples, this.loafCapability, this.loafTotalDuration)
+        const base = signalSummary(
+            this.loafSamples,
+            this.loafCapability,
+            this.loafTotalDuration,
+            this.performanceObserverDroppedEntryCount('long-animation-frame')
+        )
         const samples = this.loafSamples.toArray()
         return {
             ...base,
@@ -1546,7 +1569,12 @@ export class AnimationCollector {
     }
 
     private eventSummary(): EventTimingSummary {
-        const base = signalSummary(this.eventSamples, this.eventCapability, this.eventTotalDuration)
+        const base = signalSummary(
+            this.eventSamples,
+            this.eventCapability,
+            this.eventTotalDuration,
+            this.performanceObserverDroppedEntryCount('event')
+        )
         const samples = this.eventSamples.toArray()
         return {
             ...base,
@@ -1564,6 +1592,7 @@ export class AnimationCollector {
     private resourceSummary(): AnimationResourceTimingSummary {
         const unavailable = this.resourceCapability.state !== 'supported' && !this.resourceCapability.observed
         const retained = this.resourceSamples.toArray()
+        const performanceObserverDroppedEntryCount = this.performanceObserverDroppedEntryCount('resource')
         const categorySummary = (category: AnimationResourceCategory) => {
             const counters = this.resourceCategoryCounters[category]
             const durations = retained.filter(sample => sample.category === category).map(sample => sample.duration)
@@ -1590,6 +1619,7 @@ export class AnimationCollector {
             retainedCount: unavailable ? null : this.resourceSamples.retainedCount,
             totalObservedCount: unavailable ? null : this.resourceSamples.totalCount,
             droppedSampleCount: unavailable ? null : this.resourceSamples.droppedCount,
+            ...(performanceObserverDroppedEntryCount === undefined ? {} : { performanceObserverDroppedEntryCount }),
             rejectedEntryCount: unavailable ? null : this.rejectedResourceEntries,
             bufferFullEventCount:
                 unavailable || (this.resourceBufferEventCapability.state !== 'supported' && !this.resourceBufferEventCapability.observed)
@@ -1654,12 +1684,17 @@ export class AnimationCollector {
     private coverage(captureSufficiency: CaptureSufficiencySummary, hostEvidence: AnimationHostEvidenceSummary): AnimationRumCoverage {
         const runtime = { evidenceLevel: 'runtime-observation' as const }
         const unavailable = { evidenceLevel: 'unsupported-or-unknown' as const }
-        const mainThreadObserved = this.loafSamples.totalCount + this.longTaskSamples.totalCount > 0
+        const loafObserverDropped = (this.performanceObserverDroppedEntryCount('long-animation-frame') ?? 0) > 0
+        const longTaskObserverDropped = (this.performanceObserverDroppedEntryCount('longtask') ?? 0) > 0
+        const eventObserverDropped = (this.performanceObserverDroppedEntryCount('event') ?? 0) > 0
+        const mainThreadObserved =
+            this.loafSamples.totalCount + this.longTaskSamples.totalCount > 0 || loafObserverDropped || longTaskObserverDropped
         const mainThreadUnsupported = this.loafCapability.state === 'unsupported' && this.longTaskCapability.state === 'unsupported'
         const renderingObserved =
             this.loafRenderStartToPaintObservedCount > 0 ||
             this.loafPaintToPresentationObservedCount > 0 ||
-            this.loafSamples.toArray().some(sample => sample.styleAndLayoutTailDuration !== undefined)
+            this.loafSamples.toArray().some(sample => sample.styleAndLayoutTailDuration !== undefined) ||
+            loafObserverDropped
         const scrollGestureObserved =
             this.interactionKindCounts.scroll +
                 this.interactionKindCounts.drag +
@@ -1681,9 +1716,11 @@ export class AnimationCollector {
                             : 'measured'
                         : this.eventSamples.totalCount > 0
                           ? 'partial'
-                          : this.webVitalsObservedUpdates > 0
+                          : eventObserverDropped
                             ? 'partial'
-                            : 'not-observed',
+                            : this.webVitalsObservedUpdates > 0
+                              ? 'partial'
+                              : 'not-observed',
                 ...runtime,
             },
             frameCadence: {
@@ -1857,6 +1894,9 @@ export class AnimationCollector {
                 ),
                 bursts: summarizeBursts(frameDurations, threshold, budget.frameBudgetMs),
             },
+            // droppedEntriesCount describes incomplete buffered history at the
+            // observer's first callback. Live entries are queued to the observer
+            // independently, so it must not degrade a later interaction window.
             longAnimationFrames: this.signalOverlap(this.loafSamples, this.loafCapability, measurement.startedAt, measurement.endedAt),
             longTasks: this.signalOverlap(this.longTaskSamples, this.longTaskCapability, measurement.startedAt, measurement.endedAt),
             eventTiming: this.signalOverlap(this.eventSamples, this.eventCapability, measurement.startedAt, measurement.endedAt),
@@ -1990,7 +2030,12 @@ export class AnimationCollector {
             frames: this.frameSummary(budget),
             bursts: summarizeBursts(frameSamples, threshold, budget.frameBudgetMs),
             longAnimationFrames: this.loafSummary(),
-            longTasks: signalSummary(this.longTaskSamples, this.longTaskCapability, this.longTaskTotalDuration),
+            longTasks: signalSummary(
+                this.longTaskSamples,
+                this.longTaskCapability,
+                this.longTaskTotalDuration,
+                this.performanceObserverDroppedEntryCount('longtask')
+            ),
             eventTiming: this.eventSummary(),
             inputFrameScheduling: this.inputFrameSchedulingSummary(),
             interactions: this.interactionSummary(capturedAt),

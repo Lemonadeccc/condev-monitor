@@ -372,6 +372,78 @@ test('a missing supported resource scalar fails closed while independent measure
     assert.ok(report.captureQuality.reasons.includes('source-field-incomplete'))
 })
 
+test('browser buffered-history drops make v2 page evidence partial without changing provider sample accounting', () => {
+    const { runtime, snapshot } = capturePage()
+    snapshot.longAnimationFrames = {
+        ...snapshot.longAnimationFrames,
+        retainedCount: 1,
+        totalObservedCount: 1,
+        droppedSampleCount: 0,
+        totalDurationMs: 80,
+        duration: duration([80]),
+        blockingDuration: duration([20]),
+        styleAndLayoutTailDuration: duration([50]),
+    }
+    snapshot.longTasks = {
+        ...snapshot.longTasks,
+        retainedCount: 1,
+        totalObservedCount: 1,
+        droppedSampleCount: 0,
+        totalDurationMs: 90,
+        duration: duration([90]),
+    }
+    snapshot.eventTiming = {
+        ...snapshot.eventTiming,
+        retainedCount: 1,
+        totalObservedCount: 1,
+        droppedSampleCount: 0,
+        totalDurationMs: 180,
+        duration: duration([180]),
+        inputDelay: duration([120]),
+        processingDuration: duration([30]),
+        presentationDelay: duration([30]),
+        presentationDelayCapability: { state: 'supported', observed: true, buffered: true },
+    }
+    snapshot.resourceTiming = {
+        ...snapshot.resourceTiming,
+        capability: { state: 'supported', observed: true, buffered: true },
+        retainedCount: 1,
+        totalObservedCount: 1,
+        droppedSampleCount: 0,
+        rejectedEntryCount: 0,
+        totalDurationMs: 120,
+        duration: duration([120]),
+    }
+
+    const baseline = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
+    for (const summary of [snapshot.longAnimationFrames, snapshot.longTasks, snapshot.eventTiming, snapshot.resourceTiming]) {
+        summary.performanceObserverDroppedEntryCount = null
+    }
+    const unknownDropEvidence = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
+    for (const id of ['main.loaf.count', 'main.long-task.count', 'outcome.event-duration.p95', 'resource.count']) {
+        assert.equal(metric(unknownDropEvidence, id).status, metric(baseline, id).status)
+    }
+
+    snapshot.longTasks.performanceObserverDroppedEntryCount = -1
+    const invalidDropEvidence = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
+    assert.equal(metric(invalidDropEvidence, 'main.long-task.count').status, 'unknown')
+    assert.ok(invalidDropEvidence.captureQuality.reasons.includes('source-field-incomplete'))
+
+    snapshot.longAnimationFrames.performanceObserverDroppedEntryCount = 2
+    snapshot.longTasks.performanceObserverDroppedEntryCount = 3
+    snapshot.eventTiming.performanceObserverDroppedEntryCount = 4
+    snapshot.resourceTiming.performanceObserverDroppedEntryCount = 5
+    const report = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
+
+    for (const id of ['main.loaf.count', 'main.long-task.count', 'outcome.event-duration.p95', 'resource.count']) {
+        assert.equal(metric(report, id).status, 'partial', id)
+    }
+    assert.equal(report.captureQuality.integrity, 'partial')
+    assert.ok(report.captureQuality.reasons.includes('source-field-incomplete'))
+    assert.deepEqual(report.providerEvidence, baseline.providerEvidence)
+    assert.equal(JSON.stringify(report).includes('performanceObserverDroppedEntryCount'), false)
+})
+
 test('page builder maps Browser page evidence and the exact browser-utils LoAF diagnostics shape', () => {
     const { runtime, snapshot } = capturePage()
     const report = toAnimationRumV2PageReport(

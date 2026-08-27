@@ -98,6 +98,7 @@ export function recommendAnimationImprovements(
     }
 
     const longTaskMax = snapshot.longTasks.duration?.max
+    const longTaskEvidenceIsLimited = (snapshot.longTasks.performanceObserverDroppedEntryCount ?? 0) > 0
     // 50ms is the Long Tasks API observation threshold. Treat it as an
     // investigation trigger under a project budget, not a universal UX grade.
     const longTaskTarget = options.longTaskBudgetMs ?? 50
@@ -107,7 +108,7 @@ export function recommendAnimationImprovements(
                 {
                     id: 'long-task-main-thread',
                     family: 'mainThread',
-                    confidence: 'high',
+                    confidence: longTaskEvidenceIsLimited ? 'low' : 'high',
                     metricName: 'longTaskDurationMs.max',
                     value: longTaskMax,
                     unit: 'ms',
@@ -127,6 +128,7 @@ export function recommendAnimationImprovements(
     }
 
     const renderingTailP95 = snapshot.longAnimationFrames.styleAndLayoutTailDuration?.p95
+    const loafEvidenceIsLimited = (snapshot.longAnimationFrames.performanceObserverDroppedEntryCount ?? 0) > 0
     const renderingTailTarget = options.styleAndLayoutTailBudgetMs ?? snapshot.frameBudget.frameBudgetMs * 0.5
     if (renderingTailP95 !== undefined && renderingTailP95 > renderingTailTarget) {
         recommendations.push(
@@ -134,7 +136,7 @@ export function recommendAnimationImprovements(
                 {
                     id: 'loaf-rendering-tail',
                     family: 'renderingPipeline',
-                    confidence: 'medium',
+                    confidence: loafEvidenceIsLimited ? 'low' : 'medium',
                     metricName: 'longAnimationFrameStyleLayoutTailMs.p95',
                     value: renderingTailP95,
                     unit: 'ms',
@@ -195,6 +197,7 @@ export function recommendAnimationImprovements(
     // A 100ms Event Timing phase p95 is a project investigation budget, not a
     // frame deadline or a universal standard. Consumers can explicitly override it.
     const eventTarget = options.eventPhaseBudgetMs ?? 100
+    const eventEvidenceIsLimited = (snapshot.eventTiming.performanceObserverDroppedEntryCount ?? 0) > 0
     for (const rule of eventRules) {
         if (rule.value === undefined || rule.value <= eventTarget) continue
         recommendations.push(
@@ -202,7 +205,7 @@ export function recommendAnimationImprovements(
                 {
                     id: rule.id,
                     family: rule.id === 'event-presentation-delay' ? 'renderingPipeline' : 'userOutcome',
-                    confidence: 'medium',
+                    confidence: eventEvidenceIsLimited ? 'low' : 'medium',
                     metricName: rule.name,
                     value: rule.value,
                     unit: 'ms',

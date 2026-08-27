@@ -73,6 +73,8 @@ export interface BoundedSignalSummary {
     retainedCount: number | null
     totalObservedCount: number | null
     droppedSampleCount: number | null
+    /** One-shot evidence that buffered Performance Timeline history was incomplete; not an exact live-loss count. */
+    performanceObserverDroppedEntryCount?: number | null
     capacity: number
     /** Scalar aggregation across all observed entries, including samples evicted from the ring. */
     totalDurationMs: number | null
@@ -364,6 +366,8 @@ export interface AnimationResourceTimingSummary {
     retainedCount: number | null
     totalObservedCount: number | null
     droppedSampleCount: number | null
+    /** One-shot evidence that buffered Performance Timeline history was incomplete; not an exact live-loss count. */
+    performanceObserverDroppedEntryCount?: number | null
     rejectedEntryCount: number | null
     bufferFullEventCount: number | null
     excludedPreCaptureCount: number | null
@@ -530,6 +534,8 @@ export interface PerformanceObserverHandle {
     state: CapabilityState
     buffered: boolean
     reason?: string
+    /** Dynamic while connected; frozen at the last known value after disconnect. */
+    readonly droppedEntriesCount?: number | null
     disconnect(): void
 }
 

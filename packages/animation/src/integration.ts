@@ -189,6 +189,13 @@ function boundedMetricStatus(status: AnimationRumMetric['status'], droppedSample
     return status === 'measured' && (droppedSamples ?? 0) > 0 ? 'partial' : status
 }
 
+function performanceObserverDropStatus(
+    status: AnimationRumMetric['status'],
+    droppedEntries: number | null | undefined
+): AnimationRumMetric['status'] {
+    return (status === 'measured' || status === 'not-observed') && (droppedEntries ?? 0) > 0 ? 'partial' : status
+}
+
 function statusForValue(status: AnimationRumMetric['status'], value: number | null | undefined): AnimationRumMetric['status'] {
     return value === null || value === undefined
         ? status === 'unsupported'
@@ -249,8 +256,14 @@ function projectMetrics(snapshot: AnimationSnapshot, windowDurationCapped: boole
     const loafRetainedCount = snapshot.longAnimationFrames.retainedCount ?? 0
     const loafCount = snapshot.longAnimationFrames.totalObservedCount ?? 0
     const loafCapabilityStatus = capabilityStatus(snapshot.longAnimationFrames.capability)
-    const loafAggregateStatus = completedRumWindowAggregateStatus(snapshot.longAnimationFrames.capability)
-    const loafDistributionStatus = boundedMetricStatus(loafCapabilityStatus, snapshot.longAnimationFrames.droppedSampleCount)
+    const loafAggregateStatus = performanceObserverDropStatus(
+        completedRumWindowAggregateStatus(snapshot.longAnimationFrames.capability),
+        snapshot.longAnimationFrames.performanceObserverDroppedEntryCount
+    )
+    const loafDistributionStatus = performanceObserverDropStatus(
+        boundedMetricStatus(loafCapabilityStatus, snapshot.longAnimationFrames.droppedSampleCount),
+        snapshot.longAnimationFrames.performanceObserverDroppedEntryCount
+    )
     result.push(
         metric('mainThread', 'longAnimationFrameCount', 'count', 'count', loafCount, loafCount, loafAggregateStatus),
         metric(
@@ -269,7 +282,7 @@ function projectMetrics(snapshot: AnimationSnapshot, windowDurationCapped: boole
             'ms',
             snapshot.longAnimationFrames.duration?.p95 ?? null,
             loafRetainedCount,
-            loafDistributionStatus
+            statusForValue(loafDistributionStatus, snapshot.longAnimationFrames.duration?.p95)
         ),
         metric(
             'mainThread',
@@ -294,8 +307,14 @@ function projectMetrics(snapshot: AnimationSnapshot, windowDurationCapped: boole
     const longTaskRetainedCount = snapshot.longTasks.retainedCount ?? 0
     const longTaskCount = snapshot.longTasks.totalObservedCount ?? 0
     const longTaskCapabilityStatus = capabilityStatus(snapshot.longTasks.capability)
-    const longTaskAggregateStatus = completedRumWindowAggregateStatus(snapshot.longTasks.capability)
-    const longTaskDistributionStatus = boundedMetricStatus(longTaskCapabilityStatus, snapshot.longTasks.droppedSampleCount)
+    const longTaskAggregateStatus = performanceObserverDropStatus(
+        completedRumWindowAggregateStatus(snapshot.longTasks.capability),
+        snapshot.longTasks.performanceObserverDroppedEntryCount
+    )
+    const longTaskDistributionStatus = performanceObserverDropStatus(
+        boundedMetricStatus(longTaskCapabilityStatus, snapshot.longTasks.droppedSampleCount),
+        snapshot.longTasks.performanceObserverDroppedEntryCount
+    )
     result.push(
         metric('mainThread', 'longTaskCount', 'count', 'count', longTaskCount, longTaskCount, longTaskAggregateStatus),
         metric(
@@ -314,7 +333,7 @@ function projectMetrics(snapshot: AnimationSnapshot, windowDurationCapped: boole
             'ms',
             snapshot.longTasks.duration?.p95 ?? null,
             longTaskRetainedCount,
-            longTaskDistributionStatus
+            statusForValue(longTaskDistributionStatus, snapshot.longTasks.duration?.p95)
         ),
         metric(
             'mainThread',
@@ -323,14 +342,17 @@ function projectMetrics(snapshot: AnimationSnapshot, windowDurationCapped: boole
             'ms',
             snapshot.longTasks.duration?.max ?? null,
             longTaskRetainedCount,
-            longTaskDistributionStatus
+            statusForValue(longTaskDistributionStatus, snapshot.longTasks.duration?.max)
         )
     )
 
-    const eventStatus = boundedMetricStatus(capabilityStatus(snapshot.eventTiming.capability), snapshot.eventTiming.droppedSampleCount)
-    const presentationStatus = boundedMetricStatus(
-        capabilityStatus(snapshot.eventTiming.presentationDelayCapability),
-        snapshot.eventTiming.droppedSampleCount
+    const eventStatus = performanceObserverDropStatus(
+        boundedMetricStatus(capabilityStatus(snapshot.eventTiming.capability), snapshot.eventTiming.droppedSampleCount),
+        snapshot.eventTiming.performanceObserverDroppedEntryCount
+    )
+    const presentationStatus = performanceObserverDropStatus(
+        boundedMetricStatus(capabilityStatus(snapshot.eventTiming.presentationDelayCapability), snapshot.eventTiming.droppedSampleCount),
+        snapshot.eventTiming.performanceObserverDroppedEntryCount
     )
     result.push(
         metric(
@@ -340,7 +362,7 @@ function projectMetrics(snapshot: AnimationSnapshot, windowDurationCapped: boole
             'ms',
             snapshot.eventTiming.duration?.p95 ?? null,
             snapshot.eventTiming.duration?.count ?? 0,
-            eventStatus
+            statusForValue(eventStatus, snapshot.eventTiming.duration?.p95)
         ),
         metric(
             'userOutcome',

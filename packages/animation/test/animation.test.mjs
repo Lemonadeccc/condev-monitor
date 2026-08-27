@@ -27,6 +27,7 @@ class FakeRuntime {
         capabilities = {},
         frameCapability,
         drainError = false,
+        performanceObserverDroppedEntries,
     } = {}) {
         this.isBrowser = browser
         this.frameCapability = frameCapability ?? (browser ? 'supported' : 'unsupported')
@@ -47,6 +48,7 @@ class FakeRuntime {
         this.observers = new Map()
         this.pendingEntries = new Map()
         this.drainError = drainError
+        this.performanceObserverDroppedEntries = performanceObserverDroppedEntries
         this.disconnectCount = 0
     }
 
@@ -95,7 +97,7 @@ class FakeRuntime {
             this.observers.set(type, callbacks)
         }
         let disconnected = false
-        return {
+        const handle = {
             state,
             buffered: state === 'supported',
             ...(state === 'supported' ? {} : { reason: `${type} ${state}` }),
@@ -106,6 +108,13 @@ class FakeRuntime {
                 this.observers.get(type)?.delete(callback)
             },
         }
+        if (this.performanceObserverDroppedEntries && Object.hasOwn(this.performanceObserverDroppedEntries, type)) {
+            Object.defineProperty(handle, 'droppedEntriesCount', {
+                enumerable: true,
+                get: () => this.performanceObserverDroppedEntries[type],
+            })
+        }
+        return handle
     }
 
     tick(delta) {
@@ -412,6 +421,108 @@ test('bounded local signals retain presentation delay and interaction overlap, m
     assert.equal(snapshot.longTasks.droppedSampleCount, 1)
     assert.equal(snapshot.longAnimationFrames.styleAndLayoutTailDuration.p95, 40)
     assert.equal('styleAndLayoutDuration' in snapshot.longAnimationFrames, false)
+})
+
+test('browser buffered-history drops stay separate from SDK rings and lower affected page confidence', () => {
+    const browserDrops = {
+        'long-animation-frame': 2,
+        longtask: 3,
+        event: 4,
+        resource: 5,
+    }
+    const runtime = new FakeRuntime({
+        capabilities: { resource: 'supported' },
+        performanceObserverDroppedEntries: browserDrops,
+    })
+    const collector = new AnimationCollector({ runtime }).start()
+    const interaction = collector.beginInteraction('pointer', 'observer-drop-window')
+    runtime.emit('long-animation-frame', [{ startTime: 10, duration: 80, blockingDuration: 20, styleAndLayoutStart: 40 }])
+    runtime.emit('longtask', [{ startTime: 10, duration: 80 }])
+    runtime.emit('event', [{ startTime: 20, duration: 180, processingStart: 140, processingEnd: 170 }])
+    runtime.emit('resource', [
+        {
+            startTime: 10,
+            duration: 120,
+            resourceInitiatorType: 'script',
+            transferSize: 100,
+            encodedBodySize: 90,
+            decodedBodySize: 110,
+        },
+    ])
+    runtime.advance(250)
+    interaction.end()
+    const snapshot = collector.stop()
+
+    assert.deepEqual(
+        [
+            snapshot.longAnimationFrames.performanceObserverDroppedEntryCount,
+            snapshot.longTasks.performanceObserverDroppedEntryCount,
+            snapshot.eventTiming.performanceObserverDroppedEntryCount,
+            snapshot.resourceTiming.performanceObserverDroppedEntryCount,
+        ],
+        [2, 3, 4, 5]
+    )
+    assert.deepEqual(
+        [
+            snapshot.longAnimationFrames.droppedSampleCount,
+            snapshot.longTasks.droppedSampleCount,
+            snapshot.eventTiming.droppedSampleCount,
+            snapshot.resourceTiming.droppedSampleCount,
+        ],
+        [0, 0, 0, 0]
+    )
+    assert.deepEqual(
+        [
+            snapshot.interactions.recent[0].performance.longAnimationFrames.status,
+            snapshot.interactions.recent[0].performance.longTasks.status,
+            snapshot.interactions.recent[0].performance.eventTiming.status,
+        ],
+        ['measured', 'measured', 'measured']
+    )
+
+    const rum = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    const rumMetric = (name, stat) => rum.metrics.find(metric => metric.name === name && metric.stat === stat)
+    assert.equal(rumMetric('longAnimationFrameCount', 'count').status, 'partial')
+    assert.equal(rumMetric('longTaskCount', 'count').status, 'partial')
+    assert.equal(rumMetric('inputDelayMs', 'p95').status, 'partial')
+    assert.equal(JSON.stringify(rum).includes('performanceObserverDroppedEntryCount'), false)
+
+    const recommendations = recommendAnimationImprovements(snapshot)
+    for (const id of ['long-task-main-thread', 'loaf-rendering-tail', 'event-input-delay']) {
+        assert.equal(recommendations.find(item => item.id === id).confidence, 'low')
+    }
+
+    const legacySnapshot = new AnimationCollector({ runtime: new FakeRuntime() }).start().stop()
+    assert.equal('performanceObserverDroppedEntryCount' in legacySnapshot.longTasks, false)
+    const zeroRuntime = new FakeRuntime({ performanceObserverDroppedEntries: { longtask: 0 } })
+    const zeroSnapshot = new AnimationCollector({ runtime: zeroRuntime }).start().stop()
+    const zeroRum = toAnimationRumSummary(zeroSnapshot, {
+        capturedAtEpochMs: zeroRuntime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    assert.equal(zeroSnapshot.longTasks.performanceObserverDroppedEntryCount, 0)
+    assert.equal(zeroRum.metrics.find(metric => metric.name === 'longTaskCount' && metric.stat === 'count').status, 'measured')
+
+    const missingHistoryRuntime = new FakeRuntime({
+        performanceObserverDroppedEntries: { longtask: Number.MAX_SAFE_INTEGER + 1 },
+    })
+    const missingHistorySnapshot = new AnimationCollector({ runtime: missingHistoryRuntime }).start().stop()
+    const missingHistoryRum = toAnimationRumSummary(missingHistorySnapshot, {
+        capturedAtEpochMs: missingHistoryRuntime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    assert.equal(missingHistorySnapshot.longTasks.performanceObserverDroppedEntryCount, Number.MAX_SAFE_INTEGER)
+    assert.equal(missingHistoryRum.metrics.find(metric => metric.name === 'longTaskCount' && metric.stat === 'count').status, 'partial')
+    assert.equal(
+        missingHistoryRum.metrics.find(metric => metric.name === 'longTaskDurationMs' && metric.stat === 'p95').status,
+        'not-observed'
+    )
 })
 
 test('LoAF rendering tail omits zero and out-of-interval styleAndLayoutStart values', () => {
@@ -3571,8 +3682,16 @@ test('browser runtime forwards shared observer capability and buffered fallback 
     try {
         class SupportedWithoutList {
             static supportedEntryTypes = undefined
+            static instance
+            constructor(callback) {
+                this.callback = callback
+                SupportedWithoutList.instance = this
+            }
             observe(options) {
                 this.options = options
+            }
+            emit(droppedEntriesCount) {
+                this.callback({ getEntries: () => [] }, this, { droppedEntriesCount })
             }
             disconnect() {}
         }
@@ -3582,6 +3701,9 @@ test('browser runtime forwards shared observer capability and buffered fallback 
         assert.equal(supported.state, 'supported')
         assert.equal(supported.buffered, true)
         assert.equal(supported.reason, undefined)
+        assert.equal(supported.droppedEntriesCount, null)
+        SupportedWithoutList.instance.emit(2)
+        assert.equal(supported.droppedEntriesCount, 2)
         supported.disconnect()
 
         class LegacyFallbackObserver {
