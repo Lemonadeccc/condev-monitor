@@ -1,7 +1,8 @@
+import { detectAnimationRumProtocol } from '@condev-monitor/animation-rum-contract'
 import { BadRequestException, Body, Controller, Get, Param, Post, Query, Res } from '@nestjs/common'
 import type { Response } from 'express'
 
-import { isAnimationRumV1Candidate, validateAnimationRumV1 } from '../../shared/animation-rum-v1'
+import { validateAnimationRumV1 } from '../../shared/animation-rum-v1'
 import { InboundFilterService } from '../ingest/inbound-filter.service'
 import { IngestWriterService } from '../ingest/ingest-writer.service'
 import { RateLimiterService } from '../ingest/rate-limiter.service'
@@ -82,12 +83,28 @@ export class SpanController {
             }
         }
         const parsedItems = Array.isArray(parsedForCost) ? parsedForCost : [parsedForCost]
-        const containsAnimationRum = parsedItems.some(isAnimationRumV1Candidate)
-        if (containsAnimationRum && !/^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$/.test(appId)) {
+        const protocols = parsedItems.map(item => detectAnimationRumProtocol(item))
+        const hasLegacyLane = protocols.some(protocol => protocol !== 'v2' && protocol !== 'versioned-unknown')
+        if (protocols.includes('v1') && !/^[A-Za-z0-9][A-Za-z0-9_-]{1,127}$/u.test(appId)) {
+            throw new BadRequestException({ message: 'Invalid app id', error: 'INVALID_APP_ID' })
+        }
+        if (
+            !hasLegacyLane &&
+            protocols.some(protocol => protocol === 'v2' || protocol === 'versioned-unknown') &&
+            !/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u.test(appId)
+        ) {
             throw new BadRequestException({ message: 'Invalid app id', error: 'INVALID_APP_ID' })
         }
         const rateCost = (item: unknown) => {
-            if (isAnimationRumV1Candidate(item) && Array.isArray(item.metrics)) {
+            const protocol = detectAnimationRumProtocol(item)
+            if (
+                item !== null &&
+                typeof item === 'object' &&
+                !Array.isArray(item) &&
+                (protocol === 'v1' || protocol === 'v2' || protocol === 'versioned-unknown') &&
+                'metrics' in item &&
+                Array.isArray(item.metrics)
+            ) {
                 return Math.max(1, Math.min(item.metrics.length, 128))
             }
             return 1

@@ -1,14 +1,16 @@
 import * as fs from 'node:fs'
 
 import { ClickHouseClient } from '@clickhouse/client'
+import { detectAnimationRumProtocol } from '@condev-monitor/animation-rum-contract'
 import { originalPositionFor, TraceMap } from '@jridgewell/trace-mapping'
-import { BadRequestException, Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common'
+import { BadRequestException, HttpException, Inject, Injectable, Logger, ServiceUnavailableException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import type { Pool } from 'pg'
 
 import { buildFailureImpactSql, buildImportanceSql, deriveTransportStatus } from '../../shared/ai-status'
 import { resolveClickhouseDatabase } from '../../shared/clickhouse-utils'
 import { EmailService } from '../email/email.service'
+import { AnimationRumV2AdmissionService } from '../ingest/animation-rum-v2-admission.service'
 import { InboundFilterService } from '../ingest/inbound-filter.service'
 import { IngestWriterService } from '../ingest/ingest-writer.service'
 
@@ -147,6 +149,25 @@ type ResolvedFrame = StackFrame & {
     }
 }
 
+type AnimationRumV2TrackingRejection = {
+    rejected: number
+    status: number
+    error: string
+}
+
+function animationRumV2TerminalRejection(error: unknown, rejected: number): AnimationRumV2TrackingRejection | null {
+    if (!(error instanceof HttpException)) return null
+    const status = error.getStatus()
+    if (status < 400 || status >= 500 || status === 408 || status === 425 || status === 429) return null
+    const response = error.getResponse()
+    const candidate =
+        response !== null && typeof response === 'object' && 'error' in response && typeof response.error === 'string'
+            ? response.error
+            : 'RUM_V2_REJECTED'
+    const safeError = /^[A-Z][A-Z0-9_]{0,63}$/u.test(candidate) ? candidate : 'RUM_V2_REJECTED'
+    return { rejected, status, error: safeError }
+}
+
 function normalizeReplayEvents(rawEvents: unknown, maxEvents: number): unknown[] {
     const list = Array.isArray(rawEvents) ? rawEvents : []
     if (list.length <= maxEvents) return list
@@ -192,7 +213,8 @@ export class SpanService {
         private readonly emailService: EmailService,
         private readonly configService: ConfigService,
         private readonly ingestWriter: IngestWriterService,
-        private readonly inboundFilter: InboundFilterService
+        private readonly inboundFilter: InboundFilterService,
+        private readonly animationRumV2Admission: AnimationRumV2AdmissionService
     ) {}
 
     private readonly logger = new Logger(SpanService.name)
@@ -555,10 +577,69 @@ export class SpanService {
             return { ok: true }
         }
 
-        // 2.5 Inbound data filter (Phase 3)
-        const filtered = this.inboundFilter.filter(items)
+        const protocols = items.map(item => detectAnimationRumProtocol(item))
+        const v2Items = items.filter((_item, index) => protocols[index] === 'v2')
+        const unknownVersionCount = protocols.filter(protocol => protocol === 'versioned-unknown').length
+        const nonV2Items = items.filter((_item, index) => protocols[index] !== 'v2' && protocols[index] !== 'versioned-unknown')
+        const hasLegacyLane = nonV2Items.length > 0
+        const animationRumV2Rejections: AnimationRumV2TrackingRejection[] = []
+
+        // Durable v2 admission happens before legacy writes. If the legacy lane
+        // later fails, the browser retries and the receipt makes v2 idempotent.
+        let animationRumV2 = null
+        if (v2Items.length > 0) {
+            try {
+                animationRumV2 = await this.animationRumV2Admission.admitBatch(appId, v2Items)
+            } catch (error) {
+                const rejection = animationRumV2TerminalRejection(error, v2Items.length)
+                if (!hasLegacyLane || !rejection) throw error
+                animationRumV2Rejections.push(rejection)
+            }
+        }
+
+        if (unknownVersionCount > 0) {
+            if (!hasLegacyLane) {
+                throw new BadRequestException({
+                    message: 'Unsupported animation RUM version',
+                    error: 'UNSUPPORTED_ANIMATION_RUM_VERSION',
+                })
+            }
+            animationRumV2Rejections.push({
+                rejected: unknownVersionCount,
+                status: 400,
+                error: 'UNSUPPORTED_ANIMATION_RUM_VERSION',
+            })
+        }
+
+        const rejectionResponse =
+            animationRumV2Rejections.length > 0
+                ? {
+                      animationRumV2Rejected: {
+                          count: animationRumV2Rejections.reduce((total, rejection) => total + rejection.rejected, 0),
+                          reasons: animationRumV2Rejections,
+                      },
+                  }
+                : {}
+
+        if (nonV2Items.length === 0) {
+            return {
+                ok: true,
+                persistedVia: 'postgres-outbox',
+                animationRumV2,
+                ...rejectionResponse,
+            }
+        }
+
+        // 2.5 Inbound data filter (Phase 3). V2 has its own stricter boundary
+        // and must never enter the v1 validator used by this legacy filter.
+        const filtered = this.inboundFilter.filter(nonV2Items)
         if (filtered.accepted.length === 0) {
-            return { ok: true, rejected: filtered.rejected }
+            return {
+                ok: true,
+                rejected: filtered.rejected,
+                ...(animationRumV2 ? { animationRumV2 } : {}),
+                ...rejectionResponse,
+            }
         }
 
         // 3. Persist via Kafka or direct ClickHouse (based on INGEST_MODE)
@@ -570,7 +651,12 @@ export class SpanService {
             await this.sendAggregatedErrorAlert(appId, errorItems)
         }
 
-        return { ok: true, persistedVia: result.persistedVia }
+        return {
+            ok: true,
+            persistedVia: result.persistedVia,
+            ...(animationRumV2 ? { animationRumV2 } : {}),
+            ...rejectionResponse,
+        }
     }
 
     private async sendAggregatedErrorAlert(appId: string, errors: Record<string, unknown>[]): Promise<void> {
