@@ -40,7 +40,8 @@
         "build:transpile": "tsup",
         "build:types": "tsc -p tsconfig.types.json",
         "verify:exports": "node scripts/verify-package-exports.mjs",
-        "test": "jest --config jest.config.cjs --runInBand"
+        "test": "jest --config jest.config.cjs --runInBand",
+        "test:package": "node --test test/*.test.mjs"
     },
     "keywords": [],
     "author": "",
