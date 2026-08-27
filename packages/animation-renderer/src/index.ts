@@ -3,6 +3,8 @@ export type {
     WebGlGpuTimer,
     WebGlGpuTimerBackend,
     WebGlGpuTimerCapability,
+    WebGlGpuTimerHostCapability,
+    WebGlGpuTimerHostReading,
     WebGlGpuTimerOptions,
     WebGlGpuTimerSnapshot,
     WebGlGpuTimingEvidence,

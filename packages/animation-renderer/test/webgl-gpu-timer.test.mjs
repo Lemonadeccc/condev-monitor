@@ -26,7 +26,7 @@ function createFakeContext(backend, options = {}) {
     let currentQuery = null
     let hostCurrentQuery = null
     let disjoint = false
-    let contextLost = false
+    let contextLost = options.initialContextLost ?? false
     let nextQueryId = 1
     const throwOn = new Set(options.throwOn ?? [])
     const extensionAvailable = options.extensionAvailable ?? true
@@ -112,6 +112,10 @@ function createFakeContext(backend, options = {}) {
         QUERY_RESULT_AVAILABLE: ENUM.QUERY_RESULT_AVAILABLE,
         getExtension(name) {
             hit(`gl.getExtension:${name}`)
+            if (options.loseContextOnGetExtension) {
+                contextLost = true
+                return null
+            }
             if (!extensionAvailable) return null
             if (options.malformedExtension) return {}
             if (backend === 'webgl' && name === 'EXT_disjoint_timer_query') return extension1
@@ -222,6 +226,33 @@ for (const backend of ['webgl', 'webgl2']) {
         assert.equal(fake.calls.includes(backend === 'webgl' ? 'ext.createQueryEXT' : 'gl.createQuery'), true)
         assert.equal(fake.calls.includes(backend === 'webgl' ? 'gl.createQuery' : 'ext.createQueryEXT'), false)
         timer.dispose()
+    })
+}
+
+for (const backend of ['webgl', 'webgl2']) {
+    test(`${backend} distinguishes extension unavailability caused by context loss`, () => {
+        const alreadyLost = createFakeContext(backend, { initialContextLost: true })
+        const alreadyLostTimer = createWebGlGpuTimer({ gl: alreadyLost.gl, backend })
+        assert.equal(alreadyLostTimer.getSnapshot().capability, 'context-lost')
+        assert.deepEqual(alreadyLostTimer.takeRendererHostTiming(), {
+            gpuTimerCapability: 'unknown',
+            gpu: { status: 'context-lost', source: 'webgl-disjoint-timer-query' },
+        })
+        assert.equal(
+            alreadyLost.calls.some(call => call.startsWith('gl.getExtension:')),
+            false
+        )
+        alreadyLostTimer.dispose()
+
+        const lostDuringExtensionRead = createFakeContext(backend, { loseContextOnGetExtension: true })
+        const racedTimer = createWebGlGpuTimer({ gl: lostDuringExtensionRead.gl, backend })
+        assert.equal(racedTimer.getSnapshot().capability, 'context-lost')
+        assert.deepEqual(racedTimer.takeRendererHostTiming(), {
+            gpuTimerCapability: 'unknown',
+            gpu: { status: 'context-lost', source: 'webgl-disjoint-timer-query' },
+        })
+        assert.equal(lostDuringExtensionRead.calls.filter(call => call === 'gl.isContextLost').length, 2)
+        racedTimer.dispose()
     })
 }
 
@@ -419,7 +450,14 @@ test('context loss is terminal for old query objects and requires host disposal 
     timer.endFrame()
     fake.setContextLost()
     timer.poll()
-    assert.deepEqual(timer.takeLatestEvidence(), { status: 'context-lost', source: 'webgl-disjoint-timer-query' })
+    assert.deepEqual(timer.takeRendererHostTiming(), {
+        gpuTimerCapability: 'unknown',
+        gpu: { status: 'context-lost', source: 'webgl-disjoint-timer-query' },
+    })
+    assert.deepEqual(timer.takeRendererHostTiming(), {
+        gpuTimerCapability: 'unknown',
+        gpu: null,
+    })
     assert.equal(timer.getSnapshot().capability, 'context-lost')
     assert.equal(fake.queries[0].deleteCount, 0)
     fake.setContextLost(false)
@@ -447,6 +485,21 @@ test('context loss during result retrieval can never become a measured zero', ()
     timer.dispose()
 })
 
+test('renderer host timing detects context loss while the timer is idle', () => {
+    const fake = createFakeContext('webgl2')
+    const timer = createWebGlGpuTimer({ gl: fake.gl, backend: 'webgl2' })
+    fake.setContextLost()
+    assert.deepEqual(timer.takeRendererHostTiming(), {
+        gpuTimerCapability: 'unknown',
+        gpu: { status: 'context-lost', source: 'webgl-disjoint-timer-query' },
+    })
+    assert.deepEqual(timer.takeRendererHostTiming(), {
+        gpuTimerCapability: 'unknown',
+        gpu: null,
+    })
+    timer.dispose()
+})
+
 test('one package instance coordinates one timer owner per context', () => {
     const fake = createFakeContext('webgl2')
     const first = createWebGlGpuTimer({ gl: fake.gl, backend: 'webgl2' })
@@ -460,6 +513,74 @@ test('one package instance coordinates one timer owner per context', () => {
     const third = createWebGlGpuTimer({ gl: fake.gl, backend: 'webgl2' })
     assert.equal(third.supported, true)
     third.dispose()
+})
+
+test('renderer host timing keeps capability separate from one-shot evidence', () => {
+    const fake = createFakeContext('webgl2')
+    const timer = createWebGlGpuTimer({ gl: fake.gl, backend: 'webgl2', sampleEvery: 1 })
+    assert.deepEqual(timer.takeRendererHostTiming(), {
+        gpuTimerCapability: 'supported',
+        gpu: null,
+    })
+
+    timer.beginFrame()
+    timer.endFrame()
+    fake.setAvailable(0, 2_500_000)
+    timer.poll()
+    assert.deepEqual(timer.takeRendererHostTiming(), {
+        gpuTimerCapability: 'supported',
+        gpu: {
+            status: 'measured',
+            timeMs: 2.5,
+            source: 'webgl-disjoint-timer-query',
+        },
+    })
+    assert.equal(timer.takeLatestEvidence(), null)
+
+    timer.beginFrame()
+    timer.endFrame()
+    fake.setAvailable(1, 3_000_000)
+    timer.poll()
+    assert.deepEqual(timer.takeLatestEvidence(), {
+        status: 'measured',
+        timeMs: 3,
+        source: 'webgl-disjoint-timer-query',
+    })
+    assert.deepEqual(timer.takeRendererHostTiming(), {
+        gpuTimerCapability: 'supported',
+        gpu: null,
+    })
+
+    const conflicting = createWebGlGpuTimer({ gl: fake.gl, backend: 'webgl2' })
+    assert.deepEqual(conflicting.takeRendererHostTiming(), {
+        gpuTimerCapability: 'unknown',
+        gpu: null,
+    })
+    conflicting.dispose()
+    timer.dispose()
+    assert.deepEqual(timer.takeRendererHostTiming(), {
+        gpuTimerCapability: 'disabled',
+        gpu: null,
+    })
+
+    const unsupportedFake = createFakeContext('webgl2', { extensionAvailable: false })
+    const unsupported = createWebGlGpuTimer({ gl: unsupportedFake.gl, backend: 'webgl2' })
+    assert.deepEqual(unsupported.takeRendererHostTiming(), {
+        gpuTimerCapability: 'unsupported',
+        gpu: null,
+    })
+    unsupported.dispose()
+
+    const error = createWebGlGpuTimer({ gl: {}, backend: 'webgl2' })
+    assert.deepEqual(error.takeRendererHostTiming(), {
+        gpuTimerCapability: 'unknown',
+        gpu: { status: 'error', source: 'webgl-disjoint-timer-query' },
+    })
+    assert.deepEqual(error.takeRendererHostTiming(), {
+        gpuTimerCapability: 'unknown',
+        gpu: null,
+    })
+    error.dispose()
 })
 
 test('unsupported, malformed, and invalid options remain distinct and allocate no queries', () => {

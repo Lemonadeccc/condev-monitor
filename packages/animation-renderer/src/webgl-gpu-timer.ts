@@ -17,6 +17,9 @@ export type WebGlGpuTimerBackend = 'webgl' | 'webgl2'
 
 export type WebGlGpuTimerCapability = 'supported' | 'unsupported' | 'owner-conflict' | 'context-lost' | 'error' | 'disposed'
 
+/** Closed capability state shared with the renderer host evidence contract. */
+export type WebGlGpuTimerHostCapability = 'supported' | 'unsupported' | 'disabled' | 'unknown'
+
 export type WebGlGpuTimingEvidence =
     | {
           status: 'measured'
@@ -27,6 +30,11 @@ export type WebGlGpuTimingEvidence =
           status: 'invalid' | 'disjoint' | 'context-lost' | 'error'
           source: typeof GPU_TIMING_SOURCE
       }
+
+export interface WebGlGpuTimerHostReading {
+    gpuTimerCapability: WebGlGpuTimerHostCapability
+    gpu: WebGlGpuTimingEvidence | null
+}
 
 export interface WebGlGpuTimerOptions {
     /** The timer never owns or destroys this application WebGL context. */
@@ -81,6 +89,11 @@ export interface WebGlGpuTimer {
     poll(): void
     /** Consume once so a single GPU result cannot be recorded on multiple frames. */
     takeLatestEvidence(): WebGlGpuTimingEvidence | null
+    /**
+     * Consume the latest result together with an explicit host capability.
+     * The returned object can be spread directly into RendererHostReading.
+     */
+    takeRendererHostTiming(): WebGlGpuTimerHostReading
     getSnapshot(): WebGlGpuTimerSnapshot
     /** Releases only query objects created by this timer. It never loses the application context. */
     dispose(): void
@@ -91,6 +104,13 @@ export class WebGlGpuTimerOptionsError extends Error {
         super(message)
         this.name = 'WebGlGpuTimerOptionsError'
     }
+}
+
+function hostCapability(capability: WebGlGpuTimerCapability): WebGlGpuTimerHostCapability {
+    if (capability === 'supported') return 'supported'
+    if (capability === 'unsupported') return 'unsupported'
+    if (capability === 'disposed') return 'disabled'
+    return 'unknown'
 }
 
 type QueryObject = object
@@ -269,14 +289,25 @@ function createWebGl2Api(gl: WebGl2ContextLike, extension: WebGl2TimerExtensionL
     }
 }
 
-type ApiInitialization = { kind: 'ready'; api: QueryApi } | { kind: 'unsupported' } | { kind: 'malformed' }
+type ApiInitialization = { kind: 'ready'; api: QueryApi } | { kind: 'unsupported' } | { kind: 'context-lost' } | { kind: 'malformed' }
 
 function initializeApi(gl: WebGlContextBaseLike, backend: WebGlGpuTimerBackend): ApiInitialization {
     const getExtension = method(gl, 'getExtension')
-    if (!getExtension) return { kind: 'malformed' }
+    const isContextLost = method(gl, 'isContextLost')
+    if (!getExtension || !isContextLost) return { kind: 'malformed' }
+    const contextLostBeforeExtension = Reflect.apply(isContextLost, gl, [])
+    if (typeof contextLostBeforeExtension !== 'boolean') return { kind: 'malformed' }
+    if (contextLostBeforeExtension) return { kind: 'context-lost' }
     const extensionName = backend === 'webgl2' ? WEBGL2_EXTENSION : WEBGL1_EXTENSION
     const extension = Reflect.apply(getExtension, gl, [extensionName])
-    if (extension === null) return { kind: 'unsupported' }
+    if (extension === null) {
+        // A lost context makes non-HandlesContextLoss nullable methods return
+        // null too. Recheck after getExtension so that race is not mislabeled
+        // as an unsupported timer-query extension.
+        const contextLostAfterExtension = Reflect.apply(isContextLost, gl, [])
+        if (typeof contextLostAfterExtension !== 'boolean') return { kind: 'malformed' }
+        return contextLostAfterExtension ? { kind: 'context-lost' } : { kind: 'unsupported' }
+    }
     if (!isObject(extension)) return { kind: 'malformed' }
     const api =
         backend === 'webgl2'
@@ -449,7 +480,9 @@ export function createWebGlGpuTimer(options: WebGlGpuTimerOptions): WebGlGpuTime
     if (ownsContext) {
         try {
             const initialized = initializeApi(gl, backend)
-            if (initialized.kind === 'unsupported') {
+            if (initialized.kind === 'context-lost') {
+                loseContext()
+            } else if (initialized.kind === 'unsupported') {
                 capability = 'unsupported'
                 releaseOwnership()
             } else if (initialized.kind === 'malformed') {
@@ -607,6 +640,17 @@ export function createWebGlGpuTimer(options: WebGlGpuTimerOptions): WebGlGpuTime
             const evidence = latestEvidence
             latestEvidence = null
             return evidence
+        },
+        takeRendererHostTiming(): WebGlGpuTimerHostReading {
+            // Keep an idle timer honest even when the host stops rendering and
+            // therefore never calls beginFrame() or poll() after context loss.
+            if (capability === 'supported') contextIsLost()
+            const gpu = latestEvidence
+            latestEvidence = null
+            return {
+                gpuTimerCapability: hostCapability(capability),
+                gpu,
+            }
         },
         getSnapshot(): WebGlGpuTimerSnapshot {
             return {
