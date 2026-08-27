@@ -406,6 +406,7 @@ function metricValue(value: unknown, unit: AnimationLabMetric['unit'], label: st
 }
 
 function metricLimitations(metricId: string): string[] {
+    if (metricId === 'frame.refresh.inferred') return ['observed-page-raf-cadence-not-display-refresh-rate']
     if (metricId.startsWith('pipeline.loaf-render-start-to-paint')) return ['loaf-only-over-50ms']
     if (metricId.startsWith('pipeline.loaf-paint-to-presentation')) {
         return ['loaf-only-over-50ms', 'presentation-time-implementation-dependent']

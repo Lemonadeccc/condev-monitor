@@ -9,6 +9,10 @@ export type LabBilingualLabel = Readonly<{
 const UNKNOWN: LabBilingualLabel = { zhCN: '未采集 / 未知', en: 'Not collected / unknown' }
 
 const METRIC_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
+    'frame.refresh.inferred': {
+        zhCN: '页面 rAF 回调节奏（帧间隔 p50 推算）',
+        en: 'Observed page rAF callback cadence (from frame-interval p50)',
+    },
     'pipeline.loaf-render-start-to-paint.count': {
         zhCN: 'LoAF 渲染开始 → Paint 有效样本数',
         en: 'LoAF render start → paint valid samples',
@@ -87,6 +91,10 @@ const METHOD_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
 }
 
 const LIMITATION_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
+    'observed-page-raf-cadence-not-display-refresh-rate': {
+        zhCN: '该值由页面可见 rAF 帧间隔 p50 推算，不是物理屏幕刷新率、合成器呈现 FPS 或 GPU FPS。',
+        en: 'Derived from the visible page rAF frame-interval p50; it is not the physical display refresh rate, compositor presentation FPS, or GPU FPS.',
+    },
     'loaf-only-over-50ms': {
         zhCN: '仅覆盖超过 50 ms 的 LoAF，不代表全部帧。',
         en: 'Covers LoAF entries over 50 ms only, not every frame.',
@@ -281,6 +289,7 @@ function fallbackLabel(value: string | null | undefined, prefix: string): LabBil
 
 export function getLabMetricLabel(metric: Pick<LabMetric, 'metricId' | 'name'>): LabBilingualLabel {
     if (metric.metricId && METRIC_LABELS[metric.metricId]) return METRIC_LABELS[metric.metricId]
+    if (!metric.metricId && metric.name === 'inferredRefreshHz') return METRIC_LABELS['frame.refresh.inferred']
     return fallbackLabel(metric.name || metric.metricId, '指标')
 }
 

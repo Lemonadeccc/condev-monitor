@@ -26,6 +26,7 @@ const V2_METRIC_IDS = [
 ] as const
 
 const V2_LIMITATION_CODES = [
+    'observed-page-raf-cadence-not-display-refresh-rate',
     'input-capture-listener-to-next-raf-callback-proxy',
     'not-paint-or-presentation-timing',
     'trusted-discrete-input-only',
@@ -113,6 +114,14 @@ const analysis: LabRunAnalysis = {
 
 describe('Lab catalog v2 metric presentation', () => {
     it('provides stable Chinese and English names for catalog-v2 metrics', () => {
+        assert.deepEqual(getLabMetricLabel({ metricId: 'frame.refresh.inferred', name: 'inferredRefreshHz' }), {
+            zhCN: '页面 rAF 回调节奏（帧间隔 p50 推算）',
+            en: 'Observed page rAF callback cadence (from frame-interval p50)',
+        })
+        assert.deepEqual(getLabMetricLabel({ metricId: '', name: 'inferredRefreshHz' }), {
+            zhCN: '页面 rAF 回调节奏（帧间隔 p50 推算）',
+            en: 'Observed page rAF callback cadence (from frame-interval p50)',
+        })
         for (const metricId of V2_METRIC_IDS) {
             const label = getLabMetricLabel({ metricId, name: 'rawInternalMetricName' })
             assert.ok(label.zhCN.length > 5, metricId)
@@ -156,6 +165,11 @@ describe('Lab catalog v2 metric presentation', () => {
         })
         assert.match(getLabLimitationLabel('loaf-only-over-50ms').zhCN, /50 ms/u)
         assert.match(getLabLimitationLabel('presentation-time-implementation-dependent').en, /implementation-dependent/u)
+        assert.match(getLabLimitationLabel('observed-page-raf-cadence-not-display-refresh-rate').zhCN, /不是物理屏幕刷新率/u)
+        assert.match(
+            getLabLimitationLabel('observed-page-raf-cadence-not-display-refresh-rate').en,
+            /not the physical display refresh rate/u
+        )
         assert.equal(formatLabMetricValue(null, 'ms'), '未采集 / 未知')
         assert.equal(formatLabMetricValue(0, 'count'), '0 次')
         assert.equal(formatLabMetricValue(3, 'count'), '3 次')

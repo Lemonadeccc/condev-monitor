@@ -152,7 +152,12 @@ test('rebuilds a catalog-only probe result and replaces page limitations with ru
     const raw = rawResult()
     const decoded = decodePageProbeResult(raw, expectedActions)
 
-    assert.deepEqual(decoded.metrics, raw.metrics)
+    assert.deepEqual(
+        decoded.metrics.map(({ limitations: _limitations, ...item }) => item),
+        raw.metrics
+    )
+    const observedRafCadence = decoded.metrics.find(item => item.name === 'inferredRefreshHz')
+    assert.deepEqual(observedRafCadence.limitations, ['observed-page-raf-cadence-not-display-refresh-rate'])
     assert.equal(decoded.actionResults.length, 1)
     assert.deepEqual(decoded.actionResults[0].metrics, raw.actionResults[0].metrics)
     assert.deepEqual(decoded.capabilities, raw.capabilities)

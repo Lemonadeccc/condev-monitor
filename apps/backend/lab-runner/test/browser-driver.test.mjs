@@ -224,10 +224,13 @@ test('resets the frame baseline across hidden page gaps for both metric catalogs
             const result = decodePageProbeResult(raw, [], metricCatalogVersion)
             const listenerBalance = await page.rawPage.evaluate(() => window.__condevFrameFixture.listenerBalance())
             const frameP95 = result.metrics.find(item => item.name === 'frameDurationMs' && item.stat === 'p95')
+            const observedRafCadence = result.metrics.find(item => item.name === 'inferredRefreshHz')
             const slowRate = result.metrics.find(item => item.name === 'slowFrameRate')
             const missed = result.metrics.find(item => item.name === 'missedFrameOpportunities')
 
             assert.deepEqual([frameP95.value, frameP95.samples], [16, 2])
+            assert.deepEqual([observedRafCadence.value, observedRafCadence.samples, observedRafCadence.status], [62.5, 2, 'measured'])
+            assert.deepEqual(observedRafCadence.limitations, ['observed-page-raf-cadence-not-display-refresh-rate'])
             assert.equal(slowRate.value, 0)
             assert.equal(missed.value, 0)
             assert.deepEqual(listenerBalance, { visibilitychange: 0, pagehide: 0 })
