@@ -3172,9 +3172,15 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     })
     Object.assign(snapshot.hostEvidence.renderer, {
         ...hostFamily({ accepted: 5, retained: 4, dropped: 1, rejected: 2 }),
-        backends: ['webgl2'],
+        backends: ['canvas2d', 'webgl2'],
+        evidenceBackends: ['canvas2d', 'webgl2'],
         drawCalls: statistics(17, 4),
         triangles: null,
+        lines: statistics(0, 4),
+        points: statistics(9, 4),
+        geometries: null,
+        textures: statistics(4, 4),
+        programs: statistics(2, 4),
         gpuFrameMs: statistics(2.5, 3),
         gpuMeasuredSampleCount: 3,
         gpuRejectedSampleCount: 1,
@@ -3368,11 +3374,19 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     const rendererHostDetail = findFakeNodes(panel, node => node.getAttribute('data-host-evidence') === 'renderer')[0]
     assert.ok(rendererHostDetail)
     const rendererHostMetric = id => findFakeNodes(rendererHostDetail, node => node.getAttribute('data-host-evidence-metric') === id)[0]
-    assert.match(fakeNodeText(rendererHostMetric('backend')), /Backend WebGL 2/)
+    assert.match(fakeNodeText(rendererHostMetric('backend')), /Backend Canvas 2D · WebGL 2/)
     assert.match(fakeNodeText(rendererHostMetric('draw-calls-p95')), /Draw calls p95 17/)
     assert.match(fakeNodeText(rendererHostMetric('triangles-p95')), /Triangles p95 unknown/)
     assert.doesNotMatch(fakeNodeText(rendererHostMetric('triangles-p95')), /\b0(?:\.0+)?\b/)
+    assert.match(fakeNodeText(rendererHostMetric('lines-p95')), /Lines p95 0/)
+    assert.match(fakeNodeText(rendererHostMetric('points-p95')), /Points p95 9/)
+    assert.match(fakeNodeText(rendererHostMetric('geometries-p95')), /Geometries p95 unknown/)
+    assert.doesNotMatch(fakeNodeText(rendererHostMetric('geometries-p95')), /\b0(?:\.0+)?\b/)
+    assert.match(fakeNodeText(rendererHostMetric('textures-p95')), /Textures p95 4/)
+    assert.match(fakeNodeText(rendererHostMetric('programs-p95')), /Programs p95 2/)
     assert.match(fakeNodeText(rendererHostMetric('gpu-frame-p95')), /GPU frame p95 2\.50 ms/)
+    assert.match(fakeNodeText(rendererHostMetric('gpu-rejected')), /GPU rejected samples 1/)
+    assert.match(fakeNodeText(rendererHostMetric('retained-tail')), /Retained tail truncated/)
     assert.match(fakeNodeText(rendererHostMetric('accepted')), /Accepted samples 5/)
     assert.match(fakeNodeText(rendererHostMetric('dropped')), /Dropped samples 1/)
     assert.match(fakeNodeText(rendererHostMetric('rejected')), /Rejected samples 2/)
@@ -3477,6 +3491,13 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     assert.match(fakeNodeText(chinesePanel), /不证明视觉更新、绘制、屏幕呈现或 GPU 已完成/)
     const chineseCoverageTab = findFakeNodes(chinesePanel, node => node.getAttribute('data-overlay-tab') === 'coverage')[0]
     chineseCoverageTab.click()
+    const chineseRendererCoverage = findFakeNodes(chinesePanel, node => node.getAttribute('data-coverage-family') === 'renderer')[0]
+    chineseRendererCoverage.click()
+    const chineseRendererHostDetail = findFakeNodes(chinesePanel, node => node.getAttribute('data-host-evidence') === 'renderer')[0]
+    assert.match(fakeNodeText(chineseRendererHostDetail), /线段数量 p95 0/)
+    assert.match(fakeNodeText(chineseRendererHostDetail), /几何体数量 p95 未知/)
+    assert.match(fakeNodeText(chineseRendererHostDetail), /GPU 拒绝样本 1/)
+    assert.match(fakeNodeText(chineseRendererHostDetail), /保留尾窗 已截断/)
     const chineseResourcesCoverage = findFakeNodes(chinesePanel, node => node.getAttribute('data-coverage-family') === 'resourcesMedia')[0]
     chineseResourcesCoverage.click()
     const chineseResourceDetail = findFakeNodes(chinesePanel, node => node.getAttribute('data-resource-timing') !== null)[0]

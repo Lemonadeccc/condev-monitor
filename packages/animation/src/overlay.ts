@@ -1408,7 +1408,9 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         const knownBackends = hostFamilyAccepted(renderer)
             ? renderer?.backends
                   .filter(backend => backend !== 'unknown')
-                  .map(backend => (backend === 'webgl' ? 'WebGL' : backend === 'webgl2' ? 'WebGL 2' : 'WebGPU'))
+                  .map(backend =>
+                      backend === 'canvas2d' ? 'Canvas 2D' : backend === 'webgl' ? 'WebGL' : backend === 'webgl2' ? 'WebGL 2' : 'WebGPU'
+                  )
             : undefined
         appendHostEvidenceFact(
             facts,
@@ -1434,9 +1436,60 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         appendHostEvidenceFact(
             facts,
             'renderer',
+            'lines-p95',
+            overlayText(locale, 'rendererLinesP95'),
+            formatOverlayMeasurement(renderer?.lines?.p95, 'count', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'points-p95',
+            overlayText(locale, 'rendererPointsP95'),
+            formatOverlayMeasurement(renderer?.points?.p95, 'count', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'geometries-p95',
+            overlayText(locale, 'rendererGeometriesP95'),
+            formatOverlayMeasurement(renderer?.geometries?.p95, 'count', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'textures-p95',
+            overlayText(locale, 'rendererTexturesP95'),
+            formatOverlayMeasurement(renderer?.textures?.p95, 'count', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'programs-p95',
+            overlayText(locale, 'rendererProgramsP95'),
+            formatOverlayMeasurement(renderer?.programs?.p95, 'count', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
             'gpu-frame-p95',
             overlayText(locale, 'rendererGpuFrameP95'),
             formatOverlayMeasurement(renderer?.gpuFrameMs?.p95, 'ms', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'gpu-rejected',
+            overlayText(locale, 'rendererGpuRejectedSamples'),
+            formatKnownHostCount(renderer?.gpuRejectedSampleCount, hostFamilyAccepted(renderer))
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'retained-tail',
+            overlayText(locale, 'rendererTailState'),
+            hostFamilyAccepted(renderer)
+                ? overlayText(locale, renderer?.truncated ? 'rendererTailTruncated' : 'rendererTailComplete')
+                : overlayText(locale, 'unknown')
         )
         appendHostEvidenceFact(
             facts,
