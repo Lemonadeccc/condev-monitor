@@ -231,6 +231,7 @@ describe('AnimationRumV2QueryService', () => {
                     page: [],
                     target: [{ reason: 'adapter-error', captures: 1 }],
                 },
+                normalization: expect.objectContaining({ appliesTo: 'closed event-flow count and sum metrics' }),
                 trend: expect.objectContaining({
                     bucket: expect.objectContaining({ kind: 'hour', maximumPoints: 49, timezone: 'UTC' }),
                     points: [
@@ -291,6 +292,12 @@ describe('AnimationRumV2QueryService', () => {
         expect(queries[1].query).toContain("status = 'measured' AND value IS NOT NULL")
         expect(queries[1].query).not.toContain('2026.8.26')
         expect(queries[1].query_params).toEqual(expect.objectContaining({ appId: 'vanillaFixture1', release: '2026.8.26' }))
+        expect(queries[1].query_params.normalizableMetricIds).toEqual(
+            expect.arrayContaining(['main.long-task.count', 'resource.transfer-size.sum'])
+        )
+        for (const metricId of ['animation.running.count', 'surface.webgl.count', 'media.video-element.count']) {
+            expect(queries[1].query_params.normalizableMetricIds).not.toContain(metricId)
+        }
         expect(queries[4].query).toContain("metric.status = 'measured' AND metric.value IS NOT NULL")
         expect(queries[4].query).toContain('owner = {frameP95Owner:String}')
         expect(queries[4].query_params).toEqual(
