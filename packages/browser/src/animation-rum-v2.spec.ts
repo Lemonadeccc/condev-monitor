@@ -1,5 +1,6 @@
 import type {
     AnimationElementSelectionHandle,
+    AnimationElementSelectionOptions,
     AnimationElementSelectionSnapshot,
     AnimationInteractionHandle,
     AnimationRuntime,
@@ -152,7 +153,7 @@ function harness(
         priority?: number
     }
     observeLoaf: jest.Mock
-    selectElement: jest.Mock<AnimationElementSelectionHandle, [Element]>
+    selectElement: jest.Mock<AnimationElementSelectionHandle, [Element, AnimationElementSelectionOptions?]>
     beginInteraction: jest.Mock<AnimationInteractionHandle, []>
     getPageSnapshot: jest.Mock
 } {
@@ -210,7 +211,7 @@ function harness(
         snapshot: jest.fn(() => loafSnapshot),
         disconnect: jest.fn(),
     }))
-    const selectElement = jest.fn((element: Element) => ({
+    const selectElement = jest.fn<AnimationElementSelectionHandle, [Element, AnimationElementSelectionOptions?]>(element => ({
         id: 'selection_123456',
         element,
         state: 'selected' as const,
@@ -299,6 +300,20 @@ describe('Browser Animation RUM v2 controller', () => {
         expect(() => value.controller.registerTarget('surface-overflow', fakeElement())).toThrow('at most 16')
         value.controller.finalize()
         expect(() => value.controller.registerTarget('after-finalize', fakeElement())).toThrow('finalized')
+    })
+
+    it('forces sampled target inspection to rum despite a local spoof and never selects sampled-out targets', () => {
+        const targetOptions = { mode: 'self', inspectionPurpose: 'local' } as never
+        const sampled = harness()
+        const element = fakeElement()
+        sampled.controller.registerTarget('hero-canvas', element, targetOptions)
+
+        expect(sampled.selectElement).toHaveBeenCalledWith(element, { mode: 'self', inspectionPurpose: 'rum' })
+
+        const sampledOut = harness({ sampleRate: Number.MIN_VALUE, sampleKey: 'not-selected-purpose-check' })
+        sampledOut.controller.registerTarget('hero-canvas', fakeElement(), targetOptions)
+        expect(sampledOut.controller.sampled).toBe(false)
+        expect(sampledOut.selectElement).not.toHaveBeenCalled()
     })
 
     it('creates no delivery, LoAF observer, or target sidecar when sampleRate is zero', async () => {

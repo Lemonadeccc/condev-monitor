@@ -341,6 +341,50 @@ describe('browser animation single-init entry', () => {
         restoreGlobals()
     })
 
+    it('uses the internal rum inspection path for registered Browser targets', async () => {
+        const restoreGlobals = installBrowserGlobals()
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({
+            dsn: 'https://example.test/dsn-api/tracking/app',
+            performance: false,
+            whiteScreen: false,
+            animation: {
+                runtime: runtime(),
+                autoInputWindows: false,
+                autoPageEvidence: false,
+                rum: { contractVersion: 2, sampleRate: 1 },
+                context: { routeKey: 'fixture.target' },
+            },
+        })
+        const target = {
+            tagName: 'CANVAS',
+            namespaceURI: 'http://www.w3.org/1999/xhtml',
+            isConnected: true,
+            width: 320,
+            height: 180,
+            ownerDocument: { defaultView: { innerWidth: 1_280, innerHeight: 720 } },
+            getAttribute: () => null,
+            getAnimations: () => [],
+            getBoundingClientRect: () => ({ left: 0, top: 0, right: 320, bottom: 180, width: 320, height: 180 }),
+            addEventListener() {},
+            removeEventListener() {},
+        } as unknown as Element
+        const purposes: Array<string | undefined> = []
+        const unregisterProvider = client.animation.registerTarget(target, context => {
+            purposes.push(context?.inspectionPurpose)
+            return null
+        })
+        const registered = client.animation.registerRumTarget('hero-canvas', target, { mode: 'self', inspectionPurpose: 'local' } as never)
+
+        expect(registered.snapshot()).not.toBeNull()
+        expect(purposes.at(-1)).toBe('rum')
+
+        registered.unregister()
+        unregisterProvider()
+        await client.destroy()
+        restoreGlobals()
+    })
+
     it('keeps explicit v1 on the generic transport and disables every v2 side effect at sampleRate zero', async () => {
         const restoreGlobals = installBrowserGlobals()
         const { init } = require('./animation') as typeof import('./animation')
@@ -593,7 +637,7 @@ describe('browser animation single-init entry', () => {
         expect(() => client.animation.registerTarget({} as Element, () => null)).toThrow('after the client was destroyed')
     })
 
-    it('forwards target evidence windows to Browser registration providers', async () => {
+    it('forces public target inspection to local while forwarding evidence windows to Browser providers', async () => {
         const clock = controllableFrameRuntime()
         const { init } = require('./animation') as typeof import('./animation')
         const client = init({ animation: { runtime: clock.runtime } })
@@ -616,11 +660,13 @@ describe('browser animation single-init entry', () => {
             return null
         })
 
-        const selection = client.animation.selectElement(target)
+        const selection = client.animation.selectElement(target, { inspectionPurpose: 'rum' } as never)
         const selected = selection.snapshot()
         const selectionContext = contexts.at(-1) as {
+            inspectionPurpose: string
             evidenceWindow: { startedAt: number; endedAt: number; relation: string }
         }
+        expect(selectionContext.inspectionPurpose).toBe('local')
         expect(selectionContext.evidenceWindow.startedAt).toBe(selected.selectedAt)
         expect(selectionContext.evidenceWindow.endedAt).toBeLessThan(selected.capturedAt)
         expect(selectionContext.evidenceWindow.relation).toBe('selection-window')
@@ -631,6 +677,7 @@ describe('browser animation single-init entry', () => {
         interaction.end()
         const correlated = selection.snapshot()
         expect(contexts.at(-1)).toEqual({
+            inspectionPurpose: 'local',
             evidenceWindow: {
                 startedAt: correlated.correlatedWindow?.startedAt,
                 endedAt: correlated.correlatedWindow?.endedAt,
