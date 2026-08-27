@@ -2,11 +2,12 @@ import { Controller, Get, Param, Query, Request, UseGuards } from '@nestjs/commo
 
 import { AnimationRumV2JwtGuard } from './animation-rum-v2-jwt.guard'
 import { AnimationRumV2QueryService } from './animation-rum-v2-query.service'
+import { AnimationRumV2ReadThrottleGuard } from './animation-rum-v2-read-throttle.guard'
 import { AnimationRumV2ApplicationDto } from './dto/animation-rum-v2-control.dto'
 import { AnimationRumV2CaptureParamsDto, AnimationRumV2CapturesQueryDto, AnimationRumV2QueryDto } from './dto/animation-rum-v2-query.dto'
 
 @Controller('/animation/rum-v2')
-@UseGuards(AnimationRumV2JwtGuard)
+@UseGuards(AnimationRumV2JwtGuard, AnimationRumV2ReadThrottleGuard)
 export class AnimationRumV2QueryController {
     constructor(private readonly queries: AnimationRumV2QueryService) {}
 
