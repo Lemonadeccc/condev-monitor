@@ -238,7 +238,11 @@ Canvas 内部和 GPU 必须由按 canvas 对象身份匹配的 adapter 提供，
 
 SDK 已提供 `createAnimationTargetAdapterRegistry(id, version)`：内部用 `WeakMap<Element, provider>` 做 capture-local 对象身份匹配，重复注册使用 generation 防止旧 unregister 删除新 renderer，注销幂等；它不从 selector/id/class/场景名生成键，也不会替 renderer 做阻塞式 GPU 采样。
 
-Target snapshot 的每个 renderer 输出现在都带归一化 `evidence`：window 的 start/end/duration，accepted/retained/dropped/rejected sample count，是否 truncated，以及 GPU validity。adapter 的原始 evidence 输入可以省略；省略时输出仍保留这些字段并使用 `null`/闭集 rejection reason，而不是制造 0。已提供的样本数量必须满足 retained + dropped = accepted；未知或不一致的数值会保留为 `null`。
+Target snapshot 的每个 renderer 输出都带归一化 `evidence`：window 的 start/end/duration，accepted/retained/dropped/rejected sample count，是否 truncated，以及 GPU validity。原始 `evidence` 在类型上为兼容旧 adapter 和 `observed:false` 保持可选；一旦声明已观测、保留了样本或提供任何非空指标，必须同时提供 window 两个端点。已提供的样本数量必须满足 retained + dropped = accepted；未知或不一致的数值会保留为 `null`，而不是制造 0。
+
+Renderer window 必须与目标 collector 使用同一个 `AnimationRuntime.now()` 时钟域；普通页面通常就是该 document 的 `performance.now()`。不能混入 `Date.now()` epoch、`performance.timeOrigin + performance.now()`、Three Clock 秒数、原始 GPU ticks，或另一 iframe/worker time origin；只有 SDK 本身因缺少 Performance clock 而回退时，adapter 才使用相同回退基准。同步 `inspect()` 完成后 SDK 才记录最终 `capturedAt`，所以 adapter 在 inspect 内读取同一时钟不会被误判为未来。
+
+没有完成交互时，renderer window 必须完整包含于 `[selectedAt,capturedAt]`；完成手动目标交互后，必须完整包含于 SDK 自己记录的 `[correlatedWindow.startedAt,correlatedWindow.endedAt]`。仅 overlap 不够，因为已经聚合的 p95 无法裁掉窗外样本。缺端点、反向、选择前、未来、异域尺度、越过交互边界或 duration 不一致都会整体清空 renderer 指标，并产生本地 `renderer-evidence-window-invalid`。RUM v2 会独立复验 selection/correlation 算术、完整包含和 duration；被篡改数据或缺少 `correlatedWindow` 的旧 correlated snapshot 只会变成 `unknown`/`not-observed`，不会注册 renderer provider，也不会继续上报 measured。
 
 - Canvas2D：逻辑帧 CPU、draw/path/text/image 次数，`getImageData`/`putImageData` readback/upload 时间与像素，backing-store resize，离屏 canvas 数量；
 - WebGL/Three/Pixi/Babylon：CPU submission、有效且非 disjoint 的 GPU timer、draw call、triangle/point/line、program/pipeline、geometry/material/texture/render target、render-target pixels、buffer/texture upload、readback、shader compile、context loss/restore 和 dispose；

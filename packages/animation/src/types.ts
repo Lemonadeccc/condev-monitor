@@ -744,6 +744,13 @@ export interface AnimationTargetRendererInspection {
 export type AnimationTargetAdapterOwnerInspection = Omit<AnimationTargetOwnerAttribution, 'adapterId' | 'adapterVersion'>
 
 export interface AnimationTargetAdapterRendererEvidence {
+    /**
+     * Bounds in the same `AnimationRuntime.now()` clock domain as the target
+     * collector. In a normal document this means `performance.now()`, never a
+     * separately chosen epoch timestamp, GPU tick, Three Clock value, or
+     * another realm's clock.
+     * Provide both endpoints whenever retained samples or metrics are reported.
+     */
     window?: {
         startedAt?: number
         endedAt?: number
@@ -765,7 +772,11 @@ export interface AnimationTargetAdapterRendererInspection {
     family: AnimationRendererFamily
     capability: CapabilityEvidence
     metrics?: Partial<AnimationRendererMetrics>
-    /** Optional raw adapter evidence; snapshots always expose its normalized form. */
+    /**
+     * Optional only for not-observed/backward-compatible adapters. An observed
+     * renderer must provide a complete, capture-contained window; snapshots
+     * always expose the normalized form and RUM revalidates it independently.
+     */
     evidence?: AnimationTargetAdapterRendererEvidence
 }
 
@@ -821,7 +832,10 @@ export interface AnimationElementSelectionSnapshot {
     correlationRelation: 'temporal-overlap' | null
     /** Duration of the completed interaction represented by `correlated`; never the selection lifetime. */
     correlatedDurationMs?: number | null
-    /** SDK-owned monotonic boundaries for the completed interaction represented by `correlated`. */
+    /**
+     * SDK-owned `AnimationRuntime.now()` boundaries for the completed
+     * interaction represented by `correlated`; never adapter-supplied.
+     */
     correlatedWindow?: {
         startedAt: number
         endedAt: number
