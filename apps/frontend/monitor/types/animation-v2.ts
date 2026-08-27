@@ -225,6 +225,65 @@ export type AnimationRumV2SummaryApiResponse = {
     }
 }
 
+export type AnimationRumV2PipelineStatus =
+    | 'idle'
+    | 'in-flight'
+    | 'healthy'
+    | 'delayed'
+    | 'quarantined'
+    | 'inconsistent'
+    | 'unknown'
+
+export type AnimationRumV2PipelineDiagnostic = {
+    diagnosticSchemaVersion: 1
+    rumContractVersion: 2
+    observedAt: string
+    status: AnimationRumV2PipelineStatus
+    window: {
+        lookbackSeconds: 3600
+        outboxDelaySeconds: 300
+        projectionGraceSeconds: 120
+        comparisonLimit: 500
+    }
+    receipts: {
+        recent: { count: number; truncated: boolean }
+        byState: {
+            pending: number
+            published: number
+            persisted: number
+            quarantined: number
+        }
+        latestTransitionAt: string | null
+        statePairMismatch: number
+    }
+    outbox: {
+        pending: { count: number; truncated: boolean }
+        due: number
+        retrying: number
+        leased: number
+        oldestPendingAt: string | null
+        maxAttemptCount: number | null
+        recentQuarantined: { count: number; truncated: boolean }
+    }
+    projection: {
+        availability: 'not-checked' | 'available' | 'unavailable'
+        eligible: { count: number; truncated: boolean }
+        matched: number | null
+        missingAfterGrace: number | null
+        identityMismatch: number | null
+    }
+    semantics: {
+        publishedMeans: 'kafka-broker-ack-only'
+        projectedMeans: 'clickhouse-capture-completion-marker'
+        diagnosticMeans: 'bounded-inference-not-worker-health'
+    }
+}
+
+export type AnimationRumV2PipelineApiResponse = {
+    success: true
+    data: AnimationRumV2PipelineDiagnostic
+}
+
 export type AnimationRumV2CaptureBase = {
     captureId: string
     parentCaptureId: string | null

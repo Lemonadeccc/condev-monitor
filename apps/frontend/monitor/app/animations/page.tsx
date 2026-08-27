@@ -1,10 +1,10 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { Activity, ArrowUpRight, History, Settings2 } from 'lucide-react'
+import { Activity, ArrowUpRight, Database, History, Inbox, Radio, Send, Settings2, type LucideIcon } from 'lucide-react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { useMemo } from 'react'
+import { type ReactNode, useMemo } from 'react'
 
 import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions, AIPanelCard, AIStatCard, AIStateMessage } from '@/components/ai/page-shell'
 import { AnimationRumV2QualityBadges, AnimationRumV2ScopeBadge } from '@/components/animation/rum-v2-ui'
@@ -23,6 +23,11 @@ import {
     formatAnimationRumV2Integer,
     formatAnimationRumV2Metric,
 } from '@/lib/animation-rum-v2'
+import {
+    animationRumV2PipelineStatusMeta,
+    formatAnimationRumV2PipelineCount,
+    getAnimationRumV2Pipeline,
+} from '@/lib/animation-rum-v2-pipeline'
 import { formatDateTime } from '@/lib/datetime'
 import type {
     AnimationRumV2CapturesApiResponse,
@@ -58,6 +63,19 @@ function metricPercentile(metric: AnimationRumV2SummaryMetric | undefined, perce
     return display.normalized && value !== '未采集 / 未知' ? `${value} / 分钟` : value
 }
 
+function PipelineStage({ icon: Icon, title, value, children }: { icon: LucideIcon; title: string; value: ReactNode; children: ReactNode }) {
+    return (
+        <section className="rounded-lg border bg-muted/10 p-4">
+            <div className="flex items-center gap-2 text-sm font-medium text-muted-foreground">
+                <Icon className="h-4 w-4" aria-hidden="true" />
+                {title}
+            </div>
+            <div className="mt-2 text-2xl font-semibold tabular-nums">{value}</div>
+            <div className="mt-2 space-y-1 text-xs text-muted-foreground">{children}</div>
+        </section>
+    )
+}
+
 export default function AnimationsPage() {
     const { user, loading } = useAuth()
     const enabled = !loading && Boolean(user)
@@ -89,11 +107,22 @@ export default function AnimationsPage() {
             fetchAnimationRumV2(`/api/animation/rum-v2/captures?${queryParams}&limit=50&offset=0`, signal),
     })
 
+    const pipelineQuery = useQuery({
+        queryKey: ['animation-rum-v2-pipeline', effectiveAppId],
+        enabled: enabled && Boolean(effectiveAppId),
+        queryFn: ({ signal }) => getAnimationRumV2Pipeline(effectiveAppId, signal),
+        refetchInterval: 30_000,
+        refetchIntervalInBackground: false,
+        staleTime: 25_000,
+    })
+
     const summary = summaryQuery.data?.data
     const metrics = summary?.metrics ?? []
     const captures = capturesQuery.data?.data.captures ?? []
     const pageFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'page', 'page-window')
     const targetFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'target', 'target-temporal-overlap')
+    const pipeline = pipelineQuery.data
+    const pipelineStatus = pipeline ? animationRumV2PipelineStatusMeta(pipeline.status) : null
 
     const scopeHref = (nextScope?: AnimationRumV2Scope) =>
         buildMonitorScopeHref(nextScope ? `/animations?scope=${nextScope}` : '/animations', searchParams)
@@ -157,6 +186,101 @@ export default function AnimationsPage() {
             {!effectiveAppId ? (
                 <AIPanelCard>
                     <AIStateMessage>请先创建或选择一个应用。</AIStateMessage>
+                </AIPanelCard>
+            ) : null}
+
+            {effectiveAppId ? (
+                <AIPanelCard
+                    title="采集链路 · 最近 60 分钟"
+                    description="每 30 秒读取一次 PostgreSQL Outbox / receipt 与 ClickHouse completion marker；所有比较均限制为最多 500 条。"
+                    headerBorder
+                    headerActions={
+                        pipelineStatus ? (
+                            <div className="flex items-center gap-2">
+                                {pipelineQuery.isFetching ? <span className="text-xs text-muted-foreground">正在刷新…</span> : null}
+                                <Badge variant={pipelineStatus.variant}>{pipelineStatus.label}</Badge>
+                            </div>
+                        ) : null
+                    }
+                >
+                    {pipelineQuery.isLoading ? (
+                        <AIStateMessage className="px-0">正在读取采集链路…</AIStateMessage>
+                    ) : pipelineQuery.isError ? (
+                        <AIStateMessage className="px-0" tone="destructive">
+                            {queryErrorMessage(pipelineQuery.error)} 本错误只影响链路卡片，不影响采集设置和历史指标查询。
+                        </AIStateMessage>
+                    ) : pipeline && pipelineStatus ? (
+                        <div className="space-y-4">
+                            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                                <PipelineStage
+                                    icon={Inbox}
+                                    title="DSN 接收 / Receipt"
+                                    value={formatAnimationRumV2PipelineCount(pipeline.receipts.recent)}
+                                >
+                                    <p>
+                                        待处理 {pipeline.receipts.byState.pending} · Kafka ACK {pipeline.receipts.byState.published}
+                                    </p>
+                                    <p>
+                                        直接持久化 {pipeline.receipts.byState.persisted} · 隔离 {pipeline.receipts.byState.quarantined}
+                                    </p>
+                                    <p>
+                                        最近变更{' '}
+                                        {pipeline.receipts.latestTransitionAt ? formatDateTime(pipeline.receipts.latestTransitionAt) : '暂无'}
+                                    </p>
+                                </PipelineStage>
+                                <PipelineStage
+                                    icon={Send}
+                                    title="PostgreSQL Outbox"
+                                    value={formatAnimationRumV2PipelineCount(pipeline.outbox.pending)}
+                                >
+                                    <p>
+                                        到期 {pipeline.outbox.due} · 重试中 {pipeline.outbox.retrying} · 已租约 {pipeline.outbox.leased}
+                                    </p>
+                                    <p>最大尝试次数 {pipeline.outbox.maxAttemptCount ?? '—'}</p>
+                                    <p>
+                                        最早待发送 {pipeline.outbox.oldestPendingAt ? formatDateTime(pipeline.outbox.oldestPendingAt) : '暂无'}
+                                    </p>
+                                </PipelineStage>
+                                <PipelineStage icon={Radio} title="Kafka Broker ACK" value={pipeline.receipts.byState.published}>
+                                    <p>这里只证明 Broker 已确认消息，不证明 Event Worker 已消费。</p>
+                                    <p>状态配对异常 {pipeline.receipts.statePairMismatch}</p>
+                                    <p>
+                                        最近隔离 Outbox {formatAnimationRumV2PipelineCount(pipeline.outbox.recentQuarantined)}
+                                    </p>
+                                </PipelineStage>
+                                <PipelineStage
+                                    icon={Database}
+                                    title="ClickHouse Completion"
+                                    value={
+                                        pipeline.projection.availability === 'available'
+                                            ? `${pipeline.projection.matched ?? 0} / ${formatAnimationRumV2PipelineCount(
+                                                  pipeline.projection.eligible
+                                              )}`
+                                            : '不可判断'
+                                    }
+                                >
+                                    <p>查询状态 {pipeline.projection.availability}</p>
+                                    <p>超过宽限期仍缺失 {pipeline.projection.missingAfterGrace ?? '—'}</p>
+                                    <p>事件身份不一致 {pipeline.projection.identityMismatch ?? '—'}</p>
+                                </PipelineStage>
+                            </div>
+                            <div className="flex flex-col gap-3 rounded-lg border border-dashed p-4 text-sm sm:flex-row sm:items-start sm:justify-between">
+                                <div className="space-y-1">
+                                    <p className="font-medium">{pipelineStatus.description}</p>
+                                    <p className="text-muted-foreground">
+                                        Kafka 已发布仅表示 broker ACK，不代表 ClickHouse 已落库。本卡是有界推断，不是 Event Worker
+                                        进程健康探针。
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">诊断时间：{formatDateTime(pipeline.observedAt)}</p>
+                                </div>
+                                <Button asChild variant="outline" size="sm">
+                                    <Link href={buildMonitorScopeHref('/animations/control', searchParams)}>核对采集设置</Link>
+                                </Button>
+                            </div>
+                        </div>
+                    ) : (
+                        <AIStateMessage className="px-0">暂时没有可用的链路诊断。</AIStateMessage>
+                    )}
                 </AIPanelCard>
             ) : null}
 
