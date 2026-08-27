@@ -1039,7 +1039,9 @@ function privacy(value: unknown): void {
         }
     }
     boolean(raw.screenshotsRetained, 'animation-report.privacy.screenshotsRetained')
-    boolean(raw.rawTraceUploaded, 'animation-report.privacy.rawTraceUploaded')
+    if (boolean(raw.rawTraceUploaded, 'animation-report.privacy.rawTraceUploaded')) {
+        throw new BadRequestException('animation-report cannot upload a raw trace')
+    }
 }
 
 export function parseAnimationReportArtifact(value: unknown): ParsedAnimationReport {

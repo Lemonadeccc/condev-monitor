@@ -1202,5 +1202,13 @@ describe('lab platform artifact projections', () => {
         const report = animationReport()
         report.privacy.selectorsRetained = true
         expect(() => parseAnimationReportArtifact(report)).toThrow(BadRequestException)
+
+        const rawTrace = animationReport()
+        rawTrace.privacy.rawTraceUploaded = true
+        expect(() => parseAnimationReportArtifact(rawTrace)).toThrow('animation-report cannot upload a raw trace')
+
+        const rawTraceV2 = animationReportV2()
+        rawTraceV2.privacy.rawTraceUploaded = true
+        expect(() => parseAnimationReportArtifact(rawTraceV2)).toThrow('animation-report cannot upload a raw trace')
     })
 })
