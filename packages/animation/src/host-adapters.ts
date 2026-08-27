@@ -271,7 +271,24 @@ export interface ThreeGpuTimingReading {
  * never starts a query or waits for the GPU; callers may only hand it evidence
  * that their renderer has already resolved.
  */
-export type RendererHostGpuTimingReading = ThreeGpuTimingReading
+export type RendererHostGpuTimingReading =
+    | (ThreeGpuTimingReading & { status?: never })
+    | {
+          status: 'measured'
+          timeMs: number
+          source: AnimationHostGpuTimingSource
+          valid?: never
+          disjoint?: never
+          contextLost?: never
+      }
+    | {
+          status: Exclude<AnimationGpuTimingStatus, 'measured'>
+          timeMs?: never
+          source?: AnimationHostGpuTimingSource
+          valid?: never
+          disjoint?: never
+          contextLost?: never
+      }
 
 /** Closed, engine-neutral renderer evidence read explicitly by the host. */
 export interface RendererHostReading {
@@ -303,7 +320,7 @@ export interface RendererHostProbe {
 export interface ThreeRendererSnapshotOptions {
     backend?: AnimationThreeRendererBackend
     now?: () => number
-    readGpuTiming?: () => ThreeGpuTimingReading | null | undefined
+    readGpuTiming?: () => RendererHostGpuTimingReading | null | undefined
 }
 
 export interface ThreeRendererProbeOptions extends ThreeRendererSnapshotOptions {
@@ -371,7 +388,7 @@ function readGpuEvidence(
 ): AnimationGpuTimingEvidence {
     if (!readGpuTiming) return { status: 'not-provided' }
 
-    let reading: ThreeGpuTimingReading | null | undefined
+    let reading: RendererHostGpuTimingReading | null | undefined
     try {
         reading = readGpuTiming()
     } catch {
@@ -379,15 +396,13 @@ function readGpuEvidence(
     }
     if (!reading) return { status: 'not-provided' }
 
-    const source = GPU_TIMING_SOURCES.has(reading.source as AnimationHostGpuTimingSource) ? reading.source : undefined
-    const timeMs = finiteNonNegative(reading.timeMs)
     const contextLost = rendererContextLost(renderer)
-    if (contextLost === 'error') return { status: 'error', ...(source ? { source } : {}) }
-    if (reading.contextLost !== false || contextLost === true) return { status: 'context-lost', ...(source ? { source } : {}) }
-    if (reading.disjoint !== false) return { status: 'disjoint', ...(source ? { source } : {}) }
-    if (reading.valid !== true || timeMs === undefined || !source) return { status: 'invalid', ...(source ? { source } : {}) }
-    if (!isHostGpuTimingSourceCompatible(backend, source)) return { status: 'invalid', source }
-    return { status: 'measured', timeMs, source, valid: true, disjoint: false, contextLost: false }
+    if (contextLost === 'error') return { status: 'error' }
+    try {
+        return normalizeRendererHostGpuEvidence(reading, backend, contextLost)
+    } catch {
+        return { status: 'error' }
+    }
 }
 
 function normalizeRendererHostGpuEvidence(
@@ -396,17 +411,51 @@ function normalizeRendererHostGpuEvidence(
     contextLost: unknown
 ): AnimationGpuTimingEvidence {
     if (contextLost !== undefined && typeof contextLost !== 'boolean') return { status: 'error' }
-    if (contextLost === true) {
-        const source = GPU_TIMING_SOURCES.has(reading?.source as AnimationHostGpuTimingSource) ? reading?.source : undefined
-        return { status: 'context-lost', ...(source ? { source } : {}) }
-    }
+    if (contextLost === true) return { status: 'context-lost' }
     if (!reading) return { status: 'not-provided' }
 
-    const source = GPU_TIMING_SOURCES.has(reading.source as AnimationHostGpuTimingSource) ? reading.source : undefined
-    const timeMs = finiteNonNegative(reading.timeMs)
-    if (reading.contextLost !== false) return { status: 'context-lost', ...(source ? { source } : {}) }
-    if (reading.disjoint !== false) return { status: 'disjoint', ...(source ? { source } : {}) }
-    if (reading.valid !== true || timeMs === undefined || !source) return { status: 'invalid', ...(source ? { source } : {}) }
+    if (typeof reading !== 'object' || Array.isArray(reading)) return { status: 'invalid' }
+    const candidate = reading as RendererHostGpuTimingReading & Record<string, unknown>
+    const hasStatus = 'status' in candidate
+    const sourceValue = candidate.source
+    const source = GPU_TIMING_SOURCES.has(sourceValue as AnimationHostGpuTimingSource)
+        ? (sourceValue as AnimationHostGpuTimingSource)
+        : undefined
+    if (sourceValue !== undefined && source === undefined) return { status: 'invalid' }
+
+    if (hasStatus) {
+        const status = candidate.status
+        if (
+            status !== 'measured' &&
+            status !== 'not-provided' &&
+            status !== 'invalid' &&
+            status !== 'disjoint' &&
+            status !== 'context-lost' &&
+            status !== 'error'
+        ) {
+            return { status: 'invalid', ...(source ? { source } : {}) }
+        }
+
+        const hasTimeMs = 'timeMs' in candidate
+        const hasLegacyFlags = 'valid' in candidate || 'disjoint' in candidate || 'contextLost' in candidate
+        if (status === 'measured') {
+            const timeMs = finiteNonNegative(candidate.timeMs)
+            if (!hasTimeMs || hasLegacyFlags || timeMs === undefined || !source) {
+                return { status: 'invalid', ...(source ? { source } : {}) }
+            }
+            if (!isHostGpuTimingSourceCompatible(backend, source)) return { status: 'invalid', source }
+            return { status: 'measured', timeMs, source, valid: true, disjoint: false, contextLost: false }
+        }
+
+        if (hasTimeMs || hasLegacyFlags) return { status: 'invalid', ...(source ? { source } : {}) }
+        return { status, ...(source ? { source } : {}) }
+    }
+
+    // Backward-compatible path for the original Three-style result shape.
+    const timeMs = finiteNonNegative(candidate.timeMs)
+    if (candidate.contextLost !== false) return { status: 'context-lost', ...(source ? { source } : {}) }
+    if (candidate.disjoint !== false) return { status: 'disjoint', ...(source ? { source } : {}) }
+    if (candidate.valid !== true || timeMs === undefined || !source) return { status: 'invalid', ...(source ? { source } : {}) }
     if (!isHostGpuTimingSourceCompatible(backend, source)) return { status: 'invalid', source }
     return { status: 'measured', timeMs, source, valid: true, disjoint: false, contextLost: false }
 }

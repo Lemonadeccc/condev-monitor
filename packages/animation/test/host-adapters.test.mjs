@@ -151,6 +151,25 @@ test('Three snapshot reads public counters and accepts GPU time only with comple
     })
     assert.equal(neutral.gpu.status, 'measured')
 
+    const canonical = readThreeRendererSnapshot(renderer, {
+        backend: 'webgl2',
+        readGpuTiming: () => ({ status: 'measured', timeMs: 1.5, source: 'webgl-disjoint-timer-query' }),
+    })
+    assert.deepEqual(canonical.gpu, {
+        status: 'measured',
+        timeMs: 1.5,
+        source: 'webgl-disjoint-timer-query',
+        valid: true,
+        disjoint: false,
+        contextLost: false,
+    })
+
+    const canonicalDisjoint = readThreeRendererSnapshot(renderer, {
+        backend: 'webgl2',
+        readGpuTiming: () => ({ status: 'disjoint', source: 'webgl-disjoint-timer-query' }),
+    })
+    assert.deepEqual(canonicalDisjoint.gpu, { status: 'disjoint', source: 'webgl-disjoint-timer-query' })
+
     for (const [reading, expectedStatus] of [
         [
             {
@@ -269,6 +288,88 @@ test('generic renderer host probe normalizes closed counters and resolved GPU ev
         },
     })
     assert.deepEqual(samples, [captured])
+})
+
+test('generic renderer host probe accepts closed GPU status readings without invented timing values', () => {
+    const readings = [
+        {
+            input: { status: 'measured', timeMs: 0, source: 'webgl-disjoint-timer-query' },
+            expected: {
+                status: 'measured',
+                timeMs: 0,
+                source: 'webgl-disjoint-timer-query',
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+            },
+        },
+        { input: { status: 'not-provided' }, expected: { status: 'not-provided' } },
+        {
+            input: { status: 'invalid', source: 'webgl-disjoint-timer-query' },
+            expected: { status: 'invalid', source: 'webgl-disjoint-timer-query' },
+        },
+        {
+            input: { status: 'disjoint', source: 'webgl-disjoint-timer-query' },
+            expected: { status: 'disjoint', source: 'webgl-disjoint-timer-query' },
+        },
+        {
+            input: { status: 'context-lost', source: 'webgl-disjoint-timer-query' },
+            expected: { status: 'context-lost', source: 'webgl-disjoint-timer-query' },
+        },
+        {
+            input: { status: 'error', source: 'webgl-disjoint-timer-query' },
+            expected: { status: 'error', source: 'webgl-disjoint-timer-query' },
+        },
+    ]
+
+    for (const { input, expected } of readings) {
+        const sample = createRendererHostProbe({
+            backend: 'webgl2',
+            read: () => ({ gpu: input }),
+            sink: { recordRenderStats() {} },
+        }).capture()
+        assert.deepEqual(sample.gpu, expected)
+        if (input.status !== 'measured') assert.equal('timeMs' in sample.gpu, false)
+    }
+})
+
+test('generic renderer host probe rejects contradictory GPU status fields and incompatible provenance', () => {
+    const invalidReadings = [
+        { backend: 'webgl2', gpu: { status: 'measured', timeMs: 1 } },
+        { backend: 'webgl2', gpu: { status: 'measured', timeMs: -1, source: 'webgl-disjoint-timer-query' } },
+        { backend: 'webgl2', gpu: { status: 'measured', timeMs: Number.NaN, source: 'webgl-disjoint-timer-query' } },
+        { backend: 'webgl2', gpu: { status: 'measured', timeMs: 1, source: 'private-gpu-clock' } },
+        { backend: 'webgpu', gpu: { status: 'measured', timeMs: 1, source: 'webgl-disjoint-timer-query' } },
+        { backend: 'webgl2', gpu: { status: 'disjoint', timeMs: 0, source: 'webgl-disjoint-timer-query' } },
+        { backend: 'webgl2', gpu: { status: 'error', valid: false, source: 'webgl-disjoint-timer-query' } },
+        { backend: 'webgl2', gpu: { status: 'measured', timeMs: 1, valid: true, source: 'webgl-disjoint-timer-query' } },
+        { backend: 'webgl2', gpu: { status: 'future-status', source: 'webgl-disjoint-timer-query' } },
+        { backend: 'webgl2', gpu: 'not-a-reading' },
+        { backend: 'webgl2', gpu: [] },
+    ]
+
+    for (const { backend, gpu } of invalidReadings) {
+        const sample = createRendererHostProbe({
+            backend,
+            read: () => ({ gpu }),
+            sink: { recordRenderStats() {} },
+        }).capture()
+        assert.equal(sample.gpu.status, 'invalid')
+        assert.equal('timeMs' in sample.gpu, false)
+        assert.doesNotMatch(JSON.stringify(sample.gpu), /private-gpu-clock|future-status|not-a-reading/)
+    }
+
+    const poisonedGpu = Object.defineProperty({}, 'source', {
+        get() {
+            throw new Error('must not be read after direct context loss')
+        },
+    })
+    const contextLost = createRendererHostProbe({
+        backend: 'webgl2',
+        read: () => ({ contextLost: true, gpu: poisonedGpu }),
+        sink: { recordRenderStats() {} },
+    }).capture()
+    assert.deepEqual(contextLost.gpu, { status: 'context-lost' })
 })
 
 test('generic renderer host probe is fail-closed, exception-safe, and disposable', () => {
