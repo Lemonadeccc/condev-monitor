@@ -9,6 +9,9 @@ import type {
 
 import type {
     WebGlGpuTimer,
+    WebGlGpuTimerTargetAdapterInspection,
+    WebGlGpuTimerTargetInspectionContext,
+    WebGlGpuTimerTargetRendererInspection,
     WebGlGpuTimingEvidence,
     WebGpuBufferDescriptorLike,
     WebGpuBufferLike,
@@ -18,7 +21,7 @@ import type {
     WebGpuQuerySetLike,
     WebGpuTimestampTimingEvidence,
 } from '../src'
-import { createCanvas2dRecorder, createWebGpuMultiPassTimestampTimer, createWebGpuTimestampTimer } from '../src'
+import { createCanvas2dRecorder, createWebGlGpuTimer, createWebGpuMultiPassTimestampTimer, createWebGpuTimestampTimer } from '../src'
 
 declare const evidence: WebGlGpuTimingEvidence
 const rendererHostReading: RendererHostGpuTimingReading = evidence
@@ -52,6 +55,46 @@ const contradictoryHybrid: RendererHostGpuTimingReading = {
     contextLost: false,
 }
 void contradictoryHybrid
+
+declare const targetContext: AnimationTargetAdapterInspectionContext
+const webGlSpecificTargetContext: WebGlGpuTimerTargetInspectionContext = targetContext
+void webGlSpecificTargetContext
+declare const webGlContext: WebGLRenderingContext
+declare const webGl2Context: WebGL2RenderingContext
+
+const webGlTargetTimer = createWebGlGpuTimer({
+    gl: webGlContext,
+    backend: 'webgl',
+    disjointQueryOwnership: 'exclusive',
+    now: () => 0,
+    maxRetainedFrames: 512,
+})
+const webGlSpecificRendererInspection: WebGlGpuTimerTargetRendererInspection = webGlTargetTimer.inspectWindow(targetContext.evidenceWindow)
+const webGlTargetRendererInspection: AnimationTargetAdapterRendererInspection = webGlSpecificRendererInspection
+const webGlSpecificAdapterInspection: WebGlGpuTimerTargetAdapterInspection = webGlTargetTimer.inspect(targetContext)
+const webGlTargetAdapterInspection: AnimationTargetAdapterInspection = webGlSpecificAdapterInspection
+const webGlTargetInspectionProvider: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null =
+    webGlTargetTimer.inspect
+const webGlTargetFamily: 'webgl' | 'webgl2' = webGlTargetTimer.inspectWindow(targetContext.evidenceWindow).family
+const webGlTargetGpuSource: 'webgl-timer-query' | undefined = webGlTargetTimer.inspectWindow(targetContext.evidenceWindow).evidence?.gpu
+    ?.source
+const webGlHostGpuSource: 'webgl-disjoint-timer-query' | undefined = webGlTargetTimer.takeRendererHostTiming().gpu?.source
+void webGlTargetRendererInspection
+void webGlTargetAdapterInspection
+void webGlTargetInspectionProvider
+void webGlTargetFamily
+void webGlTargetGpuSource
+void webGlHostGpuSource
+
+const webGl2TargetTimer = createWebGlGpuTimer({
+    gl: webGl2Context,
+    backend: 'webgl2',
+    disjointQueryOwnership: 'exclusive',
+})
+const webGl2TargetRendererInspection: AnimationTargetAdapterRendererInspection = webGl2TargetTimer.inspectWindow(
+    targetContext.evidenceWindow
+)
+void webGl2TargetRendererInspection
 
 declare const querySetBrand: unique symbol
 declare const bufferBrand: unique symbol
@@ -181,7 +224,6 @@ const canvasRecorder = createCanvas2dRecorder({
 })
 const canvasHostReading: RendererHostReading | null = canvasRecorder.takeRendererHostReading()
 void canvasHostReading
-declare const targetContext: AnimationTargetAdapterInspectionContext
 const canvasRendererInspection: AnimationTargetAdapterRendererInspection = canvasRecorder.inspectWindow(targetContext.evidenceWindow)
 void canvasRendererInspection
 const canvasInspectionProvider: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null =
