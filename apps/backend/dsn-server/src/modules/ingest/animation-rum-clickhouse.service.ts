@@ -1,4 +1,5 @@
 import { ClickHouseClient } from '@clickhouse/client'
+import { type AnimationRumV2KafkaEnvelope, createAnimationRumV2ClickHouseInsertPlan } from '@condev-monitor/animation-rum-ingest'
 import { Inject, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 
@@ -95,5 +96,20 @@ export class AnimationRumClickhouseService {
                 metric_count: report.metrics.length,
             })),
         })
+    }
+
+    async insertV2(envelope: AnimationRumV2KafkaEnvelope): Promise<void> {
+        const plan = createAnimationRumV2ClickHouseInsertPlan(envelope)
+
+        // The shared plan validates the full closed payload before the first
+        // write. Keep inserts sequential so the capture completion marker is
+        // written only after every child row succeeds.
+        for (const step of plan) {
+            await this.clickhouseClient.insert<unknown>({
+                table: `${this.database}.${step.table}`,
+                format: 'JSONEachRow',
+                values: step.rows,
+            })
+        }
     }
 }

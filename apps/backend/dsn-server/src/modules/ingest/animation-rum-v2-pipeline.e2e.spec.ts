@@ -42,6 +42,7 @@ type ReceiptRow = {
     deliveryState: string
     deliveryVia: string | null
     publishedAt: Date | string | null
+    persistedAt: Date | string | null
 }
 
 type PostgresPipelineState = {
@@ -197,6 +198,8 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
     let adminId = 0
     let applicationId = 0
     let appId = ''
+    let expectedDeliveryState: 'published' | 'persisted' = 'published'
+    let expectedDeliveryVia: 'kafka' | 'clickhouse' = 'kafka'
 
     beforeAll(async () => {
         if (process.env.TEST_ANIMATION_RUM_V2_PIPELINE_WRITE_SENTINEL !== WRITE_SENTINEL) {
@@ -209,6 +212,12 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
         const clickhousePassword = requireEnvironment('TEST_CLICKHOUSE_PASSWORD', true)
         clickhouseDatabase = requireEnvironment('TEST_CLICKHOUSE_DATABASE')
         dsnBaseUrl = parseDsnBaseUrl(requireEnvironment('TEST_DSN_BASE_URL'))
+        const expectedTransport = process.env.TEST_ANIMATION_RUM_V2_EXPECTED_TRANSPORT ?? 'kafka'
+        if (expectedTransport !== 'kafka' && expectedTransport !== 'clickhouse') {
+            throw new Error('TEST_ANIMATION_RUM_V2_EXPECTED_TRANSPORT must be kafka or clickhouse')
+        }
+        expectedDeliveryState = expectedTransport === 'kafka' ? 'published' : 'persisted'
+        expectedDeliveryVia = expectedTransport
         if (!/^[A-Za-z_][A-Za-z0-9_]*$/u.test(clickhouseDatabase)) {
             throw new Error('TEST_CLICKHOUSE_DATABASE must be a simple ClickHouse identifier')
         }
@@ -410,7 +419,7 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
         if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, 'Animation RUM v2 pipeline cleanup failed')
     })
 
-    it('publishes page before target and projects both reports into all v2 ClickHouse tables', async () => {
+    it('delivers page before target and projects both reports into all v2 ClickHouse tables', async () => {
         if (!pool || !clickhouse || !dsnBaseUrl) throw new Error('Pipeline E2E clients were not initialized')
 
         const suffix = randomUUID().replaceAll('-', '')
@@ -475,7 +484,8 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
                                parent_capture_id AS "parentCaptureId",
                                delivery_state AS "deliveryState",
                                delivery_via AS "deliveryVia",
-                               published_at AS "publishedAt"
+                               published_at AS "publishedAt",
+                               persisted_at AS "persistedAt"
                         FROM public.animation_rum_v2_capture_receipt
                         WHERE application_id = $1
                         ORDER BY captured_at, capture_id
@@ -493,9 +503,11 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
             },
             state =>
                 state.receipts.length === 2 &&
-                state.receipts.every(receipt => receipt.deliveryState === 'published' && receipt.deliveryVia === 'kafka') &&
+                state.receipts.every(
+                    receipt => receipt.deliveryState === expectedDeliveryState && receipt.deliveryVia === expectedDeliveryVia
+                ) &&
                 state.outboxCount === 0,
-            'both PostgreSQL receipts to be published and the outbox to drain'
+            `both PostgreSQL receipts to be ${expectedDeliveryState} through ${expectedDeliveryVia} and the outbox to drain`
         )
 
         const pageReceipt = postgresState.receipts.find(receipt => receipt.captureId === page.captureId)
@@ -505,8 +517,8 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
                 eventId: page.eventId,
                 scope: 'page',
                 parentCaptureId: null,
-                deliveryState: 'published',
-                deliveryVia: 'kafka',
+                deliveryState: expectedDeliveryState,
+                deliveryVia: expectedDeliveryVia,
             })
         )
         expect(targetReceipt).toEqual(
@@ -514,11 +526,13 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
                 eventId: target.eventId,
                 scope: 'target',
                 parentCaptureId: page.captureId,
-                deliveryState: 'published',
-                deliveryVia: 'kafka',
+                deliveryState: expectedDeliveryState,
+                deliveryVia: expectedDeliveryVia,
             })
         )
-        expect(timestamp(pageReceipt?.publishedAt ?? null)).toBeLessThanOrEqual(timestamp(targetReceipt?.publishedAt ?? null))
+        const pageDeliveredAt = expectedDeliveryState === 'published' ? pageReceipt?.publishedAt : pageReceipt?.persistedAt
+        const targetDeliveredAt = expectedDeliveryState === 'published' ? targetReceipt?.publishedAt : targetReceipt?.persistedAt
+        expect(timestamp(pageDeliveredAt ?? null)).toBeLessThanOrEqual(timestamp(targetDeliveredAt ?? null))
 
         const clickhouseState = await pollUntil<ClickHousePipelineState>(
             async () => {

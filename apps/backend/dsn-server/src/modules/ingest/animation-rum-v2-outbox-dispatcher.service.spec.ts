@@ -103,16 +103,25 @@ function createScriptedClient(steps: SqlStep[], timeline: string[]) {
 }
 
 function createKafka(timeline: string[]) {
-    const publishBatch = jest.fn<Promise<void>, [{ topic: string; messages: Array<{ key: string; value: string }> }]>()
-    publishBatch.mockImplementation(async () => {
+    const publishDurableBatch = jest.fn<Promise<void>, [{ topic: string; messages: Array<{ key: string; value: string }> }]>()
+    publishDurableBatch.mockImplementation(async () => {
         timeline.push('kafka')
     })
     const isConnected = jest.fn<boolean, []>().mockReturnValue(true)
-    return { publishBatch, isConnected }
+    return { publishDurableBatch, isConnected }
+}
+
+function createAnimationRumClickhouse(timeline: string[]) {
+    const insertV2 = jest.fn<Promise<void>, [unknown]>()
+    insertV2.mockImplementation(async () => {
+        timeline.push('clickhouse')
+    })
+    return { insertV2 }
 }
 
 function createConfig(overrides: Record<string, string | undefined> = {}) {
     const values: Record<string, string | undefined> = {
+        INGEST_MODE: 'kafka',
         KAFKA_ENABLED: 'true',
         ANIMATION_RUM_V2_OUTBOX_CONCURRENCY: '1',
         ...overrides,
@@ -141,6 +150,7 @@ function expectedStats(overrides: Partial<AnimationRumV2DispatchStats> = {}): An
     return {
         scanned: 1,
         published: 0,
+        persisted: 0,
         retried: 0,
         quarantined: 0,
         repaired: 0,
@@ -193,7 +203,7 @@ function claimSteps(item: OutboxFixture, receipts: unknown[]): SqlStep[] {
     ]
 }
 
-function ackSteps(): SqlStep[] {
+function ackSteps(transport: 'kafka' | 'clickhouse' = 'kafka'): SqlStep[] {
     return [
         { label: 'ack-begin', match: /^BEGIN$/u },
         {
@@ -213,7 +223,7 @@ function ackSteps(): SqlStep[] {
         },
         {
             label: 'ack-receipt-update',
-            match: "SET delivery_state = 'published'",
+            match: `SET delivery_state = '${transport === 'kafka' ? 'published' : 'persisted'}'`,
             result: queryResult([], 1),
         },
         {
@@ -277,8 +287,14 @@ function createHarness(
         connect: jest.fn().mockResolvedValue(script.client),
     }
     const kafka = createKafka(timeline)
-    const service = new AnimationRumV2OutboxDispatcherService(pool as never, kafka as never, createConfig(options.config) as never)
-    return { kafka, pool, script, service, timeline }
+    const clickhouse = createAnimationRumClickhouse(timeline)
+    const service = new AnimationRumV2OutboxDispatcherService(
+        pool as never,
+        kafka as never,
+        clickhouse as never,
+        createConfig(options.config) as never
+    )
+    return { clickhouse, kafka, pool, script, service, timeline }
 }
 
 function callByLabel(calls: QueryCall[], label: string): QueryCall {
@@ -309,7 +325,7 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
         const result = await harness.service.dispatchOnce()
 
         expect(result).toEqual(expectedStats({ published: 1 }))
-        expect(harness.kafka.publishBatch).toHaveBeenCalledWith({
+        expect(harness.kafka.publishDurableBatch).toHaveBeenCalledWith({
             topic: TOPIC,
             messages: [{ key: APP_ID, value: ENVELOPE_TEXT }],
         })
@@ -338,7 +354,7 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
 
         await expect(harness.service.dispatchOnce()).resolves.toEqual(expectedStats({ skipped: 1 }))
 
-        expect(harness.kafka.publishBatch).not.toHaveBeenCalled()
+        expect(harness.kafka.publishDurableBatch).not.toHaveBeenCalled()
         expect(harness.script.release).toHaveBeenCalledWith(false)
         expect(harness.script.calls.map(call => call.label)).toEqual(['advisory-lock'])
         harness.script.assertDone()
@@ -361,7 +377,7 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
 
         await expect(harness.service.dispatchOnce()).resolves.toEqual(expectedStats({ skipped: 1 }))
 
-        expect(harness.kafka.publishBatch).not.toHaveBeenCalled()
+        expect(harness.kafka.publishDurableBatch).not.toHaveBeenCalled()
         expect(harness.timeline.indexOf('claim-commit')).toBeLessThan(harness.timeline.indexOf('advisory-unlock'))
         harness.script.assertDone()
     })
@@ -394,7 +410,7 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
         await expect(harness.service.dispatchOnce()).resolves.toEqual(expectedStats({ repaired: 1 }))
 
         expect(callByLabel(harness.script.calls, 'repair-outbox-delete').values).toEqual([OUTBOX_ID, 'pending'])
-        expect(harness.kafka.publishBatch).not.toHaveBeenCalled()
+        expect(harness.kafka.publishDurableBatch).not.toHaveBeenCalled()
         harness.script.assertDone()
     })
 
@@ -438,7 +454,7 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
         ])
         expect(callByLabel(harness.script.calls, 'quarantine-receipt').values).toEqual([APPLICATION_ID, item.captureId])
         expect(callByLabel(harness.script.calls, 'quarantine-outbox').values).toEqual([OUTBOX_ID, errorCode, null])
-        expect(harness.kafka.publishBatch).not.toHaveBeenCalled()
+        expect(harness.kafka.publishDurableBatch).not.toHaveBeenCalled()
         harness.script.assertDone()
     })
 
@@ -460,7 +476,7 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
             APPLICATION_ID,
             [item.captureId, PARENT_CAPTURE_ID].sort(),
         ])
-        expect(harness.kafka.publishBatch).toHaveBeenCalledWith({
+        expect(harness.kafka.publishDurableBatch).toHaveBeenCalledWith({
             topic: TOPIC,
             messages: [{ key: APP_ID, value: ENVELOPE_TEXT }],
         })
@@ -481,7 +497,7 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
 
         const leaseOwner = callByLabel(harness.script.calls, 'claim-lease').values[1]
         expect(callByLabel(harness.script.calls, 'quarantine-outbox').values).toEqual([OUTBOX_ID, 'INVALID_STORED_ENVELOPE', leaseOwner])
-        expect(harness.kafka.publishBatch).not.toHaveBeenCalled()
+        expect(harness.kafka.publishDurableBatch).not.toHaveBeenCalled()
         harness.script.assertDone()
     })
 
@@ -498,7 +514,7 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
         ])
         const timeout = new Error('broker request timed out')
         timeout.name = 'KafkaJSTimeoutError'
-        harness.kafka.publishBatch.mockImplementationOnce(async () => {
+        harness.kafka.publishDurableBatch.mockImplementationOnce(async () => {
             harness.timeline.push('kafka')
             throw timeout
         })
@@ -523,7 +539,7 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
             ],
             { config: { ANIMATION_RUM_V2_OUTBOX_MAX_ATTEMPTS: '2' } }
         )
-        harness.kafka.publishBatch.mockImplementationOnce(async () => {
+        harness.kafka.publishDurableBatch.mockImplementationOnce(async () => {
             harness.timeline.push('kafka')
             throw new Error('broker unavailable')
         })
@@ -558,10 +574,44 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
 
         await expect(harness.service.dispatchOnce()).resolves.toEqual(expectedStats({ failed: 1 }))
 
-        expect(harness.kafka.publishBatch).toHaveBeenCalledTimes(1)
+        expect(harness.kafka.publishDurableBatch).toHaveBeenCalledTimes(1)
         expect(harness.script.calls.some(call => call.label === 'failure-outbox-lock')).toBe(false)
         expect(harness.script.calls.some(call => call.sql.includes("SET state = 'quarantined'"))).toBe(false)
         expect(harness.timeline.indexOf('kafka')).toBeLessThan(harness.timeline.indexOf('ack-begin'))
+        expect(harness.timeline.indexOf('ack-rollback')).toBeLessThan(harness.timeline.indexOf('advisory-unlock'))
+        harness.script.assertDone()
+    })
+
+    it('leaves a direct delivery leased after ClickHouse succeeds but its database ACK rolls back', async () => {
+        const item = outboxFixture()
+        const harness = createHarness(
+            [
+                advisoryLockStep(),
+                ...claimSteps(item, [{ captureId: item.captureId, deliveryState: 'pending' }]),
+                { label: 'ack-begin', match: /^BEGIN$/u },
+                {
+                    label: 'ack-application-lock',
+                    match: 'SELECT id FROM public.application WHERE id = $1 FOR UPDATE',
+                    result: queryResult([{ id: APPLICATION_ID }], 1),
+                },
+                {
+                    label: 'ack-receipt-lock',
+                    match: 'SELECT capture_id FROM public.animation_rum_v2_capture_receipt',
+                    result: queryResult([], 0),
+                },
+                { label: 'ack-rollback', match: /^ROLLBACK$/u },
+                advisoryUnlockStep(),
+            ],
+            { config: { INGEST_MODE: 'direct' } }
+        )
+
+        await expect(harness.service.dispatchOnce()).resolves.toEqual(expectedStats({ failed: 1 }))
+
+        expect(harness.clickhouse.insertV2).toHaveBeenCalledTimes(1)
+        expect(harness.kafka.publishDurableBatch).not.toHaveBeenCalled()
+        expect(harness.script.calls.some(call => call.label === 'failure-outbox-lock')).toBe(false)
+        expect(harness.script.calls.some(call => call.sql.includes("SET state = 'quarantined'"))).toBe(false)
+        expect(harness.timeline.indexOf('clickhouse')).toBeLessThan(harness.timeline.indexOf('ack-begin'))
         expect(harness.timeline.indexOf('ack-rollback')).toBeLessThan(harness.timeline.indexOf('advisory-unlock'))
         harness.script.assertDone()
     })
@@ -593,21 +643,92 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
         harness.script.assertDone()
     })
 
-    it('does not touch PostgreSQL or Kafka when the dispatcher is disabled', async () => {
+    it.each([
+        ['explicit direct mode', { INGEST_MODE: 'direct', KAFKA_ENABLED: 'true' }],
+        ['Kafka master switch disabled', { INGEST_MODE: 'kafka', KAFKA_ENABLED: 'false' }],
+        ['default mode', { INGEST_MODE: undefined, KAFKA_ENABLED: 'true' }],
+    ])('persists through ClickHouse in %s', async (_label, config) => {
+        const item = outboxFixture()
+        const harness = createHarness(
+            [
+                advisoryLockStep(),
+                ...claimSteps(item, [{ captureId: item.captureId, deliveryState: 'pending' }]),
+                ...ackSteps('clickhouse'),
+                advisoryUnlockStep(),
+            ],
+            { config }
+        )
+
+        await expect(harness.service.dispatchOnce()).resolves.toEqual(expectedStats({ persisted: 1 }))
+
+        expect(harness.clickhouse.insertV2).toHaveBeenCalledWith(JSON.parse(ENVELOPE_TEXT))
+        expect(harness.kafka.publishDurableBatch).not.toHaveBeenCalled()
+        expect(harness.timeline.indexOf('claim-commit')).toBeLessThan(harness.timeline.indexOf('clickhouse'))
+        expect(harness.timeline.indexOf('clickhouse')).toBeLessThan(harness.timeline.indexOf('ack-begin'))
+        expect(callByLabel(harness.script.calls, 'ack-receipt-update').sql).toContain("delivery_via = 'clickhouse'")
+        harness.script.assertDone()
+    })
+
+    it('retries a direct ClickHouse failure without acknowledging persistence', async () => {
+        jest.spyOn(Math, 'random').mockReturnValue(0.5)
+        const item = outboxFixture()
+        const harness = createHarness(
+            [
+                advisoryLockStep(),
+                ...claimSteps(item, [{ captureId: item.captureId, deliveryState: 'pending' }]),
+                ...failureLockSteps(0),
+                { label: 'retry-outbox', match: 'SET attempt_count = attempt_count + 1', result: queryResult([], 1) },
+                { label: 'failure-commit', match: /^COMMIT$/u },
+                advisoryUnlockStep(),
+            ],
+            { config: { INGEST_MODE: 'direct' } }
+        )
+        harness.clickhouse.insertV2.mockRejectedValueOnce(Object.assign(new Error('private ClickHouse detail'), { code: 'ECONNREFUSED' }))
+
+        await expect(harness.service.dispatchOnce()).resolves.toEqual(expectedStats({ retried: 1 }))
+
+        const leaseOwner = callByLabel(harness.script.calls, 'claim-lease').values[1]
+        expect(callByLabel(harness.script.calls, 'retry-outbox').values).toEqual([
+            OUTBOX_ID,
+            1_000,
+            'CLICKHOUSE_CONNECT_FAILED',
+            leaseOwner,
+        ])
+        expect(harness.kafka.publishDurableBatch).not.toHaveBeenCalled()
+        expect(harness.script.calls.some(call => call.label === 'ack-begin')).toBe(false)
+        harness.script.assertDone()
+    })
+
+    it('rejects an invalid ingest mode at startup', () => {
+        expect(
+            () =>
+                new AnimationRumV2OutboxDispatcherService(
+                    { query: jest.fn(), connect: jest.fn() } as never,
+                    createKafka([]) as never,
+                    createAnimationRumClickhouse([]) as never,
+                    createConfig({ INGEST_MODE: 'invalid' }) as never
+                )
+        ).toThrow('INGEST_MODE must be either direct or kafka')
+    })
+
+    it('does not touch PostgreSQL or either transport when the dispatcher is explicitly disabled', async () => {
         const timeline: string[] = []
         const pool = { query: jest.fn(), connect: jest.fn() }
         const kafka = createKafka(timeline)
+        const clickhouse = createAnimationRumClickhouse(timeline)
         const service = new AnimationRumV2OutboxDispatcherService(
             pool as never,
             kafka as never,
-            createConfig({ KAFKA_ENABLED: 'false' }) as never
+            clickhouse as never,
+            createConfig({ ANIMATION_RUM_V2_OUTBOX_ENABLED: 'false' }) as never
         )
 
         await expect(service.dispatchOnce()).resolves.toEqual(expectedStats({ scanned: 0 }))
 
         expect(pool.query).not.toHaveBeenCalled()
         expect(pool.connect).not.toHaveBeenCalled()
-        expect(kafka.publishBatch).not.toHaveBeenCalled()
+        expect(kafka.publishDurableBatch).not.toHaveBeenCalled()
+        expect(clickhouse.insertV2).not.toHaveBeenCalled()
     })
 
     it('keeps PostgreSQL SQLSTATE diagnostics bounded without exposing error messages', () => {
@@ -615,6 +736,7 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
         const service = new AnimationRumV2OutboxDispatcherService(
             { query: jest.fn(), connect: jest.fn() } as never,
             createKafka(timeline) as never,
+            createAnimationRumClickhouse(timeline) as never,
             createConfig() as never
         )
         const safeErrorCode = (
@@ -638,7 +760,13 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
             connect: jest.fn(),
         }
         const kafka = createKafka([])
-        const service = new AnimationRumV2OutboxDispatcherService(pool as never, kafka as never, createConfig() as never)
+        const clickhouse = createAnimationRumClickhouse([])
+        const service = new AnimationRumV2OutboxDispatcherService(
+            pool as never,
+            kafka as never,
+            clickhouse as never,
+            createConfig() as never
+        )
 
         const first = service.dispatchOnce()
         const second = service.dispatchOnce()
@@ -648,7 +776,8 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
         await expect(Promise.all([first, second])).resolves.toEqual([expectedStats({ scanned: 0 }), expectedStats({ scanned: 0 })])
         expect(pool.query).toHaveBeenCalledTimes(1)
         expect(pool.connect).not.toHaveBeenCalled()
-        expect(kafka.publishBatch).not.toHaveBeenCalled()
+        expect(kafka.publishDurableBatch).not.toHaveBeenCalled()
+        expect(clickhouse.insertV2).not.toHaveBeenCalled()
     })
 
     it('waits for the active cycle during destroy and never scans again afterwards', async () => {
@@ -661,7 +790,13 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
             connect: jest.fn(),
         }
         const kafka = createKafka([])
-        const service = new AnimationRumV2OutboxDispatcherService(pool as never, kafka as never, createConfig() as never)
+        const clickhouse = createAnimationRumClickhouse([])
+        const service = new AnimationRumV2OutboxDispatcherService(
+            pool as never,
+            kafka as never,
+            clickhouse as never,
+            createConfig() as never
+        )
         const destroyCompleted = jest.fn()
 
         const active = service.dispatchOnce()
@@ -677,6 +812,7 @@ describe('AnimationRumV2OutboxDispatcherService', () => {
         await expect(service.dispatchOnce()).resolves.toEqual(expectedStats({ scanned: 0 }))
         expect(pool.query).toHaveBeenCalledTimes(1)
         expect(pool.connect).not.toHaveBeenCalled()
-        expect(kafka.publishBatch).not.toHaveBeenCalled()
+        expect(kafka.publishDurableBatch).not.toHaveBeenCalled()
+        expect(clickhouse.insertV2).not.toHaveBeenCalled()
     })
 })

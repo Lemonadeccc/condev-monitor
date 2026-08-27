@@ -19,8 +19,12 @@ type KafkaBatch = {
 }
 
 type FakeKafka = {
-    publishBatch: jest.Mock<Promise<void>, [KafkaBatch]>
+    publishDurableBatch: jest.Mock<Promise<void>, [KafkaBatch]>
     isConnected: jest.Mock<boolean, []>
+}
+
+type FakeClickhouse = {
+    insertV2: jest.Mock<Promise<void>, [unknown]>
 }
 
 function compactSql(value: unknown): string {
@@ -39,6 +43,7 @@ function trackingPayload(report: AnimationRumV2Report) {
 
 function dispatcherConfig(overrides: Record<string, string | undefined> = {}) {
     const values: Record<string, string | undefined> = {
+        INGEST_MODE: 'kafka',
         KAFKA_ENABLED: 'true',
         KAFKA_EVENTS_TOPIC: TOPIC,
         ANIMATION_RUM_V2_OUTBOX_CONCURRENCY: '1',
@@ -49,10 +54,18 @@ function dispatcherConfig(overrides: Record<string, string | undefined> = {}) {
 
 function fakeKafka(onPublish?: (batch: KafkaBatch) => Promise<void> | void): FakeKafka {
     return {
-        publishBatch: jest.fn(async batch => {
+        publishDurableBatch: jest.fn(async batch => {
             await onPublish?.(batch)
         }),
         isConnected: jest.fn(() => true),
+    }
+}
+
+function fakeClickhouse(onInsert?: (envelope: unknown) => Promise<void> | void): FakeClickhouse {
+    return {
+        insertV2: jest.fn(async envelope => {
+            await onInsert?.(envelope)
+        }),
     }
 }
 
@@ -285,11 +298,13 @@ describePostgres('AnimationRumV2OutboxDispatcherService PostgreSQL integration',
         const first = new AnimationRumV2OutboxDispatcherService(
             barrierPool as never,
             makeKafka('first') as never,
+            fakeClickhouse() as never,
             dispatcherConfig() as never
         )
         const second = new AnimationRumV2OutboxDispatcherService(
             barrierPool as never,
             makeKafka('second') as never,
+            fakeClickhouse() as never,
             dispatcherConfig() as never
         )
 
@@ -334,7 +349,12 @@ describePostgres('AnimationRumV2OutboxDispatcherService PostgreSQL integration',
         const second = pageReport(`tail_${randomUUID().slice(0, 8)}`)
         await admission.admitBatch(appId, [trackingPayload(first), trackingPayload(second)])
         const kafka = fakeKafka()
-        const dispatcher = new AnimationRumV2OutboxDispatcherService(pool, kafka as never, dispatcherConfig() as never)
+        const dispatcher = new AnimationRumV2OutboxDispatcherService(
+            pool,
+            kafka as never,
+            fakeClickhouse() as never,
+            dispatcherConfig() as never
+        )
 
         await pool.query(
             `
@@ -358,7 +378,7 @@ describePostgres('AnimationRumV2OutboxDispatcherService PostgreSQL integration',
         )
         await expect(dispatcher.dispatchOnce()).resolves.toEqual(expect.objectContaining({ scanned: 0, published: 0 }))
 
-        expect(kafka.publishBatch).not.toHaveBeenCalled()
+        expect(kafka.publishDurableBatch).not.toHaveBeenCalled()
         const rows = await pool.query<{ captureId: string; sequence: string; state: string }>(
             `
                 SELECT capture_id AS "captureId", app_sequence::text AS sequence, state
@@ -399,13 +419,18 @@ describePostgres('AnimationRumV2OutboxDispatcherService PostgreSQL integration',
             )
             observedLease = lease.rows[0]
         })
-        const dispatcher = new AnimationRumV2OutboxDispatcherService(pool, kafka as never, dispatcherConfig() as never)
+        const dispatcher = new AnimationRumV2OutboxDispatcherService(
+            pool,
+            kafka as never,
+            fakeClickhouse() as never,
+            dispatcherConfig() as never
+        )
 
         await expect(dispatcher.dispatchOnce()).resolves.toEqual(expect.objectContaining({ scanned: 1, published: 1 }))
 
         expect(observedLease).toEqual({ leaseOwner: expect.any(String), active: true })
         expect(observedLease?.leaseOwner).not.toBe('integration-expired-lease')
-        expect(kafka.publishBatch).toHaveBeenCalledTimes(1)
+        expect(kafka.publishDurableBatch).toHaveBeenCalledTimes(1)
         const state = await pool.query<{ deliveryState: string; outboxCount: string }>(
             `
                 SELECT receipt.delivery_state AS "deliveryState",
@@ -435,7 +460,12 @@ describePostgres('AnimationRumV2OutboxDispatcherService PostgreSQL integration',
             const envelope = JSON.parse(batch.messages[0]!.value) as { info: { animationRum: { captureId: string } } }
             sentCaptures.push(envelope.info.animationRum.captureId)
         })
-        const dispatcher = new AnimationRumV2OutboxDispatcherService(pool, kafka as never, dispatcherConfig() as never)
+        const dispatcher = new AnimationRumV2OutboxDispatcherService(
+            pool,
+            kafka as never,
+            fakeClickhouse() as never,
+            dispatcherConfig() as never
+        )
 
         await expect(dispatcher.dispatchOnce()).resolves.toEqual(expect.objectContaining({ scanned: 1, published: 1 }))
         const intermediate = await pool.query<{ captureId: string; deliveryState: string; hasOutbox: boolean }>(
@@ -481,6 +511,136 @@ describePostgres('AnimationRumV2OutboxDispatcherService PostgreSQL integration',
         expect(outbox.rows[0]?.count).toBe('0')
     })
 
+    it('persists a direct delivery only after ClickHouse receives the canonical stored envelope', async () => {
+        const report = pageReport(`direct_${randomUUID().slice(0, 8)}`)
+        await admission.admitBatch(appId, [trackingPayload(report)])
+        const stored = await pool.query<{ envelopeText: string }>(
+            `
+                SELECT envelope_text AS "envelopeText"
+                FROM public.animation_rum_v2_outbox
+                WHERE application_id = $1 AND capture_id = $2
+            `,
+            [applicationId, report.captureId]
+        )
+        const canonicalEnvelope = JSON.parse(stored.rows[0]!.envelopeText) as unknown
+        const kafka = fakeKafka()
+        const clickhouse = fakeClickhouse()
+        const dispatcher = new AnimationRumV2OutboxDispatcherService(
+            pool,
+            kafka as never,
+            clickhouse as never,
+            dispatcherConfig({ INGEST_MODE: 'direct' }) as never
+        )
+
+        await expect(dispatcher.dispatchOnce()).resolves.toEqual(
+            expect.objectContaining({ scanned: 1, persisted: 1, published: 0, retried: 0, failed: 0 })
+        )
+
+        expect(clickhouse.insertV2).toHaveBeenCalledTimes(1)
+        expect(clickhouse.insertV2).toHaveBeenCalledWith(canonicalEnvelope)
+        expect(kafka.publishDurableBatch).not.toHaveBeenCalled()
+        const state = await pool.query<{
+            deliveryState: string
+            deliveryVia: string | null
+            publishedAt: Date | null
+            persistedAt: Date | null
+            outboxCount: string
+        }>(
+            `
+                SELECT receipt.delivery_state AS "deliveryState",
+                       receipt.delivery_via AS "deliveryVia",
+                       receipt.published_at AS "publishedAt",
+                       receipt.persisted_at AS "persistedAt",
+                       (SELECT count(*)::text FROM public.animation_rum_v2_outbox WHERE application_id = $1) AS "outboxCount"
+                FROM public.animation_rum_v2_capture_receipt AS receipt
+                WHERE receipt.application_id = $1 AND receipt.capture_id = $2
+            `,
+            [applicationId, report.captureId]
+        )
+        expect(state.rows[0]).toEqual({
+            deliveryState: 'persisted',
+            deliveryVia: 'clickhouse',
+            publishedAt: null,
+            persistedAt: expect.any(Date),
+            outboxCount: '0',
+        })
+        expect(Number.isFinite(state.rows[0]!.persistedAt!.getTime())).toBe(true)
+    })
+
+    it('keeps a direct delivery pending and schedules a retry when ClickHouse fails', async () => {
+        const report = pageReport(`direct_retry_${randomUUID().slice(0, 8)}`)
+        await admission.admitBatch(appId, [trackingPayload(report)])
+        const stored = await pool.query<{ envelopeText: string }>(
+            `
+                SELECT envelope_text AS "envelopeText"
+                FROM public.animation_rum_v2_outbox
+                WHERE application_id = $1 AND capture_id = $2
+            `,
+            [applicationId, report.captureId]
+        )
+        const canonicalEnvelope = JSON.parse(stored.rows[0]!.envelopeText) as unknown
+        const kafka = fakeKafka()
+        const clickhouse = fakeClickhouse(async () => {
+            throw new Error('synthetic ClickHouse failure')
+        })
+        const dispatcher = new AnimationRumV2OutboxDispatcherService(
+            pool,
+            kafka as never,
+            clickhouse as never,
+            dispatcherConfig({ INGEST_MODE: 'direct', KAFKA_ENABLED: 'false' }) as never
+        )
+
+        await expect(dispatcher.dispatchOnce()).resolves.toEqual(
+            expect.objectContaining({ scanned: 1, persisted: 0, published: 0, retried: 1, failed: 0 })
+        )
+
+        expect(clickhouse.insertV2).toHaveBeenCalledTimes(1)
+        expect(clickhouse.insertV2).toHaveBeenCalledWith(canonicalEnvelope)
+        expect(kafka.publishDurableBatch).not.toHaveBeenCalled()
+        const state = await pool.query<{
+            deliveryState: string
+            deliveryVia: string | null
+            publishedAt: Date | null
+            persistedAt: Date | null
+            outboxState: string
+            attemptCount: number
+            leaseOwner: string | null
+            leaseUntil: Date | null
+            lastErrorCode: string | null
+            retryScheduled: boolean
+        }>(
+            `
+                SELECT receipt.delivery_state AS "deliveryState",
+                       receipt.delivery_via AS "deliveryVia",
+                       receipt.published_at AS "publishedAt",
+                       receipt.persisted_at AS "persistedAt",
+                       outbox.state AS "outboxState",
+                       outbox.attempt_count AS "attemptCount",
+                       outbox.lease_owner AS "leaseOwner",
+                       outbox.lease_until AS "leaseUntil",
+                       outbox.last_error_code AS "lastErrorCode",
+                       outbox.next_attempt_at > outbox.updated_at AS "retryScheduled"
+                FROM public.animation_rum_v2_capture_receipt AS receipt
+                JOIN public.animation_rum_v2_outbox AS outbox
+                  ON outbox.application_id = receipt.application_id AND outbox.capture_id = receipt.capture_id
+                WHERE receipt.application_id = $1 AND receipt.capture_id = $2
+            `,
+            [applicationId, report.captureId]
+        )
+        expect(state.rows[0]).toEqual({
+            deliveryState: 'pending',
+            deliveryVia: null,
+            publishedAt: null,
+            persistedAt: null,
+            outboxState: 'pending',
+            attemptCount: 1,
+            leaseOwner: null,
+            leaseUntil: null,
+            lastErrorCode: 'CLICKHOUSE_WRITE_FAILED',
+            retryScheduled: true,
+        })
+    })
+
     it('keeps the claimed row leased after a post-Kafka ACK rollback, then sends it again after lease expiry', async () => {
         const report = pageReport(`rollback_${randomUUID().slice(0, 8)}`)
         await admission.admitBatch(appId, [trackingPayload(report)])
@@ -489,7 +649,12 @@ describePostgres('AnimationRumV2OutboxDispatcherService PostgreSQL integration',
             sentValues.push(batch.messages[0]!.value)
         })
         const failingPool = createAckFailingPool(pool)
-        const dispatcher = new AnimationRumV2OutboxDispatcherService(failingPool as never, kafka as never, dispatcherConfig() as never)
+        const dispatcher = new AnimationRumV2OutboxDispatcherService(
+            failingPool as never,
+            kafka as never,
+            fakeClickhouse() as never,
+            dispatcherConfig() as never
+        )
 
         await expect(dispatcher.dispatchOnce()).resolves.toEqual(expect.objectContaining({ scanned: 1, failed: 1, published: 0 }))
 
@@ -521,7 +686,7 @@ describePostgres('AnimationRumV2OutboxDispatcherService PostgreSQL integration',
             attemptCount: 0,
         })
         await expect(dispatcher.dispatchOnce()).resolves.toEqual(expect.objectContaining({ scanned: 0, published: 0 }))
-        expect(kafka.publishBatch).toHaveBeenCalledTimes(1)
+        expect(kafka.publishDurableBatch).toHaveBeenCalledTimes(1)
 
         await pool.query(
             `
@@ -533,7 +698,7 @@ describePostgres('AnimationRumV2OutboxDispatcherService PostgreSQL integration',
         )
         await expect(dispatcher.dispatchOnce()).resolves.toEqual(expect.objectContaining({ scanned: 1, published: 1 }))
 
-        expect(kafka.publishBatch).toHaveBeenCalledTimes(2)
+        expect(kafka.publishDurableBatch).toHaveBeenCalledTimes(2)
         expect(sentValues).toHaveLength(2)
         expect(sentValues[1]).toBe(sentValues[0])
         const finalState = await pool.query<{ deliveryState: string; outboxCount: string }>(

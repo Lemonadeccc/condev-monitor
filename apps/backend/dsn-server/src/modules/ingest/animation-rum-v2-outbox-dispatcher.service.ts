@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto'
 
-import { validateAnimationRumV2KafkaMessage } from '@condev-monitor/animation-rum-ingest'
+import { type AnimationRumV2KafkaEnvelope, validateAnimationRumV2KafkaMessage } from '@condev-monitor/animation-rum-ingest'
 import { Inject, Injectable, Logger, type OnApplicationBootstrap, type OnModuleDestroy } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import type { Pool, PoolClient } from 'pg'
 
+import { AnimationRumClickhouseService } from './animation-rum-clickhouse.service'
 import { KafkaProducerService } from './kafka-producer.service'
 
 const ADVISORY_LOCK_NAMESPACE = 1_129_140_822
@@ -37,13 +38,18 @@ type ClaimedOutbox = OutboxRow & {
     leaseOwner: string
 }
 
-type DispatchOutcome = 'published' | 'retried' | 'quarantined' | 'repaired' | 'skipped' | 'failed'
+type DeliveryTransport = 'kafka' | 'clickhouse'
 
-type ClaimResult = { kind: 'claimed'; item: ClaimedOutbox } | { kind: Exclude<DispatchOutcome, 'published' | 'retried' | 'failed'> }
+type DispatchOutcome = 'published' | 'persisted' | 'retried' | 'quarantined' | 'repaired' | 'skipped' | 'failed'
+
+type ClaimResult =
+    | { kind: 'claimed'; item: ClaimedOutbox }
+    | { kind: Exclude<DispatchOutcome, 'published' | 'persisted' | 'retried' | 'failed'> }
 
 export type AnimationRumV2DispatchStats = {
     scanned: number
     published: number
+    persisted: number
     retried: number
     quarantined: number
     repaired: number
@@ -63,13 +69,14 @@ function boundedInteger(config: ConfigService, key: string, fallback: number, mi
 }
 
 function emptyStats(): AnimationRumV2DispatchStats {
-    return { scanned: 0, published: 0, retried: 0, quarantined: 0, repaired: 0, skipped: 0, failed: 0 }
+    return { scanned: 0, published: 0, persisted: 0, retried: 0, quarantined: 0, repaired: 0, skipped: 0, failed: 0 }
 }
 
 @Injectable()
 export class AnimationRumV2OutboxDispatcherService implements OnApplicationBootstrap, OnModuleDestroy {
     private readonly logger = new Logger(AnimationRumV2OutboxDispatcherService.name)
     private readonly enabled: boolean
+    private readonly transport: DeliveryTransport
     private readonly pollMs: number
     private readonly concurrency: number
     private readonly leaseMs: number
@@ -83,11 +90,17 @@ export class AnimationRumV2OutboxDispatcherService implements OnApplicationBoots
     constructor(
         @Inject('PG_POOL') private readonly pool: Pool,
         private readonly kafka: KafkaProducerService,
+        private readonly animationRumClickhouse: AnimationRumClickhouseService,
         config: ConfigService
     ) {
         const kafkaEnabled = config.get<string>('KAFKA_ENABLED') === 'true'
+        const ingestMode = config.get<string>('INGEST_MODE') ?? 'direct'
+        if (ingestMode !== 'direct' && ingestMode !== 'kafka') {
+            throw new Error('INGEST_MODE must be either direct or kafka')
+        }
         const configured = config.get<string>('ANIMATION_RUM_V2_OUTBOX_ENABLED')
-        this.enabled = kafkaEnabled && configured !== 'false'
+        this.enabled = configured !== 'false'
+        this.transport = ingestMode === 'kafka' && kafkaEnabled ? 'kafka' : 'clickhouse'
         this.pollMs = boundedInteger(config, 'ANIMATION_RUM_V2_OUTBOX_POLL_MS', 1_000, 100, 60_000)
         this.concurrency = boundedInteger(config, 'ANIMATION_RUM_V2_OUTBOX_CONCURRENCY', 2, 1, 4)
         this.leaseMs = boundedInteger(config, 'ANIMATION_RUM_V2_OUTBOX_LEASE_MS', 60_000, 10_000, 300_000)
@@ -104,6 +117,7 @@ export class AnimationRumV2OutboxDispatcherService implements OnApplicationBoots
             this.logger.log('Animation RUM v2 outbox dispatcher disabled')
             return
         }
+        this.logger.log(`Animation RUM v2 outbox dispatcher using ${this.transport}`)
         this.timer = setInterval(() => {
             void this.dispatchOnce().catch(error => {
                 this.logger.error(`Animation RUM v2 outbox cycle failed (${this.safeErrorCode(error, 'DISPATCH_CYCLE_FAILED')})`)
@@ -219,24 +233,30 @@ export class AnimationRumV2OutboxDispatcherService implements OnApplicationBoots
             const claim = await this.claimCandidate(client, candidate)
             if (claim.kind !== 'claimed') return claim.kind
             const item = claim.item
-            if (!this.validStoredEnvelope(item)) {
+            const envelope = this.parseStoredEnvelope(item)
+            if (!envelope) {
                 return await this.recordFailure(client, item, 'INVALID_STORED_ENVELOPE', true)
             }
 
             try {
-                await this.kafka.publishBatch({
-                    topic: item.topic,
-                    messages: [{ key: item.messageKey, value: item.envelopeText }],
-                })
+                if (this.transport === 'kafka') {
+                    await this.kafka.publishDurableBatch({
+                        topic: item.topic,
+                        messages: [{ key: item.messageKey, value: item.envelopeText }],
+                    })
+                } else {
+                    await this.animationRumClickhouse.insertV2(envelope)
+                }
             } catch (error) {
-                return await this.recordFailure(client, item, this.kafkaErrorCode(error), false)
+                const code = this.transport === 'kafka' ? this.kafkaErrorCode(error) : this.clickhouseErrorCode(error)
+                return await this.recordFailure(client, item, code, false)
             }
 
             try {
-                await this.acknowledge(client, item)
-                return 'published'
+                await this.acknowledge(client, item, this.transport)
+                return this.transport === 'kafka' ? 'published' : 'persisted'
             } catch (error) {
-                this.logger.error(`Animation RUM v2 Kafka ACK could not be recorded (${this.safeErrorCode(error, 'PG_ACK_FAILED')})`)
+                this.logger.error(`Animation RUM v2 delivery ACK could not be recorded (${this.safeErrorCode(error, 'PG_ACK_FAILED')})`)
                 return 'failed'
             }
         } finally {
@@ -347,17 +367,18 @@ export class AnimationRumV2OutboxDispatcherService implements OnApplicationBoots
         })
     }
 
-    private validStoredEnvelope(item: ClaimedOutbox): boolean {
+    private parseStoredEnvelope(item: ClaimedOutbox): AnimationRumV2KafkaEnvelope | null {
         let envelope: unknown
         try {
             envelope = JSON.parse(item.envelopeText)
         } catch {
-            return false
+            return null
         }
-        return validateAnimationRumV2KafkaMessage({ key: item.messageKey, envelope }).ok
+        const validation = validateAnimationRumV2KafkaMessage({ key: item.messageKey, envelope })
+        return validation.ok ? validation.value : null
     }
 
-    private async acknowledge(client: PoolClient, item: ClaimedOutbox): Promise<void> {
+    private async acknowledge(client: PoolClient, item: ClaimedOutbox, transport: DeliveryTransport): Promise<void> {
         await this.transaction(client, async () => {
             await this.lockApplication(client, item.applicationId)
             const receipt = await client.query(
@@ -382,20 +403,35 @@ export class AnimationRumV2OutboxDispatcherService implements OnApplicationBoots
             )
             if (outbox.rowCount !== 1) throw new Error('Animation RUM v2 outbox lease is stale during ACK')
 
-            const published = await client.query(
-                `
-                    UPDATE public.animation_rum_v2_capture_receipt
-                    SET delivery_state = 'published',
-                        delivery_via = 'kafka',
-                        published_at = CURRENT_TIMESTAMP,
-                        persisted_at = NULL,
-                        quarantined_at = NULL,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE application_id = $1 AND capture_id = $2 AND delivery_state = 'pending'
-                `,
-                [item.applicationId, item.captureId]
-            )
-            if (published.rowCount !== 1) throw new Error('Animation RUM v2 receipt ACK did not affect one row')
+            const delivered =
+                transport === 'kafka'
+                    ? await client.query(
+                          `
+                              UPDATE public.animation_rum_v2_capture_receipt
+                              SET delivery_state = 'published',
+                                  delivery_via = 'kafka',
+                                  published_at = CURRENT_TIMESTAMP,
+                                  persisted_at = NULL,
+                                  quarantined_at = NULL,
+                                  updated_at = CURRENT_TIMESTAMP
+                              WHERE application_id = $1 AND capture_id = $2 AND delivery_state = 'pending'
+                          `,
+                          [item.applicationId, item.captureId]
+                      )
+                    : await client.query(
+                          `
+                              UPDATE public.animation_rum_v2_capture_receipt
+                              SET delivery_state = 'persisted',
+                                  delivery_via = 'clickhouse',
+                                  published_at = NULL,
+                                  persisted_at = CURRENT_TIMESTAMP,
+                                  quarantined_at = NULL,
+                                  updated_at = CURRENT_TIMESTAMP
+                              WHERE application_id = $1 AND capture_id = $2 AND delivery_state = 'pending'
+                          `,
+                          [item.applicationId, item.captureId]
+                      )
+            if (delivered.rowCount !== 1) throw new Error('Animation RUM v2 receipt ACK did not affect one row')
             const removed = await client.query(
                 `
                     DELETE FROM public.animation_rum_v2_outbox
@@ -557,6 +593,14 @@ export class AnimationRumV2OutboxDispatcherService implements OnApplicationBoots
         const code = isRecord(error) && typeof error.code === 'string' ? error.code.toUpperCase() : ''
         if (name.includes('TIMEOUT') || code.includes('TIMEOUT')) return 'KAFKA_TIMEOUT'
         return this.kafka.isConnected() ? 'KAFKA_PUBLISH_FAILED' : 'KAFKA_CONNECT_FAILED'
+    }
+
+    private clickhouseErrorCode(error: unknown): string {
+        const name = error instanceof Error ? error.name.toUpperCase() : ''
+        const code = isRecord(error) && typeof error.code === 'string' ? error.code.toUpperCase() : ''
+        if (name.includes('TIMEOUT') || code.includes('TIMEOUT')) return 'CLICKHOUSE_TIMEOUT'
+        if (name.includes('CONNECT') || code.includes('CONNECT') || code.startsWith('ECONN')) return 'CLICKHOUSE_CONNECT_FAILED'
+        return 'CLICKHOUSE_WRITE_FAILED'
     }
 
     private safeErrorCode(error: unknown, fallback: string): string {

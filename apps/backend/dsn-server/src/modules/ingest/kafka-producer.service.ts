@@ -2,6 +2,8 @@ import { Injectable, Logger, OnApplicationShutdown, OnModuleInit } from '@nestjs
 import { ConfigService } from '@nestjs/config'
 import { CompressionTypes, Kafka, Producer } from 'kafkajs'
 
+type KafkaBatch = { topic: string; messages: Array<{ key: string; value: string }> }
+
 @Injectable()
 export class KafkaProducerService implements OnModuleInit, OnApplicationShutdown {
     private readonly logger = new Logger(KafkaProducerService.name)
@@ -75,14 +77,27 @@ export class KafkaProducerService implements OnModuleInit, OnApplicationShutdown
         return this.connected
     }
 
-    async publishBatch(params: { topic: string; messages: Array<{ key: string; value: string }> }): Promise<void> {
+    async publishBatch(params: KafkaBatch): Promise<void> {
+        await this.sendBatch(params)
+    }
+
+    /**
+     * Durable outbox delivery must not advance its receipt on an unacknowledged
+     * Kafka send. Require all in-sync replicas regardless of the legacy producer
+     * acknowledgement setting.
+     */
+    async publishDurableBatch(params: KafkaBatch): Promise<void> {
+        await this.sendBatch(params, -1)
+    }
+
+    private async sendBatch(params: KafkaBatch, requiredAcks?: number): Promise<void> {
         await this.ensureConnected()
 
         try {
             await this.producer!.send({
                 topic: params.topic,
                 compression: CompressionTypes.GZIP,
-                acks: Number(this.config.get<string>('KAFKA_REQUIRED_ACKS') ?? -1),
+                acks: requiredAcks ?? Number(this.config.get<string>('KAFKA_REQUIRED_ACKS') ?? -1),
                 timeout: Number(this.config.get<string>('KAFKA_PRODUCER_TIMEOUT_MS') ?? 3000),
                 messages: params.messages.map(m => ({
                     key: m.key,

@@ -9,7 +9,7 @@ jest.mock('kafkajs', () => ({
 
 const MockedKafka = Kafka as jest.MockedClass<typeof Kafka>
 
-function createService(enabled = true) {
+function createService(enabled = true, configOverrides: Record<string, string | undefined> = {}) {
     const connect = jest.fn<Promise<void>, []>()
     const disconnect = jest.fn<Promise<void>, []>().mockResolvedValue(undefined)
     const send = jest.fn<Promise<unknown>, [unknown]>().mockResolvedValue([])
@@ -24,7 +24,7 @@ function createService(enabled = true) {
     const config = {
         get: jest.fn((key: string) => {
             if (key === 'KAFKA_ENABLED') return enabled ? 'true' : 'false'
-            return undefined
+            return configOverrides[key]
         }),
     }
     return {
@@ -58,6 +58,38 @@ describe('KafkaProducerService reconnects', () => {
         expect(connect).toHaveBeenCalledTimes(2)
         expect(send).toHaveBeenCalledWith(expect.objectContaining({ topic: batch.topic, messages: batch.messages }))
         expect(service.isConnected()).toBe(true)
+    })
+
+    it('preserves the configured acknowledgement policy for legacy batches', async () => {
+        const { service, connect, send } = createService(true, { KAFKA_REQUIRED_ACKS: '0' })
+        connect.mockResolvedValue(undefined)
+        await service.onModuleInit()
+
+        await service.publishBatch(batch)
+
+        expect(send).toHaveBeenCalledWith(
+            expect.objectContaining({
+                topic: batch.topic,
+                messages: batch.messages,
+                acks: 0,
+            })
+        )
+    })
+
+    it('forces all in-sync replica acknowledgements for durable batches even when legacy acks are disabled', async () => {
+        const { service, connect, send } = createService(true, { KAFKA_REQUIRED_ACKS: '0' })
+        connect.mockResolvedValue(undefined)
+        await service.onModuleInit()
+
+        await service.publishDurableBatch(batch)
+
+        expect(send).toHaveBeenCalledWith(
+            expect.objectContaining({
+                topic: batch.topic,
+                messages: batch.messages,
+                acks: -1,
+            })
+        )
     })
 
     it('shares one reconnect attempt across concurrent publishers', async () => {
