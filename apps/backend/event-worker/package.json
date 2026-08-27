@@ -6,7 +6,6 @@
     "scripts": {
         "build": "nest build",
         "start": "nest start",
-        "prestart:dev": "pnpm --filter @condev-monitor/animation-rum-contract build",
         "start:dev": "nest start --watch",
         "start:prod": "node dist/main",
         "pretest": "pnpm --filter @condev-monitor/animation-rum-contract build",

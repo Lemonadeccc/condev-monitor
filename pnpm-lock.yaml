@@ -272,6 +272,9 @@ importers:
       '@clickhouse/client':
         specifier: ^1.13.0
         version: 1.13.0
+      '@condev-monitor/animation-rum-contract':
+        specifier: workspace:*
+        version: link:../../../packages/animation-rum-contract
       '@nestjs/cache-manager':
         specifier: ^3.0.1
         version: 3.0.1(@nestjs/common@11.1.9(class-transformer@0.5.1)(class-validator@0.14.3)(reflect-metadata@0.2.2)(rxjs@7.8.2))(@nestjs/core@11.1.9)(cache-manager@7.2.5)(keyv@5.5.4)(rxjs@7.8.2)

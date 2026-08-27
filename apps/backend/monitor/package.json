@@ -13,6 +13,7 @@
         "start:debug": "nest start --debug --watch --entryFile src/main",
         "start:prod": "node dist/src/main",
         "lint": "eslint \"{src,apps,libs,test}/**/*.ts\" --fix",
+        "pretest": "pnpm --filter @condev-monitor/animation-rum-contract build",
         "test": "jest",
         "test:watch": "jest --watch",
         "test:cov": "jest --coverage",
@@ -20,6 +21,7 @@
         "test:e2e": "jest --config ./test/jest-e2e.json"
     },
     "dependencies": {
+        "@condev-monitor/animation-rum-contract": "workspace:*",
         "@clickhouse/client": "^1.13.0",
         "@nestjs/cache-manager": "^3.0.1",
         "@nestjs/common": "^11.1.9",

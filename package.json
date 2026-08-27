@@ -4,6 +4,7 @@
     "private": true,
     "packageManager": "pnpm@10.10.0",
     "scripts": {
+        "prestart:dev": "pnpm --filter @condev-monitor/animation-rum-contract build",
         "start:dev": "turbo start:dev",
         "start:fro": "pnpm --filter @condev-monitor/monitor-client dev",
         "examples:aisdk-rag-chatbox": "pnpm turbo build --filter=@condev-monitor/nextjs && pnpm --filter aisdk-rag-chatbox dev",
@@ -13,7 +14,7 @@
         "examples:react": "pnpm turbo build --filter=@condev-monitor/react && pnpm --filter example-react dev --host 127.0.0.1 --port 43112 --strictPort",
         "examples:vanilla": "pnpm build:sdk && pnpm --filter vanilla dev --host 127.0.0.1 --port 43111 --strictPort",
         "build": "turbo build --filter=!aisdk-rag-chatbox --filter=!ragzbxy --filter=!vanilla --filter=!lemon-bureau --filter=!nico-palmer --filter=!salle-blanche",
-        "build:sdk": "turbo build --filter=@condev-monitor/monitor-sdk-core --filter=@condev-monitor/monitor-sdk-browser-utils --filter=@condev-monitor/monitor-sdk-ai --filter=@condev-monitor/monitor-sdk-browser --filter=@condev-monitor/monitor-sdk-animation",
+        "build:sdk": "turbo build --filter=@condev-monitor/animation-rum-contract --filter=@condev-monitor/monitor-sdk-core --filter=@condev-monitor/monitor-sdk-browser-utils --filter=@condev-monitor/monitor-sdk-ai --filter=@condev-monitor/monitor-sdk-browser --filter=@condev-monitor/monitor-sdk-animation",
         "build:watch": "turbo build:watch",
         "docker:start": "docker compose -p condev-monitor -f .devcontainer/docker-compose.yml up -d && COMPOSE_FILE=.devcontainer/docker-compose.yml pnpm docker:init-postgres && pnpm docker:init-kafka && COMPOSE_FILE=.devcontainer/docker-compose.yml pnpm docker:init-clickhouse",
         "docker:stop": "docker compose -p condev-monitor -f .devcontainer/docker-compose.yml down",

@@ -13,6 +13,7 @@ ENV PNPM_CONFIG_PRODUCTION=false
 # Monorepo manifests
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/backend/monitor/package.json ./apps/backend/monitor/package.json
+COPY packages/animation-rum-contract/package.json ./packages/animation-rum-contract/package.json
 
 RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i --frozen-lockfile
 
@@ -23,7 +24,9 @@ COPY --from=deps /app/apps/backend/monitor/node_modules ./apps/backend/monitor/n
 COPY --from=deps /corepack /corepack
 COPY . .
 
-RUN corepack enable pnpm && pnpm --filter monitor build
+RUN corepack enable pnpm \
+    && pnpm --filter @condev-monitor/animation-rum-contract build \
+    && pnpm --filter monitor build
 
 FROM base AS prod-deps
 RUN apk add --no-cache libc6-compat python3 make g++
@@ -35,6 +38,7 @@ ENV PNPM_CONFIG_PRODUCTION=true
 # Install runtime dependencies only.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/backend/monitor/package.json ./apps/backend/monitor/package.json
+COPY packages/animation-rum-contract/package.json ./packages/animation-rum-contract/package.json
 
 RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i --prod --frozen-lockfile --ignore-scripts
 
@@ -45,6 +49,8 @@ ENV NODE_ENV=production
 
 COPY --from=builder /app/apps/backend/monitor/dist ./dist
 COPY --from=builder /app/apps/backend/monitor/package.json ./package.json
+COPY --from=builder /app/packages/animation-rum-contract/package.json /app/packages/animation-rum-contract/package.json
+COPY --from=builder /app/packages/animation-rum-contract/build /app/packages/animation-rum-contract/build
 COPY --from=prod-deps /app/node_modules /app/node_modules
 COPY --from=prod-deps /app/apps/backend/monitor/node_modules ./node_modules
 
