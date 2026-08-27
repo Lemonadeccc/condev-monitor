@@ -14,6 +14,7 @@ export default defineConfig([
         outDir: 'build/cjs',
         clean: true,
         external: [browserRoot],
+        noExternal: ['@condev-monitor/animation-rum-contract'],
     },
     {
         entry: moduleEntry,
@@ -22,6 +23,7 @@ export default defineConfig([
         clean: true,
         splitting: false,
         external: [browserRoot],
+        noExternal: ['@condev-monitor/animation-rum-contract'],
     },
     {
         entry: { index: 'src/index.ts' },
@@ -29,5 +31,6 @@ export default defineConfig([
         outDir: 'build/umd',
         name: 'monitor-sdk-browser',
         splitting: false,
+        noExternal: ['@condev-monitor/animation-rum-contract'],
     },
 ])

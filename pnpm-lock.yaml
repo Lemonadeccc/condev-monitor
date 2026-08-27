@@ -1167,6 +1167,9 @@ importers:
         specifier: 2.0.0-alpha.4
         version: 2.0.0-alpha.4
     devDependencies:
+      '@condev-monitor/animation-rum-contract':
+        specifier: workspace:*
+        version: link:../animation-rum-contract
       '@types/jest':
         specifier: ^29.5.14
         version: 29.5.14

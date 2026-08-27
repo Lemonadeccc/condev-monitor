@@ -54,6 +54,7 @@
         "rrweb": "2.0.0-alpha.4"
     },
     "devDependencies": {
+        "@condev-monitor/animation-rum-contract": "workspace:*",
         "@types/jest": "^29.5.14",
         "jest": "^29.7.0",
         "ts-jest": "^29.2.5"
