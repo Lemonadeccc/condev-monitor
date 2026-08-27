@@ -105,6 +105,11 @@ export interface AnimationRumV2DeliveryStore {
         now: number
     ): Promise<string[]>
     releaseLeases(scope: AnimationRumV2DeliveryScope, ownerId: string, now: number): Promise<void>
+    /**
+     * Close an already-open storage connection without deleting durable work.
+     * Implementations must be safe to use again after close().
+     */
+    close?(): void | Promise<void>
 }
 
 export interface AnimationRumV2AdmissionReceipt {

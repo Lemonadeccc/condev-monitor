@@ -133,6 +133,18 @@ async function abortTransaction(transaction: { abort(): void; done: Promise<unkn
 export class IndexedDbAnimationRumV2DeliveryStore implements AnimationRumV2DeliveryStore {
     private databasePromise: Promise<IDBPDatabase<AnimationRumV2DeliveryDatabase>> | null = null
 
+    async close(): Promise<void> {
+        const databasePromise = this.databasePromise
+        if (databasePromise === null) return
+
+        // Detach the connection before awaiting an in-progress open. A later
+        // operation can then create a fresh connection without the old open's
+        // rejection clearing that newer promise.
+        if (this.databasePromise === databasePromise) this.databasePromise = null
+        const database = await databasePromise
+        database.close()
+    }
+
     async persist(
         scope: AnimationRumV2DeliveryScope,
         reports: readonly AnimationRumV2QueuedReport[],
@@ -460,15 +472,17 @@ export class IndexedDbAnimationRumV2DeliveryStore implements AnimationRumV2Deliv
 
     private getDatabase(): Promise<IDBPDatabase<AnimationRumV2DeliveryDatabase>> {
         if (this.databasePromise === null) {
-            this.databasePromise = openDB<AnimationRumV2DeliveryDatabase>(DATABASE_NAME, DATABASE_VERSION, {
+            let databasePromise!: Promise<IDBPDatabase<AnimationRumV2DeliveryDatabase>>
+            databasePromise = openDB<AnimationRumV2DeliveryDatabase>(DATABASE_NAME, DATABASE_VERSION, {
                 upgrade(database) {
                     const store = database.createObjectStore(STORE_NAME, { keyPath: 'key' })
                     store.createIndex('by-created-at', 'createdAt')
                 },
             }).catch(error => {
-                this.databasePromise = null
+                if (this.databasePromise === databasePromise) this.databasePromise = null
                 throw error
             })
+            this.databasePromise = databasePromise
         }
         return this.databasePromise
     }

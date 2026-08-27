@@ -145,7 +145,10 @@ export class AnimationRumV2DeliveryCoordinator {
     private attemptGeneration = 0
     private runningAttempt: RunningAnimationRumV2Attempt | null = null
     private stopping: Promise<void> | null = null
+    private suspending: Promise<void> | null = null
     private timer: unknown = null
+    private suspended = false
+    private lifecycleIntent: 'active' | 'suspended' = 'active'
     private stopped = false
 
     constructor(options: AnimationRumV2DeliveryOptions) {
@@ -161,6 +164,49 @@ export class AnimationRumV2DeliveryCoordinator {
 
     start(): void {
         if (this.stopped) throw new Error('Animation RUM v2 delivery coordinator is stopped')
+        if (this.suspended || this.suspending) {
+            throw new Error('Animation RUM v2 delivery coordinator is suspended; call resume()')
+        }
+        this.startPolling()
+    }
+
+    /**
+     * Synchronously stops polling, then best-effort releases this tab's leases
+     * and closes its storage connection. Durable reports remain in IndexedDB.
+     */
+    suspend(): Promise<void> {
+        if (this.stopped) return this.stopping ?? Promise.resolve()
+        this.lifecycleIntent = 'suspended'
+        if (this.suspended) return this.suspending ?? Promise.resolve()
+
+        this.suspended = true
+        this.clearPolling()
+        const suspending = this.finishSuspend()
+        this.suspending = suspending
+        void suspending.then(
+            () => {
+                if (this.suspending === suspending) this.suspending = null
+            },
+            () => {
+                if (this.suspending === suspending) this.suspending = null
+            }
+        )
+        return suspending
+    }
+
+    /** Reopens storage lazily and restarts polling after a BFCache restore. */
+    async resume(): Promise<void> {
+        if (this.stopped) return
+        this.lifecycleIntent = 'active'
+        const suspending = this.suspending
+        if (suspending) await suspending
+        if (this.stopped || this.lifecycleIntent !== 'active') return
+
+        this.suspended = false
+        this.startPolling()
+    }
+
+    private startPolling(): void {
         if (this.timer !== null) return
         this.timer = this.timers.setInterval(() => this.runScheduled(), this.config.pollIntervalMs)
         this.runScheduled()
@@ -168,6 +214,7 @@ export class AnimationRumV2DeliveryCoordinator {
 
     persist(reports: readonly unknown[]): Promise<AnimationRumV2PersistResult> {
         if (this.stopped) return Promise.reject(new Error('Animation RUM v2 delivery coordinator is stopped'))
+        if (this.suspended) return Promise.reject(new Error('Animation RUM v2 delivery coordinator is suspended'))
         const now = this.now()
         let prepared: AnimationRumV2QueuedReport[]
         try {
@@ -209,7 +256,7 @@ export class AnimationRumV2DeliveryCoordinator {
             await this.persist(reports)
         }
         await this.persistenceQueue
-        if (this.stopped) {
+        if (this.stopped || this.suspended) {
             const persistenceFailure = hasSuppliedReports ? null : this.firstPersistenceFailure()
             if (persistenceFailure !== null) throw persistenceFailure
             return { ...EMPTY_ATTEMPT }
@@ -224,7 +271,7 @@ export class AnimationRumV2DeliveryCoordinator {
     }
 
     attemptOnce(): Promise<AnimationRumV2AttemptResult> {
-        if (this.stopped) return Promise.resolve({ ...EMPTY_ATTEMPT })
+        if (this.stopped || this.suspended) return Promise.resolve({ ...EMPTY_ATTEMPT })
         if (this.runningAttempt) return this.runningAttempt.promise
         const generation = this.attemptGeneration + 1
         this.attemptGeneration = generation
@@ -245,10 +292,8 @@ export class AnimationRumV2DeliveryCoordinator {
     stop(): Promise<void> {
         if (this.stopping) return this.stopping
         this.stopped = true
-        if (this.timer !== null) {
-            this.timers.clearInterval(this.timer)
-            this.timer = null
-        }
+        this.lifecycleIntent = 'suspended'
+        this.clearPolling()
         const stopping = this.finishStop()
         this.stopping = stopping
         void stopping.catch(() => {
@@ -260,7 +305,7 @@ export class AnimationRumV2DeliveryCoordinator {
     }
 
     private async attemptAfter(generation: number): Promise<AnimationRumV2AttemptResult> {
-        while (!this.stopped) {
+        while (!this.stopped && !this.suspended) {
             const running = this.runningAttempt
             if (!running) return this.attemptOnce()
             if (running.generation > generation) return running.promise
@@ -371,7 +416,7 @@ export class AnimationRumV2DeliveryCoordinator {
     }
 
     private runScheduled(): void {
-        if (this.stopped) return
+        if (this.stopped || this.suspended) return
         void this.flush().catch(() => {
             if (this.config.debug) console.debug('[Animation RUM v2] delivery deferred')
         })
@@ -383,7 +428,34 @@ export class AnimationRumV2DeliveryCoordinator {
         return now
     }
 
+    private clearPolling(): void {
+        if (this.timer === null) return
+        this.timers.clearInterval(this.timer)
+        this.timer = null
+    }
+
+    private async finishSuspend(): Promise<void> {
+        await this.persistenceQueue
+        try {
+            if (this.runningAttempt) await this.runningAttempt.promise
+        } catch {
+            // BFCache suspension is best-effort. Durable pending work remains
+            // retryable after restore or from another tab.
+        }
+        try {
+            await this.store.releaseLeases(this.scope, this.ownerId, this.now())
+        } catch {
+            if (this.config.debug) console.debug('[Animation RUM v2] lease release deferred during page suspension')
+        }
+        try {
+            await this.store.close?.()
+        } catch {
+            if (this.config.debug) console.debug('[Animation RUM v2] storage close deferred during page suspension')
+        }
+    }
+
     private async finishStop(): Promise<void> {
+        if (this.suspending) await this.suspending
         await this.persistenceQueue
         let failure: unknown = this.firstPersistenceFailure()
         try {
@@ -393,6 +465,11 @@ export class AnimationRumV2DeliveryCoordinator {
         } finally {
             try {
                 await this.store.releaseLeases(this.scope, this.ownerId, this.now())
+            } catch (error) {
+                failure ??= error
+            }
+            try {
+                await this.store.close?.()
             } catch (error) {
                 failure ??= error
             }
