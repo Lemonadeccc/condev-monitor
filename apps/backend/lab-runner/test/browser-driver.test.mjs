@@ -227,6 +227,64 @@ test('derives catalog v2 LoAF paint phases only from complete browser boundaries
     }
 })
 
+test('computes CLS from the largest one-second-gap and five-second session window', async () => {
+    const driver = createBrowserDriver('chromium')
+    const session = await driver.launch()
+    const context = await session.createContext(scenario())
+    try {
+        const page = await context.newPage()
+        const key = '__condevLabProbe_cls_session_fixture'
+        const capability = 'D'.repeat(43)
+        const fakeObserver = `;(() => {
+          class FixturePerformanceObserver {
+            constructor(callback) { this.callback = callback; this.type = ''; this.drained = false; }
+            observe(options) { this.type = options.type; }
+            takeRecords() {
+              if (this.drained || this.type !== 'layout-shift') return [];
+              this.drained = true;
+              return [
+                { startTime: 100, value: 0.25, hadRecentInput: false },
+                { startTime: 900, value: 0.5, hadRecentInput: false },
+                { startTime: 1900, value: 2.5, hadRecentInput: false },
+                { startTime: 2800, value: 0.5, hadRecentInput: false },
+                { startTime: 10000, value: 0.25, hadRecentInput: false },
+                { startTime: 10900, value: 0.25, hadRecentInput: false },
+                { startTime: 11800, value: 0.25, hadRecentInput: false },
+                { startTime: 12700, value: 0.25, hadRecentInput: false },
+                { startTime: 13600, value: 0.25, hadRecentInput: false },
+                { startTime: 14500, value: 0.25, hadRecentInput: false },
+                { startTime: 15000, value: 2, hadRecentInput: false },
+                { startTime: 15100, value: 10, hadRecentInput: true },
+                { startTime: 15200, value: -1, hadRecentInput: false },
+                { startTime: 15300, value: Number.NaN, hadRecentInput: false },
+              ];
+            }
+            disconnect() {}
+          }
+          Object.defineProperty(window, 'PerformanceObserver', { configurable: true, value: FixturePerformanceObserver });
+        })();`
+        await page.addInitScript(
+            `${fakeObserver}${browserProbeSource(key, {
+                capability,
+                expectedRefreshHz: 60,
+                targetFrameMs: 1000 / 60,
+                metricCatalogVersion: 2,
+                actions: [],
+            })}`
+        )
+        await page.navigate('data:text/html,<!doctype html><main>CLS session-window fixture</main>', 10_000)
+        await page.wait(50)
+        const raw = await page.collectProbeResult(key, capability, 0)
+        const result = decodePageProbeResult(raw, [], 2)
+        const cls = result.metrics.find(item => item.name === 'CLS')
+
+        assert.deepEqual([cls.value, cls.samples, cls.status], [3, 1, 'measured'])
+    } finally {
+        await context.close().catch(() => undefined)
+        await session.close().catch(() => undefined)
+    }
+})
+
 test('measures trusted discrete input capture to the next real rAF callback without pointer click double-counting', async () => {
     const driver = createBrowserDriver('chromium')
     const session = await driver.launch()

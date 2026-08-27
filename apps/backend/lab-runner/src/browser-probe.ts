@@ -83,6 +83,9 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         resources: { count: 0, transfer: 0, encoded: 0, decoded: 0 },
     }
     let cls = 0
+    let clsSessionValue = 0
+    let clsSessionStartTime: number | null = null
+    let clsSessionLastTime: number | null = null
     let lcp: number | null = null
     let lastFrame: number | null = null
     let frameId = 0
@@ -302,7 +305,24 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         }),
         layoutShift: observe('layout-shift', entry => {
             const value = entry as PerformanceEntry & { value?: number; hadRecentInput?: boolean }
-            if (!value.hadRecentInput && typeof value.value === 'number') cls += value.value
+            const shiftValue =
+                typeof value.value === 'number' && Number.isFinite(value.value) && value.value >= 0 ? value.value : null
+            const startTime = Number.isFinite(entry.startTime) && entry.startTime >= 0 ? entry.startTime : null
+            if (value.hadRecentInput || shiftValue === null || startTime === null) return
+
+            const joinsCurrentSession =
+                clsSessionStartTime !== null &&
+                clsSessionLastTime !== null &&
+                startTime >= clsSessionLastTime &&
+                startTime - clsSessionLastTime < 1_000 &&
+                startTime - clsSessionStartTime < 5_000
+            if (joinsCurrentSession) clsSessionValue += shiftValue
+            else {
+                clsSessionValue = shiftValue
+                clsSessionStartTime = startTime
+            }
+            clsSessionLastTime = startTime
+            cls = Math.max(cls, clsSessionValue)
         }),
         lcp: observe('largest-contentful-paint', entry => {
             lcp = entry.startTime
