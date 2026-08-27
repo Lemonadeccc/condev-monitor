@@ -4,6 +4,7 @@ import {
     ANIMATION_RUM_V2_CAPABILITIES,
     ANIMATION_RUM_V2_CONTRACT_VERSION,
     ANIMATION_RUM_V2_METRIC_CATALOG,
+    ANIMATION_RUM_V2_PER_MINUTE_METRIC_IDS,
     ANIMATION_RUM_V2_PROVIDER_OWNERS,
     ANIMATION_RUM_V2_QUALITY_REASONS,
     ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION,
@@ -96,9 +97,7 @@ const BACKENDS = new Set(['dom', 'canvas2d', 'webgl', 'webgl2', 'webgpu', 'mixed
 const QUALITY_REASON_SET = new Set<string>(ANIMATION_RUM_V2_QUALITY_REASONS)
 const FAMILY_SET = new Set<string>(ANIMATION_RUM_FAMILIES)
 const PROVIDER_OWNER_SET = new Set<string>(ANIMATION_RUM_V2_PROVIDER_OWNERS)
-const NORMALIZABLE_METRIC_IDS = ANIMATION_RUM_V2_METRIC_CATALOG.filter(
-    definition => (definition.stat === 'count' || definition.stat === 'sum') && definition.evidenceWindow === 'capture-window'
-).map(definition => definition.metricId)
+const NORMALIZABLE_METRIC_IDS: string[] = [...ANIMATION_RUM_V2_PER_MINUTE_METRIC_IDS]
 
 const CAPTURE_COLUMNS = `
     event_id, capture_id, parent_capture_id, scope, contract_version, snapshot_schema_version,
@@ -467,7 +466,7 @@ export class AnimationRumV2QueryService {
                 minimumWindowMs: MIN_NORMALIZED_WINDOW_MS,
                 excludesCappedWindows: true,
                 requiresMeasuredStatus: true,
-                appliesTo: 'capture-window count and sum metrics' as const,
+                appliesTo: 'closed event-flow count and sum metrics' as const,
             },
             trend: this.trendView(trendBucket, captureTrendJson.data ?? [], frameTrendJson.data ?? []),
             metrics: (metricJson.data ?? []).map(row => this.summaryMetricView(row)).filter(row => row !== null),
