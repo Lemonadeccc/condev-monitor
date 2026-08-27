@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { spawn } from 'node:child_process'
@@ -146,7 +146,9 @@ test('schema files are database-neutral and compose wires one resolved name ever
         '002_issue_tables.sql',
         '003_llm_observability_schema.sql',
         '004_animation_rum_v1.sql',
+        '005_animation_rum_v2.sql',
     ]
+    assert.deepEqual((await readdir(schemaDir)).filter(file => file.endsWith('.sql')).sort(), schemaFiles)
     for (const file of schemaFiles) {
         const sql = await readFile(path.join(schemaDir, file), 'utf8')
         assert.doesNotMatch(sql, /\blemonade\s*\./)
@@ -162,6 +164,34 @@ test('schema files are database-neutral and compose wires one resolved name ever
     assert.equal(deployCompose.split(`CLICKHOUSE_DATABASE=${resolvedExpression}`).length - 1, 4)
     assert.equal(deployCompose.split('CLICKHOUSE_DB=').length - 1, 1)
     assert.match(deployCompose, /init-clickhouse-schema\.sh:\/docker-entrypoint-initdb\.d\/001_init-clickhouse-schema\.sh:ro/)
+})
+
+test('animation RUM v2 storage stays isolated, aggregate-only, and queryable by evidence relation', async () => {
+    const sql = await readFile(path.join(schemaDir, '005_animation_rum_v2.sql'), 'utf8')
+    const statements = sql.replace(/^--.*$/gm, '')
+    const tableNames = [...sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z0-9_]+)/gi)].map(match => match[1])
+    assert.deepEqual(tableNames, ['animation_rum_captures_v2', 'animation_rum_metrics_v2', 'animation_rum_provider_evidence_v2'])
+    assert.doesNotMatch(statements, /\b(?:DROP|TRUNCATE|RENAME)\b/i)
+    assert.doesNotMatch(sql, /(?:ALTER|DROP|RENAME)\s+TABLE[\s\S]*animation_rum_[a-z_]+_v1/i)
+    assert.doesNotMatch(
+        statements,
+        /\b(?:selector|element_id|class_name|dom_text|input_value|url|coordinates|raw_event|keyframes|shader_source|props|state|metadata)\b/i
+    )
+    assert.match(sql, /scope\s+LowCardinality\(String\)/)
+    assert.match(sql, /parent_capture_id\s+String/)
+    assert.match(sql, /route_key\s+LowCardinality\(String\)/)
+    assert.match(sql, /target_key\s+LowCardinality\(String\)/)
+    assert.match(sql, /metric_id\s+LowCardinality\(String\)/)
+    assert.match(sql, /relation\s+LowCardinality\(String\)/)
+    assert.match(sql, /owner\s+LowCardinality\(String\)/)
+    assert.match(sql, /capture_sufficiency\s+LowCardinality\(String\)/)
+    assert.match(sql, /capture_integrity\s+LowCardinality\(String\)/)
+    assert.match(sql, /adapter_error_count\s+UInt32/)
+    assert.match(sql, /provider_version\s+LowCardinality\(String\)/)
+    assert.match(sql, /rum_v2_capture_identity/)
+    assert.match(sql, /rum_v2_metric_status/)
+    assert.match(sql, /rum_v2_provider_counts/)
+    assert.equal(sql.match(/TTL toDateTime\(captured_at\) \+ INTERVAL 90 DAY/g)?.length, 3)
 })
 
 test('all backend families use the validated database resolver', async () => {
