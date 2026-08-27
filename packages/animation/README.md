@@ -107,6 +107,14 @@ Buffered observer delivery cannot expand the capture window: entries ending at o
 
 Immediately before a live snapshot, and before stop finalizes interactions or disconnects observers, the collector asks the shared runtime to drain queued PerformanceObserver records synchronously. This keeps report and interaction boundaries complete without creating another observer. A host drain failure is isolated and does not make snapshot/stop unavailable.
 
+### Performance Timeline history completeness
+
+When the browser exposes `PerformanceObserverCallbackOptions.droppedEntriesCount`, the shared runtime preserves its first-delivery value as `performanceObserverDroppedEntryCount` on the affected LoAF, Long Task, Event Timing, and Resource Timing page summaries. The browser maintains the count in the buffered Performance Timeline tuple for each entry type; because the shared runtime observes one type per physical observer, a positive value is one-shot evidence that this type's buffered timeline history was incomplete by that first delivery. It does not prove that the subscriber missed a live observer entry. It is not a rolling callback-loss count, not the collector ring's `droppedSampleCount`, and not the Resource Timing buffer-full event count.
+
+A legal positive value conservatively lowers the confidence/status of whole-page aggregates associated with that subscription and their RUM projection. It does not downgrade later interaction or target windows: live entries are queued to the observer before the browser checks whether it can retain another entry in buffered timeline history. `null` means the count was unavailable or invalid and must not be displayed as zero; an omitted property means a custom/legacy runtime did not implement this evidence. A known zero is preserved as zero. The exact raw count remains local and is never serialized into either `animation_rum` v1 or v2.
+
+The callback option exists only on the first non-empty delivery after `observe()`. A synchronous `takeRecords()` drain has no callback options, so the drain cannot resolve the count by itself: an already-eligible subscriber remains unknown until a later first callback supplies the one-shot option (or remains unknown if none arrives). A logical subscriber added after the physical observer's initial history was consumed is live-only (`buffered: false`) and cannot inherit the earlier subscriber's history-loss count.
+
 ## Local collector
 
 ```ts
@@ -184,6 +192,8 @@ Resource retention has two separate loss boundaries:
 
 - `droppedSampleCount` is SDK ring eviction. The default local ring retains 512 resource samples, with a hard maximum of 8,192. Streaming counts, duration totals, byte totals, and category totals still include SDK-evicted samples, while retained-sample duration distributions describe only the bounded tail.
 - `bufferFullEventCount` reports the browser's `resourcetimingbufferfull` signal when that event can be observed. A browser buffer-full event means entries may have been lost before the SDK received them; increasing `maxResourceEntries` cannot recover those entries. Unsupported or unknown event capability remains `null`, not zero.
+
+Resource summaries may also contain the general one-shot `performanceObserverDroppedEntryCount` described above. On the runtime's single-type resource observer, a positive field proves that the Resource Timing tuple could not retain at least one entry in buffered timeline history, but not that the live observer delivery missed it. This remains distinct from both Resource Timing's own buffer-full event and SDK ring eviction.
 
 Resource Timing alone keeps the **local snapshot** `coverage.resourcesMedia.status` at `partial`. It provides request timing and size evidence, but not video frame cadence, decode-to-upload-to-first-visible latency, playback drops, autoplay/visibility behavior, or renderer/GPU upload evidence. Those require the media and renderer adapters described under Remaining gaps. Because Resource Timing aggregates are absent from the closed v1 metric tuple, the production `animation_rum` projection reports `coverage.resourcesMedia` as `not-instrumented`; the separate wire capability can still truthfully say whether Resource Timing itself is supported.
 
@@ -402,6 +412,8 @@ The new local `captureSufficiency`, `webVitals`, `resourceTiming`, LoAF paint-ph
 LoAF and Long Task count/duration totals plus interaction outcome totals are maintained as streaming scalars. Ring truncation therefore leaves those count/sum metrics `measured`, while retained-tail p95/max metrics are `partial`. A capped capture window still marks LoAF/Long Task duration sums `partial` because an exact downstream per-minute denominator is unavailable.
 
 Every RUM projection closes a drained observation window at `capturedAt`, even when the local collector remains running after hidden or pagehide. When its LoAF or Long Task observer is supported, zero entries in that wire window are a measured observation: count and duration sum are `value: 0`, `samples: 0`, and `status: measured`. Percentile, maximum, blocking, and rendering-tail distributions remain `not-observed` with null values because no duration samples exist. Unsupported or unknown observers keep both aggregates and distributions null.
+
+When a legal positive `performanceObserverDroppedEntryCount` proves that initial buffered history was incomplete, affected page count/sum evidence and non-empty retained distributions become `partial`. An empty distribution remains `not-observed`; history loss does not fabricate samples or a value. The raw count itself is not placed on the wire, and v2 provider totals continue to describe only entries actually observed by that provider.
 
 On the wire, `callbackSelfTimeRatio` means total measured monitor callback self time across the capture divided by the actual local capture duration. The retained callback p95 and its frame-budget ratio remain local diagnostics only. The recommendation engine treats a callback ratio above the default 1% project budget as an investigation trigger; this is not a web standard.
 

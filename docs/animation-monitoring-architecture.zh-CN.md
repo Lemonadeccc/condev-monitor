@@ -158,6 +158,8 @@ Web Vitals 是另一种时间范围。`packages/browser-utils` 只启动一套�
 | SDK bounded ring              | `retainedCount`、`droppedSampleCount`、`capacity` | ring 满后旧明细被逐出；全窗 streaming count/duration/byte/category total 仍包含这些已接收条目，retained duration 分布只是有界尾部 | 不能把 retained tail 当完整全窗分布                                                    |
 | 浏览器 Resource Timing buffer | `bufferEventCapability`、`bufferFullEventCount`   | `resourcetimingbufferfull` 表示浏览器可能在 SDK 接收前就丢了条目                                                                  | 调大 SDK `maxResourceEntries` 不能恢复浏览器已丢条目；事件 API 未支持/未知时不能显示 0 |
 
+此外还有一个适用于各种 PerformanceEntry 的通用机制：浏览器按 entry type 的 buffered Performance Timeline tuple 分别维护 dropped count，并只在 `observe()` 后第一次非空 callback 的 options 中提供一次性 `droppedEntriesCount`。共享运行时每个物理 observer 只订阅一种 type，因此 SDK 保存在对应页面摘要中的 `performanceObserverDroppedEntryCount` 能说明该类型到首次 delivery 时已有 timeline history 未被 buffer 保留，但不能证明当前订阅漏掉了实时 delivery；它不是实时 callback 漏采计数，也不是上表任一 Resource Timing 专用边界。正数会保守地把对应页面聚合与 RUM 证据降为 `partial`，但不会反向污染观察器注册之后的 action/interaction 窗口；`null` 是未知而不是 0，属性缺失表示自定义或旧运行时没有实现该证据。精确原始计数只留在本地快照，不进入 `animation_rum` v1/v2。
+
 即使 Resource Timing 自身没有 ring eviction 或 browser-buffer-full，`metricCoverage.resourcesMedia` 仍只能是 `partial`。它覆盖请求分类、大小和 duration，却没有 video `requestVideoFrameCallback` cadence、decode → GPU upload → first visible、dropped/total playback frames、autoplay/visibility 行为或 renderer upload 证据；必须等 media/renderer adapter 后才能讨论更完整 coverage。
 
 这些字段当前只服务本地开发诊断，不进入严格 `animation_rum` v1 的 allowlist、DSN schema、Worker projection 或 ClickHouse keys。当前 SDK 上报入口仍是：
@@ -279,6 +281,7 @@ Renderer window 必须与目标 collector 使用同一个 `AnimationRuntime.now(
 
 - 一个引用计数的 FrameClock；
 - 每种 PerformanceEntry 类型一个共享 PerformanceObserver；
+- 每个共享 PerformanceObserver 只读取第一次非空 delivery 的 `droppedEntriesCount`，并按逻辑订阅者分别保存“有资格接收初始 buffered history”的归属；后加入者是 live-only，不能继承旧订阅者的历史丢失证据；
 - Resource Timing 在分发前移除 name/URL，并共享 `resourcetimingbufferfull` 生命周期监听；
 - snapshot/stop/hidden/pagehide 和最后一个订阅者退出前，通过同一脱敏分发路径同步 `takeRecords()`，不漏掉仍在 observer queue 的尾部 entry；
 - visibility、pagehide/pageshow 和 BFCache 生命周期；
@@ -287,6 +290,8 @@ Renderer window 必须与目标 collector 使用同一个 `AnimationRuntime.now(
 - feature detection 与最后一个订阅者退出后的清理。
 
 它已经解决 animation 与旧 RuntimePerformance 重复创建 observer/rAF 的问题，也让 animation 与旧 Metrics 共用同一套 CLS/INP/LCP observer。旧 Metrics 的 final cadence 和 `performance` event name/value/path 保持兼容；animation 的本地 live snapshot 不额外生成 `animation_rum` v1 指标。
+
+`droppedEntriesCount` 必须按 Performance Timeline 的一次性、按 entry type buffered-history 证据解释。正数只证明对应 type 的 timeline tuple 没有保留全部历史，不能把它写成 live observer delivery 漏采，也不能把后续实时 action/interaction 误标成漏采；0 是已知零，`null` 是 unavailable/invalid，不能互相替代。`takeRecords()` 本身没有 callback options，因此它若先取走首批条目，不能自行解析计数：已有资格的订阅保持未知，直到后续第一次 callback 给出一次性 options（若始终没有 callback 就继续未知）；之后新增的逻辑订阅是 live-only，不得重新声称 `buffered: true` 或继承旧历史证据。热更新迁移也必须终止旧 callback 的滚动语义，避免旧 closure 恢复已经废弃的计数方式。
 
 ### `packages/core` 与 `packages/browser`
 
