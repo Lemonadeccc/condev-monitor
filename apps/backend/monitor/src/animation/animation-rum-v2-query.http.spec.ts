@@ -9,6 +9,8 @@ import { createMonitorValidationPipe } from '../common/validation/monitor-valida
 import { AnimationRumV2JwtGuard } from './animation-rum-v2-jwt.guard'
 import { AnimationRumV2QueryController } from './animation-rum-v2-query.controller'
 import { AnimationRumV2QueryService } from './animation-rum-v2-query.service'
+import { AnimationRumV2ReadThrottleGuard } from './animation-rum-v2-read-throttle.guard'
+import { AnimationRumV2ReadThrottleService } from './animation-rum-v2-read-throttle.service'
 
 const JWT_SECRET = 'animation-rum-v2-query-http-fixture-secret'
 
@@ -34,12 +36,21 @@ describe('Animation RUM v2 query HTTP boundary', () => {
         captures: jest.fn(),
         capture: jest.fn(),
     }
+    const throttle = {
+        consume: jest.fn(),
+    }
 
     beforeAll(async () => {
         const module = await Test.createTestingModule({
             imports: [PassportModule.register({ defaultStrategy: 'jwt' })],
             controllers: [AnimationRumV2QueryController],
-            providers: [AnimationRumV2JwtGuard, FixtureJwtStrategy, { provide: AnimationRumV2QueryService, useValue: queries }],
+            providers: [
+                AnimationRumV2JwtGuard,
+                AnimationRumV2ReadThrottleGuard,
+                FixtureJwtStrategy,
+                { provide: AnimationRumV2ReadThrottleService, useValue: throttle },
+                { provide: AnimationRumV2QueryService, useValue: queries },
+            ],
         }).compile()
         app = module.createNestApplication()
         app.useGlobalPipes(createMonitorValidationPipe())
@@ -51,6 +62,7 @@ describe('Animation RUM v2 query HTTP boundary', () => {
         queries.summary.mockReset().mockResolvedValue({ captures: { observed: 0 } })
         queries.captures.mockReset().mockResolvedValue({ captures: [] })
         queries.capture.mockReset().mockResolvedValue({ capture: { captureId: 'capture_12345678' } })
+        throttle.consume.mockReset().mockReturnValue({ allowed: true, remaining: 59, retryAfterSeconds: 0 })
     })
 
     afterAll(async () => {
@@ -66,6 +78,7 @@ describe('Animation RUM v2 query HTTP boundary', () => {
             .expect('Cache-Control', 'private, no-store')
             .expect('Pragma', 'no-cache')
         expect(queries.summary).not.toHaveBeenCalled()
+        expect(throttle.consume).not.toHaveBeenCalled()
     })
 
     it.each([
@@ -90,6 +103,7 @@ describe('Animation RUM v2 query HTTP boundary', () => {
             .get('/api/animation/rum-v2/captures?appId=vanillaFixture1&scope=target&limit=20&offset=40')
             .set('Authorization', auth())
             .expect(200)
+            .expect('RateLimit-Remaining', '59')
             .expect('Cache-Control', 'private, no-store')
             .expect('Pragma', 'no-cache')
             .expect({ success: true, data: { captures: [] } })
@@ -108,5 +122,28 @@ describe('Animation RUM v2 query HTTP boundary', () => {
             .expect('Cache-Control', 'private, no-store')
 
         expect(queries.capture).toHaveBeenCalledWith(41, 'vanillaFixture1', 'capture_12345678')
+    })
+
+    it.each([
+        ['/api/animation/rum-v2/summary?appId=vanillaFixture1', 'vanillaFixture1'],
+        ['/api/animation/rum-v2/captures?appId=unknownFixture1', 'unknownFixture1'],
+        ['/api/animation/rum-v2/captures/capture_12345678?appId=unknownFixture1', 'unknownFixture1'],
+    ])('rate-limits every read route without revealing app ownership: %s', async (endpoint, appId) => {
+        throttle.consume.mockReturnValue({ allowed: false, remaining: 0, retryAfterSeconds: 17 })
+
+        await request(app.getHttpServer())
+            .get(endpoint)
+            .set('Authorization', auth())
+            .expect(429)
+            .expect('Retry-After', '17')
+            .expect('RateLimit-Remaining', '0')
+            .expect('Cache-Control', 'private, no-store')
+            .expect('Pragma', 'no-cache')
+            .expect({ statusCode: 429, message: 'Animation RUM v2 read rate limit exceeded' })
+
+        expect(throttle.consume).toHaveBeenCalledWith(41, appId)
+        expect(queries.summary).not.toHaveBeenCalled()
+        expect(queries.captures).not.toHaveBeenCalled()
+        expect(queries.capture).not.toHaveBeenCalled()
     })
 })
