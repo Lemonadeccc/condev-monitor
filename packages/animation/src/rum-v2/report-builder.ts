@@ -81,6 +81,12 @@ const DPR_BUCKETS = new Set(['1', '1.5', '2', '3', '4+', 'unknown'])
 type Scope = AnimationRumV2Report['scope']
 type MetricDefinition = (typeof ANIMATION_RUM_V2_METRIC_CATALOG)[number]
 
+interface TargetProjectionWindow {
+    startedAt: number
+    endedAt: number
+    durationMs: number
+}
+
 interface MetricCandidate {
     value: number | null
     samples: number | null
@@ -1490,7 +1496,30 @@ function projectTargetDirect(state: ProjectionState, target: AnimationElementSel
     )
 }
 
-function projectTargetRenderer(state: ProjectionState, target: AnimationElementSelectionSnapshot): void {
+function targetRendererWindowValid(
+    renderer: AnimationElementSelectionSnapshot['renderers'][number],
+    projectionWindow: TargetProjectionWindow | null
+): boolean {
+    if (!projectionWindow) return false
+    const startedAt = safeNumber(renderer.evidence.window.startedAt)
+    const endedAt = safeNumber(renderer.evidence.window.endedAt)
+    const durationMs = safeNumber(renderer.evidence.window.durationMs)
+    return (
+        startedAt !== null &&
+        endedAt !== null &&
+        durationMs !== null &&
+        startedAt >= projectionWindow.startedAt &&
+        endedAt <= projectionWindow.endedAt &&
+        endedAt >= startedAt &&
+        Math.abs(durationMs - round(endedAt - startedAt)) <= 0.001
+    )
+}
+
+function projectTargetRenderer(
+    state: ProjectionState,
+    target: AnimationElementSelectionSnapshot,
+    projectionWindow: TargetProjectionWindow | null
+): void {
     const supported = target.renderers.filter(item => item.capability.state === 'supported')
     const usable = target.renderers.filter(item => item.capability.state === 'supported' && item.capability.observed)
     if (supported.length === 0) {
@@ -1525,6 +1554,14 @@ function projectTargetRenderer(state: ProjectionState, target: AnimationElementS
         return
     }
     const renderer = usable[0]!
+    if (!targetRendererWindowValid(renderer, projectionWindow)) {
+        state.reasons.add('source-field-incomplete')
+        state.capabilities['gpu-timer-query'] = 'unknown'
+        for (const id of ['renderer.gpu-frame.p95', 'renderer.draw-calls.p95', 'renderer.triangles.p95']) {
+            putMetric(state, id, null, null, 'unknown')
+        }
+        return
+    }
     const accepted = safeCount(renderer.evidence.acceptedSampleCount)
     const retained = safeCount(renderer.evidence.retainedSampleCount)
     const dropped = safeCount(renderer.evidence.droppedSampleCount)
@@ -2026,13 +2063,46 @@ export function toAnimationRumV2TargetReport(
     const parentCaptureId = safeId('parentCaptureId', pageSnapshot.captureId)
     if (captureId === parentCaptureId) throw new AnimationOptionsError('target captureId must differ from the parent page captureId')
     const state = createState('target')
+    const selectedAt = safeNumber(targetSnapshot.selectedAt)
+    const capturedAt = safeNumber(targetSnapshot.capturedAt)
+    const elapsedMs = safeNumber(targetSnapshot.elapsedMs)
+    const selectionWindowValid =
+        selectedAt !== null &&
+        capturedAt !== null &&
+        elapsedMs !== null &&
+        capturedAt >= selectedAt &&
+        Math.abs(elapsedMs - round(capturedAt - selectedAt)) <= 0.001
+    const selectionWindow: TargetProjectionWindow | null = selectionWindowValid
+        ? { startedAt: selectedAt, endedAt: capturedAt, durationMs: elapsedMs }
+        : null
     const correlatedDurationMs = safeNumber(targetSnapshot.correlatedDurationMs)
+    const rawCorrelatedWindow = targetSnapshot.correlatedWindow
+    const correlatedStartedAt = safeNumber(rawCorrelatedWindow?.startedAt)
+    const correlatedEndedAt = safeNumber(rawCorrelatedWindow?.endedAt)
+    const correlatedWindowDurationMs = safeNumber(rawCorrelatedWindow?.durationMs)
+    const correlatedWindowValid =
+        selectionWindow !== null &&
+        correlatedStartedAt !== null &&
+        correlatedEndedAt !== null &&
+        correlatedWindowDurationMs !== null &&
+        correlatedDurationMs !== null &&
+        correlatedStartedAt >= selectionWindow.startedAt &&
+        correlatedEndedAt <= selectionWindow.endedAt &&
+        correlatedEndedAt >= correlatedStartedAt &&
+        Math.abs(correlatedWindowDurationMs - round(correlatedEndedAt - correlatedStartedAt)) <= 0.001 &&
+        Math.abs(correlatedDurationMs - correlatedWindowDurationMs) <= 0.001
     const correlationValid = targetSnapshot.correlated
-        ? targetSnapshot.correlationRelation === 'temporal-overlap' && correlatedDurationMs !== null
+        ? targetSnapshot.correlationRelation === 'temporal-overlap' && correlatedWindowValid
         : targetSnapshot.correlationRelation === null &&
-          (targetSnapshot.correlatedDurationMs === null || targetSnapshot.correlatedDurationMs === undefined)
-    if (!correlationValid) state.reasons.add('source-field-incomplete')
+          (targetSnapshot.correlatedDurationMs === null || targetSnapshot.correlatedDurationMs === undefined) &&
+          (targetSnapshot.correlatedWindow === null || targetSnapshot.correlatedWindow === undefined)
+    if (!selectionWindowValid || !correlationValid) state.reasons.add('source-field-incomplete')
     const correlated = correlationValid ? targetSnapshot.correlated : null
+    const projectionWindow: TargetProjectionWindow | null = targetSnapshot.correlated
+        ? correlationValid && correlatedStartedAt !== null && correlatedEndedAt !== null && correlatedWindowDurationMs !== null
+            ? { startedAt: correlatedStartedAt, endedAt: correlatedEndedAt, durationMs: correlatedWindowDurationMs }
+            : null
+        : selectionWindow
     const targetWindowDurationMs = correlated && correlatedDurationMs !== null ? correlatedDurationMs : targetSnapshot.elapsedMs
     state.capabilities['long-animation-frame'] = capabilityState(pageSnapshot.longAnimationFrames.capability)
     state.capabilities.longtask = capabilityState(pageSnapshot.longTasks.capability)
@@ -2041,7 +2111,7 @@ export function toAnimationRumV2TargetReport(
     state.capabilities['loaf-presentation-time'] = capabilityState(pageSnapshot.longAnimationFrames.paintTiming?.presentationTimeCapability)
     projectTargetTemporalEvidence(state, correlated)
     projectTargetDirect(state, targetSnapshot)
-    projectTargetRenderer(state, targetSnapshot)
+    projectTargetRenderer(state, targetSnapshot, projectionWindow)
     if (!correlated) projectInteractionQuality(state, undefined)
     state.capabilities['resource-timing'] = 'disabled'
     state.capabilities['resource-timing-buffer-events'] = 'disabled'

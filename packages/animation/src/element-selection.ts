@@ -179,7 +179,7 @@ const MAX_PROPERTIES_PER_BUCKET = 64
 const MAX_TARGET_ADAPTERS = 16
 const MAX_TARGET_OWNERS = 32
 const MAX_TARGET_RENDERERS = 16
-const MAX_RENDERER_EVIDENCE_TIME_MS = 1_000_000_000_000
+const MAX_RENDERER_EVIDENCE_TIME_MS = 1_000_000_000_000_000
 const MAX_RENDERER_METRIC = 1_000_000_000_000
 const MAX_RENDERER_SAMPLE_COUNT = 1_000_000_000
 const MAX_GEOMETRY_DIMENSION = 1_000_000_000
@@ -209,6 +209,11 @@ const EMPTY_RENDERER_METRICS: AnimationRendererMetrics = {
 interface ElementSelectionDependencies {
     now(): number
     beginInteraction(kind: AnimationInteractionKind, label?: string): AnimationInteractionHandle
+}
+
+interface RendererEvidenceBounds {
+    startedAt: number
+    endedAt: number
 }
 
 function supportedEvidence(observed: boolean, reason?: string): CapabilityEvidence {
@@ -722,6 +727,34 @@ function rendererMetrics(
     return result
 }
 
+function rendererEvidenceRequiresWindow(
+    evidence: AnimationTargetRendererEvidence,
+    metrics: Partial<AnimationRendererMetrics> | undefined
+): boolean {
+    return (evidence.retainedSampleCount ?? 0) > 0 || Object.values(metrics ?? {}).some(value => value !== null && value !== undefined)
+}
+
+function rendererEvidenceWindowValid(
+    source: AnimationTargetAdapterRendererEvidence | undefined,
+    evidence: AnimationTargetRendererEvidence,
+    bounds: RendererEvidenceBounds
+): boolean {
+    const rawStartedAt = safeBoundedRawNonNegative(source?.window?.startedAt, MAX_RENDERER_EVIDENCE_TIME_MS)
+    const rawEndedAt = safeBoundedRawNonNegative(source?.window?.endedAt, MAX_RENDERER_EVIDENCE_TIME_MS)
+    const { startedAt, endedAt, durationMs } = evidence.window
+    return (
+        rawStartedAt !== null &&
+        rawEndedAt !== null &&
+        rawStartedAt >= bounds.startedAt &&
+        rawEndedAt <= bounds.endedAt &&
+        rawEndedAt >= rawStartedAt &&
+        startedAt !== null &&
+        endedAt !== null &&
+        durationMs !== null &&
+        Math.abs(durationMs - round(endedAt - startedAt)) <= 0.001
+    )
+}
+
 function localOwner(
     owner: AnimationTargetAdapterOwnerInspection,
     adapterId: string,
@@ -776,6 +809,7 @@ export function createAnimationElementSelection(
     let activeInteraction: InteractionHandle | null = null
     let correlated: InteractionMeasurement['performance'] | null = null
     let correlatedDurationMs: number | null = null
+    let correlatedWindow: AnimationElementSelectionSnapshot['correlatedWindow'] = null
     const resizeCounts: ElementResizeCounts = { total: 0, css: 0, backing: 0 }
     let lastResizeDimensions = readElementResizeDimensions(element)
     const recordResizeChanges = (current: ElementResizeDimensions): void => {
@@ -845,6 +879,11 @@ export function createAnimationElementSelection(
     const completeInteraction = (measurement: InteractionMeasurement): InteractionMeasurement => {
         correlated = measurement.performance
         correlatedDurationMs = measurement.durationMs
+        correlatedWindow = {
+            startedAt: measurement.startedAt,
+            endedAt: measurement.endedAt,
+            durationMs: measurement.durationMs,
+        }
         activeInteraction = null
         recording = false
         return measurement
@@ -867,6 +906,7 @@ export function createAnimationElementSelection(
             recording = true
             correlated = null
             correlatedDurationMs = null
+            correlatedWindow = null
             return {
                 id: interaction.id,
                 kind: interaction.kind,
@@ -877,7 +917,6 @@ export function createAnimationElementSelection(
         },
         snapshot() {
             if (cleared) throw new Error('cannot snapshot a cleared element selection')
-            const capturedAt = dependencies.now()
             recordResizeChanges(readElementResizeDimensions(element))
             const direct = inspectAnimations(element, mode === 'subtree', lifecycle)
             const uiFrameworks = new Set<AnimationUiFramework>(['vanilla'])
@@ -887,7 +926,14 @@ export function createAnimationElementSelection(
             if ((direct.cssAnimationCount ?? 0) + (direct.cssTransitionCount ?? 0) > 0) motionEngines.add('css')
             if ((direct.webAnimationCount ?? 0) > 0) motionEngines.add('waapi')
             const owners: AnimationTargetOwnerAttribution[] = []
-            const rendererInspections: AnimationTargetRendererInspection[] = []
+            const rendererCandidates: Array<{
+                adapterId: string
+                adapterVersion: string
+                family: AnimationRendererFamily
+                capability: CapabilityEvidence
+                metrics: Partial<AnimationRendererMetrics> | undefined
+                evidence: AnimationTargetAdapterRendererEvidence | undefined
+            }> = []
             const adapterErrors: string[] = []
 
             for (const adapter of (options.adapters ?? []).slice(0, MAX_TARGET_ADAPTERS)) {
@@ -907,30 +953,48 @@ export function createAnimationElementSelection(
                     }
                     if (inspection.renderer && RENDERERS.has(inspection.renderer.family)) {
                         renderers.add(inspection.renderer.family)
-                        if (rendererInspections.length >= MAX_TARGET_RENDERERS) continue
+                        if (rendererCandidates.length >= MAX_TARGET_RENDERERS) continue
                         const capability = adapterCapability(inspection.renderer.capability)
                         const canUseRendererEvidence = capability.state === 'supported' && capability.observed
                         if (!canUseRendererEvidence && (inspection.renderer.metrics || inspection.renderer.evidence)) {
                             adapterErrors.push(`${adapterId}:renderer-capability-conflict`)
                         }
-                        const evidence = rendererEvidence(
-                            canUseRendererEvidence ? inspection.renderer.evidence : undefined,
-                            canUseRendererEvidence ? inspection.renderer.metrics : undefined,
-                            inspection.renderer.family
-                        )
-                        rendererInspections.push({
+                        rendererCandidates.push({
                             adapterId,
                             adapterVersion,
                             family: inspection.renderer.family,
                             capability,
-                            metrics: rendererMetrics(canUseRendererEvidence ? inspection.renderer.metrics : undefined, evidence),
-                            evidence,
+                            metrics: canUseRendererEvidence ? inspection.renderer.metrics : undefined,
+                            evidence: canUseRendererEvidence ? inspection.renderer.evidence : undefined,
                         })
                     }
                 } catch {
                     adapterErrors.push(`${adapterId}:inspection-failed`)
                 }
             }
+
+            const capturedAt = dependencies.now()
+            const evidenceBounds: RendererEvidenceBounds = correlatedWindow
+                ? { startedAt: correlatedWindow.startedAt, endedAt: correlatedWindow.endedAt }
+                : { startedAt: selectedAt, endedAt: capturedAt }
+            const rendererInspections: AnimationTargetRendererInspection[] = rendererCandidates.map(candidate => {
+                let evidence = rendererEvidence(candidate.evidence, candidate.metrics, candidate.family)
+                const windowInvalid =
+                    rendererEvidenceRequiresWindow(evidence, candidate.metrics) &&
+                    !rendererEvidenceWindowValid(candidate.evidence, evidence, evidenceBounds)
+                if (windowInvalid) {
+                    adapterErrors.push(`${candidate.adapterId}:renderer-evidence-window-invalid`)
+                    evidence = rendererEvidence(undefined, undefined, candidate.family)
+                }
+                return {
+                    adapterId: candidate.adapterId,
+                    adapterVersion: candidate.adapterVersion,
+                    family: candidate.family,
+                    capability: candidate.capability,
+                    metrics: rendererMetrics(windowInvalid ? undefined : candidate.metrics, evidence),
+                    evidence,
+                }
+            })
 
             const state = !connected(element) ? 'disconnected' : recording ? 'recording' : 'selected'
             const inventory: AnimationTargetRuntimeInventory = {
@@ -957,6 +1021,7 @@ export function createAnimationElementSelection(
                 correlated,
                 correlationRelation: correlated ? 'temporal-overlap' : null,
                 correlatedDurationMs,
+                correlatedWindow,
                 adapterErrors,
             }
             return snapshot

@@ -292,6 +292,7 @@ function targetSnapshot() {
         },
         correlationRelation: 'temporal-overlap',
         correlatedDurationMs: 1_200,
+        correlatedWindow: { startedAt: 0, endedAt: 1_200, durationMs: 1_200 },
         adapterErrors: ['private-renderer: secret adapter failure at https://private.example'],
     }
 }
@@ -541,6 +542,228 @@ test('target builder rejects host-only GPU sources and invalid renderer families
     }
 })
 
+test('target renderer evidence is contained by the exact correlated window and is revalidated before projection', () => {
+    const { runtime, snapshot } = capturePage()
+    const target = targetSnapshot()
+    target.correlatedDurationMs = 200
+    target.correlatedWindow = { startedAt: 400, endedAt: 600, durationMs: 200 }
+    target.renderers[0].evidence.window = { startedAt: 350, endedAt: 500, durationMs: 150 }
+
+    const outside = toAnimationRumV2TargetReport(
+        snapshot,
+        target,
+        projectionOptions(runtime, {
+            eventId: 'event_target_window_outside',
+            captureId: 'capture_target_window_outside',
+            targetKey: 'hero-canvas',
+        })
+    )
+    for (const id of ['renderer.gpu-frame.p95', 'renderer.draw-calls.p95', 'renderer.triangles.p95']) {
+        assert.deepEqual([metric(outside, id).value, metric(outside, id).samples, metric(outside, id).status], [null, null, 'unknown'])
+    }
+    assert.equal(outside.capabilities['renderer-adapter'], 'supported')
+    assert.equal(outside.capabilities['gpu-timer-query'], 'unknown')
+    assert.equal(outside.providerEvidence['renderer-adapter'], undefined)
+    assert.ok(outside.captureQuality.reasons.includes('source-field-incomplete'))
+    assert.equal(validateNormalizedAnimationRumV2(outside, { nowEpochMs: runtime.wallNow() }).ok, true)
+
+    for (const [index, invalidWindow] of [
+        { startedAt: 410, endedAt: 601, durationMs: 191 },
+        { startedAt: null, endedAt: 500, durationMs: null },
+        { startedAt: 500, endedAt: 410, durationMs: 90 },
+        { startedAt: 410, endedAt: 590, durationMs: 179 },
+        { startedAt: 1_777_000_000_000, endedAt: 1_777_000_000_100, durationMs: 100 },
+    ].entries()) {
+        target.renderers[0].evidence.window = invalidWindow
+        const invalid = toAnimationRumV2TargetReport(
+            snapshot,
+            target,
+            projectionOptions(runtime, {
+                eventId: `event_target_window_invalid_${index}`,
+                captureId: `capture_target_window_invalid_${index}`,
+                targetKey: 'hero-canvas',
+            })
+        )
+        for (const id of ['renderer.gpu-frame.p95', 'renderer.draw-calls.p95', 'renderer.triangles.p95']) {
+            assert.deepEqual([metric(invalid, id).value, metric(invalid, id).samples, metric(invalid, id).status], [null, null, 'unknown'])
+        }
+        assert.equal(invalid.providerEvidence['renderer-adapter'], undefined)
+        assert.equal(validateNormalizedAnimationRumV2(invalid, { nowEpochMs: runtime.wallNow() }).ok, true)
+    }
+
+    target.renderers[0].evidence.window = { startedAt: 410, endedAt: 590, durationMs: 180 }
+    const contained = toAnimationRumV2TargetReport(
+        snapshot,
+        target,
+        projectionOptions(runtime, {
+            eventId: 'event_target_window_contained',
+            captureId: 'capture_target_window_contained',
+            targetKey: 'hero-canvas',
+        })
+    )
+    assert.equal(metric(contained, 'renderer.gpu-frame.p95').value, 7)
+    assert.deepEqual(contained.providerEvidence['renderer-adapter'].renderer, {
+        version: '0.1.0',
+        accepted: 3,
+        retained: 3,
+        evidence: 3,
+        dropped: 0,
+        rejected: 0,
+        truncated: false,
+    })
+
+    delete target.correlatedWindow
+    const missingCorrelationWindow = toAnimationRumV2TargetReport(
+        snapshot,
+        target,
+        projectionOptions(runtime, {
+            eventId: 'event_target_window_missing',
+            captureId: 'capture_target_window_missing',
+            targetKey: 'hero-canvas',
+        })
+    )
+    assert.equal(metric(missingCorrelationWindow, 'frame.duration.p95').value, null)
+    assert.deepEqual(
+        [
+            metric(missingCorrelationWindow, 'renderer.gpu-frame.p95').value,
+            metric(missingCorrelationWindow, 'renderer.gpu-frame.p95').status,
+        ],
+        [null, 'unknown']
+    )
+    assert.equal(missingCorrelationWindow.providerEvidence['renderer-adapter'], undefined)
+
+    target.correlated = null
+    target.correlationRelation = null
+    target.correlatedDurationMs = null
+    target.correlatedWindow = null
+    target.renderers[0].evidence.window = { startedAt: 100, endedAt: 1_000, durationMs: 900 }
+    const selectionFallback = toAnimationRumV2TargetReport(
+        snapshot,
+        target,
+        projectionOptions(runtime, {
+            eventId: 'event_target_window_selection',
+            captureId: 'capture_target_window_selection',
+            targetKey: 'hero-canvas',
+        })
+    )
+    assert.equal(metric(selectionFallback, 'renderer.gpu-frame.p95').value, 7)
+    assert.equal(metric(selectionFallback, 'frame.duration.p95').status, 'not-observed')
+})
+
+test('a locally rejected renderer window remains unknown through the target RUM projection', () => {
+    const { runtime, snapshot } = capturePage()
+    const collector = new AnimationCollector({ runtime }).start()
+    const element = {
+        tagName: 'CANVAS',
+        namespaceURI: 'http://www.w3.org/1999/xhtml',
+        isConnected: true,
+        width: 300,
+        height: 150,
+        ownerDocument: { defaultView: { innerWidth: 1_000, innerHeight: 800 } },
+        getAttribute: () => null,
+        getAnimations: () => [],
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 300, bottom: 150, width: 300, height: 150 }),
+        addEventListener() {},
+        removeEventListener() {},
+    }
+    const selection = collector.selectElement(element, {
+        adapters: [
+            {
+                id: 'invalid-window',
+                version: '1.0.0',
+                canInspect: candidate => candidate === element,
+                inspect: () => ({
+                    renderer: {
+                        family: 'webgl',
+                        capability: { state: 'supported', observed: true, buffered: false },
+                        metrics: { gpuFrameMsP95: 4, drawCallsP95: 8, trianglesP95: 1_000 },
+                        evidence: {
+                            window: { startedAt: 0, endedAt: 10 },
+                            acceptedSampleCount: 2,
+                            retainedSampleCount: 2,
+                            droppedSampleCount: 0,
+                            rejectedSampleCount: 0,
+                            truncated: false,
+                            gpu: { valid: true, disjoint: false, contextLost: false, source: 'webgl-timer-query' },
+                        },
+                    },
+                }),
+            },
+        ],
+    })
+    runtime.tick(20)
+    const local = selection.snapshot()
+    assert.deepEqual(local.adapterErrors, ['invalid-window:renderer-evidence-window-invalid'])
+    assert.ok(Object.values(local.renderers[0].metrics).every(value => value === null))
+
+    const report = toAnimationRumV2TargetReport(
+        snapshot,
+        local,
+        projectionOptions(runtime, {
+            eventId: 'event_target_local_reject',
+            captureId: 'capture_target_local_reject',
+            targetKey: 'hero-canvas',
+        })
+    )
+    for (const id of ['renderer.gpu-frame.p95', 'renderer.draw-calls.p95', 'renderer.triangles.p95']) {
+        assert.deepEqual([metric(report, id).value, metric(report, id).samples, metric(report, id).status], [null, null, 'unknown'])
+    }
+    assert.equal(report.capabilities['gpu-timer-query'], 'unknown')
+    assert.equal(report.providerEvidence['renderer-adapter'], undefined)
+    assert.ok(report.captureQuality.reasons.includes('source-field-incomplete'))
+    assert.equal(validateNormalizedAnimationRumV2(report, { nowEpochMs: runtime.wallNow() }).ok, true)
+
+    selection.clear()
+    collector.destroy()
+})
+
+test('malformed selection or correlated window arithmetic fails temporal and renderer evidence closed', () => {
+    const { runtime, snapshot } = capturePage()
+    const cases = [
+        target => {
+            target.elapsedMs = 1_199
+        },
+        target => {
+            target.correlatedWindow = { startedAt: 0, endedAt: 1_201, durationMs: 1_201 }
+            target.correlatedDurationMs = 1_201
+        },
+        target => {
+            target.correlatedWindow = { startedAt: 800, endedAt: 400, durationMs: 400 }
+            target.correlatedDurationMs = 400
+        },
+        target => {
+            target.correlatedWindow = { startedAt: 100, endedAt: 1_100, durationMs: 999 }
+            target.correlatedDurationMs = 999
+        },
+        target => {
+            target.correlatedWindow = { startedAt: 100, endedAt: 1_100, durationMs: 1_000 }
+            target.correlatedDurationMs = 999
+        },
+    ]
+
+    for (const [index, mutate] of cases.entries()) {
+        const target = targetSnapshot()
+        mutate(target)
+        const report = toAnimationRumV2TargetReport(
+            snapshot,
+            target,
+            projectionOptions(runtime, {
+                eventId: `event_target_bounds_invalid_${index}`,
+                captureId: `capture_target_bounds_invalid_${index}`,
+                targetKey: 'hero-canvas',
+            })
+        )
+        assert.deepEqual([metric(report, 'frame.duration.p95').value, metric(report, 'frame.duration.p95').status], [null, 'not-observed'])
+        for (const id of ['renderer.gpu-frame.p95', 'renderer.draw-calls.p95', 'renderer.triangles.p95']) {
+            assert.deepEqual([metric(report, id).value, metric(report, id).samples, metric(report, id).status], [null, null, 'unknown'])
+        }
+        assert.equal(report.capabilities['gpu-timer-query'], 'unknown')
+        assert.equal(report.providerEvidence['renderer-adapter'], undefined)
+        assert.ok(report.captureQuality.reasons.includes('source-field-incomplete'))
+        assert.equal(validateNormalizedAnimationRumV2(report, { nowEpochMs: runtime.wallNow() }).ok, true)
+    }
+})
+
 test('page builder reports rejected renderer evidence as unknown GPU instrumentation', () => {
     const runtime = new FakeRuntime()
     const collector = new AnimationCollector({ runtime, explicitRefreshHz: 60 }).start()
@@ -693,9 +916,7 @@ test('RUM v2 keeps playback-quality read errors unknown instead of disabled or z
 })
 
 test('RUM v2 treats a measured zero playback denominator as supported but not observed', () => {
-    const { runtime, snapshot } = captureMediaPage([
-        { status: 'measured', totalVideoFramesDelta: 0, droppedVideoFramesDelta: 0 },
-    ])
+    const { runtime, snapshot } = captureMediaPage([{ status: 'measured', totalVideoFramesDelta: 0, droppedVideoFramesDelta: 0 }])
     const report = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
     const validation = validateNormalizedAnimationRumV2(report, { nowEpochMs: runtime.wallNow() })
 
@@ -717,11 +938,7 @@ test('RUM v2 treats a measured zero playback denominator as supported but not ob
 
 test('RUM v2 keeps mixed retained playback evidence and ring truncation partial', () => {
     const { runtime, snapshot } = captureMediaPage(
-        [
-            { status: 'unsupported' },
-            { status: 'measured', totalVideoFramesDelta: 10, droppedVideoFramesDelta: 1 },
-            { status: 'error' },
-        ],
+        [{ status: 'unsupported' }, { status: 'measured', totalVideoFramesDelta: 10, droppedVideoFramesDelta: 1 }, { status: 'error' }],
         2
     )
     const report = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
@@ -776,9 +993,7 @@ test('RUM v2 measures the supported subset of mixed playback evidence without de
 })
 
 test('RUM v2 positive playback denominator remains measured with or without optional status counts', () => {
-    const { runtime, snapshot } = captureMediaPage([
-        { status: 'measured', totalVideoFramesDelta: 20, droppedVideoFramesDelta: 2 },
-    ])
+    const { runtime, snapshot } = captureMediaPage([{ status: 'measured', totalVideoFramesDelta: 20, droppedVideoFramesDelta: 2 }])
     const currentReport = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
     const currentValidation = validateNormalizedAnimationRumV2(currentReport, { nowEpochMs: runtime.wallNow() })
 
@@ -795,10 +1010,7 @@ test('RUM v2 positive playback denominator remains measured with or without opti
 
     delete snapshot.hostEvidence.media.playbackQualityUnsupportedSampleCount
     delete snapshot.hostEvidence.media.playbackQualityErrorSampleCount
-    const legacyReport = toAnimationRumV2PageReport(
-        snapshot,
-        projectionOptions(runtime, { eventId: 'event_page_legacy_1234' })
-    )
+    const legacyReport = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime, { eventId: 'event_page_legacy_1234' }))
     const legacyValidation = validateNormalizedAnimationRumV2(legacyReport, { nowEpochMs: runtime.wallNow() })
 
     assert.equal(legacyValidation.ok, true, legacyValidation.ok ? '' : legacyValidation.errors.join(', '))
@@ -814,9 +1026,7 @@ test('RUM v2 positive playback denominator remains measured with or without opti
 })
 
 test('RUM v2 fails closed when only half of the optional playback status breakdown is present', () => {
-    const { runtime, snapshot } = captureMediaPage([
-        { status: 'measured', totalVideoFramesDelta: 20, droppedVideoFramesDelta: 2 },
-    ])
+    const { runtime, snapshot } = captureMediaPage([{ status: 'measured', totalVideoFramesDelta: 20, droppedVideoFramesDelta: 2 }])
     delete snapshot.hostEvidence.media.playbackQualityErrorSampleCount
 
     const report = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))

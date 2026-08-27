@@ -1855,12 +1855,13 @@ test('element selection is a parallel native sidecar with bounded direct evidenc
     assert.deepEqual(direct.inventory.renderers, ['canvas', 'webgl'])
     assert.deepEqual(direct.inventory.motionEngines, ['css', 'gsap'])
     assert.equal(direct.owners[0].label, 'HeroCanvas')
-    assert.equal(direct.renderers[0].metrics.drawCallsP95, 12)
+    assert.equal(direct.renderers[0].metrics.drawCallsP95, null)
     assert.equal(direct.renderers[0].metrics.gpuFrameMsP95, null)
     assert.deepEqual(direct.renderers[0].evidence.window, { startedAt: null, endedAt: null, durationMs: null })
     assert.equal(direct.renderers[0].evidence.acceptedSampleCount, null)
     assert.equal(direct.renderers[0].evidence.gpu.source, 'unknown')
-    assert.equal(direct.renderers[0].evidence.gpu.rejectionReason, 'metric-invalid')
+    assert.equal(direct.renderers[0].evidence.gpu.rejectionReason, 'not-reported')
+    assert.deepEqual(direct.adapterErrors, ['react-three:renderer-evidence-window-invalid'])
     assert.doesNotMatch(JSON.stringify(direct), /private-id/)
 
     target.getAnimations = () => Array.from({ length: 300 }, () => animation)
@@ -1943,6 +1944,7 @@ test('renderer adapters normalize bounded evidence and keep GPU timing fail-clos
         inspect: () => ({ renderer }),
     }
     const selection = collector.selectElement(target, { adapters: [adapter] })
+    runtime.advance(200)
 
     let snapshot = selection.snapshot().renderers[0]
     assert.equal(snapshot.metrics.cpuFrameMsP95, 2.5)
@@ -1967,19 +1969,16 @@ test('renderer adapters normalize bounded evidence and keep GPU timing fail-clos
     }
     snapshot = selection.snapshot().renderers[0]
     assert.equal(snapshot.metrics.gpuFrameMsP95, null)
+    assert.equal(snapshot.metrics.cpuFrameMsP95, null)
+    assert.equal(snapshot.metrics.drawCallsP95, null)
     assert.deepEqual(snapshot.evidence.window, { startedAt: null, endedAt: null, durationMs: null })
     assert.equal(snapshot.evidence.acceptedSampleCount, null)
     assert.equal(snapshot.evidence.retainedSampleCount, null)
     assert.equal(snapshot.evidence.droppedSampleCount, null)
     assert.equal(snapshot.evidence.rejectedSampleCount, null)
     assert.equal(snapshot.evidence.truncated, null)
-    assert.deepEqual(snapshot.evidence.gpu, {
-        valid: null,
-        disjoint: null,
-        contextLost: null,
-        source: 'unknown',
-        rejectionReason: 'validity-unknown',
-    })
+    assert.equal(snapshot.evidence.gpu.rejectionReason, 'not-reported')
+    assert.deepEqual(selection.snapshot().adapterErrors, ['renderer-contract:renderer-evidence-window-invalid'])
 
     renderer = {
         ...renderer,
@@ -2001,11 +2000,12 @@ test('renderer adapters normalize bounded evidence and keep GPU timing fail-clos
     assert.equal(snapshot.evidence.droppedSampleCount, null)
     assert.equal(snapshot.evidence.rejectedSampleCount, null)
     assert.equal(snapshot.evidence.truncated, null)
-    assert.equal(snapshot.evidence.gpu.rejectionReason, 'timer-disjoint')
+    assert.equal(snapshot.evidence.gpu.rejectionReason, 'not-reported')
 
     renderer = {
         ...renderer,
         evidence: {
+            window: { startedAt: 100, endedAt: 160 },
             gpu: { valid: true, disjoint: false, contextLost: true, source: 'host-summary' },
         },
     }
@@ -2016,6 +2016,7 @@ test('renderer adapters normalize bounded evidence and keep GPU timing fail-clos
     renderer = {
         ...renderer,
         evidence: {
+            window: { startedAt: 100, endedAt: 160 },
             gpu: { valid: true, disjoint: false, contextLost: false, source: 'untrusted-clock' },
         },
     }
@@ -2029,6 +2030,7 @@ test('renderer adapters normalize bounded evidence and keep GPU timing fail-clos
         capability: { state: 'supported', observed: true, buffered: false },
         metrics: { gpuFrameMsP95: 5 },
         evidence: {
+            window: { startedAt: 100, endedAt: 160 },
             acceptedSampleCount: 1,
             retainedSampleCount: 1,
             droppedSampleCount: 0,
@@ -2044,6 +2046,7 @@ test('renderer adapters normalize bounded evidence and keep GPU timing fail-clos
         family: 'other',
         metrics: { gpuFrameMsP95: 5 },
         evidence: {
+            window: { startedAt: 100, endedAt: 160 },
             acceptedSampleCount: 1,
             retainedSampleCount: 1,
             droppedSampleCount: 0,
@@ -2073,6 +2076,104 @@ test('renderer adapters normalize bounded evidence and keep GPU timing fail-clos
     assert.deepEqual(contradictory.adapterErrors, ['renderer-contract:renderer-capability-conflict'])
 
     selection.clear()
+    collector.destroy()
+})
+
+test('renderer adapter windows use the collector monotonic clock and must fit the exact interaction window', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    const target = {
+        tagName: 'CANVAS',
+        namespaceURI: 'http://www.w3.org/1999/xhtml',
+        isConnected: true,
+        width: 300,
+        height: 150,
+        ownerDocument: { defaultView: { innerWidth: 1_000, innerHeight: 800 } },
+        getAttribute: () => null,
+        getAnimations: () => [],
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 300, bottom: 150, width: 300, height: 150 }),
+        addEventListener() {},
+        removeEventListener() {},
+    }
+    let rendererWindow = { startedAt: 100, endedAt: 100 }
+    let advanceDuringInspect = false
+    const adapter = {
+        id: 'clock-window',
+        version: '1.0.0',
+        canInspect: element => element === target,
+        inspect: () => {
+            if (advanceDuringInspect) {
+                runtime.advance(5)
+                rendererWindow = { startedAt: 100, endedAt: runtime.now() }
+            }
+            return {
+                renderer: {
+                    family: 'webgl',
+                    capability: { state: 'supported', observed: true, buffered: false },
+                    metrics: { drawCallsP95: 4 },
+                    evidence: {
+                        window: rendererWindow,
+                        acceptedSampleCount: 2,
+                        retainedSampleCount: 2,
+                        droppedSampleCount: 0,
+                        rejectedSampleCount: 0,
+                        truncated: false,
+                    },
+                },
+            }
+        },
+    }
+
+    runtime.advance(100)
+    const selection = collector.selectElement(target, { adapters: [adapter] })
+    advanceDuringInspect = true
+    let selected = selection.snapshot()
+    advanceDuringInspect = false
+    assert.equal(selected.capturedAt, 105)
+    assert.equal(selected.renderers[0].metrics.drawCallsP95, 4)
+    assert.deepEqual(selected.renderers[0].evidence.window, { startedAt: 100, endedAt: 105, durationMs: 5 })
+
+    for (const invalidWindow of [
+        { startedAt: 0, endedAt: 50 },
+        { startedAt: 100, endedAt: runtime.now() + 1 },
+        { startedAt: 1_750_000_000_000, endedAt: 1_750_000_000_001 },
+        { startedAt: 100 },
+        { startedAt: 100, endedAt: Number.NaN },
+        { startedAt: 104, endedAt: 103 },
+    ]) {
+        rendererWindow = invalidWindow
+        selected = selection.snapshot()
+        assert.equal(selected.renderers[0].metrics.drawCallsP95, null)
+        assert.deepEqual(selected.adapterErrors, ['clock-window:renderer-evidence-window-invalid'])
+    }
+
+    runtime.advance(95)
+    const interaction = selection.beginInteraction('custom', 'renderer window')
+    runtime.advance(20)
+    interaction.end()
+    rendererWindow = { startedAt: 190, endedAt: 210 }
+    selected = selection.snapshot()
+    assert.deepEqual(selected.correlatedWindow, { startedAt: 200, endedAt: 220, durationMs: 20 })
+    assert.equal(selected.renderers[0].metrics.drawCallsP95, null)
+    assert.deepEqual(selected.adapterErrors, ['clock-window:renderer-evidence-window-invalid'])
+
+    rendererWindow = { startedAt: 201, endedAt: 219 }
+    selected = selection.snapshot()
+    assert.equal(selected.renderers[0].metrics.drawCallsP95, 4)
+    assert.deepEqual(selected.adapterErrors, [])
+
+    selection.clear()
+    runtime.time = 1_750_000_000_000
+    rendererWindow = { startedAt: runtime.now(), endedAt: runtime.now() }
+    const epochClockSelection = collector.selectElement(target, { adapters: [adapter] })
+    selected = epochClockSelection.snapshot()
+    assert.equal(selected.renderers[0].metrics.drawCallsP95, 4)
+    assert.deepEqual(selected.renderers[0].evidence.window, {
+        startedAt: 1_750_000_000_000,
+        endedAt: 1_750_000_000_000,
+        durationMs: 0,
+    })
+    epochClockSelection.clear()
     collector.destroy()
 })
 
@@ -3253,6 +3354,7 @@ test('dev overlay target recording is explicitly started, bounded, resettable, a
     ]
     document.hit = target
     let targetSelection = null
+    let rendererWindow = { startedAt: runtime.now(), endedAt: runtime.now() }
     const rendererAdapter = {
         id: 'overlay-renderer',
         version: '1.0.0',
@@ -3263,7 +3365,7 @@ test('dev overlay target recording is explicitly started, bounded, resettable, a
                 capability: { state: 'supported', observed: true, buffered: false },
                 metrics: { cpuFrameMsP95: 2, gpuFrameMsP95: 3, drawCallsP95: 10 },
                 evidence: {
-                    window: { startedAt: 10, endedAt: 110 },
+                    window: rendererWindow,
                     acceptedSampleCount: 6,
                     retainedSampleCount: 5,
                     droppedSampleCount: 1,
@@ -3314,7 +3416,7 @@ test('dev overlay target recording is explicitly started, bounded, resettable, a
     assert.match(fakeNodeText(panel), /Direct element evidence/)
     assert.match(fakeNodeText(panel), /Page window during selection/)
     assert.match(fakeNodeText(panel), /not part of animation_rum v1/)
-    assert.match(fakeNodeText(panel), /Evidence window 100 ms/)
+    assert.match(fakeNodeText(panel), /Evidence window 0 ms/)
     assert.match(fakeNodeText(panel), /Samples \(accepted \/ retained \/ dropped \/ rejected\) 6 \/ 5 \/ 1 \/ 2/)
     assert.match(fakeNodeText(panel), /Retained tail truncated/)
     assert.match(fakeNodeText(panel), /GPU timing valid evidence/)
@@ -3332,6 +3434,7 @@ test('dev overlay target recording is explicitly started, bounded, resettable, a
     assert.equal(recording.correlated, null)
 
     runtime.tick(25)
+    rendererWindow = { startedAt: rendererWindow.startedAt, endedAt: runtime.now() }
     const firstInteractionId = recording.activeInteractionId
     const stopButton = targetAction('stop')
     assert.ok(stopButton)

@@ -119,6 +119,7 @@ function targetSnapshot(): AnimationElementSelectionSnapshot {
         correlated: null,
         correlationRelation: null,
         correlatedDurationMs: null,
+        correlatedWindow: null,
         adapterErrors: [],
     }
 }

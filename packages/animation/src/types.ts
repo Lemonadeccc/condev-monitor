@@ -821,6 +821,12 @@ export interface AnimationElementSelectionSnapshot {
     correlationRelation: 'temporal-overlap' | null
     /** Duration of the completed interaction represented by `correlated`; never the selection lifetime. */
     correlatedDurationMs?: number | null
+    /** SDK-owned monotonic boundaries for the completed interaction represented by `correlated`. */
+    correlatedWindow?: {
+        startedAt: number
+        endedAt: number
+        durationMs: number
+    } | null
     adapterErrors: readonly string[]
 }
 
