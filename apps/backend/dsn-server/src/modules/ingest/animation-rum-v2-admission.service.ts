@@ -23,7 +23,7 @@ import type { Pool, PoolClient } from 'pg'
 const APP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u
 const TOPIC_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/u
 const MAX_V2_REPORTS_PER_REQUEST = 64
-const RECEIPT_RETENTION_DAYS = 180
+const DEFAULT_RECEIPT_RETENTION_DAYS = 180
 
 type DeliveryState = 'pending' | 'published' | 'persisted' | 'quarantined'
 type OutboxState = 'pending' | 'quarantined' | null
@@ -97,6 +97,7 @@ function timestamp(value: Date | string): string {
 export class AnimationRumV2AdmissionService {
     private readonly logger = new Logger(AnimationRumV2AdmissionService.name)
     private readonly eventsTopic: string
+    private readonly receiptRetentionDays: number
     private schemaReady = false
 
     constructor(
@@ -105,6 +106,11 @@ export class AnimationRumV2AdmissionService {
     ) {
         this.eventsTopic = config.get<string>('KAFKA_EVENTS_TOPIC') ?? 'monitor.sdk.events.v1'
         if (!TOPIC_RE.test(this.eventsTopic)) throw new Error('Invalid Animation RUM v2 Kafka topic configuration')
+        const configuredRetention = config.get<string>('ANIMATION_RUM_V2_RECEIPT_RETENTION_DAYS')
+        this.receiptRetentionDays = configuredRetention === undefined ? DEFAULT_RECEIPT_RETENTION_DAYS : Number(configuredRetention)
+        if (!Number.isSafeInteger(this.receiptRetentionDays) || this.receiptRetentionDays < 120 || this.receiptRetentionDays > 365) {
+            throw new Error('ANIMATION_RUM_V2_RECEIPT_RETENTION_DAYS must be an integer from 120 to 365')
+        }
     }
 
     async admitBatch(
@@ -317,7 +323,7 @@ export class AnimationRumV2AdmissionService {
                         report.environment,
                         report.capturedAt,
                         receivedAt,
-                        RECEIPT_RETENTION_DAYS,
+                        this.receiptRetentionDays,
                     ]
                 )
                 if (receiptInsert.rowCount !== 1) throw new Error('Animation RUM v2 receipt insert did not affect one row')
@@ -552,7 +558,7 @@ export class AnimationRumV2AdmissionService {
         const valid =
             (row.deliveryState === 'pending' && row.outboxState === 'pending') ||
             ((row.deliveryState === 'published' || row.deliveryState === 'persisted') && row.outboxState === null) ||
-            (row.deliveryState === 'quarantined' && row.outboxState === 'quarantined')
+            (row.deliveryState === 'quarantined' && (row.outboxState === 'quarantined' || row.outboxState === null))
         if (!valid) throw new Error('Animation RUM v2 receipt and outbox state disagree')
     }
 

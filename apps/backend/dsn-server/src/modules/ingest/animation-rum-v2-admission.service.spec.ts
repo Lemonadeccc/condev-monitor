@@ -22,13 +22,13 @@ function trackingPayload(report = createAnimationRumV2GoldenReport()) {
     }
 }
 
-function createService(query: jest.Mock) {
+function createService(query: jest.Mock, overrides: Record<string, string | undefined> = {}) {
     const client = { query, release: jest.fn() }
     const pool = {
         connect: jest.fn().mockResolvedValue(client),
         query: jest.fn(),
     }
-    const config = { get: jest.fn().mockReturnValue(undefined) }
+    const config = { get: jest.fn((key: string) => overrides[key]) }
     return {
         client,
         pool,
@@ -227,5 +227,53 @@ describe('AnimationRumV2AdmissionService', () => {
         expect(sql.at(-1)).toBe('ROLLBACK')
         expect(sql.some(text => text.includes('INSERT INTO'))).toBe(false)
         expect(client.release).toHaveBeenCalledTimes(1)
+    })
+
+    it('freezes configured receipt retention into each new receipt', async () => {
+        const query = successfulPageQuery()
+        const { service } = createService(query, { ANIMATION_RUM_V2_RECEIPT_RETENTION_DAYS: '365' })
+
+        await service.admitBatch(APP_ID, [trackingPayload()], { nowEpochMs: ANIMATION_RUM_V2_GOLDEN_NOW })
+
+        const receiptInsert = query.mock.calls
+            .map(call => call as unknown[])
+            .find(call => compactSql(call[0]).includes('INSERT INTO public.animation_rum_v2_capture_receipt'))
+        expect(receiptInsert?.[1]).toEqual(expect.arrayContaining([365]))
+    })
+
+    it.each(['119', '366', '180.5', 'not-a-number'])('rejects invalid receipt retention configuration %s at startup', configured => {
+        expect(() =>
+            createService(jest.fn(), {
+                ANIMATION_RUM_V2_RECEIPT_RETENTION_DAYS: configured,
+            })
+        ).toThrow('ANIMATION_RUM_V2_RECEIPT_RETENTION_DAYS must be an integer from 120 to 365')
+    })
+
+    it('accepts a quarantined receipt invariant after its retained envelope has expired', () => {
+        const { service } = createService(jest.fn())
+        const assertStoredInvariant = (
+            service as unknown as {
+                assertStoredInvariant(row: Record<string, unknown>): void
+            }
+        ).assertStoredInvariant.bind(service)
+
+        expect(() =>
+            assertStoredInvariant({
+                captureId: 'capture_12345678',
+                eventId: 'event_12345678',
+                payloadSha256: 'a'.repeat(64),
+                payloadHashVersion: 1,
+                scope: 'page',
+                parentCaptureId: null,
+                routeKey: null,
+                targetKey: null,
+                release: '',
+                dist: '',
+                environment: '',
+                deliveryState: 'quarantined',
+                initialReceivedAt: RECEIVED_AT,
+                outboxState: null,
+            })
+        ).not.toThrow()
     })
 })
