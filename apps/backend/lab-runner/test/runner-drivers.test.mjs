@@ -3,10 +3,16 @@ import test from 'node:test'
 
 import { ANIMATION_LAB_METRIC_CATALOG_V1 } from '@condev-monitor/animation-lab'
 
-import { runAnimationLab } from '../build/index.js'
-import { PAGE_PROBE_ACTION_METRIC_IDS, PAGE_PROBE_CAPABILITY_KEYS, PAGE_PROBE_ROOT_METRIC_IDS } from '../src/probe-result.ts'
+import * as runnerPackage from '../build/index.js'
+import {
+    PAGE_PROBE_ACTION_METRIC_IDS,
+    PAGE_PROBE_CAPABILITY_KEYS,
+    PAGE_PROBE_OBSERVER_DROP_KEYS,
+    PAGE_PROBE_ROOT_METRIC_IDS,
+} from '../src/probe-result.ts'
 
 const catalogById = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [entry.metricId, entry]))
+const { runAnimationLab } = runnerPackage
 
 function metricForId(metricId, notObservedMetricId) {
     const entry = catalogById.get(metricId)
@@ -36,6 +42,12 @@ function metricForId(metricId, notObservedMetricId) {
 }
 
 function rawProbeResult(action, durationMs = 1_000, options = {}) {
+    const observerDrops = Object.fromEntries(PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => [key, 0]))
+    const observerDropCountCapped = Object.fromEntries(PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => [key, false]))
+    if (options.observerDropStream) {
+        observerDrops[options.observerDropStream] = options.observerDropCount
+        observerDropCountCapped[options.observerDropStream] = options.observerDropCountCapped === true
+    }
     return {
         durationMs,
         metrics: PAGE_PROBE_ROOT_METRIC_IDS.map(metricId => metricForId(metricId, options.notObservedMetricId)),
@@ -61,6 +73,10 @@ function rawProbeResult(action, durationMs = 1_000, options = {}) {
             eventTimings: 0,
             resources: 0,
         },
+        observerDrops,
+        observerDropCountUnavailable: Object.fromEntries(PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => [key, false])),
+        observerDropCountCapped,
+        observerEntryDeliveryObserved: Object.fromEntries(PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => [key, true])),
         limitations: [],
     }
 }
@@ -117,6 +133,9 @@ class FakePage {
         return rawProbeResult(this.action, this.state.probeDurationMs, {
             omitActionResult: this.state.crossDocumentDuringAction,
             notObservedMetricId: this.state.notObservedMetricId,
+            observerDropStream: this.state.observerDropStream,
+            observerDropCount: this.state.observerDropCount,
+            observerDropCountCapped: this.state.observerDropCountCapped,
         })
     }
     async click() {}
@@ -157,6 +176,9 @@ function fakeDriver(engine, options = {}) {
         traceStarted: false,
         crossDocumentDuringAction: options.crossDocumentDuringAction ?? false,
         notObservedMetricId: options.notObservedMetricId,
+        observerDropStream: options.observerDropStream,
+        observerDropCount: options.observerDropCount,
+        observerDropCountCapped: options.observerDropCountCapped,
     }
     const session = {
         engine,
@@ -254,6 +276,43 @@ test('starts the minimum observation floor after slow navigation completes', asy
     const floorWaits = state.waitDurations.filter(durationMs => durationMs > 4_900)
     assert.equal(floorWaits.length, 3)
     assert.equal(result.report.attempts.filter(attempt => attempt.phase === 'measured').length, 3)
+})
+
+test('keeps timeline-history incompleteness on root metrics across the Runner boundary without downgrading actions', async () => {
+    assert.equal('decodePageProbeResultWithObserverDrops' in runnerPackage, false)
+    const { driver } = fakeDriver('webkit', {
+        observerDropStream: 'longTasks',
+        observerDropCount: 4,
+    })
+    const result = await runAnimationLab(
+        {
+            ...scenario(),
+            trace: { enabled: false },
+            lighthouse: { enabled: false },
+        },
+        { browser: 'webkit', driver }
+    )
+    const attempts = result.report.attempts.filter(attempt => attempt.phase === 'measured')
+
+    assert.equal(attempts.length, 3)
+    for (const attempt of attempts) {
+        const rootLongTaskMetrics = attempt.metrics.filter(
+            metric => metric.scope?.level === 'attempt' && metric.metricId?.startsWith('main.long-task.')
+        )
+        const actionLongTaskMetrics = attempt.metrics.filter(
+            metric => metric.scope?.level === 'action' && metric.metricId?.startsWith('main.long-task.')
+        )
+
+        assert.equal(rootLongTaskMetrics.length, 3)
+        assert.ok(rootLongTaskMetrics.every(metric => metric.status === 'partial'))
+        assert.ok(rootLongTaskMetrics.every(metric => metric.limitations?.includes('page-probe-long-task-timeline-history-incomplete')))
+        assert.equal(actionLongTaskMetrics.length, 2)
+        assert.ok(actionLongTaskMetrics.every(metric => metric.status === 'measured'))
+        assert.ok(actionLongTaskMetrics.every(metric => !metric.limitations?.includes('page-probe-long-task-timeline-history-incomplete')))
+        assert.ok(attempt.limitations.includes('page-probe-long-task-timeline-history-incomplete'))
+        assert.equal('observerDrops' in attempt, false)
+    }
+    assert.equal(JSON.stringify(result.report).includes('observerDrops'), false)
 })
 
 test('marks final-document absence unknown while bounding measured evidence after cross-document actions', async () => {

@@ -3,7 +3,7 @@ import test from 'node:test'
 
 import { createBrowserDriver, validateBrowserDriverScenario } from '../build/index.js'
 import { browserProbeSource } from '../src/browser-probe.ts'
-import { decodePageProbeResult } from '../src/probe-result.ts'
+import { decodePageProbeResult, decodePageProbeResultWithObserverDrops } from '../src/probe-result.ts'
 
 function scenario(overrides = {}) {
     return {
@@ -99,6 +99,210 @@ test('does not manufacture healthy zeroes for unsupported PerformanceObserver en
     }
 })
 
+test('preserves first-callback timeline-history loss evidence and conservatively bounds root metrics', async () => {
+    const driver = createBrowserDriver('chromium')
+    const session = await driver.launch()
+    const context = await session.createContext(scenario())
+    try {
+        const page = await context.newPage()
+        const key = '__condevLabProbe_observer_drop_fixture'
+        const capability = 'O'.repeat(43)
+        const fakeObserver = `;(() => {
+          class FixturePerformanceObserver {
+            static supportedEntryTypes = ['longtask', 'layout-shift'];
+            constructor(callback) { this.callback = callback; this.type = ''; this.delivered = false; }
+            observe(options) {
+              this.type = options.type;
+              queueMicrotask(() => {
+                if (this.delivered) return;
+                this.delivered = true;
+                if (this.type === 'layout-shift') {
+                  this.callback(
+                    { getEntries: () => [{ startTime: 20, duration: 0, value: 0.25, hadRecentInput: true }] },
+                    this,
+                    { droppedEntriesCount: 0 }
+                  );
+                  return;
+                }
+                if (this.type !== 'longtask') return;
+                this.callback({ getEntries: () => [] }, this, { droppedEntriesCount: 9 });
+                this.callback(
+                  { getEntries: () => [{ startTime: 10, duration: 75 }] },
+                  this,
+                  { droppedEntriesCount: 4 }
+                );
+                this.callback({ getEntries: () => [{ startTime: 90, duration: 60 }] }, this, {});
+                this.callback(
+                  { getEntries: () => [{ startTime: 160, duration: 55 }] },
+                  this,
+                  { droppedEntriesCount: 3 }
+                );
+              });
+            }
+            takeRecords() { return []; }
+            disconnect() {}
+          }
+          Object.defineProperty(window, 'PerformanceObserver', { configurable: true, value: FixturePerformanceObserver });
+        })();`
+        await page.addInitScript(
+            `${fakeObserver}${browserProbeSource(key, {
+                capability,
+                expectedRefreshHz: 60,
+                targetFrameMs: 1000 / 60,
+                metricCatalogVersion: 2,
+                observerDropContractVersion: 1,
+                actions: [],
+            })}`
+        )
+        await page.navigate('data:text/html,<!doctype html><main>observer drop fixture</main>', 10_000)
+        await page.wait(50)
+        const raw = await page.collectProbeResult(key, capability, 0)
+        const result = decodePageProbeResultWithObserverDrops(raw, [], 2)
+
+        assert.equal(raw.observerDrops.longTasks, 4)
+        assert.equal(raw.observerDrops.longAnimationFrames, null)
+        assert.equal(raw.observerDrops.layoutShifts, 0)
+        assert.equal(raw.observerEntryDeliveryObserved.longTasks, true)
+        assert.equal(raw.observerEntryDeliveryObserved.longAnimationFrames, false)
+        assert.equal(raw.observerEntryDeliveryObserved.layoutShifts, true)
+        assert.equal(result.observerDrops.longTasks, 4)
+        assert.equal(result.metrics.find(item => item.name === 'CLS')?.value, 0)
+        for (const name of ['longTaskCount', 'longTaskDurationMs']) {
+            const metrics = result.metrics.filter(item => item.name === name)
+            assert.ok(metrics.length > 0)
+            assert.ok(metrics.every(item => item.status === 'partial'))
+            assert.ok(metrics.every(item => item.limitations.includes('page-probe-long-task-timeline-history-incomplete')))
+        }
+        await page.close()
+
+        const takeRecordsPage = await context.newPage()
+        const takeRecordsKey = `${key}_take_records`
+        const takeRecordsObserver = `;(() => {
+          class FixturePerformanceObserver {
+            static supportedEntryTypes = ['longtask'];
+            constructor() { this.returned = false; }
+            observe() {}
+            takeRecords() {
+              if (this.returned) return [];
+              this.returned = true;
+              return [{ startTime: 10, duration: 75 }];
+            }
+            disconnect() {}
+          }
+          Object.defineProperty(window, 'PerformanceObserver', { configurable: true, value: FixturePerformanceObserver });
+        })();`
+        await takeRecordsPage.addInitScript(
+            `${takeRecordsObserver}${browserProbeSource(takeRecordsKey, {
+                capability,
+                expectedRefreshHz: 60,
+                targetFrameMs: 1000 / 60,
+                metricCatalogVersion: 2,
+                observerDropContractVersion: 1,
+                actions: [],
+            })}`
+        )
+        await takeRecordsPage.navigate('data:text/html,<!doctype html><main>take records fixture</main>', 10_000)
+        const takeRecordsRaw = await takeRecordsPage.collectProbeResult(takeRecordsKey, capability, 0)
+        const takeRecordsResult = decodePageProbeResultWithObserverDrops(takeRecordsRaw, [], 2)
+
+        assert.equal(takeRecordsResult.observerDrops.longTasks, null)
+        assert.equal(takeRecordsResult.observerDropCountUnavailable.longTasks, true)
+        assert.equal(takeRecordsResult.observerEntryDeliveryObserved.longTasks, true)
+        assert.equal(takeRecordsResult.metrics.find(item => item.name === 'longTaskCount')?.value, 1)
+        assert.equal(takeRecordsResult.metrics.find(item => item.name === 'longTaskCount')?.status, 'measured')
+        assert.ok(takeRecordsResult.limitations.includes('page-probe-long-task-timeline-history-drop-count-unavailable'))
+        await takeRecordsPage.close()
+
+        const invalidPage = await context.newPage()
+        const invalidKey = `${key}_invalid`
+        const invalidObserver = `;(() => {
+          class FixturePerformanceObserver {
+            static supportedEntryTypes = ['longtask'];
+            constructor(callback) { this.callback = callback; this.type = ''; }
+            observe(options) {
+              this.type = options.type;
+              queueMicrotask(() => {
+                if (this.type !== 'longtask') return;
+                const list = { getEntries: () => [{ startTime: 10, duration: 75 }] };
+                this.callback(list, this, { droppedEntriesCount: -1 });
+                this.callback(list, this, { droppedEntriesCount: 4 });
+              });
+            }
+            takeRecords() { return []; }
+            disconnect() {}
+          }
+          Object.defineProperty(window, 'PerformanceObserver', { configurable: true, value: FixturePerformanceObserver });
+        })();`
+        await invalidPage.addInitScript(
+            `${invalidObserver}${browserProbeSource(invalidKey, {
+                capability,
+                expectedRefreshHz: 60,
+                targetFrameMs: 1000 / 60,
+                metricCatalogVersion: 2,
+                observerDropContractVersion: 1,
+                actions: [],
+            })}`
+        )
+        await invalidPage.navigate('data:text/html,<!doctype html><main>invalid observer drop fixture</main>', 10_000)
+        await invalidPage.wait(50)
+        const invalidRaw = await invalidPage.collectProbeResult(invalidKey, capability, 0)
+        const invalidResult = decodePageProbeResultWithObserverDrops(invalidRaw, [], 2)
+
+        assert.equal(invalidResult.observerDrops.longTasks, null)
+        assert.equal(invalidResult.observerDropCountUnavailable.longTasks, true)
+        assert.equal(invalidResult.observerEntryDeliveryObserved.longTasks, true)
+        assert.equal(invalidResult.metrics.find(item => item.name === 'longTaskCount')?.status, 'measured')
+        assert.ok(invalidResult.limitations.includes('page-probe-long-task-timeline-history-drop-count-unavailable'))
+        await invalidPage.close()
+
+        const cappedPage = await context.newPage()
+        const cappedKey = `${key}_capped`
+        const cappedObserver = `;(() => {
+          class FixturePerformanceObserver {
+            static supportedEntryTypes = ['longtask'];
+            constructor(callback) { this.callback = callback; this.type = ''; }
+            observe(options) {
+              this.type = options.type;
+              queueMicrotask(() => {
+                if (this.type !== 'longtask') return;
+                this.callback(
+                  { getEntries: () => [{ startTime: 10, duration: 75 }] },
+                  this,
+                  { droppedEntriesCount: 10000001 }
+                );
+              });
+            }
+            takeRecords() { return []; }
+            disconnect() {}
+          }
+          Object.defineProperty(window, 'PerformanceObserver', { configurable: true, value: FixturePerformanceObserver });
+        })();`
+        await cappedPage.addInitScript(
+            `${cappedObserver}${browserProbeSource(cappedKey, {
+                capability,
+                expectedRefreshHz: 60,
+                targetFrameMs: 1000 / 60,
+                metricCatalogVersion: 2,
+                observerDropContractVersion: 1,
+                actions: [],
+            })}`
+        )
+        await cappedPage.navigate('data:text/html,<!doctype html><main>capped observer drop fixture</main>', 10_000)
+        await cappedPage.wait(50)
+        const cappedRaw = await cappedPage.collectProbeResult(cappedKey, capability, 0)
+        const cappedResult = decodePageProbeResultWithObserverDrops(cappedRaw, [], 2)
+
+        assert.equal(cappedResult.observerDrops.longTasks, 10_000_000)
+        assert.equal(cappedResult.observerDropCountCapped.longTasks, true)
+        assert.equal(cappedResult.observerEntryDeliveryObserved.longTasks, true)
+        assert.equal(cappedResult.metrics.find(item => item.name === 'longTaskCount')?.status, 'partial')
+        assert.ok(cappedResult.limitations.includes('page-probe-long-task-timeline-history-drop-count-capped'))
+    } finally {
+        await context.close().catch(() => undefined)
+        await session.close().catch(() => undefined)
+    }
+})
+
 test('fails closed for unsupported controlled conditions and discloses context-only cold cache', () => {
     assert.throws(() => validateBrowserDriverScenario('firefox', scenario({ cpuThrottleRate: 2 })), /CPU throttling is unavailable/)
     assert.throws(
@@ -154,6 +358,14 @@ test('accepts only standard CSS and capability-sequenced probe commands in a rea
         const result = await page.collectProbeResult(key, capability, 2)
         assert.equal(result.actionResults.length, 1)
         assert.equal(result.actionResults[0].actionId, 'secure-action')
+        assert.deepEqual(Object.keys(result).sort(), [
+            'actionResults',
+            'capabilities',
+            'durationMs',
+            'limitations',
+            'metrics',
+            'sampleDrops',
+        ])
         assert.deepEqual(result.sampleDrops, {
             frames: 0,
             longTasks: 0,
@@ -612,6 +824,7 @@ test('measures trusted discrete input capture to the next real rAF callback with
         assert.ok(rootP95.value >= 0)
         assert.deepEqual([actionCount.value, actionCount.samples], [2, 2])
         assert.equal(raw.sampleDrops.inputFrameScheduling, 0)
+        assert.deepEqual(Object.keys(raw).sort(), ['actionResults', 'capabilities', 'durationMs', 'limitations', 'metrics', 'sampleDrops'])
     } finally {
         await context.close().catch(() => undefined)
         await session.close().catch(() => undefined)

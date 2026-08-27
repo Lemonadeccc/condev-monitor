@@ -5,10 +5,12 @@ import { ANIMATION_LAB_METRIC_CATALOG_V1, ANIMATION_LAB_METRIC_CATALOG_V2 } from
 
 import {
     decodePageProbeResult,
+    decodePageProbeResultWithObserverDrops,
     PAGE_PROBE_ACTION_METRIC_IDS,
     PAGE_PROBE_ACTION_METRIC_IDS_V2,
     PAGE_PROBE_CAPABILITY_KEYS,
     PAGE_PROBE_CAPABILITY_KEYS_V2,
+    PAGE_PROBE_OBSERVER_DROP_KEYS,
     PAGE_PROBE_ROOT_METRIC_IDS,
     PAGE_PROBE_ROOT_METRIC_IDS_V2,
 } from '../src/probe-result.ts'
@@ -38,6 +40,14 @@ function metricId(metric) {
     return catalogIdByTuple.get([metric.family, metric.name, metric.stat, metric.unit].join('|'))
 }
 
+function metricForCatalogId(metrics, id) {
+    const entry = catalogByIdV2.get(id)
+    assert.ok(entry, id)
+    return metrics.find(
+        item => item.family === entry.family && item.name === entry.name && item.stat === entry.stat && item.unit === entry.unit
+    )
+}
+
 function metricForId(metricId, overrides = {}) {
     const entry = catalogByIdV2.get(metricId)
     assert.ok(entry, metricId)
@@ -52,6 +62,22 @@ function metricForId(metricId, overrides = {}) {
         evidenceLevel: 'controlled-lab-measurement',
         ...overrides,
     }
+}
+
+function observerDrops(value = 0) {
+    return Object.fromEntries(PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => [key, value]))
+}
+
+function observerDropCountUnavailable(value = false) {
+    return Object.fromEntries(PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => [key, value]))
+}
+
+function withObserverDropContract(result) {
+    result.observerDrops = observerDrops()
+    result.observerDropCountUnavailable = observerDropCountUnavailable()
+    result.observerDropCountCapped = observerDropCountUnavailable()
+    result.observerEntryDeliveryObserved = observerDropCountUnavailable(true)
+    return result
 }
 
 const loafPaintMetricIds = [
@@ -725,6 +751,231 @@ test('preserves complete streaming totals while every truncated retained distrib
         for (const id of contract.partialRoot) assert.equal(rootById.get(id)?.status, 'partial', `${contract.stream}:${id}`)
         for (const id of contract.measuredRoot) assert.equal(rootById.get(id)?.status, 'measured', `${contract.stream}:${id}`)
         for (const id of contract.partialAction) assert.equal(actionById.get(id)?.status, 'partial', `${contract.stream}:${id}`)
+    }
+})
+
+test('conservatively bounds root quality for positive timeline-history loss while preserving live action windows', () => {
+    const contracts = [
+        {
+            stream: 'longTasks',
+            limitation: 'page-probe-long-task-timeline-history-incomplete',
+            partialRoot: ['main.long-task.count', 'main.long-task.duration.p95', 'main.long-task.duration.sum'],
+            measuredAction: ['main.long-task.count', 'main.long-task.duration.p95'],
+        },
+        {
+            stream: 'longAnimationFrames',
+            limitation: 'page-probe-loaf-timeline-history-incomplete',
+            partialRoot: ['main.loaf.count', 'main.loaf.duration.p95', 'main.loaf.blocking.p95', 'pipeline.loaf-style-layout-tail.p95'],
+            measuredAction: ['main.loaf.count', 'main.loaf.duration.p95'],
+        },
+        {
+            stream: 'eventTimings',
+            limitation: 'page-probe-event-timing-timeline-history-incomplete',
+            partialRoot: [...eventTimingMetricIds],
+            measuredAction: eventTimingMetricIds.filter(id => id !== 'interaction.count'),
+        },
+        {
+            stream: 'resources',
+            limitation: 'page-probe-resource-timing-timeline-history-incomplete',
+            partialRoot: [
+                'resource.count',
+                'resource.duration.p95',
+                'resource.transfer.sum',
+                'resource.encoded.sum',
+                'resource.decoded.sum',
+            ],
+            measuredAction: [],
+        },
+        {
+            stream: 'layoutShifts',
+            limitation: 'page-probe-layout-shift-timeline-history-incomplete',
+            partialRoot: ['vital.cls.latest'],
+            measuredAction: [],
+        },
+        {
+            stream: 'largestContentfulPaints',
+            limitation: 'page-probe-lcp-timeline-history-incomplete',
+            partialRoot: ['vital.lcp.latest'],
+            measuredAction: [],
+        },
+    ]
+
+    for (const contract of contracts) {
+        const raw = withObserverDropContract(rawResult())
+        raw.observerDrops[contract.stream] = 3
+        const decoded = decodePageProbeResultWithObserverDrops(raw, expectedActions, 1)
+        assert.equal(decoded.observerDrops[contract.stream], 3)
+        assert.ok(decoded.limitations.includes(contract.limitation))
+        for (const id of contract.partialRoot) {
+            const item = metricForCatalogId(decoded.metrics, id)
+            assert.equal(item?.status, 'partial', `${contract.stream}:${id}`)
+            assert.ok(item?.limitations.includes(contract.limitation), `${contract.stream}:${id}:limitation`)
+        }
+        for (const id of contract.measuredAction) {
+            const item = metricForCatalogId(decoded.actionResults[0].metrics, id)
+            assert.equal(item?.status, 'measured', `${contract.stream}:${id}`)
+            assert.equal(item?.limitations?.includes(contract.limitation) ?? false, false, `${contract.stream}:${id}:limitation`)
+        }
+        assert.equal(
+            metricForCatalogId(decoded.metrics, 'frame.duration.p95')?.status,
+            'measured',
+            `${contract.stream}:unrelated frame metric`
+        )
+    }
+})
+
+test('conservatively bounds every v2 LoAF root phase while preserving live action windows', () => {
+    const raw = withObserverDropContract(rawResultV2())
+    raw.observerDrops.longAnimationFrames = 2
+    const decoded = decodePageProbeResultWithObserverDrops(raw, expectedActions, 2)
+    const affectedNames = [
+        'longAnimationFrameCount',
+        'longAnimationFrameDurationMs',
+        'longAnimationFrameBlockingMs',
+        'longAnimationFrameStyleLayoutTailMs',
+        'longAnimationFrameRenderStartToPaintCount',
+        'longAnimationFrameRenderStartToPaintMs',
+        'longAnimationFramePaintToPresentationCount',
+        'longAnimationFramePaintToPresentationMs',
+        'longAnimationFrameFirstUIEventToFrameEndCount',
+        'longAnimationFrameFirstUIEventToFrameEndMs',
+        'longAnimationFrameAttributedForcedStyleAndLayoutCount',
+        'longAnimationFrameAttributedForcedStyleAndLayoutMs',
+    ]
+    const root = decoded.metrics.filter(item => affectedNames.includes(item.name))
+    const action = decoded.actionResults[0].metrics.filter(item => affectedNames.includes(item.name))
+
+    assert.equal(root.length, affectedNames.length)
+    assert.equal(action.length, affectedNames.length - 2)
+    assert.ok(root.every(item => item.status === 'partial'))
+    assert.ok(root.every(item => item.limitations.includes('page-probe-loaf-timeline-history-incomplete')))
+    assert.ok(action.every(item => item.status === 'measured'))
+    assert.ok(action.every(item => !(item.limitations ?? []).includes('page-probe-loaf-timeline-history-incomplete')))
+    assert.equal(decoded.metrics.find(item => item.name === 'inputCaptureToNextRafCallbackCount')?.status, 'measured')
+})
+
+test('keeps unreported timeline-history drop counts null without fabricating zero or downgrading metrics', () => {
+    const raw = withObserverDropContract(rawResult())
+    raw.observerDrops.eventTimings = null
+    raw.observerDropCountUnavailable.eventTimings = true
+    const decoded = decodePageProbeResultWithObserverDrops(raw, expectedActions, 1)
+
+    assert.equal(decoded.observerDrops.eventTimings, null)
+    assert.equal(decoded.observerDropCountUnavailable.eventTimings, true)
+    assert.equal(decoded.observerEntryDeliveryObserved.eventTimings, true)
+    assert.equal(decoded.metrics.find(item => item.name === 'interactionCount')?.status, 'measured')
+    assert.equal(decoded.actionResults[0].metrics.find(item => item.name === 'inputDelayMs')?.status, 'measured')
+    assert.ok(decoded.limitations.includes('page-probe-event-timing-timeline-history-drop-count-unavailable'))
+})
+
+test('distinguishes a supported stream with no entry delivery from an unavailable first-callback count', () => {
+    const raw = withObserverDropContract(rawResult())
+    raw.observerDrops.layoutShifts = null
+    raw.observerEntryDeliveryObserved.layoutShifts = false
+    const rawCls = metricForCatalogId(raw.metrics, 'vital.cls.latest')
+    assert.ok(rawCls)
+    rawCls.value = 0
+    const decoded = decodePageProbeResultWithObserverDrops(raw, expectedActions, 1)
+    const cls = metricForCatalogId(decoded.metrics, 'vital.cls.latest')
+
+    assert.equal(decoded.observerDrops.layoutShifts, null)
+    assert.equal(decoded.observerDropCountUnavailable.layoutShifts, false)
+    assert.equal(decoded.observerEntryDeliveryObserved.layoutShifts, false)
+    assert.equal(cls?.status, 'measured')
+    assert.equal(decoded.limitations.includes('page-probe-layout-shift-timeline-history-drop-count-unavailable'), false)
+})
+
+test('keeps the timeline-history drop wire opt-in while accepting legacy v1 and v2 probe payloads', () => {
+    const legacyV1 = rawResult()
+    const legacyV2 = rawResultV2()
+    assert.deepEqual(Object.keys(decodePageProbeResult(legacyV1, expectedActions)).sort(), [
+        'actionResults',
+        'capabilities',
+        'durationMs',
+        'limitations',
+        'metrics',
+    ])
+    assert.deepEqual(Object.keys(decodePageProbeResult(legacyV2, expectedActions, 2)).sort(), [
+        'actionResults',
+        'capabilities',
+        'durationMs',
+        'limitations',
+        'metrics',
+    ])
+    assert.throws(() => decodePageProbeResultWithObserverDrops(legacyV1, expectedActions, 1), TypeError)
+
+    const current = withObserverDropContract(rawResult())
+    assert.throws(() => decodePageProbeResult(current, expectedActions), TypeError)
+    assert.equal(decodePageProbeResultWithObserverDrops(current, expectedActions, 1).observerDrops.longTasks, 0)
+})
+
+test('preserves a known-positive lower bound when the timeline-history drop count exceeds the private wire limit', () => {
+    const raw = withObserverDropContract(rawResult())
+    raw.observerDrops.resources = 10_000_000
+    raw.observerDropCountCapped.resources = true
+    const decoded = decodePageProbeResultWithObserverDrops(raw, expectedActions, 1)
+    const resourceCount = metricForCatalogId(decoded.metrics, 'resource.count')
+
+    assert.equal(decoded.observerDrops.resources, 10_000_000)
+    assert.equal(decoded.observerDropCountCapped.resources, true)
+    assert.equal(resourceCount?.status, 'partial')
+    assert.ok(resourceCount?.limitations.includes('page-probe-resource-timing-timeline-history-incomplete'))
+    assert.ok(decoded.limitations.includes('page-probe-resource-timing-timeline-history-drop-count-capped'))
+})
+
+test('rejects forged timeline-history drop state and capability contradictions', () => {
+    for (const mutation of [
+        raw => {
+            raw.observerDrops.longTasks = -1
+        },
+        raw => {
+            raw.observerDrops.longTasks = 10_000_001
+        },
+        raw => {
+            raw.observerDrops.longTasks = 1
+            raw.observerDropCountUnavailable.longTasks = true
+        },
+        raw => {
+            raw.capabilities.longtask = false
+            raw.observerDrops.longTasks = 1
+        },
+        raw => {
+            raw.capabilities.longtask = false
+            raw.observerDrops.longTasks = null
+            raw.observerDropCountUnavailable.longTasks = true
+        },
+        raw => {
+            raw.observerDrops.longTasks = null
+        },
+        raw => {
+            raw.observerEntryDeliveryObserved.longTasks = false
+        },
+        raw => {
+            raw.observerEntryDeliveryObserved.longTasks = 'yes'
+        },
+        raw => {
+            const longTaskCount = metricForCatalogId(raw.metrics, 'main.long-task.count')
+            assert.ok(longTaskCount)
+            longTaskCount.value = 0
+        },
+        raw => {
+            raw.observerDrops.privateEntries = 1
+        },
+        raw => {
+            raw.observerDropCountUnavailable.resources = 'yes'
+        },
+        raw => {
+            raw.observerDropCountCapped.resources = true
+        },
+        raw => {
+            raw.observerDrops.resources = 10_000_000
+            raw.observerDropCountCapped.resources = true
+            raw.observerDropCountUnavailable.resources = true
+        },
+    ]) {
+        const raw = withObserverDropContract(rawResult())
+        mutation(raw)
+        assert.throws(() => decodePageProbeResultWithObserverDrops(raw, expectedActions, 1), TypeError)
     }
 })
 

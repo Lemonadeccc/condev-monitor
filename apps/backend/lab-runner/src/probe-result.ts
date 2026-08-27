@@ -49,6 +49,20 @@ const SAMPLE_DROP_KEYS_V1 = ['frames', 'longTasks', 'longAnimationFrames', 'even
 const SAMPLE_DROP_KEYS_V2 = [...SAMPLE_DROP_KEYS_V1, 'inputFrameScheduling'] as const
 type SampleDropKey = (typeof SAMPLE_DROP_KEYS_V2)[number]
 type PageProbeSampleDrops = Record<SampleDropKey, number>
+export const PAGE_PROBE_OBSERVER_DROP_KEYS = [
+    'longTasks',
+    'longAnimationFrames',
+    'eventTimings',
+    'resources',
+    'layoutShifts',
+    'largestContentfulPaints',
+] as const
+type ObserverDropKey = (typeof PAGE_PROBE_OBSERVER_DROP_KEYS)[number]
+export type PageProbeObserverDrops = Record<ObserverDropKey, number | null>
+type PageProbeObserverDropCountUnavailable = Record<ObserverDropKey, boolean>
+type PageProbeObserverDropCountCapped = Record<ObserverDropKey, boolean>
+type PageProbeObserverEntryDeliveryObserved = Record<ObserverDropKey, boolean>
+type PageProbeObserverDropContractVersion = 0 | 1
 const SAMPLE_TRUNCATION_CONTRACT: Readonly<
     Record<
         SampleDropKey,
@@ -139,6 +153,106 @@ const SAMPLE_TRUNCATION_CONTRACT: Readonly<
         rootMetricIds: new Set(['main.input-capture-to-next-raf-callback.p95']),
         actionMetricIds: new Set(['main.input-capture-to-next-raf-callback.p95']),
     },
+}
+const OBSERVER_DROP_CONTRACT: Readonly<
+    Record<
+        ObserverDropKey,
+        {
+            capability: string
+            droppedLimitation: string
+            unavailableLimitation: string
+            cappedLimitation: string
+            rootMetricIds: ReadonlySet<string>
+            actionMetricIds: ReadonlySet<string>
+        }
+    >
+> = {
+    // Each probe observer registers one type, so droppedEntriesCount describes
+    // that entry type's cumulative Performance Timeline buffered history. It
+    // cannot prove that live observer delivery missed entries. Root quality is
+    // conservatively bounded; scenario actions begin after registration and
+    // retain their live evidence.
+    longTasks: {
+        capability: 'longtask',
+        droppedLimitation: 'page-probe-long-task-timeline-history-incomplete',
+        unavailableLimitation: 'page-probe-long-task-timeline-history-drop-count-unavailable',
+        cappedLimitation: 'page-probe-long-task-timeline-history-drop-count-capped',
+        rootMetricIds: new Set(['main.long-task.count', 'main.long-task.duration.p95', 'main.long-task.duration.sum']),
+        actionMetricIds: new Set(),
+    },
+    longAnimationFrames: {
+        capability: 'loaf',
+        droppedLimitation: 'page-probe-loaf-timeline-history-incomplete',
+        unavailableLimitation: 'page-probe-loaf-timeline-history-drop-count-unavailable',
+        cappedLimitation: 'page-probe-loaf-timeline-history-drop-count-capped',
+        rootMetricIds: new Set([
+            'main.loaf.count',
+            'main.loaf.duration.p95',
+            'main.loaf.blocking.p95',
+            'pipeline.loaf-style-layout-tail.p95',
+            'pipeline.loaf-render-start-to-paint.count',
+            'pipeline.loaf-render-start-to-paint.p95',
+            'pipeline.loaf-paint-to-presentation.count',
+            'pipeline.loaf-paint-to-presentation.p95',
+            'interaction.loaf-first-ui-event-to-frame-end.count',
+            'interaction.loaf-first-ui-event-to-frame-end.p95',
+            'pipeline.loaf-attributed-forced-style-layout.count',
+            'pipeline.loaf-attributed-forced-style-layout.p95',
+        ]),
+        actionMetricIds: new Set(),
+    },
+    eventTimings: {
+        capability: 'eventTiming',
+        droppedLimitation: 'page-probe-event-timing-timeline-history-incomplete',
+        unavailableLimitation: 'page-probe-event-timing-timeline-history-drop-count-unavailable',
+        cappedLimitation: 'page-probe-event-timing-timeline-history-drop-count-capped',
+        rootMetricIds: new Set([
+            'interaction.event-duration.p95',
+            'interaction.input-delay.p95',
+            'interaction.processing.p95',
+            'interaction.presentation.p95',
+            'interaction.count',
+        ]),
+        actionMetricIds: new Set(),
+    },
+    resources: {
+        capability: 'resourceTiming',
+        droppedLimitation: 'page-probe-resource-timing-timeline-history-incomplete',
+        unavailableLimitation: 'page-probe-resource-timing-timeline-history-drop-count-unavailable',
+        cappedLimitation: 'page-probe-resource-timing-timeline-history-drop-count-capped',
+        rootMetricIds: new Set([
+            'resource.count',
+            'resource.duration.p95',
+            'resource.transfer.sum',
+            'resource.encoded.sum',
+            'resource.decoded.sum',
+        ]),
+        actionMetricIds: new Set(),
+    },
+    layoutShifts: {
+        capability: 'layoutShift',
+        droppedLimitation: 'page-probe-layout-shift-timeline-history-incomplete',
+        unavailableLimitation: 'page-probe-layout-shift-timeline-history-drop-count-unavailable',
+        cappedLimitation: 'page-probe-layout-shift-timeline-history-drop-count-capped',
+        rootMetricIds: new Set(['vital.cls.latest']),
+        actionMetricIds: new Set(),
+    },
+    largestContentfulPaints: {
+        capability: 'lcp',
+        droppedLimitation: 'page-probe-lcp-timeline-history-incomplete',
+        unavailableLimitation: 'page-probe-lcp-timeline-history-drop-count-unavailable',
+        cappedLimitation: 'page-probe-lcp-timeline-history-drop-count-capped',
+        rootMetricIds: new Set(['vital.lcp.latest']),
+        actionMetricIds: new Set(),
+    },
+}
+const OBSERVER_ENTRY_EVIDENCE_METRIC_IDS: Readonly<Record<ObserverDropKey, string>> = {
+    longTasks: 'main.long-task.count',
+    longAnimationFrames: 'main.loaf.count',
+    eventTimings: 'interaction.count',
+    resources: 'resource.count',
+    layoutShifts: 'vital.cls.latest',
+    largestContentfulPaints: 'vital.lcp.latest',
 }
 const CAPABILITY_METRIC_IDS: Readonly<Record<string, readonly string[]>> = {
     longtask: ['main.long-task.count', 'main.long-task.duration.p95', 'main.long-task.duration.sum'],
@@ -316,6 +430,13 @@ export interface DecodedPageProbeResult {
     actionResults: DecodedPageProbeActionResult[]
     capabilities: Record<string, boolean | null>
     limitations: string[]
+}
+
+interface DecodedPageProbeResultWithObserverDrops extends DecodedPageProbeResult {
+    observerDrops: PageProbeObserverDrops
+    observerDropCountUnavailable: PageProbeObserverDropCountUnavailable
+    observerDropCountCapped: PageProbeObserverDropCountCapped
+    observerEntryDeliveryObserved: PageProbeObserverEntryDeliveryObserved
 }
 
 function fail(label: string): never {
@@ -542,6 +663,80 @@ function decodeSampleDrops(value: unknown, metricCatalogVersion: LabMetricCatalo
     return { ...decoded, inputFrameScheduling: decoded.inputFrameScheduling ?? 0 } as PageProbeSampleDrops
 }
 
+function decodeObserverDrops(value: unknown): PageProbeObserverDrops {
+    const raw = record(value, 'observerDrops')
+    exactKeys(raw, PAGE_PROBE_OBSERVER_DROP_KEYS, 'observerDrops')
+    if (Object.keys(raw).length !== PAGE_PROBE_OBSERVER_DROP_KEYS.length) fail('observerDrops count')
+    return Object.fromEntries(
+        PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => [
+            key,
+            raw[key] === null ? null : integer(raw[key], `observerDrops.${key}`, 0, MAX_SAMPLES),
+        ])
+    ) as PageProbeObserverDrops
+}
+
+function decodeObserverDropCountUnavailable(value: unknown): PageProbeObserverDropCountUnavailable {
+    const raw = record(value, 'observerDropCountUnavailable')
+    exactKeys(raw, PAGE_PROBE_OBSERVER_DROP_KEYS, 'observerDropCountUnavailable')
+    if (Object.keys(raw).length !== PAGE_PROBE_OBSERVER_DROP_KEYS.length) fail('observerDropCountUnavailable count')
+    return Object.fromEntries(
+        PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => {
+            if (typeof raw[key] !== 'boolean') fail(`observerDropCountUnavailable.${key}`)
+            return [key, raw[key]]
+        })
+    ) as PageProbeObserverDropCountUnavailable
+}
+
+function decodeObserverDropCountCapped(value: unknown): PageProbeObserverDropCountCapped {
+    const raw = record(value, 'observerDropCountCapped')
+    exactKeys(raw, PAGE_PROBE_OBSERVER_DROP_KEYS, 'observerDropCountCapped')
+    if (Object.keys(raw).length !== PAGE_PROBE_OBSERVER_DROP_KEYS.length) fail('observerDropCountCapped count')
+    return Object.fromEntries(
+        PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => {
+            if (typeof raw[key] !== 'boolean') fail(`observerDropCountCapped.${key}`)
+            return [key, raw[key]]
+        })
+    ) as PageProbeObserverDropCountCapped
+}
+
+function decodeObserverEntryDeliveryObserved(value: unknown): PageProbeObserverEntryDeliveryObserved {
+    const raw = record(value, 'observerEntryDeliveryObserved')
+    exactKeys(raw, PAGE_PROBE_OBSERVER_DROP_KEYS, 'observerEntryDeliveryObserved')
+    if (Object.keys(raw).length !== PAGE_PROBE_OBSERVER_DROP_KEYS.length) fail('observerEntryDeliveryObserved count')
+    return Object.fromEntries(
+        PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => {
+            if (typeof raw[key] !== 'boolean') fail(`observerEntryDeliveryObserved.${key}`)
+            return [key, raw[key]]
+        })
+    ) as PageProbeObserverEntryDeliveryObserved
+}
+
+function emptyObserverDrops(): PageProbeObserverDrops {
+    return Object.fromEntries(PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => [key, null])) as PageProbeObserverDrops
+}
+
+function emptyObserverDropFlags<
+    T extends PageProbeObserverDropCountUnavailable | PageProbeObserverDropCountCapped | PageProbeObserverEntryDeliveryObserved,
+>(): T {
+    return Object.fromEntries(PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => [key, false])) as T
+}
+
+function hasCapturedObserverEntries(
+    stream: ObserverDropKey,
+    metrics: readonly AnimationLabMetric[],
+    catalog: ReadonlyMap<string, LabMetricCatalogEntryV1>
+): boolean {
+    const metricId = OBSERVER_ENTRY_EVIDENCE_METRIC_IDS[stream]
+    const entry = [...catalog.values()].find(item => item.metricId === metricId)
+    if (!entry) fail('observer entry evidence metric identity')
+    const metric = metrics.find(
+        item => metricKey(item.family, item.name, item.stat, item.unit) === metricKey(entry.family, entry.name, entry.stat, entry.unit)
+    )
+    if (!metric) fail('observer entry evidence metric completeness')
+    if (stream === 'largestContentfulPaints') return metric.value !== null
+    return typeof metric.value === 'number' && metric.value > 0
+}
+
 function downgradeTruncatedMetrics(
     metrics: readonly AnimationLabMetric[],
     catalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
@@ -555,6 +750,29 @@ function downgradeTruncatedMetrics(
             const contract = SAMPLE_TRUNCATION_CONTRACT[stream]
             const affected = actionScoped ? contract.actionMetricIds : contract.rootMetricIds
             return sampleDrops[stream] > 0 && affected.has(entry.metricId) ? [contract.limitation] : []
+        })
+        if (limitations.length === 0) return metric
+        return {
+            ...metric,
+            ...(metric.status === 'measured' ? { status: 'partial' as const } : {}),
+            limitations: [...new Set([...(metric.limitations ?? []), ...limitations])],
+        }
+    })
+}
+
+function downgradeObserverDroppedMetrics(
+    metrics: readonly AnimationLabMetric[],
+    catalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
+    observerDrops: PageProbeObserverDrops,
+    actionScoped: boolean
+): AnimationLabMetric[] {
+    return metrics.map(metric => {
+        const entry = catalog.get(metricKey(metric.family, metric.name, metric.stat, metric.unit))
+        if (!entry) fail('observer drop metric identity')
+        const limitations = PAGE_PROBE_OBSERVER_DROP_KEYS.flatMap(stream => {
+            const contract = OBSERVER_DROP_CONTRACT[stream]
+            const affected = actionScoped ? contract.actionMetricIds : contract.rootMetricIds
+            return (observerDrops[stream] ?? 0) > 0 && affected.has(entry.metricId) ? [contract.droppedLimitation] : []
         })
         if (limitations.length === 0) return metric
         return {
@@ -796,18 +1014,30 @@ function decodeActionResults(
     return expectedActions.map(action => decodedById.get(action.actionId) ?? fail('actionResults one-to-one mapping'))
 }
 
-/**
- * Decodes the untrusted structured-clone returned by the disposable page probe.
- * Every returned object is rebuilt from closed runner/shared contracts.
- */
-export function decodePageProbeResult(
+function decodePageProbeResultWire(
     rawValue: unknown,
     expectedActionsValue: readonly ExpectedPageProbeAction[],
-    metricCatalogVersion: LabMetricCatalogVersion = 1
-): DecodedPageProbeResult {
+    metricCatalogVersion: LabMetricCatalogVersion,
+    observerDropContractVersion: PageProbeObserverDropContractVersion
+): DecodedPageProbeResultWithObserverDrops {
     if (metricCatalogVersion !== 1 && metricCatalogVersion !== 2) fail('metric catalog version')
+    if (observerDropContractVersion !== 0 && observerDropContractVersion !== 1) fail('observer drop contract version')
     const raw = record(rawValue, 'root')
-    exactKeys(raw, ['durationMs', 'metrics', 'actionResults', 'capabilities', 'sampleDrops', 'limitations'], 'root')
+    exactKeys(
+        raw,
+        [
+            'durationMs',
+            'metrics',
+            'actionResults',
+            'capabilities',
+            'sampleDrops',
+            ...(observerDropContractVersion === 1
+                ? ['observerDrops', 'observerDropCountUnavailable', 'observerDropCountCapped', 'observerEntryDeliveryObserved']
+                : []),
+            'limitations',
+        ],
+        'root'
+    )
     const durationMs = finite(raw.durationMs, 'duration', 0, MAX_DURATION_MS)
     const expectedActions = decodeExpectedActions(expectedActionsValue)
     const rootMetricCatalog = metricCatalogVersion === 2 ? ROOT_PAGE_PROBE_METRICS_V2 : ROOT_PAGE_PROBE_METRICS_V1
@@ -815,6 +1045,19 @@ export function decodePageProbeResult(
     const rawMetrics = decodeMetrics(raw.metrics, 'metrics', rootMetricCatalog, metricCatalogVersion)
     const capabilities = decodeCapabilities(raw.capabilities, metricCatalogVersion)
     const sampleDrops = decodeSampleDrops(raw.sampleDrops, metricCatalogVersion)
+    const observerDrops = observerDropContractVersion === 1 ? decodeObserverDrops(raw.observerDrops) : emptyObserverDrops()
+    const observerDropCountUnavailable =
+        observerDropContractVersion === 1
+            ? decodeObserverDropCountUnavailable(raw.observerDropCountUnavailable)
+            : emptyObserverDropFlags<PageProbeObserverDropCountUnavailable>()
+    const observerDropCountCapped =
+        observerDropContractVersion === 1
+            ? decodeObserverDropCountCapped(raw.observerDropCountCapped)
+            : emptyObserverDropFlags<PageProbeObserverDropCountCapped>()
+    const observerEntryDeliveryObserved =
+        observerDropContractVersion === 1
+            ? decodeObserverEntryDeliveryObserved(raw.observerEntryDeliveryObserved)
+            : emptyObserverDropFlags<PageProbeObserverEntryDeliveryObserved>()
     // Page prose is intentionally ignored. Only its bounded container shape is accepted.
     const ignoredLimitations = boundedArray(raw.limitations, 'limitations', MAX_LIMITATION_INPUTS)
     if (ignoredLimitations.some(item => typeof item !== 'string' || item.length > 200)) fail('limitations')
@@ -827,6 +1070,32 @@ export function decodePageProbeResult(
         const capability = SAMPLE_TRUNCATION_CONTRACT[stream].capability
         if (sampleDrops[stream] > 0 && capability && capabilities[capability] !== true) fail('sampleDrops capability coherence')
     }
+    if (observerDropContractVersion === 1) {
+        for (const stream of PAGE_PROBE_OBSERVER_DROP_KEYS) {
+            const capability = capabilities[OBSERVER_DROP_CONTRACT[stream].capability]
+            const deliveryHasDropEvidence = observerDrops[stream] !== null || observerDropCountUnavailable[stream]
+            if (
+                capability !== true &&
+                (deliveryHasDropEvidence || observerDropCountCapped[stream] || observerEntryDeliveryObserved[stream])
+            ) {
+                fail('observerDrops capability coherence')
+            }
+            if (observerEntryDeliveryObserved[stream] !== deliveryHasDropEvidence) fail('observerDrops delivery coherence')
+            if (observerDrops[stream] !== null && observerDropCountUnavailable[stream]) fail('observerDrops availability coherence')
+            if (observerDropCountCapped[stream] && observerDrops[stream] !== MAX_SAMPLES) fail('observerDrops capped coherence')
+            if (observerDropCountCapped[stream] && observerDropCountUnavailable[stream]) fail('observerDrops capped coherence')
+            if (capability === true) {
+                const capturedEntries = hasCapturedObserverEntries(stream, rawMetrics, rootMetricCatalog)
+                if (
+                    stream === 'layoutShifts'
+                        ? capturedEntries && !observerEntryDeliveryObserved[stream]
+                        : capturedEntries !== observerEntryDeliveryObserved[stream]
+                ) {
+                    fail('observerDrops captured-entry coherence')
+                }
+            }
+        }
+    }
     const videoPlaybackQualityCapability = capabilities.videoPlaybackQuality
     if (videoPlaybackQualityCapability === undefined) fail('video playback capability')
     const videoMetrics = enforceVideoPlaybackQualityContract(rawMetrics, rootMetricCatalog, videoPlaybackQualityCapability)
@@ -834,7 +1103,12 @@ export function decodePageProbeResult(
         metricCatalogVersion === 2
             ? enforcePhasePairContracts(videoMetrics, rootMetricCatalog, sampleDrops)
             : { metrics: videoMetrics, incompletePairs: new Set<PhasePairMetricId>() }
-    const metrics = downgradeTruncatedMetrics(rootPairs.metrics, rootMetricCatalog, sampleDrops, false)
+    const metrics = downgradeObserverDroppedMetrics(
+        downgradeTruncatedMetrics(rootPairs.metrics, rootMetricCatalog, sampleDrops, false),
+        rootMetricCatalog,
+        observerDrops,
+        false
+    )
     const actionResults = decodeActionResults(
         raw.actionResults,
         expectedActions,
@@ -848,7 +1122,12 @@ export function decodePageProbeResult(
                 : { metrics: action.metrics }
         return {
             ...action,
-            metrics: downgradeTruncatedMetrics(actionPairs.metrics, actionMetricCatalog, sampleDrops, true),
+            metrics: downgradeObserverDroppedMetrics(
+                downgradeTruncatedMetrics(actionPairs.metrics, actionMetricCatalog, sampleDrops, true),
+                actionMetricCatalog,
+                observerDrops,
+                true
+            ),
         }
     })
     assertCapabilityMetricCoherence(capabilities, metrics, rootMetricCatalog, 'metrics')
@@ -860,9 +1139,49 @@ export function decodePageProbeResult(
         metrics,
         actionResults,
         capabilities,
+        observerDrops,
+        observerDropCountUnavailable,
+        observerDropCountCapped,
+        observerEntryDeliveryObserved,
         limitations: [
             ...PAGE_PROBE_LIMITATIONS,
             ...(typeof droppedSamples === 'number' && droppedSamples > 0 ? ['page-probe-samples-truncated'] : []),
+            ...PAGE_PROBE_OBSERVER_DROP_KEYS.flatMap(stream => {
+                const contract = OBSERVER_DROP_CONTRACT[stream]
+                if ((observerDrops[stream] ?? 0) > 0) return [contract.droppedLimitation]
+                return observerDropCountUnavailable[stream] ? [contract.unavailableLimitation] : []
+            }),
+            ...PAGE_PROBE_OBSERVER_DROP_KEYS.flatMap(stream =>
+                observerDropCountCapped[stream] ? [OBSERVER_DROP_CONTRACT[stream].cappedLimitation] : []
+            ),
         ],
     }
+}
+
+/**
+ * Decodes the legacy untrusted page-probe wire exposed by the package API.
+ * Its signature and returned key shape intentionally remain unchanged.
+ */
+export function decodePageProbeResult(
+    rawValue: unknown,
+    expectedActionsValue: readonly ExpectedPageProbeAction[],
+    metricCatalogVersion: LabMetricCatalogVersion = 1
+): DecodedPageProbeResult {
+    const result = decodePageProbeResultWire(rawValue, expectedActionsValue, metricCatalogVersion, 0)
+    return {
+        durationMs: result.durationMs,
+        metrics: result.metrics,
+        actionResults: result.actionResults,
+        capabilities: result.capabilities,
+        limitations: result.limitations,
+    }
+}
+
+/** Internal Runner decoder for the explicitly opted-in timeline-history drop-evidence wire. */
+export function decodePageProbeResultWithObserverDrops(
+    rawValue: unknown,
+    expectedActionsValue: readonly ExpectedPageProbeAction[],
+    metricCatalogVersion: LabMetricCatalogVersion = 1
+): DecodedPageProbeResultWithObserverDrops {
+    return decodePageProbeResultWire(rawValue, expectedActionsValue, metricCatalogVersion, 1)
 }

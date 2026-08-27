@@ -26,7 +26,7 @@ import {
 } from './browser-driver'
 import { browserProbeSource } from './browser-probe'
 import { buildLabLocalBudgetDisplayEvent, type LabLocalDisplayAttempt, type LabLocalDisplaySink, safePublish } from './local-display'
-import { decodePageProbeResult } from './probe-result'
+import { decodePageProbeResultWithObserverDrops } from './probe-result'
 import { createScenarioProtocolHash } from './scenario-protocol'
 import {
     actionWindowFromProbe,
@@ -132,6 +132,7 @@ async function measuredAttempt(
         await page.addInitScript(
             browserProbeSource(probeKey, {
                 capability: probeCapability,
+                observerDropContractVersion: 1,
                 ...probeFrameContract(scenario),
                 actions: scenario.actions.map((action, actionIndex) => ({
                     actionId: scenarioActionId(action, actionIndex),
@@ -178,7 +179,11 @@ async function measuredAttempt(
                 ? [{ actionId: scenarioActionId(action, actionIndex), order: actionIndex, kind: action.kind }]
                 : []
         )
-        const probe = decodePageProbeResult(result, expectedProbeActions, scenario.measurementContract?.metricCatalogVersion ?? 1)
+        const probe = decodePageProbeResultWithObserverDrops(
+            result,
+            expectedProbeActions,
+            scenario.measurementContract?.metricCatalogVersion ?? 1
+        )
         const actionWindows = actionExecutions.map(actionResult =>
             actionWindowFromProbe(scenario.actions[actionResult.order]!, actionResult.order, {
                 ...actionResult,

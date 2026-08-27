@@ -18,6 +18,8 @@ export interface LabBrowserProbeConfig {
     slowFrameFactor?: number
     /** Additive metric payload contract. Omitted callers retain the exact v1 shape. */
     metricCatalogVersion?: 1 | 2
+    /** Additive page-probe wire evidence. Omitted callers retain the exact legacy shape. */
+    observerDropContractVersion?: 1
     actions?: readonly LabBrowserProbeActionConfig[]
 }
 
@@ -25,6 +27,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
     const windowValue = window as unknown as Window & Record<string, unknown>
     const startedAt = performance.now()
     const metricCatalogVersion = config.metricCatalogVersion === 2 ? 2 : 1
+    const observerDropContractVersion = config.observerDropContractVersion === 1 ? 1 : null
     const maximumSamples = 20_000
     const maximumMetricSamples = 10_000_000
     const maximumPendingInputs = 256
@@ -49,7 +52,43 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
     const pendingInputs: Array<{ capturedAt: number; actionId: string | null }> = []
     const events: Array<{ startTime: number; duration: number; inputDelay: number; processing: number; presentation: number }> = []
     const resources: Array<{ duration: number; transfer: number; encoded: number; decoded: number }> = []
-    const observers: Array<{ observer: PerformanceObserver; callback: (entry: PerformanceEntry) => void }> = []
+    const observerDrops = {
+        longTasks: null as number | null,
+        longAnimationFrames: null as number | null,
+        eventTimings: null as number | null,
+        resources: null as number | null,
+        layoutShifts: null as number | null,
+        largestContentfulPaints: null as number | null,
+    }
+    const observerDropCountUnavailable = {
+        longTasks: false,
+        longAnimationFrames: false,
+        eventTimings: false,
+        resources: false,
+        layoutShifts: false,
+        largestContentfulPaints: false,
+    }
+    const observerDropCountCapped = {
+        longTasks: false,
+        longAnimationFrames: false,
+        eventTimings: false,
+        resources: false,
+        layoutShifts: false,
+        largestContentfulPaints: false,
+    }
+    const observerEntryDeliveryObserved = {
+        longTasks: false,
+        longAnimationFrames: false,
+        eventTimings: false,
+        resources: false,
+        layoutShifts: false,
+        largestContentfulPaints: false,
+    }
+    const observers: Array<{
+        observer: PerformanceObserver
+        callback: (entry: PerformanceEntry) => void
+        stream: keyof typeof observerDrops
+    }> = []
     const canvasContexts = new WeakMap<HTMLCanvasElement, 'canvas2d' | 'webgl' | 'webgl2' | 'webgpu'>()
     const actionDefinitions = new Map((config.actions ?? []).map(action => [action.actionId, action]))
     const actionWindows = new Map<
@@ -124,31 +163,69 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             return null
         }
     })()
-    const observe = (type: string, callback: (entry: PerformanceEntry) => void, durationThreshold?: number): boolean => {
+    const recordObserverDrops = (stream: keyof typeof observerDrops, callbackOptions: unknown, receivedEntries: boolean): void => {
+        // Performance Timeline exposes the observed entry type's cumulative
+        // buffered-history drop count only on the first non-empty callback
+        // after observe(). Later callback options are intentionally ignored;
+        // this is not a changing live-delivery counter.
+        if (!receivedEntries) return
+        observerEntryDeliveryObserved[stream] = true
+        if (observerDrops[stream] !== null || observerDropCountUnavailable[stream]) return
+        if (!callbackOptions || typeof callbackOptions !== 'object') {
+            observerDropCountUnavailable[stream] = true
+            return
+        }
+        const value = (callbackOptions as { droppedEntriesCount?: unknown }).droppedEntriesCount
+        if (value === undefined) {
+            observerDropCountUnavailable[stream] = true
+            return
+        }
+        if (typeof value !== 'number' || !Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+            observerDropCountUnavailable[stream] = true
+            return
+        }
+        observerDrops[stream] = Math.min(value, maximumMetricSamples)
+        observerDropCountCapped[stream] = value > maximumMetricSamples
+        observerDropCountUnavailable[stream] = false
+    }
+    const observe = (
+        type: string,
+        stream: keyof typeof observerDrops,
+        callback: (entry: PerformanceEntry) => void,
+        durationThreshold?: number
+    ): boolean => {
         // Firefox and WebKit accept an unknown entry type without throwing.
         // Trust the browser's closed support declaration so an unavailable
         // stream can never be reported as a measured healthy zero.
         if (!supportedPerformanceEntryTypes?.has(type)) return false
         try {
-            const observer = new PerformanceObserver(list => list.getEntries().forEach(callback))
+            const observer = new PerformanceObserver(((
+                list: PerformanceObserverEntryList,
+                _observer: PerformanceObserver,
+                callbackOptions?: unknown
+            ) => {
+                const entries = list.getEntries()
+                recordObserverDrops(stream, callbackOptions, entries.length > 0)
+                entries.forEach(callback)
+            }) as PerformanceObserverCallback)
             observer.observe({
                 type,
                 buffered: true,
                 ...(durationThreshold === undefined ? {} : { durationThreshold }),
             } as PerformanceObserverInit)
-            observers.push({ observer, callback })
+            observers.push({ observer, callback, stream })
             return true
         } catch {
             return false
         }
     }
     const capabilities = {
-        longtask: observe('longtask', entry => {
+        longtask: observe('longtask', 'longTasks', entry => {
             streamTotals.longTasks.count += 1
             streamTotals.longTasks.duration += entry.duration
             retain('longTasks', longTasks, { startTime: entry.startTime, duration: entry.duration })
         }),
-        loaf: observe('long-animation-frame', entry => {
+        loaf: observe('long-animation-frame', 'longAnimationFrames', entry => {
             const value = entry as PerformanceEntry & {
                 blockingDuration?: number
                 renderStart?: number
@@ -288,6 +365,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         }),
         eventTiming: observe(
             'event',
+            'eventTimings',
             entry => {
                 const value = entry as PerformanceEventTiming
                 const inputDelay = Math.max(0, value.processingStart - value.startTime)
@@ -303,7 +381,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             },
             16
         ),
-        resourceTiming: observe('resource', entry => {
+        resourceTiming: observe('resource', 'resources', entry => {
             const value = entry as PerformanceResourceTiming
             const resource = {
                 duration: value.duration,
@@ -317,7 +395,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             streamTotals.resources.decoded += resource.decoded
             retain('resources', resources, resource)
         }),
-        layoutShift: observe('layout-shift', entry => {
+        layoutShift: observe('layout-shift', 'layoutShifts', entry => {
             const value = entry as PerformanceEntry & { value?: number; hadRecentInput?: boolean }
             const shiftValue = typeof value.value === 'number' && Number.isFinite(value.value) && value.value >= 0 ? value.value : null
             const startTime = Number.isFinite(entry.startTime) && entry.startTime >= 0 ? entry.startTime : null
@@ -337,7 +415,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             clsSessionLastTime = startTime
             cls = Math.max(cls, clsSessionValue)
         }),
-        lcp: observe('largest-contentful-paint', entry => {
+        lcp: observe('largest-contentful-paint', 'largestContentfulPaints', entry => {
             lcp = entry.startTime
         }),
         documentAnimations: typeof document.getAnimations === 'function',
@@ -942,9 +1020,14 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     // Cleanup failure cannot change already captured evidence.
                 }
             }
-            for (const { observer, callback } of observers) {
+            for (const { observer, callback, stream } of observers) {
                 try {
-                    observer.takeRecords().forEach(callback)
+                    const records = observer.takeRecords()
+                    if (records.length > 0) {
+                        observerEntryDeliveryObserved[stream] = true
+                        if (observerDrops[stream] === null) observerDropCountUnavailable[stream] = true
+                    }
+                    records.forEach(callback)
                     observer.disconnect()
                 } catch {
                     // One unsupported observer must not invalidate the run.
@@ -1400,6 +1483,9 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                               eventTimings: sampleDrops.eventTimings,
                               resources: sampleDrops.resources,
                           },
+                ...(observerDropContractVersion === 1
+                    ? { observerDrops, observerDropCountUnavailable, observerDropCountCapped, observerEntryDeliveryObserved }
+                    : {}),
                 limitations,
             }
             return result
