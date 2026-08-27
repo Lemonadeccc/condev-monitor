@@ -17,6 +17,7 @@ import { clampAnimationTimeWindow } from '@/lib/animation-metrics'
 import {
     animationRumV2FamilyLabel,
     animationRumV2MetricDisplay,
+    animationRumV2MetricStatusCountEntries,
     animationRumV2OwnerLabel,
     animationRumV2RelationLabel,
     findAnimationRumV2SummaryMetric,
@@ -535,7 +536,7 @@ export default function AnimationsPage() {
                                 <tr className="[&_th]:font-medium">
                                     <th className="px-6 py-3 text-left">指标</th>
                                     <th className="px-6 py-3 text-left">范围 / 关系 / 提供方</th>
-                                    <th className="px-6 py-3 text-left">已测 / 部分 / 未知</th>
+                                    <th className="px-6 py-3 text-left">六态采集数</th>
                                     <th className="px-6 py-3 text-right">采集 p50</th>
                                     <th className="px-6 py-3 text-right">采集 p75</th>
                                     <th className="px-6 py-3 text-right">采集 p95</th>
@@ -566,12 +567,14 @@ export default function AnimationsPage() {
                                                     {animationRumV2OwnerLabel(metric.owner)}
                                                 </div>
                                             </td>
-                                            <td className="px-6 py-4 font-mono text-xs tabular-nums">
-                                                <div>已测 {formatAnimationRumV2Integer(metric.statusCounts.measured)}</div>
-                                                <div>部分 {formatAnimationRumV2Integer(metric.statusCounts.partial)}</div>
-                                                <div>
-                                                    未知 {formatAnimationRumV2Integer(metric.statusCounts.unknown)} · 未观测{' '}
-                                                    {formatAnimationRumV2Integer(metric.statusCounts.notObserved)}
+                                            <td className="px-6 py-4 text-xs tabular-nums">
+                                                <div className="grid min-w-48 grid-cols-2 gap-x-4 gap-y-1">
+                                                    {animationRumV2MetricStatusCountEntries(metric.statusCounts).map(entry => (
+                                                        <div key={entry.status} className="flex items-center justify-between gap-2">
+                                                            <span className="text-muted-foreground">{entry.label}</span>
+                                                            <span className="font-mono">{formatAnimationRumV2Integer(entry.count)}</span>
+                                                        </div>
+                                                    ))}
                                                 </div>
                                             </td>
                                             {(['p50', 'p75', 'p95'] as const).map(percentile => {

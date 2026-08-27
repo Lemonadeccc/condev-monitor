@@ -4,6 +4,7 @@ import { describe, it } from 'node:test'
 import type { AnimationRumV2SummaryMetric } from '../types/animation-v2'
 import {
     animationRumV2MetricDisplay,
+    animationRumV2MetricStatusCountEntries,
     animationRumV2QualityReasonLabel,
     animationRumV2RelationLabel,
     animationRumV2StatusLabel,
@@ -83,6 +84,48 @@ describe('Animation RUM v2 presentation helpers', () => {
         assert.equal(formatAnimationRumV2Metric(0, 'ratio'), '0%')
         assert.equal(animationRumV2StatusLabel('partial'), '部分测量')
         assert.equal(animationRumV2StatusLabel('unknown'), '未知')
+    })
+
+    it('keeps all six GPU timer result states visible without collapsing unavailable evidence into zero', () => {
+        const statusFieldByCapability = {
+            supported: 'notObserved',
+            disabled: 'notInstrumented',
+            unsupported: 'unsupported',
+            unknown: 'unknown',
+        } as const
+
+        for (const [capability, activeField] of Object.entries(statusFieldByCapability)) {
+            const statusCounts = {
+                measured: 0,
+                partial: 0,
+                notObserved: 0,
+                notInstrumented: 0,
+                unsupported: 0,
+                unknown: 0,
+                [activeField]: 1,
+            }
+            const gpuMetric = summaryMetric({
+                metricId: 'renderer.gpu-frame.p95',
+                family: 'renderer',
+                name: 'gpuFrameMs',
+                relation: 'adapter',
+                owner: 'renderer-adapter',
+                statusCounts,
+            })
+            const entries = animationRumV2MetricStatusCountEntries(gpuMetric.statusCounts)
+
+            assert.deepEqual(
+                entries.map(entry => entry.status),
+                ['measured', 'partial', 'not-observed', 'not-instrumented', 'unsupported', 'unknown']
+            )
+            assert.equal(entries.filter(entry => entry.count === 1).length, 1, capability)
+            assert.equal(entries.find(entry => entry.count === 1)?.status.replaceAll('-', ''), activeField.toLowerCase(), capability)
+            assert.equal(
+                entries.reduce((sum, entry) => sum + Number(entry.count), 0),
+                1,
+                capability
+            )
+        }
     })
 
     it('finds metrics by scope and relation instead of merging page and target evidence', () => {

@@ -140,6 +140,24 @@ export function animationRumV2StatusVariant(status: AnimationRumV2MetricStatus) 
     return 'outline' as const
 }
 
+const METRIC_STATUS_COUNT_FIELDS = [
+    ['measured', 'measured'],
+    ['partial', 'partial'],
+    ['not-observed', 'notObserved'],
+    ['not-instrumented', 'notInstrumented'],
+    ['unsupported', 'unsupported'],
+    ['unknown', 'unknown'],
+] as const satisfies readonly [AnimationRumV2MetricStatus, keyof AnimationRumV2SummaryMetric['statusCounts']][]
+
+/** Closed six-state view model; unavailable GPU evidence must never collapse into zero or generic unknown. */
+export function animationRumV2MetricStatusCountEntries(statusCounts: AnimationRumV2SummaryMetric['statusCounts']) {
+    return METRIC_STATUS_COUNT_FIELDS.map(([status, field]) => ({
+        status,
+        label: animationRumV2StatusLabel(status),
+        count: statusCounts[field],
+    }))
+}
+
 export function animationRumV2CapabilityStateLabel(state: AnimationRumV2CapabilityState): string {
     switch (state) {
         case 'supported':
