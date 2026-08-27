@@ -1132,6 +1132,10 @@ importers:
       '@condev-monitor/monitor-sdk-core':
         specifier: workspace:*
         version: link:../core
+    devDependencies:
+      '@condev-monitor/animation-rum-contract':
+        specifier: workspace:*
+        version: link:../animation-rum-contract
 
   packages/animation-lab: {}
 

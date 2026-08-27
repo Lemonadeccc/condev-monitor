@@ -12,6 +12,7 @@ export default defineConfig([
         outDir: 'build/cjs',
         clean: true,
         splitting: false,
+        noExternal: ['@condev-monitor/animation-rum-contract'],
     },
     {
         entry,
@@ -19,5 +20,6 @@ export default defineConfig([
         outDir: 'build/esm',
         clean: true,
         splitting: false,
+        noExternal: ['@condev-monitor/animation-rum-contract'],
     },
 ])

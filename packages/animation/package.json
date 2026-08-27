@@ -52,5 +52,8 @@
     "dependencies": {
         "@condev-monitor/monitor-sdk-browser-utils": "workspace:*",
         "@condev-monitor/monitor-sdk-core": "workspace:*"
+    },
+    "devDependencies": {
+        "@condev-monitor/animation-rum-contract": "workspace:*"
     }
 }
