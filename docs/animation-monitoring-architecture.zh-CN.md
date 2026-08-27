@@ -368,7 +368,7 @@ Firefox/WebKit 请求 trace 或 Lighthouse 时，会保留 0-duration 的显式 
 
 上传语义把每个被测动作拆成 `actionId + trigger + subject + outcome + timestamps`，并把 renderer/framework/motion/browser 证据作为可多值技术轴，而不是猜一个“框架名称”。指标使用闭集 `metricId + scope + aggregation + budgetRefs + evidenceRefs + limitations`。平台详情页按左侧动作、右侧证据展示触发方式、主题/表面、时间窗、技术证据、指标、阈值、发现与建议；页面右下角浮层则消费 SDK 的本地 Target/host adapter 证据。没有框架 adapter 的原生页面仍可测帧、主线程、交互和 DOM/SVG/Canvas 表面，但 owner、真实 GPU 时间等必须显示 `unsupported`/`not-instrumented`，不能填 0。
 
-默认诊断合同固定为 60 Hz（16.666667 ms），不是根据已经变慢的页面自校准。内置调查规则是 frame p95 `<=1.5×frame budget`（至少 120 帧）、slow-frame rate `<=5%`（至少 120 帧）、jank burst `<=0`（至少 120 帧）、Long Task count `<=0`（至少 1 个样本）和 input delay p95 `<=100 ms`（至少 3 个事件）。这些是版本化项目预算，不是浏览器标准或跨业务统一评分；高刷场景应在 scenario 明确写入 refresh contract。
+默认诊断合同固定为 60 Hz（16.666667 ms），不是根据已经变慢的页面自校准。兼容指标 `frame.refresh.inferred` 的准确含义是“可见页面 rAF 帧间隔 p50 推算出的回调节奏”，不是物理屏幕刷新率、compositor presentation FPS 或 GPU FPS；平台会显示这一限制，不能用它自动放宽预算。内置调查规则是 frame p95 `<=1.5×frame budget`（至少 120 帧）、slow-frame rate `<=5%`（至少 120 帧）、jank burst `<=0`（至少 120 帧）、Long Task count `<=0`（至少 1 个样本）和 input delay p95 `<=100 ms`（至少 3 个事件）。这些是版本化项目预算，不是浏览器标准或跨业务统一评分；高刷场景应在 scenario 明确写入 refresh contract。
 
 详情页按需显示五个视图：Overview 给重复测量的聚合；Animation 是动画/交互相关的 trace 子集；Performance 是完整有界 CDP 时间线及脱敏栈；Lighthouse 是另一轮 navigation 的分类、核心指标和失败审计；Artifacts 只列平台实际保存且当前有权下载的产物。Timeline/Lighthouse 前端代码按 tab 动态加载，避免诊断 UI 自身增加首屏成本。
 

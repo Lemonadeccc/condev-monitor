@@ -6,6 +6,8 @@ It is intentionally not imported by the Browser SDK. A lab runner controls a dis
 
 The page probe enables every standards-based, privacy-safe signal it can observe: frame cadence and slow tails, Long Tasks, Long Animation Frames, Event Timing phases, LCP/CLS, resources, Web Animations inventory, renderer surface/context families, Canvas backing pixels, video dropped-frame quality, reduced-motion candidates, and Chromium heap availability. Unsupported signals stay `unsupported`; an exposed capability without a valid sample stays `not-observed`, and an optional field that cannot yet be capability-detected stays `unknown`. GPU time, draw calls, framework ownership, business completion, and authored-source attribution are never guessed.
 
+`frame.refresh.inferred` keeps its catalog-v1 identity for compatibility, but its measured value is specifically the observed visible-page rAF callback cadence derived as `1000 / frame-interval p50`. It is not a physical display refresh-rate measurement, compositor presentation FPS, or GPU FPS. Every decoded instance carries `observed-page-raf-cadence-not-display-refresh-rate`; use the explicit measurement-contract `expectedHz` and `targetFrameMs` for budgets rather than letting this observation relax the target.
+
 ## Runtime boundary
 
 The package ships ESM, CommonJS, and type declarations for the Node-side runner and platform services. It is not injected into the page being measured and is not an alternative Browser SDK. The executable runner lives in `@condev-monitor/animation-lab-runner` and requires Node.js 22 or newer.
