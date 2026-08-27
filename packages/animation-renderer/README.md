@@ -28,7 +28,9 @@ const rendererProbe = client.animation.createRendererProbe({
         drawCalls: renderer.info.render.calls,
         triangles: renderer.info.render.triangles,
         contextLost: gl.isContextLost(),
-        gpu: gpuTimer.takeLatestEvidence(),
+        // Includes both one-shot evidence and an explicit supported /
+        // unsupported / disabled / unknown timer capability.
+        ...gpuTimer.takeRendererHostTiming(),
     }),
 })
 
@@ -50,7 +52,7 @@ function destroyMonitoring() {
 }
 ```
 
-`createThreeRendererProbe({ readGpuTiming: () => gpuTimer.takeLatestEvidence() })` accepts the same one-shot evidence when using the animation core directly. Legacy Three GPU readings with `valid/disjoint/contextLost` flags remain supported.
+`takeLatestEvidence()` remains available for low-level consumers. Prefer `takeRendererHostTiming()` with the generic renderer probe because it keeps an enabled-but-not-yet-resolved timer distinct from an unsupported or disabled timer. Legacy Three GPU readings with `valid/disjoint/contextLost` flags remain supported.
 
 `beginFrame()` and `endFrame()` must synchronously enclose one complete renderer frame. Do not put an `await` between them, and do not use the result for an arbitrary sub-region while naming it GPU frame time. The result measures completion of the enclosed GPU command interval; it does not measure browser composition, display scanout, INP, CPU submission time, or the entire page frame.
 
@@ -72,7 +74,7 @@ The timer never calls `gl.finish()`, `gl.flush()`, `gl.getError()`, `WEBGL_lose_
 - `invalid`: a result was malformed or exceeded its bounded poll lifetime.
 - `error`: an extension API violated its contract or threw.
 
-Unsupported extensions and a pending query produce no evidence, not `0`. The local `getSnapshot()` separates `unsupported`, `owner-conflict`, `context-lost`, `error`, and `disposed`, and exposes only bounded numeric diagnostics. Re-reading after a successful consume returns `null`, so one GPU query cannot be counted on multiple frames.
+Unsupported extensions and a pending query produce no evidence, not `0`. `takeRendererHostTiming()` pairs that nullable evidence with a closed host capability: `supported`, `unsupported`, `disabled`, or `unknown`. Owner conflicts, context loss, and API errors map to `unknown`; disposal maps to `disabled`. Initialization checks context loss before extension lookup and rechecks when lookup returns `null`, so a loss race cannot be mislabeled as an unsupported extension. The local `getSnapshot()` retains the more specific diagnostic state and exposes only bounded numeric counters. Re-reading after a successful consume returns `null`, so one GPU query cannot be counted on multiple frames.
 
 Context loss is terminal for an instance. After the application's `webglcontextrestored` handling has recreated renderer resources, dispose the old timer and create a new one. The timer never prevents the loss event, restores resources, destroys the renderer, or loses the application context.
 
