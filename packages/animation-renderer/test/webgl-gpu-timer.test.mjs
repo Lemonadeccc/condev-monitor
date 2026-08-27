@@ -34,6 +34,7 @@ function createFakeContext(backend, options = {}) {
 
     const hit = name => {
         calls.push(name)
+        options.onCall?.(name)
         if (throwOn.has(name)) throw new Error(`fake ${name} failure`)
     }
     const makeQuery = () => {
@@ -187,6 +188,9 @@ function createFakeContext(backend, options = {}) {
         },
         setHostQueryActive(value = true) {
             hostCurrentQuery = value ? { host: true } : null
+        },
+        getCurrentQuery() {
+            return currentQuery
         },
     }
 }
@@ -664,4 +668,931 @@ test('dispose balances owned active queries, deletes each query once, and is ide
     assert.equal(timer.endFrame(), false)
     assert.doesNotThrow(() => timer.poll())
     assert.equal(timer.takeLatestEvidence(), null)
+})
+
+function targetWindow(startedAt, endedAt, relation = 'selection-window') {
+    return { startedAt, endedAt, relation }
+}
+
+function createTargetTimer(backend = 'webgl2', timerOptions = {}, contextOptions = {}) {
+    const fake = createFakeContext(backend, contextOptions)
+    let time = 0
+    const timer = createWebGlGpuTimer({
+        gl: fake.gl,
+        backend,
+        sampleEvery: 1,
+        now: () => time,
+        ...timerOptions,
+    })
+    return {
+        fake,
+        timer,
+        setTime(value) {
+            time = value
+        },
+    }
+}
+
+function recordTargetQuery(harness, { start, end, resultNanoseconds, resolveAt = end }) {
+    harness.setTime(start)
+    assert.equal(harness.timer.beginFrame(), true)
+    harness.setTime(end)
+    assert.equal(harness.timer.endFrame(), true)
+    const queryIndex = harness.fake.queries.length - 1
+    harness.setTime(resolveAt)
+    harness.fake.setAvailable(queryIndex, resultNanoseconds)
+    harness.timer.poll()
+    return queryIndex
+}
+
+for (const backend of ['webgl', 'webgl2']) {
+    test(`${backend} retains non-consuming target-window p95 at the original frame bounds`, () => {
+        const harness = createTargetTimer(backend, { maxRetainedFrames: 4 })
+        recordTargetQuery(harness, { start: 0, end: 10, resultNanoseconds: 1_000_000, resolveAt: 100 })
+
+        const first = harness.timer.inspectWindow(targetWindow(0, 10))
+        assert.deepEqual(first, {
+            family: backend,
+            capability: { state: 'supported', observed: true, buffered: false },
+            metrics: { gpuFrameMsP95: 1 },
+            evidence: {
+                window: { startedAt: 0, endedAt: 10 },
+                acceptedSampleCount: 1,
+                retainedSampleCount: 1,
+                droppedSampleCount: 0,
+                rejectedSampleCount: 0,
+                truncated: false,
+                gpu: {
+                    valid: true,
+                    disjoint: false,
+                    contextLost: false,
+                    source: 'webgl-timer-query',
+                },
+            },
+        })
+        assert.equal(harness.timer.inspectWindow(targetWindow(90, 110)).capability.observed, false)
+        assert.equal(harness.timer.inspectWindow(targetWindow(5, 10)).capability.observed, false)
+        assert.deepEqual(harness.timer.takeLatestEvidence(), {
+            status: 'measured',
+            timeMs: 1,
+            source: 'webgl-disjoint-timer-query',
+        })
+        assert.deepEqual(harness.timer.inspectWindow(targetWindow(0, 10)), first)
+
+        recordTargetQuery(harness, { start: 20, end: 30, resultNanoseconds: 2_000_000, resolveAt: 200 })
+        const combined = harness.timer.inspectWindow(targetWindow(0, 30, 'interaction-window'))
+        assert.deepEqual(combined, {
+            family: backend,
+            capability: { state: 'supported', observed: true, buffered: false },
+            metrics: { gpuFrameMsP95: 1.95 },
+            evidence: {
+                window: { startedAt: 0, endedAt: 30 },
+                acceptedSampleCount: 2,
+                retainedSampleCount: 2,
+                droppedSampleCount: 0,
+                rejectedSampleCount: 0,
+                truncated: false,
+                gpu: {
+                    valid: true,
+                    disjoint: false,
+                    contextLost: false,
+                    source: 'webgl-timer-query',
+                },
+            },
+        })
+        const boundInspect = harness.timer.inspect
+        assert.deepEqual(boundInspect({ evidenceWindow: targetWindow(0, 30, 'interaction-window') }), {
+            inventory: { renderers: [backend] },
+            owners: [{ relation: 'renderer-host', label: 'Condev WebGL GPU timer' }],
+            renderer: combined,
+        })
+        assert.deepEqual(harness.timer.takeRendererHostTiming(), {
+            gpuTimerCapability: 'supported',
+            gpu: { status: 'measured', timeMs: 2, source: 'webgl-disjoint-timer-query' },
+        })
+        assert.deepEqual(harness.timer.inspectWindow(targetWindow(0, 30)), combined)
+        harness.timer.dispose()
+    })
+}
+
+test('pending, sparse, and capacity-skipped WebGL queries never manufacture target zeroes', () => {
+    const harness = createTargetTimer('webgl2', { sampleEvery: 2, maxPendingQueries: 1, maxRetainedFrames: 2 })
+    harness.setTime(0)
+    assert.equal(harness.timer.beginFrame(), true)
+    harness.setTime(10)
+    assert.equal(harness.timer.endFrame(), true)
+    harness.setTime(20)
+    assert.equal(harness.timer.beginFrame(), false)
+    harness.setTime(40)
+    assert.equal(harness.timer.beginFrame(), false)
+
+    const beforeResolution = harness.timer.inspectWindow(targetWindow(0, 50))
+    assert.equal(beforeResolution.capability.observed, false)
+    assert.equal('metrics' in beforeResolution, false)
+    assert.equal('evidence' in beforeResolution, false)
+    assert.equal(harness.timer.takeLatestEvidence(), null)
+
+    harness.fake.setAvailable(0, 0)
+    harness.timer.poll()
+    const measuredZero = harness.timer.inspectWindow(targetWindow(0, 10))
+    assert.equal(measuredZero.metrics.gpuFrameMsP95, 0)
+    assert.equal(measuredZero.evidence.acceptedSampleCount, 1)
+    assert.equal(measuredZero.evidence.rejectedSampleCount, 0)
+    assert.equal(measuredZero.evidence.gpu.valid, true)
+    assert.equal(measuredZero.evidence.gpu.source, 'webgl-timer-query')
+    harness.timer.dispose()
+})
+
+test('a contained pending WebGL query suppresses biased p95 until the fixed window settles', () => {
+    const harness = createTargetTimer('webgl2', { maxPendingQueries: 2, maxRetainedFrames: 4 })
+    recordTargetQuery(harness, { start: 0, end: 10, resultNanoseconds: 1_000_000 })
+    harness.setTime(20)
+    assert.equal(harness.timer.beginFrame(), true)
+    harness.setTime(30)
+    assert.equal(harness.timer.endFrame(), true)
+
+    const unsettled = harness.timer.inspectWindow(targetWindow(0, 30))
+    assert.equal(unsettled.capability.observed, false)
+    assert.equal('metrics' in unsettled, false)
+    assert.equal('evidence' in unsettled, false)
+    assert.deepEqual(harness.timer.inspectWindow(targetWindow(0, 10)).metrics, { gpuFrameMsP95: 1 })
+
+    harness.fake.setAvailable(1, 100_000_000)
+    harness.timer.poll()
+    const settled = harness.timer.inspectWindow(targetWindow(0, 30))
+    assert.deepEqual(settled, {
+        family: 'webgl2',
+        capability: { state: 'supported', observed: true, buffered: false },
+        metrics: { gpuFrameMsP95: 95.05 },
+        evidence: {
+            window: { startedAt: 0, endedAt: 30 },
+            acceptedSampleCount: 2,
+            retainedSampleCount: 2,
+            droppedSampleCount: 0,
+            rejectedSampleCount: 0,
+            truncated: false,
+            gpu: {
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+                source: 'webgl-timer-query',
+            },
+        },
+    })
+    assert.deepEqual(harness.timer.inspectWindow(targetWindow(0, 30)), settled)
+    harness.timer.dispose()
+})
+
+test('WebGL target ring exposes exact accepted/retained/dropped arithmetic and forgets ambiguous windows', () => {
+    const harness = createTargetTimer('webgl2', { maxRetainedFrames: 2 })
+    recordTargetQuery(harness, { start: 0, end: 10, resultNanoseconds: 1_000_000 })
+    recordTargetQuery(harness, { start: 20, end: 30, resultNanoseconds: 2_000_000 })
+    recordTargetQuery(harness, { start: 40, end: 50, resultNanoseconds: 3_000_000 })
+
+    const full = harness.timer.inspectWindow(targetWindow(0, 50))
+    assert.deepEqual(full, {
+        family: 'webgl2',
+        capability: { state: 'supported', observed: true, buffered: false },
+        metrics: {},
+        evidence: {
+            window: { startedAt: 20, endedAt: 50 },
+            acceptedSampleCount: 3,
+            retainedSampleCount: 2,
+            droppedSampleCount: 1,
+            rejectedSampleCount: 0,
+            truncated: true,
+            gpu: {
+                valid: false,
+                disjoint: false,
+                contextLost: false,
+                source: 'webgl-timer-query',
+            },
+        },
+    })
+    assert.equal(full.evidence.acceptedSampleCount, full.evidence.retainedSampleCount + full.evidence.droppedSampleCount)
+    assert.equal(full.evidence.truncated, full.evidence.droppedSampleCount > 0)
+
+    const recent = harness.timer.inspectWindow(targetWindow(20, 50))
+    assert.equal(recent.metrics.gpuFrameMsP95, 2.95)
+    assert.deepEqual(
+        {
+            accepted: recent.evidence.acceptedSampleCount,
+            retained: recent.evidence.retainedSampleCount,
+            dropped: recent.evidence.droppedSampleCount,
+            rejected: recent.evidence.rejectedSampleCount,
+            truncated: recent.evidence.truncated,
+        },
+        { accepted: 2, retained: 2, dropped: 0, rejected: 0, truncated: false }
+    )
+
+    const ambiguous = harness.timer.inspectWindow(targetWindow(5, 50))
+    assert.equal(ambiguous.capability.observed, false)
+    assert.match(ambiguous.capability.reason, /exact sample count is unavailable/)
+    assert.equal('metrics' in ambiguous, false)
+    assert.equal('evidence' in ambiguous, false)
+    const evictedOnly = harness.timer.inspectWindow(targetWindow(0, 10))
+    assert.equal(evictedOnly.capability.observed, false)
+    assert.equal('evidence' in evictedOnly, false)
+    harness.timer.dispose()
+})
+
+test('invalid and mixed WebGL target records remain observed but fail closed', () => {
+    const invalid = createTargetTimer('webgl2', { maxRetainedFrames: 4 })
+    recordTargetQuery(invalid, { start: 0, end: 10, resultNanoseconds: 1_000_000 })
+    recordTargetQuery(invalid, { start: 20, end: 30, resultNanoseconds: Number.NaN })
+    const mixed = invalid.timer.inspectWindow(targetWindow(0, 30))
+    assert.deepEqual(mixed, {
+        family: 'webgl2',
+        capability: { state: 'supported', observed: true, buffered: false },
+        metrics: {},
+        evidence: {
+            window: { startedAt: 0, endedAt: 30 },
+            acceptedSampleCount: 1,
+            retainedSampleCount: 1,
+            droppedSampleCount: 0,
+            rejectedSampleCount: 1,
+            truncated: false,
+            gpu: {
+                valid: false,
+                disjoint: false,
+                contextLost: false,
+                source: 'webgl-timer-query',
+            },
+        },
+    })
+    assert.equal('gpuFrameMsP95' in mixed.metrics, false)
+    assert.deepEqual(
+        {
+            accepted: invalid.timer.getSnapshot().acceptedTargetSampleCount,
+            retained: invalid.timer.getSnapshot().retainedTargetSampleCount,
+            dropped: invalid.timer.getSnapshot().droppedTargetSampleCount,
+            rejected: invalid.timer.getSnapshot().rejectedTargetSampleCount,
+        },
+        { accepted: 1, retained: 1, dropped: 0, rejected: 1 }
+    )
+    invalid.timer.dispose()
+})
+
+test('measured and rejected WebGL target eviction counters remain independent and exact', () => {
+    const harness = createTargetTimer('webgl2', { maxRetainedFrames: 2 })
+    recordTargetQuery(harness, { start: 0, end: 10, resultNanoseconds: 1_000_000 })
+    recordTargetQuery(harness, { start: 20, end: 30, resultNanoseconds: Number.NaN })
+    recordTargetQuery(harness, { start: 40, end: 50, resultNanoseconds: 3_000_000 })
+    recordTargetQuery(harness, { start: 60, end: 70, resultNanoseconds: Number.NaN })
+
+    assert.deepEqual(
+        {
+            capacity: harness.timer.getSnapshot().targetResultCapacity,
+            accepted: harness.timer.getSnapshot().acceptedTargetSampleCount,
+            retained: harness.timer.getSnapshot().retainedTargetSampleCount,
+            dropped: harness.timer.getSnapshot().droppedTargetSampleCount,
+            rejected: harness.timer.getSnapshot().rejectedTargetSampleCount,
+            retainedRejected: harness.timer.getSnapshot().retainedTargetRejectionCount,
+            droppedRejected: harness.timer.getSnapshot().droppedTargetRejectionCount,
+        },
+        {
+            capacity: 2,
+            accepted: 2,
+            retained: 1,
+            dropped: 1,
+            rejected: 2,
+            retainedRejected: 1,
+            droppedRejected: 1,
+        }
+    )
+
+    const full = harness.timer.inspectWindow(targetWindow(0, 70))
+    assert.deepEqual(full, {
+        family: 'webgl2',
+        capability: { state: 'supported', observed: true, buffered: false },
+        metrics: {},
+        evidence: {
+            window: { startedAt: 40, endedAt: 70 },
+            acceptedSampleCount: 2,
+            retainedSampleCount: 1,
+            droppedSampleCount: 1,
+            rejectedSampleCount: 2,
+            truncated: true,
+            gpu: {
+                valid: false,
+                disjoint: false,
+                contextLost: false,
+                source: 'webgl-timer-query',
+            },
+        },
+    })
+    assert.equal(full.evidence.acceptedSampleCount, full.evidence.retainedSampleCount + full.evidence.droppedSampleCount)
+
+    const recent = harness.timer.inspectWindow(targetWindow(40, 70))
+    assert.deepEqual(
+        {
+            metrics: recent.metrics,
+            accepted: recent.evidence.acceptedSampleCount,
+            retained: recent.evidence.retainedSampleCount,
+            dropped: recent.evidence.droppedSampleCount,
+            rejected: recent.evidence.rejectedSampleCount,
+            truncated: recent.evidence.truncated,
+        },
+        { metrics: {}, accepted: 1, retained: 1, dropped: 0, rejected: 1, truncated: false }
+    )
+    harness.timer.dispose()
+})
+
+test('rejected-only eviction preserves normalized measured counts without truncation', () => {
+    const harness = createTargetTimer('webgl2', { maxRetainedFrames: 2 })
+    recordTargetQuery(harness, { start: 0, end: 10, resultNanoseconds: Number.NaN })
+    recordTargetQuery(harness, { start: 20, end: 30, resultNanoseconds: 2_000_000 })
+    recordTargetQuery(harness, { start: 40, end: 50, resultNanoseconds: Number.NaN })
+
+    assert.deepEqual(
+        {
+            accepted: harness.timer.getSnapshot().acceptedTargetSampleCount,
+            retained: harness.timer.getSnapshot().retainedTargetSampleCount,
+            dropped: harness.timer.getSnapshot().droppedTargetSampleCount,
+            rejected: harness.timer.getSnapshot().rejectedTargetSampleCount,
+            retainedRejected: harness.timer.getSnapshot().retainedTargetRejectionCount,
+            droppedRejected: harness.timer.getSnapshot().droppedTargetRejectionCount,
+        },
+        {
+            accepted: 1,
+            retained: 1,
+            dropped: 0,
+            rejected: 2,
+            retainedRejected: 1,
+            droppedRejected: 1,
+        }
+    )
+
+    const inspected = harness.timer.inspectWindow(targetWindow(0, 50))
+    assert.deepEqual(inspected, {
+        family: 'webgl2',
+        capability: { state: 'supported', observed: true, buffered: false },
+        metrics: {},
+        evidence: {
+            window: { startedAt: 20, endedAt: 50 },
+            acceptedSampleCount: 1,
+            retainedSampleCount: 1,
+            droppedSampleCount: 0,
+            rejectedSampleCount: 2,
+            truncated: false,
+            gpu: {
+                valid: false,
+                disjoint: false,
+                contextLost: false,
+                source: 'webgl-timer-query',
+            },
+        },
+    })
+    assert.equal(inspected.evidence.acceptedSampleCount, inspected.evidence.retainedSampleCount + inspected.evidence.droppedSampleCount)
+    assert.equal(inspected.evidence.truncated, inspected.evidence.droppedSampleCount > 0)
+    harness.timer.dispose()
+})
+
+test('disjoint, context-lost, and API-error WebGL target records preserve closed rejection states', () => {
+    const cases = [
+        {
+            name: 'disjoint',
+            setup: () => createTargetTimer('webgl2'),
+            reject(harness) {
+                harness.fake.setAvailable(0, 2_000_000)
+                harness.fake.setDisjoint()
+                harness.timer.poll()
+            },
+            gpu: { valid: false, disjoint: true, contextLost: false, source: 'webgl-timer-query' },
+        },
+        {
+            name: 'context-lost',
+            setup: () => createTargetTimer('webgl2'),
+            reject(harness) {
+                harness.fake.setContextLost()
+                harness.timer.poll()
+            },
+            gpu: { valid: false, disjoint: false, contextLost: true, source: 'webgl-timer-query' },
+        },
+        {
+            name: 'error',
+            setup: () => createTargetTimer('webgl2', {}, { throwOn: ['gl.readAvailable'] }),
+            reject(harness) {
+                harness.timer.poll()
+            },
+            gpu: { valid: false, disjoint: false, contextLost: false, source: 'webgl-timer-query' },
+        },
+        {
+            name: 'timeout',
+            setup: () => createTargetTimer('webgl2', { maxPollAttempts: 1 }),
+            reject(harness) {
+                harness.timer.poll()
+            },
+            gpu: { valid: false, disjoint: false, contextLost: false, source: 'webgl-timer-query' },
+        },
+    ]
+
+    for (const value of cases) {
+        const harness = value.setup()
+        harness.setTime(0)
+        assert.equal(harness.timer.beginFrame(), true, value.name)
+        harness.setTime(10)
+        assert.equal(harness.timer.endFrame(), true, value.name)
+        value.reject(harness)
+        const inspected = harness.timer.inspectWindow(targetWindow(0, 10))
+        assert.deepEqual(
+            inspected,
+            {
+                family: 'webgl2',
+                capability: { state: 'supported', observed: true, buffered: false },
+                metrics: {},
+                evidence: {
+                    window: { startedAt: 0, endedAt: 10 },
+                    acceptedSampleCount: 0,
+                    retainedSampleCount: 0,
+                    droppedSampleCount: 0,
+                    rejectedSampleCount: 1,
+                    truncated: false,
+                    gpu: value.gpu,
+                },
+            },
+            value.name
+        )
+        assert.equal(harness.timer.getSnapshot().acceptedTargetSampleCount, 0, value.name)
+        assert.equal(harness.timer.getSnapshot().rejectedTargetSampleCount, 1, value.name)
+        harness.timer.dispose()
+    }
+})
+
+test('runtime WebGL context loss wins over create, current-query, and disjoint races', () => {
+    const cases = [
+        { name: 'create', call: 'gl.createQuery', throws: true },
+        { name: 'read-current', call: 'gl.getQuery', throws: true },
+        { name: 'read-disjoint', call: 'gl.getParameter', disjoint: true },
+    ]
+
+    for (const value of cases) {
+        let armed = false
+        let fake
+        fake = createFakeContext('webgl2', {
+            onCall(name) {
+                if (!armed || name !== value.call) return
+                fake.setContextLost()
+                if (value.disjoint) fake.setDisjoint()
+                if (value.throws) throw new Error(`${value.name} raced with context loss`)
+            },
+        })
+        const timer = createWebGlGpuTimer({ gl: fake.gl, backend: 'webgl2', sampleEvery: 1, now: () => 0 })
+        armed = true
+        let began
+        assert.doesNotThrow(() => {
+            began = timer.beginFrame()
+        }, value.name)
+        assert.equal(began, false, value.name)
+        assert.equal(timer.getSnapshot().capability, 'context-lost', value.name)
+        assert.deepEqual(timer.takeLatestEvidence(), { status: 'context-lost', source: 'webgl-disjoint-timer-query' }, value.name)
+        const target = timer.inspectWindow(targetWindow(0, 10))
+        assert.equal(target.capability.state, 'unknown', value.name)
+        assert.equal(target.capability.observed, false, value.name)
+        timer.dispose()
+    }
+})
+
+test('context loss during availability read beats the API exception and records one rejection', () => {
+    let armed = false
+    let fake
+    fake = createFakeContext('webgl2', {
+        onCall(name) {
+            if (!armed || name !== 'gl.readAvailable') return
+            fake.setContextLost()
+            throw new Error('availability raced with context loss')
+        },
+    })
+    let time = 0
+    const timer = createWebGlGpuTimer({
+        gl: fake.gl,
+        backend: 'webgl2',
+        sampleEvery: 1,
+        now: () => time,
+    })
+    assert.equal(timer.beginFrame(), true)
+    time = 10
+    assert.equal(timer.endFrame(), true)
+    armed = true
+    assert.doesNotThrow(() => timer.poll())
+    assert.equal(timer.getSnapshot().capability, 'context-lost')
+    assert.deepEqual(timer.takeLatestEvidence(), {
+        status: 'context-lost',
+        source: 'webgl-disjoint-timer-query',
+    })
+    assert.deepEqual(timer.inspectWindow(targetWindow(0, 10)), {
+        family: 'webgl2',
+        capability: { state: 'supported', observed: true, buffered: false },
+        metrics: {},
+        evidence: {
+            window: { startedAt: 0, endedAt: 10 },
+            acceptedSampleCount: 0,
+            retainedSampleCount: 0,
+            droppedSampleCount: 0,
+            rejectedSampleCount: 1,
+            truncated: false,
+            gpu: {
+                valid: false,
+                disjoint: false,
+                contextLost: true,
+                source: 'webgl-timer-query',
+            },
+        },
+    })
+    timer.dispose()
+})
+
+test('nested WebGL callbacks are blocked without changing the successful outer host query', () => {
+    const nested = {
+        currentBegin: [],
+        createEnd: [],
+        beginBegin: [],
+        endEnd: [],
+        disjointPollCount: 0,
+        availablePollCount: 0,
+    }
+    let armed = false
+    let timer
+    const fake = createFakeContext('webgl2', {
+        onCall(name) {
+            if (!armed) return
+            if (name === 'gl.getQuery') nested.currentBegin.push(timer.beginFrame())
+            else if (name === 'gl.createQuery') nested.createEnd.push(timer.endFrame())
+            else if (name === 'gl.beginQuery') nested.beginBegin.push(timer.beginFrame())
+            else if (name === 'gl.endQuery') nested.endEnd.push(timer.endFrame())
+            else if (name === 'gl.getParameter') {
+                nested.disjointPollCount += 1
+                timer.poll()
+            } else if (name === 'gl.readAvailable') {
+                nested.availablePollCount += 1
+                timer.poll()
+            }
+        },
+    })
+    let time = 0
+    timer = createWebGlGpuTimer({
+        gl: fake.gl,
+        backend: 'webgl2',
+        sampleEvery: 1,
+        now: () => time,
+    })
+    armed = true
+    const runtimeCallStart = fake.calls.length
+
+    assert.equal(timer.beginFrame(), true)
+    time = 10
+    assert.equal(timer.endFrame(), true)
+    fake.setAvailable(0, 2_000_000)
+    assert.doesNotThrow(() => timer.poll())
+
+    assert.deepEqual(nested.currentBegin, [false, false])
+    assert.deepEqual(nested.createEnd, [false])
+    assert.deepEqual(nested.beginBegin, [false])
+    assert.deepEqual(nested.endEnd, [false])
+    assert.equal(nested.disjointPollCount, 2)
+    assert.equal(nested.availablePollCount, 1)
+    assert.deepEqual(timer.takeLatestEvidence(), {
+        status: 'measured',
+        timeMs: 2,
+        source: 'webgl-disjoint-timer-query',
+    })
+    assert.deepEqual(timer.inspectWindow(targetWindow(0, 10)).metrics, { gpuFrameMsP95: 2 })
+    assert.equal(fake.queries[0].deleteCount, 1)
+    assert.equal(fake.getCurrentQuery(), null)
+
+    const runtimeCalls = fake.calls.slice(runtimeCallStart)
+    for (const [name, count] of [
+        ['gl.getQuery', 2],
+        ['gl.getParameter', 2],
+        ['gl.createQuery', 1],
+        ['gl.beginQuery', 1],
+        ['gl.endQuery', 1],
+        ['gl.readAvailable', 1],
+        ['gl.readResult', 1],
+        ['gl.deleteQuery', 1],
+    ]) {
+        assert.equal(runtimeCalls.filter(call => call === name).length, count, name)
+    }
+    timer.dispose()
+})
+
+for (const value of [
+    { name: 'current-query read', call: 'gl.getQuery', phase: 'begin', queryCount: 0, endCallCount: 0 },
+    { name: 'disjoint read', call: 'gl.getParameter', phase: 'begin', queryCount: 0, endCallCount: 0 },
+    { name: 'query creation', call: 'gl.createQuery', phase: 'begin', queryCount: 1, endCallCount: 0 },
+    { name: 'query begin', call: 'gl.beginQuery', phase: 'begin', queryCount: 1, endCallCount: 1 },
+    { name: 'query end', call: 'gl.endQuery', phase: 'end', queryCount: 1, endCallCount: 1 },
+    { name: 'availability read', call: 'gl.readAvailable', phase: 'poll', queryCount: 1, endCallCount: 1 },
+]) {
+    test(`dispose re-entry from ${value.name} releases ownership without leaking a query`, () => {
+        let armed = false
+        let fired = false
+        let timer
+        const fake = createFakeContext('webgl2', {
+            onCall(name) {
+                if (!armed || fired || name !== value.call) return
+                fired = true
+                timer.dispose()
+            },
+        })
+        timer = createWebGlGpuTimer({ gl: fake.gl, backend: 'webgl2', sampleEvery: 1, now: () => 0 })
+
+        let outerResult
+        if (value.phase === 'begin') {
+            armed = true
+            assert.doesNotThrow(() => {
+                outerResult = timer.beginFrame()
+            })
+            assert.equal(outerResult, false)
+        } else {
+            assert.equal(timer.beginFrame(), true)
+            if (value.phase === 'end') {
+                armed = true
+                assert.doesNotThrow(() => {
+                    outerResult = timer.endFrame()
+                })
+                assert.equal(outerResult, false)
+            } else {
+                assert.equal(timer.endFrame(), true)
+                fake.setAvailable(0, 1_000_000)
+                armed = true
+                assert.doesNotThrow(() => timer.poll())
+            }
+        }
+
+        assert.equal(fired, true)
+        assert.equal(timer.getSnapshot().capability, 'disposed')
+        assert.equal(timer.takeLatestEvidence(), null)
+        assert.equal(fake.queries.length, value.queryCount)
+        assert.equal(fake.getCurrentQuery(), null)
+        assert.equal(fake.calls.filter(call => call === 'gl.endQuery').length, value.endCallCount)
+        for (const query of fake.queries) assert.equal(query.deleteCount, 1)
+
+        const replacement = createWebGlGpuTimer({ gl: fake.gl, backend: 'webgl2', sampleEvery: 1, now: () => 0 })
+        assert.equal(replacement.supported, true)
+        replacement.dispose()
+    })
+}
+
+test('a throwing endQuery is invoked once and cleaned without a second end attempt', () => {
+    const fake = createFakeContext('webgl2', { throwOn: ['gl.endQuery'] })
+    const timer = createWebGlGpuTimer({ gl: fake.gl, backend: 'webgl2', sampleEvery: 1, now: () => 0 })
+    assert.equal(timer.beginFrame(), true)
+    let ended
+    assert.doesNotThrow(() => {
+        ended = timer.endFrame()
+    })
+    assert.equal(ended, false)
+    assert.equal(timer.getSnapshot().capability, 'error')
+    assert.equal(fake.calls.filter(call => call === 'gl.endQuery').length, 1)
+    assert.equal(fake.queries[0].deleteCount, 1)
+    assert.equal(fake.getCurrentQuery(), null)
+    assert.deepEqual(timer.takeLatestEvidence(), { status: 'error', source: 'webgl-disjoint-timer-query' })
+    timer.dispose()
+    assert.equal(fake.calls.filter(call => call === 'gl.endQuery').length, 1)
+    assert.equal(fake.queries[0].deleteCount, 1)
+})
+
+test('unsupported, owner-conflict, initialization-error, and disposed timers expose no target measurement', () => {
+    const unsupportedFake = createFakeContext('webgl2', { extensionAvailable: false })
+    const unsupported = createWebGlGpuTimer({ gl: unsupportedFake.gl, backend: 'webgl2', now: () => 0 })
+    const unsupportedInspection = unsupported.inspectWindow(targetWindow(0, 10))
+    assert.equal(unsupportedInspection.family, 'webgl2')
+    assert.equal(unsupportedInspection.capability.state, 'unsupported')
+    assert.equal(unsupportedInspection.capability.observed, false)
+    assert.equal('metrics' in unsupportedInspection, false)
+    unsupported.dispose()
+
+    const ownerFake = createFakeContext('webgl2')
+    const owner = createWebGlGpuTimer({ gl: ownerFake.gl, backend: 'webgl2', now: () => 0 })
+    const conflict = createWebGlGpuTimer({ gl: ownerFake.gl, backend: 'webgl2', now: () => 0 })
+    assert.equal(conflict.inspectWindow(targetWindow(0, 10)).capability.state, 'unknown')
+    assert.equal(conflict.inspectWindow(targetWindow(0, 10)).capability.observed, false)
+    conflict.dispose()
+    owner.dispose()
+
+    const initializationError = createWebGlGpuTimer({ gl: {}, backend: 'webgl2', now: () => 0 })
+    assert.equal(initializationError.inspectWindow(targetWindow(0, 10)).capability.state, 'unknown')
+    assert.equal(initializationError.inspectWindow(targetWindow(0, 10)).capability.observed, false)
+    initializationError.dispose()
+
+    const disposedHarness = createTargetTimer('webgl2')
+    disposedHarness.timer.dispose()
+    const disposed = disposedHarness.timer.inspectWindow(targetWindow(0, 10))
+    assert.equal(disposed.capability.state, 'unknown')
+    assert.equal(disposed.capability.observed, false)
+    assert.equal('metrics' in disposed, false)
+})
+
+test('WebGL target clock failures, regression, and re-entry never escape or become measured', () => {
+    const throwingFake = createFakeContext('webgl2')
+    const throwing = createWebGlGpuTimer({
+        gl: throwingFake.gl,
+        backend: 'webgl2',
+        sampleEvery: 1,
+        now() {
+            throw new Error('clock failure')
+        },
+    })
+    let throwingBegan
+    assert.doesNotThrow(() => {
+        throwingBegan = throwing.beginFrame()
+    })
+    assert.equal(throwingBegan, true)
+    assert.equal(throwing.endFrame(), true)
+    assert.equal(throwingFake.queries.length, 1)
+    assert.equal(throwing.getSnapshot().clockErrorCount, 2)
+    throwingFake.setAvailable(0, 1_000_000)
+    throwing.poll()
+    assert.deepEqual(throwing.takeLatestEvidence(), {
+        status: 'measured',
+        timeMs: 1,
+        source: 'webgl-disjoint-timer-query',
+    })
+    assert.equal(throwing.inspectWindow(targetWindow(0, 10)).capability.observed, false)
+    throwing.dispose()
+
+    const backward = createTargetTimer('webgl2')
+    backward.setTime(10)
+    assert.equal(backward.timer.beginFrame(), true)
+    backward.setTime(5)
+    assert.equal(backward.timer.endFrame(), true)
+    assert.equal(backward.timer.getSnapshot().clockErrorCount, 1)
+    backward.fake.setAvailable(0, 1_000_000)
+    backward.timer.poll()
+    assert.deepEqual(backward.timer.takeLatestEvidence(), {
+        status: 'measured',
+        timeMs: 1,
+        source: 'webgl-disjoint-timer-query',
+    })
+    assert.equal(backward.timer.inspectWindow(targetWindow(0, 20)).capability.observed, false)
+    backward.timer.dispose()
+
+    const crossFrame = createTargetTimer('webgl2')
+    recordTargetQuery(crossFrame, { start: 10, end: 20, resultNanoseconds: 1_000_000 })
+    assert.deepEqual(crossFrame.timer.takeLatestEvidence(), {
+        status: 'measured',
+        timeMs: 1,
+        source: 'webgl-disjoint-timer-query',
+    })
+    crossFrame.setTime(15)
+    assert.equal(crossFrame.timer.beginFrame(), true)
+    crossFrame.setTime(25)
+    assert.equal(crossFrame.timer.endFrame(), true)
+    assert.equal(crossFrame.timer.getSnapshot().clockErrorCount, 1)
+    crossFrame.fake.setAvailable(1, 2_000_000)
+    crossFrame.timer.poll()
+    assert.deepEqual(crossFrame.timer.takeLatestEvidence(), {
+        status: 'measured',
+        timeMs: 2,
+        source: 'webgl-disjoint-timer-query',
+    })
+    const retained = crossFrame.timer.inspectWindow(targetWindow(0, 30))
+    assert.equal(retained.metrics.gpuFrameMsP95, 1)
+    assert.equal(retained.evidence.acceptedSampleCount, 1)
+    crossFrame.timer.dispose()
+
+    const reentrantFake = createFakeContext('webgl2')
+    let reentrantTimer
+    let entered = false
+    reentrantTimer = createWebGlGpuTimer({
+        gl: reentrantFake.gl,
+        backend: 'webgl2',
+        sampleEvery: 1,
+        now() {
+            if (!entered) {
+                entered = true
+                reentrantTimer.dispose()
+            }
+            return 0
+        },
+    })
+    let began
+    assert.doesNotThrow(() => {
+        began = reentrantTimer.beginFrame()
+    })
+    assert.equal(began, false)
+    assert.equal(reentrantFake.queries.length, 0)
+    assert.equal(reentrantTimer.inspectWindow(targetWindow(0, 10)).capability.observed, false)
+})
+
+for (const nestedMethod of ['beginFrame', 'endFrame']) {
+    test(`a now callback nested ${nestedMethod} invalidates only target bounds`, () => {
+        const fake = createFakeContext('webgl2')
+        const nestedResults = []
+        let time = 0
+        let timer
+        timer = createWebGlGpuTimer({
+            gl: fake.gl,
+            backend: 'webgl2',
+            sampleEvery: 1,
+            now() {
+                nestedResults.push(timer[nestedMethod]())
+                return time
+            },
+        })
+
+        assert.equal(timer.beginFrame(), true)
+        time = 10
+        assert.equal(timer.endFrame(), true)
+        assert.deepEqual(nestedResults, [false, false])
+        assert.equal(fake.queries.length, 1)
+        assert.equal(timer.getSnapshot().clockErrorCount, 2)
+
+        fake.setAvailable(0, 4_000_000)
+        timer.poll()
+        assert.deepEqual(timer.takeLatestEvidence(), {
+            status: 'measured',
+            timeMs: 4,
+            source: 'webgl-disjoint-timer-query',
+        })
+        const target = timer.inspectWindow(targetWindow(0, 10))
+        assert.equal(target.capability.observed, false)
+        assert.equal('metrics' in target, false)
+        assert.equal('evidence' in target, false)
+        assert.equal(timer.getSnapshot().acceptedTargetSampleCount, 0)
+        timer.dispose()
+    })
+}
+
+test('hostile WebGL target windows and contexts fail closed while inspect remains bound', () => {
+    const harness = createTargetTimer('webgl2')
+    recordTargetQuery(harness, { start: 0, end: 10, resultNanoseconds: 1_000_000 })
+    const unreadableWindow = new Proxy(
+        {},
+        {
+            get() {
+                throw new Error('unreadable window')
+            },
+        }
+    )
+    let unreadable
+    assert.doesNotThrow(() => {
+        unreadable = harness.timer.inspectWindow(unreadableWindow)
+    })
+    assert.equal(unreadable.capability.observed, false)
+    assert.equal('metrics' in unreadable, false)
+
+    for (const invalid of [targetWindow(0, Number.NaN), targetWindow(10, 0), targetWindow(0, 10, 'foreign-window')]) {
+        const inspected = harness.timer.inspectWindow(invalid)
+        assert.equal(inspected.capability.observed, false)
+        assert.equal('evidence' in inspected, false)
+    }
+
+    const inspect = harness.timer.inspect
+    const withoutContext = inspect()
+    assert.deepEqual(withoutContext.inventory, { renderers: ['webgl2'] })
+    assert.deepEqual(withoutContext.owners, [{ relation: 'renderer-host', label: 'Condev WebGL GPU timer' }])
+    assert.equal(withoutContext.renderer.capability.observed, false)
+
+    const hostileContext = Object.defineProperty({}, 'evidenceWindow', {
+        get() {
+            throw new Error('unreadable context')
+        },
+    })
+    let hostile
+    assert.doesNotThrow(() => {
+        hostile = inspect(hostileContext)
+    })
+    assert.equal(hostile.renderer.capability.observed, false)
+    assert.equal('metrics' in hostile.renderer, false)
+    assert.deepEqual(inspect({ evidenceWindow: targetWindow(0, 10) }).renderer.metrics, { gpuFrameMsP95: 1 })
+
+    let nestedInspection
+    const recursiveWindow = {
+        get startedAt() {
+            nestedInspection = harness.timer.inspectWindow(targetWindow(0, 10))
+            return 0
+        },
+        endedAt: 10,
+        relation: 'selection-window',
+    }
+    let recursiveOuter
+    assert.doesNotThrow(() => {
+        recursiveOuter = harness.timer.inspectWindow(recursiveWindow)
+    })
+    assert.equal(nestedInspection.capability.observed, false)
+    assert.equal(recursiveOuter.capability.observed, false)
+    assert.equal('metrics' in recursiveOuter, false)
+    assert.equal('evidence' in recursiveOuter, false)
+    assert.deepEqual(harness.timer.inspectWindow(targetWindow(0, 10)).metrics, { gpuFrameMsP95: 1 })
+    harness.timer.dispose()
+
+    const reentrant = createTargetTimer('webgl2')
+    recordTargetQuery(reentrant, { start: 0, end: 10, resultNanoseconds: 1_000_000 })
+    const disposingWindow = {
+        get startedAt() {
+            reentrant.timer.dispose()
+            return 0
+        },
+        endedAt: 10,
+        relation: 'selection-window',
+    }
+    let afterDisposal
+    assert.doesNotThrow(() => {
+        afterDisposal = reentrant.timer.inspectWindow(disposingWindow)
+    })
+    assert.equal(afterDisposal.capability.state, 'unknown')
+    assert.equal(afterDisposal.capability.observed, false)
+    assert.equal('metrics' in afterDisposal, false)
 })
