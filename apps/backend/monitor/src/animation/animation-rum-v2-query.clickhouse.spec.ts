@@ -43,6 +43,13 @@ const captureRow = (scope: 'page' | 'target') => ({
     adapter_error_count: 0,
     provider_evidence_count: 0,
     metric_count: 1,
+    projection_observed_metric_count: 1,
+    projection_matching_metric_count: 1,
+    projection_mismatched_metric_identity_count: 0,
+    projection_observed_provider_evidence_count: 0,
+    projection_matching_provider_evidence_count: 0,
+    projection_mismatched_provider_identity_count: 0,
+    projection_complete: 1,
 })
 
 describeIntegration('Animation RUM v2 query ClickHouse syntax', () => {
@@ -97,7 +104,26 @@ describeIntegration('Animation RUM v2 query ClickHouse syntax', () => {
                     options.query.includes('capture_id = {captureId:String}') &&
                     options.query.includes('LIMIT 1') &&
                     !options.query.includes("scope = 'page'")
+                const isCaptureMetricDetail =
+                    options.query.includes('event_id = {eventId:String}') && options.query.includes('ORDER BY metric_id, relation, owner')
                 if (isCaptureList || isCaptureDetail) return { json: async () => ({ data: [fixture] }) }
+                if (isCaptureMetricDetail) {
+                    return {
+                        json: async () => ({
+                            data: [
+                                {
+                                    scope,
+                                    metric_id: 'frame.duration.p95',
+                                    relation: scope === 'page' ? 'page-window' : 'target-temporal-overlap',
+                                    owner: 'browser-core',
+                                    value: 16,
+                                    samples: 60,
+                                    status: 'measured',
+                                },
+                            ],
+                        }),
+                    }
+                }
                 return { json: async () => json }
             }),
         }

@@ -1,5 +1,5 @@
 import { ANIMATION_RUM_FAMILIES, ANIMATION_RUM_V2_CAPABILITIES } from '@condev-monitor/animation-rum-contract'
-import { ForbiddenException, NotFoundException } from '@nestjs/common'
+import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common'
 
 import { AnimationRumV2QueryService } from './animation-rum-v2-query.service'
 
@@ -54,6 +54,13 @@ const captureRow = (overrides: Record<string, unknown> = {}) => ({
     adapter_error_count: 1,
     provider_evidence_count: 1,
     metric_count: 1,
+    projection_observed_metric_count: 1,
+    projection_matching_metric_count: 1,
+    projection_mismatched_metric_identity_count: 0,
+    projection_observed_provider_evidence_count: 1,
+    projection_matching_provider_evidence_count: 1,
+    projection_mismatched_provider_identity_count: 0,
+    projection_complete: 1,
     ...overrides,
 })
 
@@ -97,6 +104,13 @@ describe('AnimationRumV2QueryService', () => {
                             target_adapter_error_count: 1,
                             first_captured_at: '2026-08-26 08:00:00.123',
                             last_captured_at: '2026-08-26 09:00:00.123',
+                            projection_completion_marker_count: 2,
+                            projection_verified_count: 2,
+                            projection_mismatched_count: 0,
+                            projection_excluded_from_analytics_count: 0,
+                            projection_metric_count_mismatch_count: 0,
+                            projection_provider_count_mismatch_count: 0,
+                            projection_child_identity_mismatch_count: 0,
                         },
                     ])
                 )
@@ -216,6 +230,17 @@ describe('AnimationRumV2QueryService', () => {
                 snapshotSchemaVersion: 1,
                 catalogMetricCount: 69,
                 aggregationSemantics: 'distribution-of-capture-aggregates',
+                projectionIntegrity: {
+                    semantics: 'completion-marker-child-row-counts',
+                    status: 'verified',
+                    completionMarkers: 2,
+                    verified: 2,
+                    mismatched: 0,
+                    excludedFromAnalytics: 0,
+                    metricCountMismatches: 0,
+                    providerEvidenceCountMismatches: 0,
+                    childIdentityMismatches: 0,
+                },
                 captures: expect.objectContaining({
                     observed: 2,
                     page: 1,
@@ -286,6 +311,10 @@ describe('AnimationRumV2QueryService', () => {
 
         const queries = clickhouse.query.mock.calls.map(call => call[0])
         expect(queries[0].query).toContain('animation_rum_captures_v2 FINAL')
+        expect(queries[0].query).toContain('projection_checked_captures')
+        expect(queries[0].query).toContain('countIf(projection_complete = 1) AS observed_capture_count')
+        expect(queries[0].query).not.toContain('CROSS JOIN')
+        expect(queries[0].query).toContain('projection_excluded_from_analytics_count')
         expect(queries[1].query).toContain('INNER JOIN completed_captures')
         expect(queries[1].query).toContain('metric.event_id = capture.event_id')
         expect(queries[1].query).toContain('GROUP BY scope, metric_id, relation, owner')
@@ -318,6 +347,50 @@ describe('AnimationRumV2QueryService', () => {
 
         await expect(service.summary(41, { appId: 'otherApp', ...WINDOW })).rejects.toBeInstanceOf(ForbiddenException)
         expect(clickhouse.query).not.toHaveBeenCalled()
+    })
+
+    it('reports aggregate storage-projection mismatches without exposing capture identities', () => {
+        const { service } = createService({ query: jest.fn() })
+        const view = (service as any).summaryProjectionIntegrityView({
+            projection_completion_marker_count: '9007199254740993',
+            projection_verified_count: '9007199254740992',
+            projection_mismatched_count: 1,
+            projection_excluded_from_analytics_count: 1,
+            projection_metric_count_mismatch_count: 1,
+            projection_provider_count_mismatch_count: 0,
+            projection_child_identity_mismatch_count: 1,
+            capture_id: 'capture_private_1234',
+            event_id: 'event_private_1234',
+        })
+
+        expect(view).toEqual({
+            semantics: 'completion-marker-child-row-counts',
+            status: 'mismatch',
+            completionMarkers: '9007199254740993',
+            verified: '9007199254740992',
+            mismatched: 1,
+            excludedFromAnalytics: 1,
+            metricCountMismatches: 1,
+            providerEvidenceCountMismatches: 0,
+            childIdentityMismatches: 1,
+        })
+        expect(JSON.stringify(view)).not.toContain('private')
+    })
+
+    it('distinguishes a verified empty projection window from one with no completion markers', () => {
+        const { service } = createService({ query: jest.fn() })
+
+        expect(
+            (service as any).summaryProjectionIntegrityView({
+                projection_completion_marker_count: 0,
+                projection_verified_count: 0,
+                projection_mismatched_count: 0,
+                projection_excluded_from_analytics_count: 0,
+                projection_metric_count_mismatch_count: 0,
+                projection_provider_count_mismatch_count: 0,
+                projection_child_identity_mismatch_count: 0,
+            }).status
+        ).toBe('not-observed')
     })
 
     it('excludes partial values from distributions, returns null without measured captures, and preserves large UInt64 values', () => {
@@ -462,6 +535,12 @@ describe('AnimationRumV2QueryService', () => {
                 scope: 'page',
                 targetKey: null,
                 quality: { sufficiency: 'sufficient', integrity: 'partial', reasons: ['adapter-error'], adapterErrorCount: 1 },
+                projectionIntegrity: {
+                    semantics: 'completion-marker-child-row-counts',
+                    status: 'verified',
+                    expected: { metrics: 1, providerEvidence: 1 },
+                    observed: { metrics: 1, providerEvidence: 1 },
+                },
                 targetChildCount: 2,
                 frameP95: expect.objectContaining({ metricId: 'frame.duration.p95', value: 18.5 }),
             })
@@ -469,6 +548,12 @@ describe('AnimationRumV2QueryService', () => {
         expect(response.captures[0]).not.toHaveProperty('capabilities')
         expect(response.captures[0]).not.toHaveProperty('coverage')
         expect(JSON.stringify(response)).not.toContain('private')
+        const calls = clickhouse.query.mock.calls.map(call => call[0].query)
+        expect(calls[0]).toContain('FROM projection_checked_captures')
+        expect(calls[0]).toContain('WHERE projection_complete = 1')
+        expect(calls[1]).toContain('FROM projection_checked_captures')
+        expect(calls[2]).toContain('WHERE projection_complete = 1')
+        expect(calls[3]).toContain('WHERE projection_complete = 1')
     })
 
     it('returns detail children only for the exact completion event and strips unknown JSON fields', async () => {
@@ -487,15 +572,6 @@ describe('AnimationRumV2QueryService', () => {
                             samples: 120,
                             status: 'measured',
                         },
-                        {
-                            scope: 'target',
-                            metric_id: 'private.metric',
-                            relation: 'target-direct',
-                            owner: 'target-sidecar',
-                            value: 1,
-                            samples: 1,
-                            status: 'measured',
-                        },
                     ])
                 )
                 .mockResolvedValueOnce(
@@ -511,18 +587,6 @@ describe('AnimationRumV2QueryService', () => {
                             dropped: 20,
                             rejected: 0,
                             truncated: 1,
-                        },
-                        {
-                            scope: 'target',
-                            owner: 'private-owner',
-                            family: 'frameCadence',
-                            provider_version: '2.0.0',
-                            accepted: 1,
-                            retained: 1,
-                            evidence: 1,
-                            dropped: 0,
-                            rejected: 0,
-                            truncated: 0,
                         },
                     ])
                 )
@@ -552,6 +616,12 @@ describe('AnimationRumV2QueryService', () => {
                 targetKey: 'hero-canvas',
             })
         )
+        expect(response.capture.projectionIntegrity).toEqual({
+            semantics: 'completion-marker-child-row-counts',
+            status: 'verified',
+            expected: { metrics: 1, providerEvidence: 1 },
+            observed: { metrics: 1, providerEvidence: 1 },
+        })
         expect(Object.keys(response.capture.capabilities)).toEqual([...ANIMATION_RUM_V2_CAPABILITIES])
         expect(Object.keys(response.capture.coverage)).toEqual([...ANIMATION_RUM_FAMILIES])
         expect(response.capture.capabilities).not.toHaveProperty('url')
@@ -579,7 +649,12 @@ describe('AnimationRumV2QueryService', () => {
         ])
         expect(response.relationships).toEqual(
             expect.objectContaining({
-                parent: expect.objectContaining({ captureId: 'capture_parent_1234', scope: 'page', targetKey: null }),
+                parent: expect.objectContaining({
+                    captureId: 'capture_parent_1234',
+                    scope: 'page',
+                    targetKey: null,
+                    projectionIntegrity: expect.objectContaining({ status: 'verified' }),
+                }),
                 targets: null,
             })
         )
@@ -594,8 +669,79 @@ describe('AnimationRumV2QueryService', () => {
         expect(JSON.stringify(response)).not.toContain('#private')
     })
 
+    it('returns 409 before reading child tables when a completion marker has an incomplete child projection', async () => {
+        const clickhouse = {
+            query: jest.fn().mockResolvedValueOnce(
+                result([
+                    captureRow({
+                        projection_observed_metric_count: 1,
+                        projection_matching_metric_count: 0,
+                        projection_mismatched_metric_identity_count: 1,
+                        projection_complete: 0,
+                    }),
+                ])
+            ),
+        }
+        const { service } = createService(clickhouse)
+
+        await expect(service.capture(41, 'vanillaFixture1', 'capture_12345678')).rejects.toMatchObject({
+            status: 409,
+            response: expect.objectContaining({ error: 'ANIMATION_RUM_V2_PROJECTION_INCOMPLETE' }),
+        })
+        expect(clickhouse.query).toHaveBeenCalledTimes(1)
+    })
+
+    it('returns 409 when a physically complete child set cannot survive the closed response mapper', async () => {
+        const clickhouse = {
+            query: jest
+                .fn()
+                .mockResolvedValueOnce(result([captureRow()]))
+                .mockResolvedValueOnce(
+                    result([
+                        {
+                            scope: 'target',
+                            metric_id: 'private.metric',
+                            relation: 'target-direct',
+                            owner: 'target-sidecar',
+                            value: 1,
+                            samples: 1,
+                            status: 'measured',
+                        },
+                    ])
+                )
+                .mockResolvedValueOnce(
+                    result([
+                        {
+                            scope: 'target',
+                            owner: 'browser-core',
+                            family: 'frameCadence',
+                            provider_version: '2.0.0',
+                            accepted: 1,
+                            retained: 1,
+                            evidence: 1,
+                            dropped: 0,
+                            rejected: 0,
+                            truncated: 0,
+                        },
+                    ])
+                )
+                .mockResolvedValueOnce(result([])),
+        }
+        const { service } = createService(clickhouse)
+
+        await expect(service.capture(41, 'vanillaFixture1', 'capture_12345678')).rejects.toBeInstanceOf(ConflictException)
+        expect(clickhouse.query).toHaveBeenCalledTimes(4)
+    })
+
     it('returns bounded target summaries with a page detail instead of requiring per-target reads', async () => {
-        const page = captureRow({ parent_capture_id: '', scope: 'page', target_key: '' })
+        const page = captureRow({
+            parent_capture_id: '',
+            scope: 'page',
+            target_key: '',
+            provider_evidence_count: 0,
+            projection_observed_provider_evidence_count: 0,
+            projection_matching_provider_evidence_count: 0,
+        })
         const child = captureRow({
             event_id: 'event_child_1234',
             capture_id: 'capture_child_1234',
@@ -605,7 +751,19 @@ describe('AnimationRumV2QueryService', () => {
             query: jest
                 .fn()
                 .mockResolvedValueOnce(result([page]))
-                .mockResolvedValueOnce(result([]))
+                .mockResolvedValueOnce(
+                    result([
+                        {
+                            scope: 'page',
+                            metric_id: 'frame.duration.p95',
+                            relation: 'page-window',
+                            owner: 'browser-core',
+                            value: 18.5,
+                            samples: 120,
+                            status: 'measured',
+                        },
+                    ])
+                )
                 .mockResolvedValueOnce(result([]))
                 .mockResolvedValueOnce(result([child])),
         }
@@ -613,10 +771,23 @@ describe('AnimationRumV2QueryService', () => {
 
         const response = await service.capture(41, 'vanillaFixture1', 'capture_12345678')
 
+        expect(response.capture.projectionIntegrity).toEqual(
+            expect.objectContaining({
+                status: 'verified',
+                expected: { metrics: 1, providerEvidence: 0 },
+                observed: { metrics: 1, providerEvidence: 0 },
+            })
+        )
         expect(response.relationships).toEqual({
             parent: null,
             targets: {
-                items: [expect.objectContaining({ captureId: 'capture_child_1234', parentCaptureId: 'capture_12345678' })],
+                items: [
+                    expect.objectContaining({
+                        captureId: 'capture_child_1234',
+                        parentCaptureId: 'capture_12345678',
+                        projectionIntegrity: expect.objectContaining({ status: 'verified' }),
+                    }),
+                ],
                 returned: 1,
                 hasMore: false,
             },

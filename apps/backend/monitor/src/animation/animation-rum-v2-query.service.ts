@@ -12,11 +12,12 @@ import {
     isAnimationRumV2RouteKey,
     isAnimationRumV2TargetKey,
 } from '@condev-monitor/animation-rum-contract'
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common'
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 
 import { ApplicationService } from '../application/application.service'
 import { resolveClickhouseDatabase } from '../shared/clickhouse-utils'
+import { createAnimationRumV2ProjectionSql } from './animation-rum-v2-projection-sql'
 import { AnimationRumV2CapturesQueryDto, AnimationRumV2QueryDto } from './dto/animation-rum-v2-query.dto'
 
 type QueryInput = AnimationRumV2QueryDto & { limit?: number; offset?: number }
@@ -110,6 +111,13 @@ const CAPTURE_COLUMNS = `
     provider_evidence_count, metric_count
 `
 
+const PROJECTION_COUNT_COLUMNS = `
+    projection_observed_metric_count, projection_matching_metric_count,
+    projection_mismatched_metric_identity_count,
+    projection_observed_provider_evidence_count, projection_matching_provider_evidence_count,
+    projection_mismatched_provider_identity_count, projection_complete
+`
+
 function clickhouseTime(date: Date): string {
     return date.toISOString().replace('T', ' ').replace('Z', '')
 }
@@ -160,6 +168,11 @@ function integerIsPositive(value: number | string | null): boolean {
     return typeof value === 'string' && BigInt(value) > 0n
 }
 
+function jsonIntegerBigInt(value: JsonInteger): bigint | null {
+    if (typeof value === 'number') return BigInt(value)
+    return typeof value === 'string' ? BigInt(value) : null
+}
+
 function closedString(value: unknown, allowed: Set<string>, fallback: string): string {
     const candidate = typeof value === 'string' ? value : ''
     return allowed.has(candidate) ? candidate : fallback
@@ -208,47 +221,80 @@ export class AnimationRumV2QueryService {
         const queryParams = this.queryParams(query)
 
         const trendBucket = this.trendBucket(query)
+        const projectionSql = this.projectionSql(`
+            SELECT app_id, ${CAPTURE_COLUMNS}
+            FROM ${this.database}.animation_rum_captures_v2 FINAL
+            WHERE ${filter}
+        `)
+        const verifiedProjectionSql = `${projectionSql},
+            verified_captures AS (
+                SELECT *
+                FROM projection_checked_captures
+                WHERE projection_complete = 1
+            )`
         const [captureResult, metricResult, qualityReasonResult, captureTrendResult, frameTrendResult] = await Promise.all([
             this.readQuery({
                 query: `
+                    WITH ${projectionSql}
                     SELECT
-                        count() AS observed_capture_count,
-                        countIf(scope = 'page') AS page_capture_count,
-                        countIf(scope = 'target') AS target_capture_count,
-                        countIf(capture_sufficiency = 'sufficient') AS sufficient_capture_count,
-                        countIf(capture_sufficiency = 'insufficient') AS insufficient_capture_count,
-                        countIf(capture_integrity = 'complete') AS complete_capture_count,
-                        countIf(capture_integrity = 'partial') AS partial_capture_count,
-                        countIf(window_duration_capped = 1) AS capped_capture_count,
-                        countIf(scope = 'page' AND capture_sufficiency = 'sufficient') AS page_sufficient_capture_count,
-                        countIf(scope = 'page' AND capture_sufficiency = 'insufficient') AS page_insufficient_capture_count,
-                        countIf(scope = 'page' AND capture_integrity = 'complete') AS page_complete_capture_count,
-                        countIf(scope = 'page' AND capture_integrity = 'partial') AS page_partial_capture_count,
-                        countIf(scope = 'page' AND window_duration_capped = 1) AS page_capped_capture_count,
-                        countIf(scope = 'target' AND capture_sufficiency = 'sufficient') AS target_sufficient_capture_count,
-                        countIf(scope = 'target' AND capture_sufficiency = 'insufficient') AS target_insufficient_capture_count,
-                        countIf(scope = 'target' AND capture_integrity = 'complete') AS target_complete_capture_count,
-                        countIf(scope = 'target' AND capture_integrity = 'partial') AS target_partial_capture_count,
-                        countIf(scope = 'target' AND window_duration_capped = 1) AS target_capped_capture_count,
-                        uniqExactIf(route_key, route_key != '') AS distinct_route_count,
-                        uniqExactIf(target_key, target_key != '') AS distinct_target_count,
-                        sum(adapter_error_count) AS total_adapter_error_count,
-                        sumIf(adapter_error_count, scope = 'page') AS page_adapter_error_count,
-                        sumIf(adapter_error_count, scope = 'target') AS target_adapter_error_count,
-                        minOrNull(captured_at) AS first_captured_at,
-                        maxOrNull(captured_at) AS last_captured_at
-                    FROM ${this.database}.animation_rum_captures_v2 FINAL
-                    WHERE ${filter}
+                        countIf(projection_complete = 1) AS observed_capture_count,
+                        countIf(projection_complete = 1 AND scope = 'page') AS page_capture_count,
+                        countIf(projection_complete = 1 AND scope = 'target') AS target_capture_count,
+                        countIf(projection_complete = 1 AND capture_sufficiency = 'sufficient') AS sufficient_capture_count,
+                        countIf(projection_complete = 1 AND capture_sufficiency = 'insufficient') AS insufficient_capture_count,
+                        countIf(projection_complete = 1 AND capture_integrity = 'complete') AS complete_capture_count,
+                        countIf(projection_complete = 1 AND capture_integrity = 'partial') AS partial_capture_count,
+                        countIf(projection_complete = 1 AND window_duration_capped = 1) AS capped_capture_count,
+                        countIf(projection_complete = 1 AND scope = 'page' AND capture_sufficiency = 'sufficient')
+                            AS page_sufficient_capture_count,
+                        countIf(projection_complete = 1 AND scope = 'page' AND capture_sufficiency = 'insufficient')
+                            AS page_insufficient_capture_count,
+                        countIf(projection_complete = 1 AND scope = 'page' AND capture_integrity = 'complete')
+                            AS page_complete_capture_count,
+                        countIf(projection_complete = 1 AND scope = 'page' AND capture_integrity = 'partial')
+                            AS page_partial_capture_count,
+                        countIf(projection_complete = 1 AND scope = 'page' AND window_duration_capped = 1)
+                            AS page_capped_capture_count,
+                        countIf(projection_complete = 1 AND scope = 'target' AND capture_sufficiency = 'sufficient')
+                            AS target_sufficient_capture_count,
+                        countIf(projection_complete = 1 AND scope = 'target' AND capture_sufficiency = 'insufficient')
+                            AS target_insufficient_capture_count,
+                        countIf(projection_complete = 1 AND scope = 'target' AND capture_integrity = 'complete')
+                            AS target_complete_capture_count,
+                        countIf(projection_complete = 1 AND scope = 'target' AND capture_integrity = 'partial')
+                            AS target_partial_capture_count,
+                        countIf(projection_complete = 1 AND scope = 'target' AND window_duration_capped = 1)
+                            AS target_capped_capture_count,
+                        uniqExactIf(route_key, projection_complete = 1 AND route_key != '') AS distinct_route_count,
+                        uniqExactIf(target_key, projection_complete = 1 AND target_key != '') AS distinct_target_count,
+                        sumIf(adapter_error_count, projection_complete = 1) AS total_adapter_error_count,
+                        sumIf(adapter_error_count, projection_complete = 1 AND scope = 'page') AS page_adapter_error_count,
+                        sumIf(adapter_error_count, projection_complete = 1 AND scope = 'target') AS target_adapter_error_count,
+                        minOrNullIf(captured_at, projection_complete = 1) AS first_captured_at,
+                        maxOrNullIf(captured_at, projection_complete = 1) AS last_captured_at,
+                        count() AS projection_completion_marker_count,
+                        countIf(projection_complete = 1) AS projection_verified_count,
+                        countIf(projection_complete = 0) AS projection_mismatched_count,
+                        countIf(projection_complete = 0) AS projection_excluded_from_analytics_count,
+                        countIf(projection_observed_metric_count != toUInt64(metric_count))
+                            AS projection_metric_count_mismatch_count,
+                        countIf(projection_observed_provider_evidence_count != toUInt64(provider_evidence_count))
+                            AS projection_provider_count_mismatch_count,
+                        countIf(
+                            projection_mismatched_metric_identity_count > 0 OR
+                            projection_mismatched_provider_identity_count > 0
+                        ) AS projection_child_identity_mismatch_count
+                    FROM projection_checked_captures
                 `,
                 query_params: queryParams,
                 format: 'JSON',
             }),
             this.readQuery({
                 query: `
-                    WITH completed_captures AS (
-                        SELECT event_id, capture_id, scope, window_duration_ms, window_duration_capped
-                        FROM ${this.database}.animation_rum_captures_v2 FINAL
-                        WHERE ${filter}
+                    WITH ${verifiedProjectionSql},
+                    completed_captures AS (
+                        SELECT app_id, event_id, capture_id, scope, window_duration_ms, window_duration_capped
+                        FROM verified_captures
                     )
                     SELECT
                         scope, metric_id, relation, owner,
@@ -297,9 +343,10 @@ export class AnimationRumV2QueryService {
                         FROM (
                             SELECT event_id, capture_id, scope, metric_id, relation, owner, value, samples, status
                             FROM ${this.database}.animation_rum_metrics_v2 FINAL
-                            WHERE app_id = {appId:String}
-                              AND captured_at >= {from:DateTime64(3, 'UTC')}
-                              AND captured_at < {to:DateTime64(3, 'UTC')}
+                            WHERE (app_id, capture_id) IN (
+                                SELECT app_id, capture_id
+                                FROM completed_captures
+                            )
                         ) AS metric
                         INNER JOIN completed_captures AS capture
                             ON metric.capture_id = capture.capture_id
@@ -314,6 +361,7 @@ export class AnimationRumV2QueryService {
             }),
             this.readQuery({
                 query: `
+                    WITH ${verifiedProjectionSql}
                     SELECT
                         reason,
                         count() AS capture_count,
@@ -321,8 +369,7 @@ export class AnimationRumV2QueryService {
                         countIf(scope = 'target') AS target_capture_count
                     FROM (
                         SELECT scope, arrayJoin(capture_quality_reasons) AS reason
-                        FROM ${this.database}.animation_rum_captures_v2 FINAL
-                        WHERE ${filter}
+                        FROM verified_captures
                     )
                     WHERE reason IN {qualityReasons:Array(String)}
                     GROUP BY reason
@@ -333,13 +380,13 @@ export class AnimationRumV2QueryService {
             }),
             this.readQuery({
                 query: `
+                    WITH ${verifiedProjectionSql}
                     SELECT
                         ${this.trendBucketSql('captured_at', trendBucket.kind)} AS bucket,
                         count() AS observed_capture_count,
                         countIf(scope = 'page') AS page_capture_count,
                         countIf(scope = 'target') AS target_capture_count
-                    FROM ${this.database}.animation_rum_captures_v2 FINAL
-                    WHERE ${filter}
+                    FROM verified_captures
                     GROUP BY bucket
                     ORDER BY bucket
                 `,
@@ -348,10 +395,10 @@ export class AnimationRumV2QueryService {
             }),
             this.readQuery({
                 query: `
-                    WITH completed_captures AS (
-                        SELECT event_id, capture_id, scope, captured_at
-                        FROM ${this.database}.animation_rum_captures_v2 FINAL
-                        WHERE ${filter}
+                    WITH ${verifiedProjectionSql},
+                    completed_captures AS (
+                        SELECT app_id, event_id, capture_id, scope, captured_at
+                        FROM verified_captures
                     )
                     SELECT
                         ${this.trendBucketSql('capture.captured_at', trendBucket.kind)} AS bucket,
@@ -370,9 +417,10 @@ export class AnimationRumV2QueryService {
                     FROM (
                         SELECT event_id, capture_id, scope, relation, owner, value, status
                         FROM ${this.database}.animation_rum_metrics_v2 FINAL
-                        WHERE app_id = {appId:String}
-                          AND captured_at >= {from:DateTime64(3, 'UTC')}
-                          AND captured_at < {to:DateTime64(3, 'UTC')}
+                        WHERE (app_id, capture_id) IN (
+                            SELECT app_id, capture_id
+                            FROM completed_captures
+                        )
                           AND metric_id = {frameP95MetricId:String}
                           AND owner = {frameP95Owner:String}
                           AND (
@@ -414,6 +462,7 @@ export class AnimationRumV2QueryService {
             aggregationSemantics: 'distribution-of-capture-aggregates' as const,
             window: this.windowView(query),
             filters: this.filtersView(query),
+            projectionIntegrity: this.summaryProjectionIntegrityView(counts),
             captures: {
                 observed: jsonIntegerOrZero(counts.observed_capture_count),
                 page: jsonIntegerOrZero(counts.page_capture_count),
@@ -477,21 +526,28 @@ export class AnimationRumV2QueryService {
         const query = await this.authorizedQuery(userId, input)
         const filter = this.captureFilterSql(query)
         const queryParams = this.queryParams(query)
+        const projectionSql = this.projectionSql(`
+            SELECT app_id, ${CAPTURE_COLUMNS}
+            FROM ${this.database}.animation_rum_captures_v2 FINAL
+            WHERE ${filter}
+        `)
         const [countResult, captureResult] = await Promise.all([
             this.readQuery({
                 query: `
+                    WITH ${projectionSql}
                     SELECT count() AS capture_count
-                    FROM ${this.database}.animation_rum_captures_v2 FINAL
-                    WHERE ${filter}
+                    FROM projection_checked_captures
+                    WHERE projection_complete = 1
                 `,
                 query_params: queryParams,
                 format: 'JSON',
             }),
             this.readQuery({
                 query: `
-                    SELECT ${CAPTURE_COLUMNS}
-                    FROM ${this.database}.animation_rum_captures_v2 FINAL
-                    WHERE ${filter}
+                    WITH ${projectionSql}
+                    SELECT ${CAPTURE_COLUMNS}, ${PROJECTION_COUNT_COLUMNS}
+                    FROM projection_checked_captures
+                    WHERE projection_complete = 1
                     ORDER BY captured_at DESC, capture_id DESC
                     LIMIT {limit:UInt32} OFFSET {offset:UInt32}
                 `,
@@ -511,11 +567,16 @@ export class AnimationRumV2QueryService {
             const [targetCountResult, frameP95Result] = await Promise.all([
                 this.readQuery({
                     query: `
+                        WITH ${this.projectionSql(`
+                            SELECT app_id, ${CAPTURE_COLUMNS}
+                            FROM ${this.database}.animation_rum_captures_v2 FINAL
+                            WHERE app_id = {appId:String}
+                              AND scope = 'target'
+                              AND parent_capture_id IN {captureIds:Array(String)}
+                        `)}
                         SELECT parent_capture_id, count() AS target_child_count
-                        FROM ${this.database}.animation_rum_captures_v2 FINAL
-                        WHERE app_id = {appId:String}
-                          AND scope = 'target'
-                          AND parent_capture_id IN {captureIds:Array(String)}
+                        FROM projection_checked_captures
+                        WHERE projection_complete = 1
                         GROUP BY parent_capture_id
                     `,
                     query_params: { appId: query.appId, captureIds },
@@ -523,19 +584,26 @@ export class AnimationRumV2QueryService {
                 }),
                 this.readQuery({
                     query: `
-                        WITH selected_captures AS (
-                            SELECT event_id, capture_id, scope
+                        WITH ${this.projectionSql(`
+                            SELECT app_id, ${CAPTURE_COLUMNS}
                             FROM ${this.database}.animation_rum_captures_v2 FINAL
                             WHERE app_id = {appId:String}
                               AND capture_id IN {captureIds:Array(String)}
+                        `)},
+                        selected_captures AS (
+                            SELECT app_id, event_id, capture_id, scope
+                            FROM projection_checked_captures
+                            WHERE projection_complete = 1
                         )
                         SELECT metric.capture_id, metric.scope, metric.metric_id, metric.relation,
                                metric.owner, metric.value, metric.samples, metric.status
                         FROM (
                             SELECT event_id, capture_id, scope, metric_id, relation, owner, value, samples, status
                             FROM ${this.database}.animation_rum_metrics_v2 FINAL
-                            WHERE app_id = {appId:String}
-                              AND capture_id IN {captureIds:Array(String)}
+                            WHERE (app_id, capture_id) IN (
+                                SELECT app_id, capture_id
+                                FROM selected_captures
+                            )
                               AND metric_id = {frameP95MetricId:String}
                         ) AS metric
                         INNER JOIN selected_captures AS capture
@@ -593,11 +661,15 @@ export class AnimationRumV2QueryService {
         const retentionFloor = clickhouseTime(this.retentionFloor())
         const captureResult = await this.readQuery({
             query: `
-                SELECT ${CAPTURE_COLUMNS}
-                FROM ${this.database}.animation_rum_captures_v2 FINAL
-                WHERE app_id = {appId:String}
-                  AND capture_id = {captureId:String}
-                  AND captured_at >= {retentionFloor:DateTime64(3, 'UTC')}
+                WITH ${this.projectionSql(`
+                    SELECT app_id, ${CAPTURE_COLUMNS}
+                    FROM ${this.database}.animation_rum_captures_v2 FINAL
+                    WHERE app_id = {appId:String}
+                      AND capture_id = {captureId:String}
+                      AND captured_at >= {retentionFloor:DateTime64(3, 'UTC')}
+                `)}
+                SELECT ${CAPTURE_COLUMNS}, ${PROJECTION_COUNT_COLUMNS}
+                FROM projection_checked_captures
                 LIMIT 1
             `,
             query_params: { appId, captureId, retentionFloor },
@@ -608,6 +680,7 @@ export class AnimationRumV2QueryService {
         if (!row) {
             throw new NotFoundException({ message: 'Animation capture not found', error: 'NOT_FOUND' })
         }
+        if (!this.projectionIsComplete(row)) this.throwProjectionIncomplete()
 
         const eventId = boundedString(row.event_id, 80, CAPTURE_ID_PATTERN)
         if (!eventId) {
@@ -650,15 +723,26 @@ export class AnimationRumV2QueryService {
         ])
         const metricJson = (await metricResult.json()) as { data?: Record<string, unknown>[] }
         const providerJson = (await providerResult.json()) as { data?: Record<string, unknown>[] }
+        const metrics = (metricJson.data ?? []).map(metric => this.metricView(metric)).filter(metric => metric !== null)
+        const providerEvidence = (providerJson.data ?? [])
+            .map(provider => this.providerEvidenceView(provider))
+            .filter(provider => provider !== null)
+        const projectionIntegrity = this.captureProjectionIntegrityView(row)
+        if (
+            (metricJson.data ?? []).length !== projectionIntegrity.expected.metrics ||
+            metrics.length !== projectionIntegrity.expected.metrics ||
+            (providerJson.data ?? []).length !== projectionIntegrity.expected.providerEvidence ||
+            providerEvidence.length !== projectionIntegrity.expected.providerEvidence
+        ) {
+            this.throwProjectionIncomplete()
+        }
 
         return {
             contractVersion: ANIMATION_RUM_V2_CONTRACT_VERSION,
             snapshotSchemaVersion: ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION,
             capture: this.captureDetailView(row),
-            metrics: (metricJson.data ?? []).map(metric => this.metricView(metric)).filter(metric => metric !== null),
-            providerEvidence: (providerJson.data ?? [])
-                .map(provider => this.providerEvidenceView(provider))
-                .filter(provider => provider !== null),
+            metrics,
+            providerEvidence,
             relationships,
         }
     }
@@ -667,12 +751,17 @@ export class AnimationRumV2QueryService {
         if (row.scope === 'page') {
             const result = await this.readQuery({
                 query: `
-                    SELECT ${CAPTURE_COLUMNS}
-                    FROM ${this.database}.animation_rum_captures_v2 FINAL
-                    WHERE app_id = {appId:String}
-                      AND scope = 'target'
-                      AND parent_capture_id = {captureId:String}
-                      AND captured_at >= {retentionFloor:DateTime64(3, 'UTC')}
+                    WITH ${this.projectionSql(`
+                        SELECT app_id, ${CAPTURE_COLUMNS}
+                        FROM ${this.database}.animation_rum_captures_v2 FINAL
+                        WHERE app_id = {appId:String}
+                          AND scope = 'target'
+                          AND parent_capture_id = {captureId:String}
+                          AND captured_at >= {retentionFloor:DateTime64(3, 'UTC')}
+                    `)}
+                    SELECT ${CAPTURE_COLUMNS}, ${PROJECTION_COUNT_COLUMNS}
+                    FROM projection_checked_captures
+                    WHERE projection_complete = 1
                     ORDER BY captured_at DESC, capture_id DESC
                     LIMIT 101
                 `,
@@ -695,12 +784,17 @@ export class AnimationRumV2QueryService {
         if (!parentCaptureId) return { parent: null, targets: null }
         const result = await this.readQuery({
             query: `
-                SELECT ${CAPTURE_COLUMNS}
-                FROM ${this.database}.animation_rum_captures_v2 FINAL
-                WHERE app_id = {appId:String}
-                  AND scope = 'page'
-                  AND capture_id = {parentCaptureId:String}
-                  AND captured_at >= {retentionFloor:DateTime64(3, 'UTC')}
+                WITH ${this.projectionSql(`
+                    SELECT app_id, ${CAPTURE_COLUMNS}
+                    FROM ${this.database}.animation_rum_captures_v2 FINAL
+                    WHERE app_id = {appId:String}
+                      AND scope = 'page'
+                      AND capture_id = {parentCaptureId:String}
+                      AND captured_at >= {retentionFloor:DateTime64(3, 'UTC')}
+                `)}
+                SELECT ${CAPTURE_COLUMNS}, ${PROJECTION_COUNT_COLUMNS}
+                FROM projection_checked_captures
+                WHERE projection_complete = 1
                 LIMIT 1
             `,
             query_params: { appId, parentCaptureId, retentionFloor },
@@ -708,6 +802,112 @@ export class AnimationRumV2QueryService {
         })
         const json = (await result.json()) as { data?: Record<string, unknown>[] }
         return { parent: json.data?.[0] ? this.captureListView(json.data[0]) : null, targets: null }
+    }
+
+    private projectionSql(selectedCaptureMarkersSql: string): string {
+        return createAnimationRumV2ProjectionSql({ database: this.database, selectedCaptureMarkersSql })
+    }
+
+    private summaryProjectionIntegrityView(row: Record<string, unknown>) {
+        const completionMarkers = jsonInteger(row.projection_completion_marker_count)
+        const verified = jsonInteger(row.projection_verified_count)
+        const mismatched = jsonInteger(row.projection_mismatched_count)
+        const excludedFromAnalytics = jsonInteger(row.projection_excluded_from_analytics_count)
+        const metricCountMismatches = jsonInteger(row.projection_metric_count_mismatch_count)
+        const providerEvidenceCountMismatches = jsonInteger(row.projection_provider_count_mismatch_count)
+        const childIdentityMismatches = jsonInteger(row.projection_child_identity_mismatch_count)
+        const markerCount = jsonIntegerBigInt(completionMarkers)
+        const verifiedCount = jsonIntegerBigInt(verified)
+        const mismatchCount = jsonIntegerBigInt(mismatched)
+        const excludedCount = jsonIntegerBigInt(excludedFromAnalytics)
+        const diagnosticCounts = [metricCountMismatches, providerEvidenceCountMismatches, childIdentityMismatches].map(jsonIntegerBigInt)
+        const partitionIsValid =
+            markerCount !== null &&
+            verifiedCount !== null &&
+            mismatchCount !== null &&
+            excludedCount !== null &&
+            markerCount === verifiedCount + mismatchCount &&
+            mismatchCount === excludedCount &&
+            diagnosticCounts.every(count => count !== null && count <= mismatchCount)
+        const status =
+            partitionIsValid && markerCount === 0n
+                ? ('not-observed' as const)
+                : partitionIsValid && mismatchCount === 0n
+                  ? ('verified' as const)
+                  : ('mismatch' as const)
+
+        return {
+            semantics: 'completion-marker-child-row-counts' as const,
+            status,
+            completionMarkers,
+            verified,
+            mismatched,
+            excludedFromAnalytics,
+            metricCountMismatches,
+            providerEvidenceCountMismatches,
+            childIdentityMismatches,
+        }
+    }
+
+    private projectionIsComplete(row: Record<string, unknown>): boolean {
+        const expectedMetrics = safeInteger(row.metric_count)
+        const expectedProviderEvidence = safeInteger(row.provider_evidence_count)
+        const observedMetrics = jsonIntegerBigInt(jsonInteger(row.projection_observed_metric_count))
+        const matchingMetrics = jsonIntegerBigInt(jsonInteger(row.projection_matching_metric_count))
+        const mismatchedMetricIdentities = jsonIntegerBigInt(jsonInteger(row.projection_mismatched_metric_identity_count))
+        const observedProviderEvidence = jsonIntegerBigInt(jsonInteger(row.projection_observed_provider_evidence_count))
+        const matchingProviderEvidence = jsonIntegerBigInt(jsonInteger(row.projection_matching_provider_evidence_count))
+        const mismatchedProviderIdentities = jsonIntegerBigInt(jsonInteger(row.projection_mismatched_provider_identity_count))
+        if (
+            Number(row.projection_complete) !== 1 ||
+            expectedMetrics === null ||
+            expectedProviderEvidence === null ||
+            observedMetrics === null ||
+            matchingMetrics === null ||
+            mismatchedMetricIdentities === null ||
+            observedProviderEvidence === null ||
+            matchingProviderEvidence === null ||
+            mismatchedProviderIdentities === null
+        ) {
+            return false
+        }
+        return (
+            observedMetrics === BigInt(expectedMetrics) &&
+            matchingMetrics === BigInt(expectedMetrics) &&
+            mismatchedMetricIdentities === 0n &&
+            observedProviderEvidence === BigInt(expectedProviderEvidence) &&
+            matchingProviderEvidence === BigInt(expectedProviderEvidence) &&
+            mismatchedProviderIdentities === 0n
+        )
+    }
+
+    private captureProjectionIntegrityView(row: Record<string, unknown>) {
+        if (!this.projectionIsComplete(row)) this.throwProjectionIncomplete()
+        const expectedMetrics = safeInteger(row.metric_count)
+        const expectedProviderEvidence = safeInteger(row.provider_evidence_count)
+        const observedMetrics = jsonInteger(row.projection_observed_metric_count)
+        const observedProviderEvidence = jsonInteger(row.projection_observed_provider_evidence_count)
+        if (
+            expectedMetrics === null ||
+            expectedProviderEvidence === null ||
+            observedMetrics === null ||
+            observedProviderEvidence === null
+        ) {
+            this.throwProjectionIncomplete()
+        }
+        return {
+            semantics: 'completion-marker-child-row-counts' as const,
+            status: 'verified' as const,
+            expected: { metrics: expectedMetrics, providerEvidence: expectedProviderEvidence },
+            observed: { metrics: observedMetrics, providerEvidence: observedProviderEvidence },
+        }
+    }
+
+    private throwProjectionIncomplete(): never {
+        throw new ConflictException({
+            message: 'Animation capture projection is incomplete',
+            error: 'ANIMATION_RUM_V2_PROJECTION_INCOMPLETE',
+        })
     }
 
     private async authorizedQuery(userId: number, input: QueryInput): Promise<NormalizedQuery> {
@@ -1045,6 +1245,7 @@ export class AnimationRumV2QueryService {
                 reasons,
                 adapterErrorCount: safeInteger(row.adapter_error_count),
             },
+            projectionIntegrity: this.captureProjectionIntegrityView(row),
             providerEvidenceCount: safeInteger(row.provider_evidence_count),
             metricCount: safeInteger(row.metric_count),
         }
