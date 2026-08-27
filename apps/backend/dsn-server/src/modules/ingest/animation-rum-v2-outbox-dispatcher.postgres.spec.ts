@@ -481,8 +481,8 @@ describePostgres('AnimationRumV2OutboxDispatcherService PostgreSQL integration',
         expect(outbox.rows[0]?.count).toBe('0')
     })
 
-    it('keeps the claimed row leased after a post-Kafka ACK rollback, then resends it after lease expiry', async () => {
-        const report = pageReport(`ackfail_${randomUUID().slice(0, 8)}`)
+    it('keeps the claimed row leased after a post-Kafka ACK rollback, then sends it again after lease expiry', async () => {
+        const report = pageReport(`rollback_${randomUUID().slice(0, 8)}`)
         await admission.admitBatch(appId, [trackingPayload(report)])
         const sentValues: string[] = []
         const kafka = fakeKafka(batch => {
