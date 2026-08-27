@@ -784,6 +784,7 @@ test('explicit host evidence is bounded, capture-clocked, coverage-aware, and ex
         [3, 2, 1, 1]
     )
     assert.equal(snapshot.hostEvidence.framework.detailScope, 'retained-samples')
+    assert.equal(snapshot.hostEvidence.framework.retainedEvidenceSampleCount, 2)
     assert.equal(snapshot.hostEvidence.framework.acceptedWindow.startedAt, 0)
     assert.equal(snapshot.hostEvidence.framework.acceptedWindow.endedAt, 20)
     assert.equal(snapshot.hostEvidence.framework.window.startedAt, 10)
@@ -1812,6 +1813,7 @@ test('element selection is a parallel native sidecar with bounded direct evidenc
     assert.equal(completed.activeInteractionId, null)
     assert.deepEqual(completed.correlated, measurement.performance)
     assert.equal(completed.correlationRelation, 'temporal-overlap')
+    assert.equal(completed.correlatedDurationMs, measurement.durationMs)
 
     collectFrames(runtime, [20])
     const after = collector.snapshot()
@@ -3245,6 +3247,7 @@ test('dev overlay target recording is explicitly started, bounded, resettable, a
     assert.equal(stopped.activeInteractionId, null)
     assert.ok(stopped.correlated)
     assert.equal(stopped.correlationRelation, 'temporal-overlap')
+    assert.equal(stopped.correlatedDurationMs, 25)
     const correlatedAtStop = structuredClone(stopped.correlated)
     const durationAtStop = collector.snapshot().interactions.recent.find(interaction => interaction.id === firstInteractionId).durationMs
 
