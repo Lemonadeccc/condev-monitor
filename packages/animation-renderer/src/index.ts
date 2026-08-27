@@ -27,13 +27,18 @@ export type {
     WebGlGpuTimerSnapshot,
     WebGlGpuTimingEvidence,
 } from './webgl-gpu-timer'
-export { WebGpuTimestampTimerOptionsError, createWebGpuTimestampTimer } from './webgpu-timestamp-timer'
+export { WebGpuTimestampTimerOptionsError, createWebGpuMultiPassTimestampTimer, createWebGpuTimestampTimer } from './webgpu-timestamp-timer'
 export type {
     WebGpuBufferDescriptorLike,
     WebGpuBufferLike,
     WebGpuCommandEncoderLike,
     WebGpuDeviceLike,
     WebGpuDeviceLostInfoLike,
+    WebGpuFrameEndTimestampWritesLike,
+    WebGpuFrameStartTimestampWritesLike,
+    WebGpuMultiPassBoundaryDescriptors,
+    WebGpuMultiPassTimestampTimer,
+    WebGpuMultiPassTimestampTimerOptions,
     WebGpuQuerySetDescriptorLike,
     WebGpuQuerySetLike,
     WebGpuSupportedFeaturesLike,

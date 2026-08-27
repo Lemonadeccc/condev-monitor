@@ -100,9 +100,34 @@ export interface WebGpuTimestampWritesLike<QuerySet extends WebGpuQuerySetLike> 
     readonly endOfPassWriteIndex: 1
 }
 
+/** Timestamp writes attached only to the first pass of a multi-pass frame. */
+export interface WebGpuFrameStartTimestampWritesLike<QuerySet extends WebGpuQuerySetLike> {
+    readonly querySet: QuerySet
+    readonly beginningOfPassWriteIndex: 0
+}
+
+/** Timestamp writes attached only to the last pass of a multi-pass frame. */
+export interface WebGpuFrameEndTimestampWritesLike<QuerySet extends WebGpuQuerySetLike> {
+    readonly querySet: QuerySet
+    readonly endOfPassWriteIndex: 1
+}
+
+export interface WebGpuMultiPassBoundaryDescriptors<
+    FirstDescriptor extends object,
+    LastDescriptor extends object,
+    QuerySet extends WebGpuQuerySetLike,
+> {
+    readonly firstPassDescriptor: FirstDescriptor & {
+        readonly timestampWrites: WebGpuFrameStartTimestampWritesLike<QuerySet>
+    }
+    readonly lastPassDescriptor: LastDescriptor & {
+        readonly timestampWrites: WebGpuFrameEndTimestampWritesLike<QuerySet>
+    }
+}
+
 declare const WEBGPU_FRAME_TICKET: unique symbol
 
-/** Opaque handle for one sampled, complete single-pass renderer frame. */
+/** Opaque handle for one sampled renderer frame. */
 export interface WebGpuTimestampFrameTicket<QuerySet extends WebGpuQuerySetLike> {
     readonly sampleId: number
     readonly [WEBGPU_FRAME_TICKET]: QuerySet
@@ -116,6 +141,20 @@ export interface WebGpuTimestampTimerOptions<QuerySet extends WebGpuQuerySetLike
      * the complete renderer frame represented by the resulting duration.
      */
     frameBoundary: 'single-pass-complete-frame'
+    /** Sample the first eligible frame and then every Nth beginFrame call. Default: 60. */
+    sampleEvery?: number
+    /** Bound allocated/in-flight query and readback resource sets. Default: 2. */
+    maxPendingFrames?: number
+}
+
+export interface WebGpuMultiPassTimestampTimerOptions<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike> {
+    /** The timer observes this device but never destroys it. */
+    device: WebGpuDeviceLike<QuerySet, Buffer>
+    /**
+     * Required host attestation: the returned first/last descriptors delimit
+     * the complete renderer frame in one command encoder/command buffer.
+     */
+    frameBoundary: 'multi-pass-single-command-buffer-complete-frame'
     /** Sample the first eligible frame and then every Nth beginFrame call. Default: 60. */
     sampleEvery?: number
     /** Bound allocated/in-flight query and readback resource sets. Default: 2. */
@@ -143,22 +182,11 @@ export interface WebGpuTimestampTimerSnapshot {
     errorCount: number
 }
 
-export interface WebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike> {
+export interface WebGpuTimestampTimerCommon<QuerySet extends WebGpuQuerySetLike> {
     readonly backend: 'webgpu'
     readonly supported: boolean
     /** Allocates a sparse, bounded query/readback set. Null means this frame is not sampled. */
     beginFrame(): WebGpuTimestampFrameTicket<QuerySet> | null
-    /**
-     * Returns a shallow copy with this timer's timestampWrites. Existing
-     * timestampWrites are never overwritten. Use the returned descriptor for
-     * exactly one render or compute pass.
-     */
-    instrumentPassDescriptor<Descriptor extends object>(
-        ticket: WebGpuTimestampFrameTicket<QuerySet>,
-        descriptor: Descriptor
-    ): (Descriptor & { readonly timestampWrites: WebGpuTimestampWritesLike<QuerySet> }) | null
-    /** Encodes resolve/copy after the instrumented pass has ended. It does not finish or submit the encoder. */
-    endFrame(ticket: WebGpuTimestampFrameTicket<QuerySet>, encoder: WebGpuCommandEncoderLike<QuerySet, Buffer>): boolean
     /**
      * Call synchronously after the application's queue.submit succeeds. This
      * is the only method that starts asynchronous MAP_READ.
@@ -179,6 +207,40 @@ export interface WebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, Buffe
     dispose(): void
 }
 
+export interface WebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike>
+    extends WebGpuTimestampTimerCommon<QuerySet> {
+    /**
+     * Returns a shallow copy with this timer's timestampWrites. Existing
+     * timestampWrites are never overwritten. Use the returned descriptor for
+     * exactly one render or compute pass.
+     */
+    instrumentPassDescriptor<Descriptor extends object>(
+        ticket: WebGpuTimestampFrameTicket<QuerySet>,
+        descriptor: Descriptor
+    ): (Descriptor & { readonly timestampWrites: WebGpuTimestampWritesLike<QuerySet> }) | null
+    /** Encodes resolve/copy after the instrumented pass has ended. It does not finish or submit the encoder. */
+    endFrame(ticket: WebGpuTimestampFrameTicket<QuerySet>, encoder: WebGpuCommandEncoderLike<QuerySet, Buffer>): boolean
+}
+
+export interface WebGpuMultiPassTimestampTimer<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike>
+    extends WebGpuTimestampTimerCommon<QuerySet> {
+    /**
+     * Atomically instruments two distinct descriptors. Neither descriptor is
+     * returned when either boundary conflicts or caller access is re-entrant.
+     */
+    instrumentFrameBoundaryPasses<FirstDescriptor extends object, LastDescriptor extends object>(
+        ticket: WebGpuTimestampFrameTicket<QuerySet>,
+        firstDescriptor: FirstDescriptor,
+        lastDescriptor: LastDescriptor
+    ): WebGpuMultiPassBoundaryDescriptors<FirstDescriptor, LastDescriptor, QuerySet> | null
+    /** Encodes resolve/copy after every pass has ended on the associated encoder. */
+    endFrame(
+        ticket: WebGpuTimestampFrameTicket<QuerySet>,
+        encoder: WebGpuCommandEncoderLike<QuerySet, Buffer>,
+        completion: 'all-frame-passes-ended-on-associated-encoder'
+    ): boolean
+}
+
 export class WebGpuTimestampTimerOptionsError extends Error {
     constructor(message: string) {
         super(message)
@@ -186,7 +248,9 @@ export class WebGpuTimestampTimerOptionsError extends Error {
     }
 }
 
-type FrameState = 'created' | 'instrumented' | 'encoded' | 'submitted' | 'mapping'
+type FrameState = 'created' | 'instrumenting' | 'instrumented' | 'encoding' | 'encoded' | 'submitted' | 'mapping'
+
+type CallerOperation = 'begin' | 'instrument' | 'encode' | 'submit' | 'cleanup'
 
 interface FrameRecord<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike> {
     sampleId: number
@@ -195,6 +259,32 @@ interface FrameRecord<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpu
     resolveBuffer: Buffer
     readBuffer: Buffer
     state: FrameState
+}
+
+type WebGpuTimestampTimerMode = 'single-pass' | 'multi-pass'
+
+interface WebGpuTimestampTimerCoreOptions<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike> {
+    device: WebGpuDeviceLike<QuerySet, Buffer>
+    sampleEvery?: number
+    maxPendingFrames?: number
+}
+
+interface WebGpuTimestampTimerInternal<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike>
+    extends WebGpuTimestampTimerCommon<QuerySet> {
+    instrumentPassDescriptor<Descriptor extends object>(
+        ticket: WebGpuTimestampFrameTicket<QuerySet>,
+        descriptor: Descriptor
+    ): (Descriptor & { readonly timestampWrites: WebGpuTimestampWritesLike<QuerySet> }) | null
+    instrumentFrameBoundaryPasses<FirstDescriptor extends object, LastDescriptor extends object>(
+        ticket: WebGpuTimestampFrameTicket<QuerySet>,
+        firstDescriptor: FirstDescriptor,
+        lastDescriptor: LastDescriptor
+    ): WebGpuMultiPassBoundaryDescriptors<FirstDescriptor, LastDescriptor, QuerySet> | null
+    endFrame(
+        ticket: WebGpuTimestampFrameTicket<QuerySet>,
+        encoder: WebGpuCommandEncoderLike<QuerySet, Buffer>,
+        completion?: 'all-frame-passes-ended-on-associated-encoder'
+    ): boolean
 }
 
 interface DeviceLostListener {
@@ -247,6 +337,35 @@ function errorName(error: unknown): string | null {
     }
 }
 
+interface PassDescriptorCopy {
+    conflict: boolean
+    descriptor: object | null
+}
+
+/**
+ * Copy one pass descriptor with ordinary object-spread semantics while
+ * intentionally omitting timestampWrites. Reading that caller-controlled
+ * property exactly once avoids accessor/Proxy time-of-check re-entry.
+ */
+function copyPassDescriptorWithoutTimestampWrites(source: object): PassDescriptorCopy {
+    if (Reflect.get(source, 'timestampWrites') !== undefined) {
+        return { conflict: true, descriptor: null }
+    }
+
+    const descriptor: Record<PropertyKey, unknown> = {}
+    for (const key of Reflect.ownKeys(source)) {
+        const property = Reflect.getOwnPropertyDescriptor(source, key)
+        if (!property?.enumerable || key === 'timestampWrites') continue
+        Object.defineProperty(descriptor, key, {
+            value: Reflect.get(source, key),
+            enumerable: true,
+            configurable: true,
+            writable: true,
+        })
+    }
+    return { conflict: false, descriptor }
+}
+
 function subscribeDeviceLost(device: object, lost: PromiseLike<WebGpuDeviceLostInfoLike>, listener: DeviceLostListener): () => void {
     let hub = deviceLostHubs.get(device)
     if (!hub) {
@@ -275,13 +394,10 @@ function subscribeDeviceLost(device: object, lost: PromiseLike<WebGpuDeviceLostI
     }
 }
 
-export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike>(
-    options: WebGpuTimestampTimerOptions<QuerySet, Buffer>
-): WebGpuTimestampTimer<QuerySet, Buffer> {
-    if (!options || !isObject(options.device)) throw new WebGpuTimestampTimerOptionsError('device must be a WebGPU device')
-    if (options.frameBoundary !== 'single-pass-complete-frame') {
-        throw new WebGpuTimestampTimerOptionsError('frameBoundary must explicitly be single-pass-complete-frame')
-    }
+function createWebGpuTimestampTimerCore<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike>(
+    options: WebGpuTimestampTimerCoreOptions<QuerySet, Buffer>,
+    mode: WebGpuTimestampTimerMode
+): WebGpuTimestampTimerInternal<QuerySet, Buffer> {
     const sampleEvery = requireBoundedInteger('sampleEvery', options.sampleEvery, DEFAULT_SAMPLE_EVERY, MAX_SAMPLE_EVERY)
     const maxPendingFrames = requireBoundedInteger(
         'maxPendingFrames',
@@ -308,6 +424,30 @@ export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, 
     let nextSampleId = 1
     let highestSettledSampleId = 0
     let unsubscribeDeviceLost = (): void => {}
+    let callerOperation: CallerOperation | null = null
+    let callerOperationReentered = false
+    let pendingDispose = false
+    let drainPendingDispose = (): void => {}
+
+    const rejectCallerOperationReentry = (): boolean => {
+        if (callerOperation === null) return false
+        callerOperationReentered = true
+        rejectedTicketCount = increment(rejectedTicketCount)
+        return true
+    }
+
+    const beginCallerOperation = (operation: CallerOperation): void => {
+        callerOperation = operation
+        callerOperationReentered = false
+    }
+
+    const endCallerOperation = (): boolean => {
+        const reentered = callerOperationReentered
+        callerOperation = null
+        callerOperationReentered = false
+        drainPendingDispose()
+        return reentered
+    }
 
     const emit = (evidence: WebGpuTimestampTimingEvidence): void => {
         if (latestEvidence) droppedEvidenceCount = increment(droppedEvidenceCount)
@@ -354,10 +494,33 @@ export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, 
             // resources to normal WebGPU/GC lifetime instead of invalidating the
             // application's command buffer. Submitted resources are safe to end.
             const useApi =
-                mode !== 'device-lost' && (record.state === 'created' || record.state === 'submitted' || record.state === 'mapping')
+                mode !== 'device-lost' &&
+                (record.state === 'created' ||
+                    record.state === 'instrumenting' ||
+                    record.state === 'submitted' ||
+                    record.state === 'mapping')
             if (mode === 'terminal' && !useApi) abandonedCommandFrameCount = increment(abandonedCommandFrameCount)
             releaseRecord(record, useApi)
         }
+    }
+
+    const performDispose = (): void => {
+        if (capability === 'disposed') return
+        unsubscribeDeviceLost()
+        const releaseMode = capability === 'device-lost' ? 'device-lost' : 'terminal'
+        capability = 'disposed'
+        callerOperation = 'cleanup'
+        callerOperationReentered = false
+        releaseAll(releaseMode)
+        callerOperation = null
+        callerOperationReentered = false
+        latestEvidence = null
+    }
+
+    drainPendingDispose = (): void => {
+        if (!pendingDispose) return
+        pendingDispose = false
+        performDispose()
     }
 
     const fail = (): void => {
@@ -365,8 +528,10 @@ export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, 
         unsubscribeDeviceLost()
         noteError()
         capability = 'error'
+        beginCallerOperation('cleanup')
         releaseAll('terminal')
-        emit({ status: 'error', source: GPU_TIMING_SOURCE })
+        endCallerOperation()
+        if (capability === 'error') emit({ status: 'error', source: GPU_TIMING_SOURCE })
     }
 
     const loseDevice = (): void => {
@@ -376,8 +541,10 @@ export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, 
         capability = 'device-lost'
         // Device loss invalidates every object. Drop references without calling
         // methods on resources whose underlying device is already gone.
+        beginCallerOperation('cleanup')
         releaseAll('device-lost')
-        emit({ status: 'context-lost', source: GPU_TIMING_SOURCE })
+        endCallerOperation()
+        if (capability === 'device-lost') emit({ status: 'context-lost', source: GPU_TIMING_SOURCE })
     }
 
     try {
@@ -413,33 +580,50 @@ export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, 
         return record
     }
 
+    const ownsDuringCallerOperation = (record: FrameRecord<QuerySet, Buffer>, state: FrameState): boolean =>
+        !callerOperationReentered && capability === 'supported' && records.get(record.ticket as object) === record && record.state === state
+
     const settleMappedRecord = (record: FrameRecord<QuerySet, Buffer>): void => {
         if (capability !== 'supported' || records.get(record.ticket as object) !== record || record.state !== 'mapping') return
-        let range: ArrayBuffer
+        let startNanoseconds: bigint | null = null
+        let endNanoseconds: bigint | null = null
+        let operationError = false
+        beginCallerOperation('cleanup')
         try {
             const getMappedRange = method(record.readBuffer, 'getMappedRange')
             if (!getMappedRange) throw new TypeError('read buffer getMappedRange is required')
+            if (!ownsDuringCallerOperation(record, 'mapping')) throw new TypeError('mapped buffer access was re-entrant')
             const value = Reflect.apply(getMappedRange, record.readBuffer, [0, QUERY_RESULT_BYTES])
             if (!(value instanceof ArrayBuffer)) throw new TypeError('getMappedRange must return ArrayBuffer')
-            range = value
+            if (value.byteLength >= QUERY_RESULT_BYTES) {
+                try {
+                    const values = new BigUint64Array(value, 0, QUERY_COUNT)
+                    startNanoseconds = values[0] ?? null
+                    endNanoseconds = values[1] ?? null
+                } catch {
+                    startNanoseconds = null
+                    endNanoseconds = null
+                }
+            }
+            if (!ownsDuringCallerOperation(record, 'mapping')) throw new TypeError('mapped buffer read was re-entrant')
         } catch {
+            operationError = true
+        }
+        const operationReentered = endCallerOperation()
+        if (
+            operationError ||
+            operationReentered ||
+            capability !== 'supported' ||
+            records.get(record.ticket as object) !== record ||
+            record.state !== 'mapping'
+        ) {
             fail()
             return
         }
-
-        let startNanoseconds: bigint | null = null
-        let endNanoseconds: bigint | null = null
-        if (range.byteLength >= QUERY_RESULT_BYTES) {
-            try {
-                const values = new BigUint64Array(range, 0, QUERY_COUNT)
-                startNanoseconds = values[0] ?? null
-                endNanoseconds = values[1] ?? null
-            } catch {
-                startNanoseconds = null
-                endNanoseconds = null
-            }
-        }
+        beginCallerOperation('cleanup')
         releaseRecord(record, true)
+        endCallerOperation()
+        if (capability !== 'supported') return
 
         if (
             startNanoseconds === null ||
@@ -474,6 +658,7 @@ export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, 
             return capability === 'supported'
         },
         beginFrame(): WebGpuTimestampFrameTicket<QuerySet> | null {
+            if (rejectCallerOperationReentry()) return null
             if (capability !== 'supported') return null
             beginAttemptCount = increment(beginAttemptCount)
             if ((beginAttemptCount - 1) % sampleEvery !== 0) return null
@@ -485,15 +670,21 @@ export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, 
             let querySet: QuerySet | null = null
             let resolveBuffer: Buffer | null = null
             let readBuffer: Buffer | null = null
+            let operationError = false
+            beginCallerOperation('begin')
             try {
                 const createQuerySet = method(device, 'createQuerySet')
+                if (!createQuerySet) throw new TypeError('device query-set factory is required')
+                if (callerOperationReentered || capability !== 'supported') throw new TypeError('device factory access was re-entrant')
                 const createBuffer = method(device, 'createBuffer')
-                if (!createQuerySet || !createBuffer) throw new TypeError('device query and buffer factories are required')
+                if (!createBuffer) throw new TypeError('device buffer factory is required')
+                if (callerOperationReentered || capability !== 'supported') throw new TypeError('device factory access was re-entrant')
                 const createdQuerySet = Reflect.apply(createQuerySet, device, [
                     { type: 'timestamp', count: QUERY_COUNT, label: 'condev-webgpu-frame-timestamps' },
                 ])
                 if (!isObject(createdQuerySet)) throw new TypeError('device returned a malformed query set')
                 querySet = createdQuerySet as QuerySet
+                if (callerOperationReentered || capability !== 'supported') throw new TypeError('query-set creation was re-entrant')
                 const createdResolveBuffer = Reflect.apply(createBuffer, device, [
                     {
                         size: QUERY_RESULT_BYTES,
@@ -503,6 +694,7 @@ export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, 
                 ])
                 if (!isObject(createdResolveBuffer)) throw new TypeError('device returned a malformed resolve buffer')
                 resolveBuffer = createdResolveBuffer as Buffer
+                if (callerOperationReentered || capability !== 'supported') throw new TypeError('resolve-buffer creation was re-entrant')
                 const createdReadBuffer = Reflect.apply(createBuffer, device, [
                     {
                         size: QUERY_RESULT_BYTES,
@@ -512,10 +704,22 @@ export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, 
                 ])
                 if (!isObject(createdReadBuffer)) throw new TypeError('device returned a malformed read buffer')
                 readBuffer = createdReadBuffer as Buffer
+                if (callerOperationReentered || capability !== 'supported') throw new TypeError('read-buffer creation was re-entrant')
             } catch {
+                operationError = true
+            }
+            const operationReentered = endCallerOperation()
+            if (operationError || operationReentered || capability !== 'supported' || !querySet || !resolveBuffer || !readBuffer) {
+                beginCallerOperation('cleanup')
                 if (querySet) safeResourceCall(querySet, 'destroy')
                 if (resolveBuffer) safeResourceCall(resolveBuffer, 'destroy')
                 if (readBuffer) safeResourceCall(readBuffer, 'destroy')
+                endCallerOperation()
+                if (operationReentered) {
+                    invalidFrameCount = increment(invalidFrameCount)
+                    return null
+                }
+                if (capability !== 'supported') return null
                 fail()
                 return null
             }
@@ -538,55 +742,248 @@ export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, 
             ticket: WebGpuTimestampFrameTicket<QuerySet>,
             descriptor: Descriptor
         ): (Descriptor & { readonly timestampWrites: WebGpuTimestampWritesLike<QuerySet> }) | null {
+            if (rejectCallerOperationReentry()) return null
+            if (mode !== 'single-pass') {
+                rejectedTicketCount = increment(rejectedTicketCount)
+                return null
+            }
             const record = lookup(ticket)
             if (!record || record.state !== 'created' || !isObject(descriptor) || capability !== 'supported') {
                 if (record && record.state !== 'created') rejectedTicketCount = increment(rejectedTicketCount)
                 return null
             }
+            let conflict = false
+            let invalid = false
+            let instrumented: object | null = null
+            record.state = 'instrumenting'
+            beginCallerOperation('instrument')
             try {
-                const existing = Reflect.get(descriptor, 'timestampWrites')
-                if (existing !== undefined) {
-                    conflictingTimestampWritesCount = increment(conflictingTimestampWritesCount)
-                    releaseRecord(record, true)
-                    return null
+                const copied = copyPassDescriptorWithoutTimestampWrites(descriptor)
+                if (!ownsDuringCallerOperation(record, 'instrumenting')) {
+                    throw new TypeError('pass descriptor copy was re-entrant')
                 }
-                const timestampWrites: WebGpuTimestampWritesLike<QuerySet> = Object.freeze({
-                    querySet: record.querySet,
-                    beginningOfPassWriteIndex: 0,
-                    endOfPassWriteIndex: 1,
-                })
-                const instrumented = { ...descriptor, timestampWrites }
-                record.state = 'instrumented'
-                return instrumented
+                conflict = copied.conflict
+                instrumented = copied.descriptor
+                if (instrumented) {
+                    const timestampWrites: WebGpuTimestampWritesLike<QuerySet> = Object.freeze({
+                        querySet: record.querySet,
+                        beginningOfPassWriteIndex: 0,
+                        endOfPassWriteIndex: 1,
+                    })
+                    Object.defineProperty(instrumented, 'timestampWrites', {
+                        value: timestampWrites,
+                        enumerable: true,
+                        configurable: true,
+                        writable: true,
+                    })
+                }
             } catch {
-                invalidFrameCount = increment(invalidFrameCount)
+                invalid = true
+            }
+            const operationReentered = endCallerOperation()
+            const stillOwned = records.get(record.ticket as object) === record && record.state === 'instrumenting'
+            if (conflict && !operationReentered && !invalid && stillOwned && capability === 'supported') {
+                conflictingTimestampWritesCount = increment(conflictingTimestampWritesCount)
+                beginCallerOperation('cleanup')
                 releaseRecord(record, true)
+                endCallerOperation()
                 return null
             }
+            if (operationReentered || invalid || !stillOwned || capability !== 'supported' || !instrumented) {
+                invalidFrameCount = increment(invalidFrameCount)
+                if (stillOwned) {
+                    beginCallerOperation('cleanup')
+                    releaseRecord(record, true)
+                    endCallerOperation()
+                }
+                return null
+            }
+            record.state = 'instrumented'
+            return instrumented as Descriptor & { readonly timestampWrites: WebGpuTimestampWritesLike<QuerySet> }
         },
-        endFrame(ticket: WebGpuTimestampFrameTicket<QuerySet>, encoder: WebGpuCommandEncoderLike<QuerySet, Buffer>): boolean {
+        instrumentFrameBoundaryPasses<FirstDescriptor extends object, LastDescriptor extends object>(
+            ticket: WebGpuTimestampFrameTicket<QuerySet>,
+            firstDescriptor: FirstDescriptor,
+            lastDescriptor: LastDescriptor
+        ): WebGpuMultiPassBoundaryDescriptors<FirstDescriptor, LastDescriptor, QuerySet> | null {
+            if (rejectCallerOperationReentry()) return null
+            if (mode !== 'multi-pass') {
+                rejectedTicketCount = increment(rejectedTicketCount)
+                return null
+            }
             const record = lookup(ticket)
-            if (!record || record.state !== 'instrumented' || !isObject(encoder) || capability !== 'supported') {
+            if (
+                !record ||
+                record.state !== 'created' ||
+                !isObject(firstDescriptor) ||
+                !isObject(lastDescriptor) ||
+                Object.is(firstDescriptor, lastDescriptor) ||
+                capability !== 'supported'
+            ) {
+                if (record && record.state !== 'created') rejectedTicketCount = increment(rejectedTicketCount)
+                else if (
+                    record &&
+                    (!isObject(firstDescriptor) || !isObject(lastDescriptor) || Object.is(firstDescriptor, lastDescriptor))
+                ) {
+                    invalidFrameCount = increment(invalidFrameCount)
+                    beginCallerOperation('cleanup')
+                    releaseRecord(record, true)
+                    endCallerOperation()
+                }
+                return null
+            }
+
+            let conflict = false
+            let invalid = false
+            let firstCopy: object | null = null
+            let lastCopy: object | null = null
+            record.state = 'instrumenting'
+            beginCallerOperation('instrument')
+            try {
+                const copiedFirst = copyPassDescriptorWithoutTimestampWrites(firstDescriptor)
+                if (!ownsDuringCallerOperation(record, 'instrumenting')) {
+                    throw new TypeError('first pass descriptor copy was re-entrant')
+                }
+                const copiedLast = copiedFirst.conflict
+                    ? { conflict: false, descriptor: null }
+                    : copyPassDescriptorWithoutTimestampWrites(lastDescriptor)
+                if (!ownsDuringCallerOperation(record, 'instrumenting')) {
+                    throw new TypeError('last pass descriptor copy was re-entrant')
+                }
+                conflict = copiedFirst.conflict || copiedLast.conflict
+                firstCopy = copiedFirst.descriptor
+                lastCopy = copiedLast.descriptor
+                if (firstCopy && lastCopy) {
+                    const firstTimestampWrites: WebGpuFrameStartTimestampWritesLike<QuerySet> = Object.freeze({
+                        querySet: record.querySet,
+                        beginningOfPassWriteIndex: 0,
+                    })
+                    const lastTimestampWrites: WebGpuFrameEndTimestampWritesLike<QuerySet> = Object.freeze({
+                        querySet: record.querySet,
+                        endOfPassWriteIndex: 1,
+                    })
+                    Object.defineProperty(firstCopy, 'timestampWrites', {
+                        value: firstTimestampWrites,
+                        enumerable: true,
+                        configurable: true,
+                        writable: true,
+                    })
+                    Object.defineProperty(lastCopy, 'timestampWrites', {
+                        value: lastTimestampWrites,
+                        enumerable: true,
+                        configurable: true,
+                        writable: true,
+                    })
+                }
+            } catch {
+                invalid = true
+            }
+
+            const operationReentered = endCallerOperation()
+            const stillOwned = records.get(record.ticket as object) === record && record.state === 'instrumenting'
+            if (conflict && !operationReentered && !invalid && stillOwned && capability === 'supported') {
+                conflictingTimestampWritesCount = increment(conflictingTimestampWritesCount)
+                beginCallerOperation('cleanup')
+                releaseRecord(record, true)
+                endCallerOperation()
+                return null
+            }
+            if (operationReentered || invalid || !stillOwned || capability !== 'supported' || !firstCopy || !lastCopy) {
+                invalidFrameCount = increment(invalidFrameCount)
+                if (stillOwned) {
+                    beginCallerOperation('cleanup')
+                    releaseRecord(record, true)
+                    endCallerOperation()
+                }
+                return null
+            }
+
+            record.state = 'instrumented'
+            return {
+                firstPassDescriptor: firstCopy,
+                lastPassDescriptor: lastCopy,
+            } as WebGpuMultiPassBoundaryDescriptors<FirstDescriptor, LastDescriptor, QuerySet>
+        },
+        endFrame(
+            ticket: WebGpuTimestampFrameTicket<QuerySet>,
+            encoder: WebGpuCommandEncoderLike<QuerySet, Buffer>,
+            completion?: 'all-frame-passes-ended-on-associated-encoder'
+        ): boolean {
+            if (rejectCallerOperationReentry()) return false
+            const record = lookup(ticket)
+            if (
+                !record ||
+                record.state !== 'instrumented' ||
+                !isObject(encoder) ||
+                capability !== 'supported' ||
+                (mode === 'multi-pass' && completion !== 'all-frame-passes-ended-on-associated-encoder')
+            ) {
                 if (record && record.state !== 'instrumented') rejectedTicketCount = increment(rejectedTicketCount)
+                else if (record && mode === 'multi-pass' && completion !== 'all-frame-passes-ended-on-associated-encoder') {
+                    rejectedTicketCount = increment(rejectedTicketCount)
+                }
                 return false
             }
+            let operationError = false
+            record.state = 'encoding'
+            beginCallerOperation('encode')
             try {
                 const resolveQuerySet = method(encoder, 'resolveQuerySet')
+                if (
+                    callerOperationReentered ||
+                    capability !== 'supported' ||
+                    records.get(record.ticket as object) !== record ||
+                    record.state !== 'encoding'
+                ) {
+                    throw new TypeError('command encoder access was re-entrant')
+                }
                 const copyBufferToBuffer = method(encoder, 'copyBufferToBuffer')
                 if (!resolveQuerySet || !copyBufferToBuffer) throw new TypeError('command encoder methods are required')
-                // Mark first: if either encoder call throws after recording a
-                // command, terminal cleanup must not destroy resources that the
-                // host might still submit with this command encoder.
-                record.state = 'encoded'
+                if (
+                    callerOperationReentered ||
+                    capability !== 'supported' ||
+                    records.get(record.ticket as object) !== record ||
+                    record.state !== 'encoding'
+                ) {
+                    throw new TypeError('command encoder access was re-entrant')
+                }
                 Reflect.apply(resolveQuerySet, encoder, [record.querySet, 0, QUERY_COUNT, record.resolveBuffer, 0])
+                if (
+                    callerOperationReentered ||
+                    capability !== 'supported' ||
+                    records.get(record.ticket as object) !== record ||
+                    record.state !== 'encoding'
+                ) {
+                    throw new TypeError('query resolve was re-entrant')
+                }
                 Reflect.apply(copyBufferToBuffer, encoder, [record.resolveBuffer, 0, record.readBuffer, 0, QUERY_RESULT_BYTES])
-                return true
+                if (
+                    callerOperationReentered ||
+                    capability !== 'supported' ||
+                    records.get(record.ticket as object) !== record ||
+                    record.state !== 'encoding'
+                ) {
+                    throw new TypeError('readback copy was re-entrant')
+                }
             } catch {
+                operationError = true
+            }
+            const operationReentered = endCallerOperation()
+            if (
+                operationError ||
+                operationReentered ||
+                capability !== 'supported' ||
+                records.get(record.ticket as object) !== record ||
+                record.state !== 'encoding'
+            ) {
                 fail()
                 return false
             }
+            record.state = 'encoded'
+            return true
         },
         notifySubmitted(ticket: WebGpuTimestampFrameTicket<QuerySet>, submission: 'associated-command-stream-submitted'): boolean {
+            if (rejectCallerOperationReentry()) return false
             const record = lookup(ticket)
             if (
                 !record ||
@@ -600,33 +997,76 @@ export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, 
                 }
                 return false
             }
-            let mapping: PromiseLike<void>
+            let mapping: Promise<void> | null = null
+            let operationError = false
+            record.state = 'submitted'
+            beginCallerOperation('submit')
             try {
                 const mapAsync = method(record.readBuffer, 'mapAsync')
                 if (!mapAsync) throw new TypeError('read buffer mapAsync is required')
-                // queue.submit has already succeeded according to the method's
-                // explicit call contract, so cleanup is now safe even if map
-                // setup fails synchronously.
-                record.state = 'submitted'
+                if (
+                    callerOperationReentered ||
+                    capability !== 'supported' ||
+                    records.get(record.ticket as object) !== record ||
+                    record.state !== 'submitted'
+                ) {
+                    throw new TypeError('read buffer access was re-entrant')
+                }
                 const result = Reflect.apply(mapAsync, record.readBuffer, [GPU_MAP_MODE_READ, 0, QUERY_RESULT_BYTES])
-                if (!isObject(result) || !method(result as PromiseLike<void>, 'then')) throw new TypeError('mapAsync must return a promise')
-                mapping = result as PromiseLike<void>
-                record.state = 'mapping'
+                if (!isObject(result)) throw new TypeError('mapAsync returned an invalid result')
+                const then = method(result as PromiseLike<void>, 'then')
+                if (!then) throw new TypeError('mapAsync must return a promise')
+                let thenCallError = false
+                mapping = new Promise<void>((resolve, reject) => {
+                    try {
+                        Reflect.apply(then, result, [resolve, reject])
+                    } catch (error) {
+                        thenCallError = true
+                        reject(error)
+                    }
+                })
+                if (
+                    thenCallError ||
+                    callerOperationReentered ||
+                    capability !== 'supported' ||
+                    records.get(record.ticket as object) !== record ||
+                    record.state !== 'submitted'
+                ) {
+                    throw new TypeError('mapAsync promise subscription was re-entrant')
+                }
             } catch {
+                operationError = true
+            }
+            const operationReentered = endCallerOperation()
+            if (
+                operationError ||
+                operationReentered ||
+                !mapping ||
+                capability !== 'supported' ||
+                records.get(record.ticket as object) !== record ||
+                record.state !== 'submitted'
+            ) {
+                if (mapping) void mapping.catch(() => {})
                 fail()
                 return false
             }
-            Promise.resolve(mapping).then(
+            record.state = 'mapping'
+            mapping.then(
                 () => settleMappedRecord(record),
                 error => {
                     if (records.get(record.ticket as object) !== record || capability === 'disposed') return
-                    if (errorName(error) === 'AbortError') loseDevice()
+                    beginCallerOperation('submit')
+                    const name = errorName(error)
+                    const operationReentered = endCallerOperation()
+                    if (operationReentered) fail()
+                    else if (name === 'AbortError') loseDevice()
                     else fail()
                 }
             )
             return true
         },
         cancelFrame(ticket: WebGpuTimestampFrameTicket<QuerySet>, commandStream?: 'will-not-submit'): boolean {
+            if (rejectCallerOperationReentry()) return false
             const record = lookup(ticket)
             if (!record || record.state === 'mapping' || capability !== 'supported') {
                 if (record && record.state === 'mapping') rejectedTicketCount = increment(rejectedTicketCount)
@@ -637,15 +1077,24 @@ export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, 
                 return false
             }
             cancelledFrameCount = increment(cancelledFrameCount)
+            beginCallerOperation('cleanup')
             releaseRecord(record, true)
+            endCallerOperation()
             return true
         },
         takeLatestEvidence(): WebGpuTimestampTimingEvidence | null {
+            if (rejectCallerOperationReentry()) return null
             const evidence = latestEvidence
             latestEvidence = null
             return evidence
         },
         takeRendererHostTiming(): WebGpuTimestampTimerHostReading {
+            if (rejectCallerOperationReentry()) {
+                return {
+                    gpuTimerCapability: hostCapability(capability),
+                    gpu: null,
+                }
+            }
             const gpu = latestEvidence
             latestEvidence = null
             return {
@@ -681,10 +1130,32 @@ export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, 
         },
         dispose(): void {
             if (capability === 'disposed') return
-            unsubscribeDeviceLost()
-            releaseAll(capability === 'device-lost' ? 'device-lost' : 'terminal')
-            latestEvidence = null
-            capability = 'disposed'
+            if (callerOperation !== null) {
+                pendingDispose = true
+                rejectCallerOperationReentry()
+                return
+            }
+            performDispose()
         },
     }
+}
+
+export function createWebGpuTimestampTimer<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike>(
+    options: WebGpuTimestampTimerOptions<QuerySet, Buffer>
+): WebGpuTimestampTimer<QuerySet, Buffer> {
+    if (!options || !isObject(options.device)) throw new WebGpuTimestampTimerOptionsError('device must be a WebGPU device')
+    if (options.frameBoundary !== 'single-pass-complete-frame') {
+        throw new WebGpuTimestampTimerOptionsError('frameBoundary must explicitly be single-pass-complete-frame')
+    }
+    return createWebGpuTimestampTimerCore(options, 'single-pass')
+}
+
+export function createWebGpuMultiPassTimestampTimer<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike>(
+    options: WebGpuMultiPassTimestampTimerOptions<QuerySet, Buffer>
+): WebGpuMultiPassTimestampTimer<QuerySet, Buffer> {
+    if (!options || !isObject(options.device)) throw new WebGpuTimestampTimerOptionsError('device must be a WebGPU device')
+    if (options.frameBoundary !== 'multi-pass-single-command-buffer-complete-frame') {
+        throw new WebGpuTimestampTimerOptionsError('frameBoundary must explicitly be multi-pass-single-command-buffer-complete-frame')
+    }
+    return createWebGpuTimestampTimerCore(options, 'multi-pass')
 }
