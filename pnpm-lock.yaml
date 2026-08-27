@@ -1144,6 +1144,12 @@ importers:
 
   packages/animation-lab-explorer: {}
 
+  packages/animation-renderer:
+    devDependencies:
+      '@condev-monitor/monitor-sdk-animation':
+        specifier: workspace:*
+        version: link:../animation
+
   packages/animation-rum-contract: {}
 
   packages/animation-rum-ingest:
