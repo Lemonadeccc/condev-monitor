@@ -232,12 +232,19 @@ import {
     createThreeRendererProbe,
     createVideoFrameProbe,
 } from '@condev-monitor/monitor-sdk-animation'
+import { createWebGlGpuTimer } from '@condev-monitor/monitor-sdk-animation-renderer'
 
 const animation = new AnimationCollector()
 animation.start()
 
 const framework = createFrameworkCommitProbe({ sink: animation, framework: 'react' })
 // Pass this function to <Profiler onRender={framework.onReactProfilerRender}>.
+
+const gpuTimer = createWebGlGpuTimer({
+    gl,
+    backend: 'webgl2',
+    disjointQueryOwnership: 'exclusive',
+})
 
 const rendererHost = createRendererHostProbe({
     sink: animation,
@@ -246,8 +253,8 @@ const rendererHost = createRendererHostProbe({
         drawCalls: publicRendererStats.drawCalls,
         triangles: publicRendererStats.triangles,
         contextLost: gl.isContextLost(),
-        // Optional: only a result that an asynchronous query already resolved.
-        gpu: gpuTimer.readLatestResolved(),
+        // One-shot result from an asynchronous query; pending remains null.
+        gpu: gpuTimer.takeLatestEvidence(),
     }),
 })
 rendererHost.capture()
@@ -256,9 +263,19 @@ const three = createThreeRendererProbe({
     sink: animation,
     renderer,
     backend: 'webgl2',
-    // Optional: return only a previously resolved asynchronous timer-query result.
-    readGpuTiming: () => gpuTimer.readLatestResolved(),
+    readGpuTiming: () => gpuTimer.takeLatestEvidence(),
 })
+
+function renderFrame() {
+    gpuTimer.poll()
+    const measuring = gpuTimer.beginFrame()
+    try {
+        renderer.render(scene, camera)
+    } finally {
+        if (measuring) gpuTimer.endFrame()
+    }
+    rendererHost.capture() // Or three.capture(); do not consume the same result twice.
+}
 
 const lifecycle = createGsapLifecycleProbe({ sink: animation, gsap, scrollTrigger: ScrollTrigger })
 lifecycle.capture('mount')
@@ -274,7 +291,9 @@ With the browser client, pass the already set-up and running `AnimationIntegrati
 
 `createFrameworkCommitProbe()` can also accept a manual `recordCommit()` call for React, Vue, Angular, Svelte, Solid, vanilla, or another host. Its React Profiler callback records `actualDuration` as `renderMs` and `baseDuration` as `baseRenderMs`; React's `commitTime` is a timestamp, not commit work, so the helper never relabels it as `commitMs`. Supply `commitMs` only when the host measured that duration independently. The helper does not import React or discover component ownership.
 
-`createThreeRendererProbe()` reads the public `renderer.info` counters and optional context-loss state. GPU evidence is fail-closed: a duration is retained only when the host supplies a finite resolved value with `valid: true`, `disjoint: false`, `contextLost: false`, and a closed timer-query source that matches the declared backend. `webgl`/`webgl2` accept `webgl-disjoint-timer-query`, `webgpu` accepts `webgpu-timestamp-query`, and the backend-neutral `host-timer-query` is accepted for a GPU-capable backend including `unknown`; Canvas2D accepts no GPU source. A backend-specific source paired with `unknown` or a different backend becomes `invalid`; the direct host sink rejects the same mismatch. The helper does not create a timer query, does not call `gl.finish()`, and does not turn CPU time around `renderer.render()` into GPU time. A real integration must issue and resolve sparse asynchronous WebGL/WebGPU queries outside the probe, then let `readGpuTiming` read a completed result without blocking the render loop.
+`createThreeRendererProbe()` reads the public `renderer.info` counters and optional context-loss state. GPU evidence is fail-closed: a duration is retained only when the host supplies either the legacy complete validity flags or a closed status result, with a finite resolved value and a timer-query source matching the declared backend. `webgl`/`webgl2` accept `webgl-disjoint-timer-query`, `webgpu` accepts `webgpu-timestamp-query`, and the backend-neutral `host-timer-query` is accepted for a GPU-capable backend including `unknown`; Canvas2D accepts no GPU source. A backend-specific source paired with `unknown` or a different backend becomes `invalid`; the direct host sink rejects the same mismatch. The core helper itself does not create a timer query, call `gl.finish()`, or turn CPU time around `renderer.render()` into GPU time. The optional `@condev-monitor/monitor-sdk-animation-renderer` package now supplies the sparse, asynchronous WebGL 1/2 frame timer used above; WebGPU timestamp queries remain separate work.
+
+The WebGL timer requires `disjointQueryOwnership: 'exclusive'` because `GPU_DISJOINT_EXT` is context-global and read-to-clear. Do not run it beside an engine GPU profiler, another timer-query owner, or another bundle reading that flag. `beginFrame()`/`endFrame()` must synchronously enclose one complete renderer frame with no `await`; a local pass or arbitrary GPU region must not be relabelled as `gpuFrameMs`. Call `poll()` before `beginFrame()`, consume each result once through exactly one host probe, and recreate the timer after application-owned context restoration. See the renderer package README for the full contract.
 
 `createRendererHostProbe()` is the engine-neutral equivalent for Canvas2D, native WebGL/WebGPU, R3F, Pixi, Babylon, or another renderer integration. The host explicitly maps only public counters into the closed `drawCalls/triangles/lines/points/geometries/textures/programs` fields; no engine name, scene object, selector, URL, shader, texture identity, or custom metadata is accepted. Every supplied counter must be a finite non-negative integer inside the SDK bound. An invalid supplied counter or context state rejects that read instead of silently turning it into “unobserved”; throwing accessors and revoked proxies cannot escape the probe, and GPU access failures remain `error`, never measured. A Canvas2D backend can report counters but has no renderer-independent GPU timer, so every proposed Canvas2D GPU duration is rejected. The probe performs one caller-triggered read only: it starts no rAF, patches no drawing method, calls no `gl.finish()`, and never inspects private renderer fields.
 
@@ -284,7 +303,7 @@ With the browser client, pass the already set-up and running `AnimationIntegrati
 
 None of these helpers creates a semantic business interaction. Keep `beginInteraction()`/`recordQuality()` around the representative action when interaction-level correlation is needed. They also do not monkey-patch a framework, import React/Three/GSAP, own application cleanup, or control renderer/video lifecycle. The application is responsible for calling probes at meaningful boundaries and disposing both its resources and the probes.
 
-Complete host samples, categories, and Browser `pageEvidence` stay local and are absent from the strict `animation_rum` v1 projection, even when RUM is enabled. Explicit RUM v2 reconstructs only the small closed aggregate subset present in its versioned catalog—currently including renderer GPU/draw-call/triangle p95—together with provider counts and evidence quality; it never spreads the local snapshot. The existing page outcome metrics and aggregate monitor-overhead metrics still reflect the page's real behavior and the actual cost of running enabled probes; local-only does not mean zero-cost. Hidden/offscreen activity in `pageEvidence.workAvoidance` is deliberately named a review candidate: it does not move the production coverage family to measured and never invents a work duration. In the collector snapshot, host evidence can move `renderer`, `resourcesMedia`, or `memoryLifecycle` coverage from `not-instrumented` to **at most** `partial`; it cannot prove complete coverage. Heap/post-GC plateaus, resource-to-visible attribution, real asynchronous GPU queries, decode/upload/first-visible timing, and general automatic framework ownership/update attribution remain separate work.
+Complete host samples, categories, and Browser `pageEvidence` stay local and are absent from the strict `animation_rum` v1 projection, even when RUM is enabled. Explicit RUM v2 reconstructs only the small closed aggregate subset present in its versioned catalog—currently including renderer GPU/draw-call/triangle p95—together with provider counts and evidence quality; it never spreads the local snapshot. The existing page outcome metrics and aggregate monitor-overhead metrics still reflect the page's real behavior and the actual cost of running enabled probes; local-only does not mean zero-cost. Hidden/offscreen activity in `pageEvidence.workAvoidance` is deliberately named a review candidate: it does not move the production coverage family to measured and never invents a work duration. In the collector snapshot, host evidence can move `renderer`, `resourcesMedia`, or `memoryLifecycle` coverage from `not-instrumented` to **at most** `partial`; it cannot prove complete coverage. Heap/post-GC plateaus, resource-to-visible attribution, WebGPU timestamp queries, decode/upload/first-visible timing, and general automatic framework ownership/update attribution remain separate work.
 
 ## Selected-element sidecar
 
