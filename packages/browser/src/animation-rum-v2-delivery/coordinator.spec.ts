@@ -32,6 +32,7 @@ function targetReport(parentCaptureId: string, suffix: string) {
 class MemoryDeliveryStore implements AnimationRumV2DeliveryStore {
     readonly records = new Map<string, AnimationRumV2QueuedReport>()
     readonly calls: string[] = []
+    readonly close = jest.fn(async () => undefined)
 
     async persist(
         scope: AnimationRumV2DeliveryScope,
@@ -455,6 +456,88 @@ describe('AnimationRumV2DeliveryCoordinator', () => {
         await stopping
         expect(store.calls[store.calls.length - 1]).toBe('release:test-owner')
         expect(callbacks).toHaveLength(1)
+    })
+
+    it('suspends polling synchronously, preserves durable work, and resumes it after storage closes', async () => {
+        const store = new MemoryDeliveryStore()
+        const callbacks: Array<() => void> = []
+        const clearInterval = jest.fn()
+        let now = 100
+        let finishFirstSend!: (result: AnimationRumV2SendResult) => void
+        let markFirstSendStarted!: () => void
+        const firstSendStarted = new Promise<void>(resolve => {
+            markFirstSendStarted = resolve
+        })
+        const firstSendResult = new Promise<AnimationRumV2SendResult>(resolve => {
+            finishFirstSend = resolve
+        })
+        const send = jest.fn(async (_scope, reports: readonly AnimationRumV2QueuedReport[]) => {
+            if (send.mock.calls.length === 1) {
+                markFirstSendStarted()
+                return firstSendResult
+            }
+            return settled(reports)
+        })
+        const coordinator = new AnimationRumV2DeliveryCoordinator({
+            ...options(store, send, () => now),
+            timers: {
+                setInterval(callback) {
+                    callbacks.push(callback)
+                    return `timer-${callbacks.length}`
+                },
+                clearInterval,
+            },
+        })
+        await coordinator.persist([pageReport('cachepage')])
+        coordinator.start()
+        await firstSendStarted
+
+        const suspension = coordinator.suspend()
+
+        expect(clearInterval).toHaveBeenCalledWith('timer-1')
+        expect(store.close).not.toHaveBeenCalled()
+        finishFirstSend({ kind: 'retry' })
+        await suspension
+        expect(store.close).toHaveBeenCalledTimes(1)
+        expect([...store.records.values()][0]).toEqual(expect.objectContaining({ state: 'pending', leaseOwner: null, attemptCount: 1 }))
+        await expect(coordinator.persist([pageReport('while_suspended')])).rejects.toThrow('coordinator is suspended')
+
+        now = 200
+        await coordinator.resume()
+        await coordinator.flush()
+
+        expect(callbacks).toHaveLength(2)
+        expect(send).toHaveBeenCalledTimes(2)
+        expect([...store.records.values()][0]).toEqual(expect.objectContaining({ state: 'confirmed', leaseOwner: null }))
+        await coordinator.stop()
+    })
+
+    it('serializes concurrent persistence, flush, suspension, and stop without losing the durable report', async () => {
+        const store = new MemoryDeliveryStore()
+        let releasePersist!: () => void
+        const persistGate = new Promise<void>(resolve => {
+            releasePersist = resolve
+        })
+        const originalPersist = store.persist.bind(store)
+        store.persist = jest.fn(async (...args: Parameters<MemoryDeliveryStore['persist']>) => {
+            await persistGate
+            return originalPersist(...args)
+        })
+        const send = jest.fn(async (_scope, reports) => settled(reports))
+        const coordinator = new AnimationRumV2DeliveryCoordinator(options(store, send, () => 100))
+
+        const persistence = coordinator.persist([pageReport('race0001')])
+        const flush = coordinator.flush()
+        const suspension = coordinator.suspend()
+        const stopping = coordinator.stop()
+        releasePersist()
+
+        await expect(persistence).resolves.toEqual({ reports: [expect.objectContaining({ duplicate: false })] })
+        await expect(flush).resolves.toEqual({ attempted: 0, confirmed: 0, terminal: 0, retried: 0 })
+        await expect(suspension).resolves.toBeUndefined()
+        await expect(stopping).resolves.toBeUndefined()
+        expect(send).not.toHaveBeenCalled()
+        expect([...store.records.values()][0]).toEqual(expect.objectContaining({ state: 'pending', leaseOwner: null }))
     })
 
     it('does not let one persistence failure poison a later successful retry and flush', async () => {

@@ -15,6 +15,7 @@ function clone(report: AnimationRumV2QueuedReport): AnimationRumV2QueuedReport {
 class AtomicFakeDatabase {
     private records = new Map<string, AnimationRumV2QueuedReport>()
     private transactionTail: Promise<void> = Promise.resolve()
+    readonly close = jest.fn()
 
     transaction() {
         let release!: () => void
@@ -113,6 +114,58 @@ describe('IndexedDbAnimationRumV2DeliveryStore', () => {
         await expect(store.leaseReady(otherScope, 'tab-other', 100, 10, 500, 65_536)).resolves.toEqual([
             expect.objectContaining({ eventId: otherReport.eventId, scopeKey: otherScope.scopeKey }),
         ])
+    })
+
+    it('closes the current connection without deleting reports and lazily reopens on the next operation', async () => {
+        const database = new AtomicFakeDatabase()
+        ;(openDB as jest.Mock).mockResolvedValue(database)
+        const store = new IndexedDbAnimationRumV2DeliveryStore()
+        const scope = createAnimationRumV2DeliveryScope('appOne123', 'https://collector.test/tracking/appOne123')
+        const report = prepareAnimationRumV2QueuedReport(scope, pageReport('reopen01'), 100)
+        await store.persist(scope, [report], { maxItems: 10, maxAgeMs: 1_000 }, 100)
+
+        await store.close()
+
+        expect(database.close).toHaveBeenCalledTimes(1)
+        await expect(store.persist(scope, [report], { maxItems: 10, maxAgeMs: 1_000 }, 110)).resolves.toEqual({
+            reports: [expect.objectContaining({ eventId: report.eventId, duplicate: true })],
+        })
+        expect(openDB).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not let a detached open failure clear a newer reopened connection', async () => {
+        const firstOpenFailure = new Error('old IndexedDB open failed')
+        let rejectFirstOpen!: (error: Error) => void
+        const firstOpen = new Promise<AtomicFakeDatabase>((_resolve, reject) => {
+            rejectFirstOpen = reject
+        })
+        const reopenedDatabase = new AtomicFakeDatabase()
+        ;(openDB as jest.Mock).mockReturnValueOnce(firstOpen).mockResolvedValue(reopenedDatabase)
+        const store = new IndexedDbAnimationRumV2DeliveryStore()
+        const scope = createAnimationRumV2DeliveryScope('appOne123', 'https://collector.test/tracking/appOne123')
+
+        const oldPersistence = store.persist(
+            scope,
+            [prepareAnimationRumV2QueuedReport(scope, pageReport('old_open'), 100)],
+            { maxItems: 10, maxAgeMs: 1_000 },
+            100
+        )
+        const closing = store.close()
+        const reopenedReport = prepareAnimationRumV2QueuedReport(scope, pageReport('new_open'), 110)
+        const reopenedPersistence = store.persist(scope, [reopenedReport], { maxItems: 10, maxAgeMs: 1_000 }, 110)
+        const oldPersistenceRejection = expect(oldPersistence).rejects.toBe(firstOpenFailure)
+        const closingRejection = expect(closing).rejects.toBe(firstOpenFailure)
+
+        rejectFirstOpen(firstOpenFailure)
+
+        await oldPersistenceRejection
+        await closingRejection
+        await expect(reopenedPersistence).resolves.toEqual({
+            reports: [expect.objectContaining({ eventId: reopenedReport.eventId, duplicate: false })],
+        })
+        const laterReport = prepareAnimationRumV2QueuedReport(scope, pageReport('later001'), 120)
+        await store.persist(scope, [laterReport], { maxItems: 10, maxAgeMs: 1_000 }, 120)
+        expect(openDB).toHaveBeenCalledTimes(2)
     })
 
     it('leases the page first, unlocks its target only after confirmation, and propagates terminal parent state', async () => {
