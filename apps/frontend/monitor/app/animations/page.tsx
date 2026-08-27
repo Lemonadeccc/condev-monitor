@@ -1,42 +1,68 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { Activity, ArrowUpRight } from 'lucide-react'
+import { Activity, ArrowUpRight, History } from 'lucide-react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { useMemo } from 'react'
 
 import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions, AIPanelCard, AIStatCard, AIStateMessage } from '@/components/ai/page-shell'
+import { AnimationRumV2QualityBadges, AnimationRumV2ScopeBadge } from '@/components/animation/rum-v2-ui'
 import { useAuth } from '@/components/providers'
 import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
 import { useApplications } from '@/hooks/use-applications'
 import { buildMonitorScopeHref, resolveMonitorAppId, resolveMonitorTimeWindow, useMonitorScope } from '@/hooks/use-monitor-scope'
+import { clampAnimationTimeWindow } from '@/lib/animation-metrics'
 import {
-    animationFamilyLabel,
-    clampAnimationTimeWindow,
-    coverageBadgeVariant,
-    coverageLabel,
-    findAggregateMetric,
-    findCaptureMetric,
-    formatAnimationMetric,
-    formatAnimationPerMinuteMetric,
-    isExposureNormalizedMetric,
-} from '@/lib/animation-metrics'
+    animationRumV2FamilyLabel,
+    animationRumV2MetricDisplay,
+    animationRumV2OwnerLabel,
+    animationRumV2RelationLabel,
+    findAnimationRumV2SummaryMetric,
+    formatAnimationRumV2Integer,
+    formatAnimationRumV2Metric,
+} from '@/lib/animation-rum-v2'
 import { formatDateTime } from '@/lib/datetime'
-import type { AnimationCapturesApiResponse, AnimationSummaryApiResponse } from '@/types/animation'
+import type {
+    AnimationRumV2CapturesApiResponse,
+    AnimationRumV2Scope,
+    AnimationRumV2SummaryApiResponse,
+    AnimationRumV2SummaryMetric,
+} from '@/types/animation-v2'
 
-function metricDescription(metric: ReturnType<typeof findAggregateMetric>) {
-    if (!metric) return 'No compatible samples'
-    if (isExposureNormalizedMetric(metric)) {
-        return `${coverageLabel(metric.status)} · ${(metric.normalizedCapturesWithValue ?? 0).toLocaleString()} duration-normalized captures`
+async function fetchAnimationRumV2<T>(url: string, signal: AbortSignal): Promise<T> {
+    const response = await fetch(url, { cache: 'no-store', signal })
+    if (!response.ok) {
+        if (response.status === 429) {
+            const retryAfter = response.headers.get('Retry-After')
+            throw new Error(retryAfter ? `读取频率过高，请在 ${retryAfter} 秒后重试。` : '读取频率过高，请稍后重试。')
+        }
+        throw new Error(`读取动效 RUM v2 数据失败（HTTP ${response.status}）。`)
     }
-    return `${coverageLabel(metric.status)} · ${metric.capturesWithValue.toLocaleString()} captures`
+    return (await response.json()) as T
+}
+
+function scopeFromSearchParams(value: string | null): AnimationRumV2Scope | undefined {
+    return value === 'page' || value === 'target' ? value : undefined
+}
+
+function queryErrorMessage(error: unknown): string {
+    return error instanceof Error ? error.message : '读取动效 RUM v2 数据失败，请稍后重试。'
+}
+
+function metricPercentile(metric: AnimationRumV2SummaryMetric | undefined, percentile: 'p50' | 'p75' | 'p95') {
+    if (!metric) return '未采集 / 未知'
+    const display = animationRumV2MetricDisplay(metric)
+    const value = formatAnimationRumV2Metric(display[percentile], metric.unit)
+    return display.normalized && value !== '未采集 / 未知' ? `${value} / 分钟` : value
 }
 
 export default function AnimationsPage() {
     const { user, loading } = useAuth()
     const enabled = !loading && Boolean(user)
     const searchParams = useSearchParams()
+    const scope = scopeFromSearchParams(searchParams.get('scope'))
     const { selectedAppId, setSelectedAppId, range, setRange, from, setFrom, to, setTo, clearCustomRange } = useMonitorScope('1d')
     const { listQuery } = useApplications({ enabled })
     const applications = useMemo(() => listQuery.data?.data?.applications ?? [], [listQuery.data?.data?.applications])
@@ -45,46 +71,43 @@ export default function AnimationsPage() {
 
     const queryParams = useMemo(() => {
         const params = new URLSearchParams({ appId: effectiveAppId, from: timeWindow.from, to: timeWindow.to })
+        if (scope) params.set('scope', scope)
         return params.toString()
-    }, [effectiveAppId, timeWindow.from, timeWindow.to])
+    }, [effectiveAppId, scope, timeWindow.from, timeWindow.to])
 
     const summaryQuery = useQuery({
-        queryKey: ['animation-summary', effectiveAppId, timeWindow.from, timeWindow.to],
+        queryKey: ['animation-rum-v2-summary', effectiveAppId, timeWindow.from, timeWindow.to, scope ?? 'all'],
         enabled: enabled && Boolean(effectiveAppId),
-        queryFn: async (): Promise<AnimationSummaryApiResponse> => {
-            const response = await fetch(`/api/animation/summary?${queryParams}`)
-            if (!response.ok) throw new Error('Failed to load animation summary')
-            return (await response.json()) as AnimationSummaryApiResponse
-        },
+        queryFn: ({ signal }): Promise<AnimationRumV2SummaryApiResponse> =>
+            fetchAnimationRumV2(`/api/animation/rum-v2/summary?${queryParams}`, signal),
     })
 
     const capturesQuery = useQuery({
-        queryKey: ['animation-captures', effectiveAppId, timeWindow.from, timeWindow.to],
+        queryKey: ['animation-rum-v2-captures', effectiveAppId, timeWindow.from, timeWindow.to, scope ?? 'all', 0],
         enabled: enabled && Boolean(effectiveAppId),
-        queryFn: async (): Promise<AnimationCapturesApiResponse> => {
-            const response = await fetch(`/api/animation/captures?${queryParams}&limit=50&offset=0`)
-            if (!response.ok) throw new Error('Failed to load animation captures')
-            return (await response.json()) as AnimationCapturesApiResponse
-        },
+        queryFn: ({ signal }): Promise<AnimationRumV2CapturesApiResponse> =>
+            fetchAnimationRumV2(`/api/animation/rum-v2/captures?${queryParams}&limit=50&offset=0`, signal),
     })
 
-    const metrics = summaryQuery.data?.data.metrics ?? []
-    const frameP95 = findAggregateMetric(metrics, 'frameCadence', 'frameDurationMs', 'p95')
-    const slowFrameRate = findAggregateMetric(metrics, 'frameCadence', 'slowFrameRate', 'ratio')
-    const longTaskDuration = findAggregateMetric(metrics, 'mainThread', 'longTaskDurationMs', 'p95')
-    const loafP95 = findAggregateMetric(metrics, 'mainThread', 'longAnimationFrameDurationMs', 'p95')
+    const summary = summaryQuery.data?.data
+    const metrics = summary?.metrics ?? []
     const captures = capturesQuery.data?.data.captures ?? []
+    const pageFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'page', 'page-window')
+    const targetFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'target', 'target-temporal-overlap')
 
-    if (loading) return <div className="text-sm text-muted-foreground">Loading...</div>
+    const scopeHref = (nextScope?: AnimationRumV2Scope) =>
+        buildMonitorScopeHref(nextScope ? `/animations?scope=${nextScope}` : '/animations', searchParams)
+
+    if (loading) return <div className="text-sm text-muted-foreground">正在加载…</div>
     if (!user) return null
 
     return (
         <AIMonitorPage>
             <AIMonitorHeader
                 icon={Activity}
-                title="Animations"
-                description={`Privacy-bounded animation RUM. Missing capabilities remain unknown instead of becoming zero.${
-                    timeWindow.clamped ? ' This selection is capped to the 90-day retention window.' : ''
+                title="动效真实用户监控 · RUM v2"
+                description={`页面级和目标级证据分开统计；“未知”不会被当成零，“时间窗口重叠”也不代表元素造成了问题。${
+                    summary?.window.retentionClamped || timeWindow.clamped ? ' 查询起点已按 90 天保留期收窄。' : ''
                 }`}
                 actions={
                     <AIMonitorScopeActions
@@ -98,95 +121,207 @@ export default function AnimationsPage() {
                         onFromChange={setFrom}
                         onToChange={setTo}
                         onClearCustomRange={clearCustomRange}
+                        extraActions={
+                            <Button asChild variant="outline" size="sm">
+                                <Link href={buildMonitorScopeHref('/animations/legacy', searchParams)}>
+                                    <History aria-hidden="true" />
+                                    旧版 v1
+                                </Link>
+                            </Button>
+                        }
                     />
                 }
             />
 
+            <div className="flex flex-wrap items-center gap-2" aria-label="采集范围筛选">
+                <span className="text-sm text-muted-foreground">范围：</span>
+                <Button asChild size="sm" variant={scope === undefined ? 'default' : 'outline'}>
+                    <Link href={scopeHref()}>全部</Link>
+                </Button>
+                <Button asChild size="sm" variant={scope === 'page' ? 'default' : 'outline'}>
+                    <Link href={scopeHref('page')}>页面级</Link>
+                </Button>
+                <Button asChild size="sm" variant={scope === 'target' ? 'default' : 'outline'}>
+                    <Link href={scopeHref('target')}>目标级</Link>
+                </Button>
+            </div>
+
+            {!effectiveAppId ? (
+                <AIPanelCard>
+                    <AIStateMessage>请先创建或选择一个应用。</AIStateMessage>
+                </AIPanelCard>
+            ) : null}
+
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
                 <AIStatCard
-                    label="Sampled captures"
-                    value={summaryQuery.data?.data.captureCount?.toLocaleString() ?? '—'}
-                    description="After deterministic client sampling"
+                    label="观测采集数"
+                    value={formatAnimationRumV2Integer(summary?.captures.observed ?? null)}
+                    description="确定性采样后的页面与目标采集"
                 />
                 <AIStatCard
-                    label="Frame p95 · capture p75"
-                    value={formatAnimationMetric(frameP95?.valueP75, frameP95?.unit ?? 'ms')}
-                    description={metricDescription(frameP95)}
+                    label="页面级 / 目标级"
+                    value={`${formatAnimationRumV2Integer(summary?.captures.page ?? null)} / ${formatAnimationRumV2Integer(
+                        summary?.captures.target ?? null
+                    )}`}
+                    description="两类证据不会混合归因"
                 />
                 <AIStatCard
-                    label="Slow rate · capture p75"
-                    value={formatAnimationMetric(slowFrameRate?.valueP75, slowFrameRate?.unit ?? 'ratio')}
-                    description={metricDescription(slowFrameRate)}
+                    label="完整 / 部分"
+                    value={`${formatAnimationRumV2Integer(summary?.captures.complete ?? null)} / ${formatAnimationRumV2Integer(
+                        summary?.captures.partial ?? null
+                    )}`}
+                    description="部分采集不会进入已测量百分位"
                 />
                 <AIStatCard
-                    label="Long Task p95 · capture p75"
-                    value={formatAnimationMetric(longTaskDuration?.valueP75, longTaskDuration?.unit ?? 'ms')}
-                    description={metricDescription(longTaskDuration)}
+                    label="页面帧 p95 · 采集 p75"
+                    value={metricPercentile(pageFrameP95, 'p75')}
+                    description={`已测量 ${formatAnimationRumV2Integer(pageFrameP95?.measuredCaptures ?? null)}，排除部分 ${formatAnimationRumV2Integer(
+                        pageFrameP95?.excludedPartialCaptures ?? null
+                    )}`}
                 />
                 <AIStatCard
-                    label="LoAF p95 · capture p75"
-                    value={formatAnimationMetric(loafP95?.valueP75, loafP95?.unit ?? 'ms')}
-                    description={metricDescription(loafP95)}
+                    label="目标窗口帧 p95 · 采集 p75"
+                    value={metricPercentile(targetFrameP95, 'p75')}
+                    description="仅表示目标选中窗口与帧证据重叠，不证明因果"
                 />
             </div>
 
+            <AIPanelCard title="数据质量与覆盖边界" description="质量原因用于解释缺失或部分证据，不是性能严重度评分。" headerBorder>
+                {summaryQuery.isLoading ? (
+                    <AIStateMessage className="px-0">正在读取数据质量…</AIStateMessage>
+                ) : summaryQuery.isError ? (
+                    <AIStateMessage className="px-0" tone="destructive">
+                        {queryErrorMessage(summaryQuery.error)}
+                    </AIStateMessage>
+                ) : summary ? (
+                    <div className="grid gap-5 xl:grid-cols-[1fr_1fr_1.2fr]">
+                        {(['page', 'target'] as const).map(itemScope => {
+                            const counts = summary.captures.byScope[itemScope]
+                            return (
+                                <section key={itemScope} className="rounded-lg border p-4">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <h3 className="font-medium">{itemScope === 'page' ? '页面级' : '目标级'}采集</h3>
+                                        <AnimationRumV2ScopeBadge scope={itemScope} />
+                                    </div>
+                                    <dl className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                                        <div>
+                                            <dt className="text-muted-foreground">充分 / 不足</dt>
+                                            <dd className="mt-1 font-mono">
+                                                {formatAnimationRumV2Integer(counts.sufficient)} /{' '}
+                                                {formatAnimationRumV2Integer(counts.insufficient)}
+                                            </dd>
+                                        </div>
+                                        <div>
+                                            <dt className="text-muted-foreground">完整 / 部分</dt>
+                                            <dd className="mt-1 font-mono">
+                                                {formatAnimationRumV2Integer(counts.complete)} /{' '}
+                                                {formatAnimationRumV2Integer(counts.partial)}
+                                            </dd>
+                                        </div>
+                                        <div>
+                                            <dt className="text-muted-foreground">窗口封顶</dt>
+                                            <dd className="mt-1 font-mono">{formatAnimationRumV2Integer(counts.capped)}</dd>
+                                        </div>
+                                        <div>
+                                            <dt className="text-muted-foreground">适配器错误</dt>
+                                            <dd className="mt-1 font-mono">{formatAnimationRumV2Integer(counts.adapterErrors)}</dd>
+                                        </div>
+                                    </dl>
+                                </section>
+                            )
+                        })}
+                        <section className="rounded-lg border p-4">
+                            <h3 className="font-medium">质量降级原因</h3>
+                            <div className="mt-4 space-y-3 text-sm">
+                                {summary.qualityReasons.length ? (
+                                    summary.qualityReasons.map(item => {
+                                        const pageCount = summary.qualityReasonsByScope.page.find(
+                                            candidate => candidate.reason === item.reason
+                                        )?.captures
+                                        const targetCount = summary.qualityReasonsByScope.target.find(
+                                            candidate => candidate.reason === item.reason
+                                        )?.captures
+                                        return (
+                                            <div key={item.reason} className="rounded-md border p-2.5">
+                                                <AnimationRumV2QualityBadges reasons={[item.reason]} />
+                                                <div className="mt-2 grid grid-cols-3 gap-2 text-xs text-muted-foreground">
+                                                    <span>
+                                                        全部{' '}
+                                                        <strong className="font-mono text-foreground">
+                                                            {formatAnimationRumV2Integer(item.captures)}
+                                                        </strong>
+                                                    </span>
+                                                    <span>
+                                                        页面{' '}
+                                                        <strong className="font-mono text-foreground">
+                                                            {formatAnimationRumV2Integer(pageCount ?? 0)}
+                                                        </strong>
+                                                    </span>
+                                                    <span>
+                                                        目标{' '}
+                                                        <strong className="font-mono text-foreground">
+                                                            {formatAnimationRumV2Integer(targetCount ?? 0)}
+                                                        </strong>
+                                                    </span>
+                                                </div>
+                                            </div>
+                                        )
+                                    })
+                                ) : (
+                                    <p className="text-muted-foreground">当前窗口没有已记录的质量降级原因。</p>
+                                )}
+                            </div>
+                        </section>
+                    </div>
+                ) : (
+                    <AIStateMessage className="px-0">当前窗口没有采集。</AIStateMessage>
+                )}
+            </AIPanelCard>
+
             <AIPanelCard
-                title="Aggregated metrics"
-                description="Percentiles aggregate capture-level summaries. Count and sum rows are explicitly normalized per minute; windows under 5 seconds, capped at 7 days, or backed by a partial numerator are excluded from rate comparisons."
+                title="帧尾延迟趋势"
+                description="每个点展示采集级 frame.duration.p95 的分布；已测量值参与百分位，部分值单列且排除。"
                 contentClassName="px-0"
                 headerBorder
             >
                 {summaryQuery.isLoading ? (
-                    <AIStateMessage>Loading animation metrics...</AIStateMessage>
+                    <AIStateMessage>正在读取趋势…</AIStateMessage>
                 ) : summaryQuery.isError ? (
-                    <AIStateMessage tone="destructive">Failed to load animation metrics. Please try again.</AIStateMessage>
-                ) : metrics.length ? (
-                    <div className="max-h-[32rem] overflow-auto">
+                    <AIStateMessage tone="destructive">{queryErrorMessage(summaryQuery.error)}</AIStateMessage>
+                ) : summary?.trend.points.length ? (
+                    <div className="max-h-[30rem] overflow-auto">
                         <table className="w-full text-sm">
                             <thead className="sticky top-0 bg-muted text-xs text-muted-foreground">
                                 <tr className="[&_th]:font-medium">
-                                    <th className="px-6 py-3 text-left">Family / metric</th>
-                                    <th className="px-6 py-3 text-left">Status</th>
-                                    <th className="px-6 py-3 text-right">Capture p50</th>
-                                    <th className="px-6 py-3 text-right">Capture p75</th>
-                                    <th className="px-6 py-3 text-right">Capture p95</th>
-                                    <th className="px-6 py-3 text-right">Coverage</th>
+                                    <th className="px-6 py-3 text-left">UTC 时间桶</th>
+                                    <th className="px-6 py-3 text-right">页面 / 目标采集</th>
+                                    <th className="px-6 py-3 text-right">页面帧 p95 · 采集 p75</th>
+                                    <th className="px-6 py-3 text-right">页面已测 / 部分</th>
+                                    <th className="px-6 py-3 text-right">目标帧 p95 · 采集 p75</th>
+                                    <th className="px-6 py-3 text-right">目标已测 / 部分</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y">
-                                {metrics.map(metric => (
-                                    <tr key={`${metric.family}:${metric.name}:${metric.stat}`} className="hover:bg-muted/20">
-                                        <td className="px-6 py-4">
-                                            <div className="font-medium">{metric.name}</div>
-                                            <div className="text-xs text-muted-foreground">
-                                                {animationFamilyLabel(metric.family)} · {metric.stat}
-                                                {isExposureNormalizedMetric(metric) ? ' · per-minute rate' : ''}
-                                            </div>
+                                {summary.trend.points.map(point => (
+                                    <tr key={point.at} className="hover:bg-muted/20">
+                                        <td className="whitespace-nowrap px-6 py-3">{formatDateTime(point.at)}</td>
+                                        <td className="px-6 py-3 text-right font-mono tabular-nums">
+                                            {formatAnimationRumV2Integer(point.pageCaptures)} /{' '}
+                                            {formatAnimationRumV2Integer(point.targetCaptures)}
                                         </td>
-                                        <td className="px-6 py-4">
-                                            <Badge variant={coverageBadgeVariant(metric.status)}>{coverageLabel(metric.status)}</Badge>
+                                        <td className="px-6 py-3 text-right font-mono tabular-nums">
+                                            {formatAnimationRumV2Metric(point.frameP95.page?.captureValue.p75, 'ms')}
                                         </td>
-                                        <td className="px-6 py-4 text-right font-mono tabular-nums">
-                                            {isExposureNormalizedMetric(metric)
-                                                ? formatAnimationPerMinuteMetric(metric.valuePerMinuteP50, metric.unit)
-                                                : formatAnimationMetric(metric.valueP50, metric.unit)}
+                                        <td className="px-6 py-3 text-right font-mono tabular-nums">
+                                            {formatAnimationRumV2Integer(point.frameP95.page?.measuredCaptures ?? null)} /{' '}
+                                            {formatAnimationRumV2Integer(point.frameP95.page?.partialCaptures ?? null)}
                                         </td>
-                                        <td className="px-6 py-4 text-right font-mono tabular-nums">
-                                            {isExposureNormalizedMetric(metric)
-                                                ? formatAnimationPerMinuteMetric(metric.valuePerMinuteP75, metric.unit)
-                                                : formatAnimationMetric(metric.valueP75, metric.unit)}
+                                        <td className="px-6 py-3 text-right font-mono tabular-nums">
+                                            {formatAnimationRumV2Metric(point.frameP95.target?.captureValue.p75, 'ms')}
                                         </td>
-                                        <td className="px-6 py-4 text-right font-mono tabular-nums">
-                                            {isExposureNormalizedMetric(metric)
-                                                ? formatAnimationPerMinuteMetric(metric.valuePerMinuteP95, metric.unit)
-                                                : formatAnimationMetric(metric.valueP95, metric.unit)}
-                                        </td>
-                                        <td className="px-6 py-4 text-right font-mono tabular-nums">
-                                            {(isExposureNormalizedMetric(metric)
-                                                ? (metric.normalizedCapturesWithValue ?? 0)
-                                                : metric.capturesWithValue
-                                            ).toLocaleString()}{' '}
-                                            / {summaryQuery.data?.data.captureCount.toLocaleString() ?? '—'}
+                                        <td className="px-6 py-3 text-right font-mono tabular-nums">
+                                            {formatAnimationRumV2Integer(point.frameP95.target?.measuredCaptures ?? null)} /{' '}
+                                            {formatAnimationRumV2Integer(point.frameP95.target?.partialCaptures ?? null)}
                                         </td>
                                     </tr>
                                 ))}
@@ -194,66 +329,176 @@ export default function AnimationsPage() {
                         </table>
                     </div>
                 ) : (
-                    <AIStateMessage>No sampled animation captures in this window.</AIStateMessage>
+                    <AIStateMessage>当前窗口没有趋势点。</AIStateMessage>
                 )}
             </AIPanelCard>
 
             <AIPanelCard
-                title="Recent captures"
-                description="Open a capture to inspect its frame budget, capability matrix and bounded metrics."
+                title="指标目录与证据状态"
+                description="同一指标可按页面 / 目标、直接 / 时间重叠 / 适配器以及提供方分别出现，不能合并成单一归因。"
+                contentClassName="px-0"
+                headerBorder
+            >
+                {summaryQuery.isLoading ? (
+                    <AIStateMessage>正在读取指标…</AIStateMessage>
+                ) : summaryQuery.isError ? (
+                    <AIStateMessage tone="destructive">{queryErrorMessage(summaryQuery.error)}</AIStateMessage>
+                ) : metrics.length ? (
+                    <div className="max-h-[38rem] overflow-auto">
+                        <table className="w-full text-sm">
+                            <thead className="sticky top-0 bg-muted text-xs text-muted-foreground">
+                                <tr className="[&_th]:font-medium">
+                                    <th className="px-6 py-3 text-left">指标</th>
+                                    <th className="px-6 py-3 text-left">范围 / 关系 / 提供方</th>
+                                    <th className="px-6 py-3 text-left">已测 / 部分 / 未知</th>
+                                    <th className="px-6 py-3 text-right">采集 p50</th>
+                                    <th className="px-6 py-3 text-right">采集 p75</th>
+                                    <th className="px-6 py-3 text-right">采集 p95</th>
+                                </tr>
+                            </thead>
+                            <tbody className="divide-y">
+                                {metrics.map(metric => {
+                                    const display = animationRumV2MetricDisplay(metric)
+                                    const suffix = display.normalized ? ' / 分钟' : ''
+                                    return (
+                                        <tr
+                                            key={`${metric.metricId}:${metric.scope}:${metric.relation}:${metric.owner}`}
+                                            className="hover:bg-muted/20"
+                                        >
+                                            <td className="px-6 py-4">
+                                                <div className="font-medium">{metric.name}</div>
+                                                <div className="mt-1 font-mono text-xs text-muted-foreground">{metric.metricId}</div>
+                                                <div className="mt-1 text-xs text-muted-foreground">
+                                                    {animationRumV2FamilyLabel(metric.family)} · {metric.stat} · {metric.evidenceWindow}
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <div className="flex items-center gap-2">
+                                                    <AnimationRumV2ScopeBadge scope={metric.scope} />
+                                                    <span>{animationRumV2RelationLabel(metric.relation)}</span>
+                                                </div>
+                                                <div className="mt-1 text-xs text-muted-foreground">
+                                                    {animationRumV2OwnerLabel(metric.owner)}
+                                                </div>
+                                            </td>
+                                            <td className="px-6 py-4 font-mono text-xs tabular-nums">
+                                                <div>已测 {formatAnimationRumV2Integer(metric.statusCounts.measured)}</div>
+                                                <div>部分 {formatAnimationRumV2Integer(metric.statusCounts.partial)}</div>
+                                                <div>
+                                                    未知 {formatAnimationRumV2Integer(metric.statusCounts.unknown)} · 未观测{' '}
+                                                    {formatAnimationRumV2Integer(metric.statusCounts.notObserved)}
+                                                </div>
+                                            </td>
+                                            {(['p50', 'p75', 'p95'] as const).map(percentile => {
+                                                const value = formatAnimationRumV2Metric(display[percentile], metric.unit)
+                                                return (
+                                                    <td key={percentile} className="px-6 py-4 text-right font-mono tabular-nums">
+                                                        {value}
+                                                        {value === '未采集 / 未知' ? '' : suffix}
+                                                    </td>
+                                                )
+                                            })}
+                                        </tr>
+                                    )
+                                })}
+                            </tbody>
+                        </table>
+                    </div>
+                ) : (
+                    <AIStateMessage>当前窗口没有指标证据。</AIStateMessage>
+                )}
+            </AIPanelCard>
+
+            <AIPanelCard
+                title="最近采集"
+                description={`列表最多显示 50 条；总数 ${formatAnimationRumV2Integer(
+                    capturesQuery.data?.data.pagination.total ?? null
+                )}。页面采集可以关联目标子采集。`}
                 contentClassName="px-0"
                 headerBorder
             >
                 {capturesQuery.isLoading ? (
-                    <AIStateMessage>Loading captures...</AIStateMessage>
+                    <AIStateMessage>正在读取采集…</AIStateMessage>
                 ) : capturesQuery.isError ? (
-                    <AIStateMessage tone="destructive">Failed to load animation captures. Please try again.</AIStateMessage>
+                    <AIStateMessage tone="destructive">{queryErrorMessage(capturesQuery.error)}</AIStateMessage>
                 ) : captures.length ? (
                     <div className="overflow-x-auto">
                         <table className="w-full text-sm">
                             <thead className="bg-muted/40 text-xs text-muted-foreground">
                                 <tr className="[&_th]:font-medium">
-                                    <th className="px-6 py-3 text-left">Captured</th>
-                                    <th className="px-6 py-3 text-left">Route / release</th>
-                                    <th className="px-6 py-3 text-right">Refresh</th>
-                                    <th className="px-6 py-3 text-right">Frame p95</th>
-                                    <th className="px-6 py-3 text-right">Slow rate</th>
+                                    <th className="px-6 py-3 text-left">采集时间</th>
+                                    <th className="px-6 py-3 text-left">范围与标识</th>
+                                    <th className="px-6 py-3 text-left">运行时</th>
+                                    <th className="px-6 py-3 text-left">质量</th>
+                                    <th className="px-6 py-3 text-right">帧 p95</th>
+                                    <th className="px-6 py-3 text-right">关联目标</th>
                                     <th className="px-6 py-3 text-right">
-                                        <span className="sr-only">Open</span>
+                                        <span className="sr-only">查看</span>
                                     </th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y">
                                 {captures.map(capture => {
-                                    const captureFrameP95 = findCaptureMetric(capture.metrics, 'frameCadence', 'frameDurationMs', 'p95')
-                                    const captureSlowRate = findCaptureMetric(capture.metrics, 'frameCadence', 'slowFrameRate', 'ratio')
-                                    const href = buildMonitorScopeHref(`/animations/${encodeURIComponent(capture.captureId)}`, searchParams)
+                                    const href = buildMonitorScopeHref(
+                                        `/animations/v2/${encodeURIComponent(capture.captureId)}`,
+                                        searchParams
+                                    )
+                                    const qualityGood =
+                                        capture.quality.sufficiency === 'sufficient' && capture.quality.integrity === 'complete'
                                     return (
-                                        <tr key={capture.eventId} className="hover:bg-muted/20">
-                                            <td className="px-6 py-4 whitespace-nowrap">{formatDateTime(new Date(capture.capturedAt))}</td>
+                                        <tr key={capture.captureId} className="hover:bg-muted/20">
+                                            <td className="whitespace-nowrap px-6 py-4">
+                                                {capture.capturedAt ? formatDateTime(capture.capturedAt) : '未知'}
+                                            </td>
                                             <td className="px-6 py-4">
-                                                <div className="max-w-72 truncate font-medium" title={capture.routeKey || ''}>
-                                                    {capture.routeKey || 'Redacted route'}
+                                                <AnimationRumV2ScopeBadge scope={capture.scope} />
+                                                <div
+                                                    className="mt-2 max-w-80 truncate font-medium"
+                                                    title={capture.context.routeKey ?? undefined}
+                                                >
+                                                    {capture.scope === 'target'
+                                                        ? (capture.targetKey ?? '目标标识未知')
+                                                        : (capture.context.routeKey ?? '路由已省略')}
                                                 </div>
+                                                {capture.parentCaptureId ? (
+                                                    <div className="mt-1 font-mono text-xs text-muted-foreground">
+                                                        父采集 {capture.parentCaptureId}
+                                                    </div>
+                                                ) : null}
+                                            </td>
+                                            <td className="px-6 py-4">
+                                                <div>{capture.context.runtime.framework}</div>
                                                 <div className="text-xs text-muted-foreground">
-                                                    {capture.release || 'No release'} · {capture.runtimeFamily || 'unknown runtime'}
+                                                    {capture.context.runtime.renderer} · {capture.context.runtime.backend}
                                                 </div>
                                             </td>
-                                            <td className="px-6 py-4 text-right font-mono tabular-nums">
-                                                {capture.context.refreshHz == null ? '—' : `${capture.context.refreshHz.toFixed(1)} Hz`}
+                                            <td className="px-6 py-4">
+                                                <Badge variant={qualityGood ? 'success' : 'warning'}>
+                                                    {qualityGood ? '充分且完整' : '证据有边界'}
+                                                </Badge>
+                                                {capture.quality.reasons.length ? (
+                                                    <div className="mt-2 max-w-80">
+                                                        <AnimationRumV2QualityBadges reasons={capture.quality.reasons} />
+                                                    </div>
+                                                ) : null}
                                             </td>
                                             <td className="px-6 py-4 text-right font-mono tabular-nums">
-                                                {formatAnimationMetric(captureFrameP95?.value, captureFrameP95?.unit ?? 'ms')}
+                                                {capture.frameP95
+                                                    ? formatAnimationRumV2Metric(capture.frameP95.value, capture.frameP95.unit)
+                                                    : '未采集 / 未知'}
+                                                {capture.frameP95 ? (
+                                                    <div className="mt-1 text-xs text-muted-foreground">{capture.frameP95.status}</div>
+                                                ) : null}
                                             </td>
                                             <td className="px-6 py-4 text-right font-mono tabular-nums">
-                                                {formatAnimationMetric(captureSlowRate?.value, captureSlowRate?.unit ?? 'ratio')}
+                                                {capture.scope === 'page' ? formatAnimationRumV2Integer(capture.targetChildCount) : '—'}
                                             </td>
                                             <td className="px-6 py-4 text-right">
                                                 <Link
-                                                    className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                                                    className="inline-flex items-center gap-1 font-medium text-primary hover:underline"
                                                     href={href}
                                                 >
-                                                    Inspect <ArrowUpRight className="h-4 w-4" aria-hidden="true" />
+                                                    查看证据 <ArrowUpRight className="h-4 w-4" aria-hidden="true" />
                                                 </Link>
                                             </td>
                                         </tr>
@@ -263,7 +508,7 @@ export default function AnimationsPage() {
                         </table>
                     </div>
                 ) : (
-                    <AIStateMessage>No recent captures in this window.</AIStateMessage>
+                    <AIStateMessage>当前窗口没有 RUM v2 采集。SDK 未启用 v2 时，旧版数据仍可在 v1 页面查看。</AIStateMessage>
                 )}
             </AIPanelCard>
         </AIMonitorPage>

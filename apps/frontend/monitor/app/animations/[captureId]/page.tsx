@@ -81,7 +81,7 @@ export default function AnimationCapturePage() {
         }
         return groups
     }, [capture])
-    const backHref = buildMonitorScopeHref('/animations', searchParams)
+    const backHref = buildMonitorScopeHref('/animations/legacy', searchParams)
 
     if (loading) return <div className="text-sm text-muted-foreground">Loading...</div>
     if (!user) return null
