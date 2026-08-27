@@ -6,7 +6,7 @@ import type {
     LabSubjectScope,
     LabSubjectSurface,
 } from '@condev-monitor/animation-lab'
-import { getAnimationLabBudgetV1 } from '@condev-monitor/animation-lab'
+import { evaluateAnimationLabBudgetRule, getAnimationLabBudgetV1 } from '@condev-monitor/animation-lab'
 
 const ACTION_KINDS = ['wait', 'click', 'hover', 'pointer-path', 'scroll', 'resize', 'drag', 'press'] as const
 const TRIGGER_SOURCES = [
@@ -138,17 +138,10 @@ export function buildLabLocalBudgetDisplayEvent(
             breachCount += 1
             continue
         }
-        const sufficient = semantics.metrics.some(
-            metric =>
-                metric.metricId === rule.metricId &&
-                metric.scope.level === 'run' &&
-                metric.status === 'measured' &&
-                typeof metric.value === 'number' &&
-                Number.isFinite(metric.value) &&
-                typeof metric.samples === 'number' &&
-                Number.isFinite(metric.samples) &&
-                metric.samples >= rule.minimumSamples
-        )
+        const sufficient = semantics.metrics.some(metric => {
+            if (metric.metricId !== rule.metricId || metric.scope.level !== 'run') return false
+            return evaluateAnimationLabBudgetRule(rule, metric, semantics.measurementContract).status === 'within-budget'
+        })
         if (!sufficient) insufficientRules += 1
     }
 

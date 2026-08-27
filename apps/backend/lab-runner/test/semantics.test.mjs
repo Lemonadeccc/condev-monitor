@@ -5,6 +5,9 @@ import {
     ANIMATION_LAB_METRIC_CATALOG_V1,
     ANIMATION_LAB_METRIC_CATALOG_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
+    DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
+    DEFAULT_ANIMATION_LAB_BUDGET_V2,
+    evaluateAnimationLabBudgetRule,
     validateAnimationLabSemanticsV2,
 } from '@condev-monitor/animation-lab'
 
@@ -49,6 +52,19 @@ function frameMetric(value, samples = 120) {
         value,
         samples,
         status: 'measured',
+        evidenceLevel: 'controlled-lab-measurement',
+    }
+}
+
+function longTaskMetric(value, samples = value, status = 'measured') {
+    return {
+        family: 'mainThread',
+        name: 'longTaskCount',
+        stat: 'count',
+        unit: 'count',
+        value,
+        samples,
+        status,
         evidenceLevel: 'controlled-lab-measurement',
     }
 }
@@ -113,6 +129,143 @@ test('creates selector-free action semantics and across-attempt metrics', () => 
     )
     assert.ok(semantics.findings.some(item => item.ruleId === 'frame-tail' && item.actionIds.includes('hero-hover')))
     assert.equal(JSON.stringify(semantics).includes('[data-lab'), false)
+})
+
+test('keeps decoration on budget v1 unless a known v2 reference is explicit', () => {
+    const base = decorateLabMetric(longTaskMetric(0, 0), { level: 'run' }, { acrossAttempts: true })
+    assert.deepEqual(base.budgetRefs, [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V1, ruleId: 'long-task-count' }])
+
+    const optedIn = decorateLabMetric(
+        longTaskMetric(0, 0),
+        { level: 'run' },
+        { acrossAttempts: true, budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V2 }
+    )
+    assert.deepEqual(optedIn.budgetRefs, [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V2, ruleId: 'long-task-count' }])
+
+    const unknown = decorateLabMetric(
+        longTaskMetric(0, 0),
+        { level: 'run' },
+        {
+            acrossAttempts: true,
+            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 3 },
+        }
+    )
+    assert.deepEqual(unknown.budgetRefs, [])
+})
+
+test('treats three complete zero-event Long Task attempts as measured only under budget v2', () => {
+    const v2Scenario = {
+        ...scenario,
+        measurementContract: {
+            contractVersion: 2,
+            expectedHz: 60,
+            targetFrameMs: 16.666667,
+            source: 'explicit',
+            confidence: 'explicit',
+            budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
+            metricCatalogVersion: 2,
+        },
+    }
+    const attempts = Array.from({ length: 3 }, (_, index) => {
+        const attemptId = `zero-long-task-${index}`
+        return {
+            attemptId,
+            phase: 'measured',
+            index,
+            startedAt: '2026-08-26T00:00:00.000Z',
+            endedAt: '2026-08-26T00:00:01.000Z',
+            durationMs: 1_000,
+            metrics: [
+                decorateLabMetric(
+                    longTaskMetric(0, 0),
+                    { level: 'attempt', attemptId },
+                    { budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V2 }
+                ),
+            ],
+            capabilities: { longtask: true },
+            limitations: [],
+        }
+    })
+    const aggregateMetrics = aggregateMeasuredAttempts(attempts)
+    const semantics = buildAnimationLabSemantics({
+        scenario: v2Scenario,
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts,
+        aggregateMetrics,
+    })
+
+    assert.deepEqual(
+        aggregateMetrics.map(metric => ({ value: metric.value, samples: metric.samples, status: metric.status })),
+        [{ value: 0, samples: 0, status: 'measured' }]
+    )
+    assert.deepEqual(semantics.metrics[0].budgetRefs, [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V2, ruleId: 'long-task-count' }])
+    assert.equal(semantics.findings.length, 0)
+    assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
+})
+
+test('does not treat a median-zero Long Task aggregate with observed events as healthy', () => {
+    const attempts = [0, 0, 1].map((value, index) => {
+        const attemptId = `mixed-long-task-${index}`
+        return {
+            attemptId,
+            phase: 'measured',
+            index,
+            startedAt: '2026-08-26T00:00:00.000Z',
+            endedAt: '2026-08-26T00:00:01.000Z',
+            durationMs: 1_000,
+            metrics: [
+                decorateLabMetric(
+                    longTaskMetric(value),
+                    { level: 'attempt', attemptId },
+                    { budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V2 }
+                ),
+            ],
+            capabilities: { longtask: true },
+            limitations: [],
+        }
+    })
+    const [aggregate] = aggregateMeasuredAttempts(attempts)
+    const rule = DEFAULT_ANIMATION_LAB_BUDGET_V2.rules.find(item => item.ruleId === 'long-task-count')
+
+    assert.deepEqual(
+        { value: aggregate.value, samples: aggregate.samples, status: aggregate.status },
+        { value: 0, samples: 1, status: 'measured' }
+    )
+    assert.equal(evaluateAnimationLabBudgetRule(rule, aggregate, { targetFrameMs: 16.666667 }).status, 'insufficient-evidence')
+})
+
+test('emits observed and candidate Long Task findings from the selected budget v2', () => {
+    const v2Scenario = {
+        ...scenario,
+        measurementContract: {
+            contractVersion: 2,
+            expectedHz: 60,
+            targetFrameMs: 16.666667,
+            source: 'explicit',
+            confidence: 'explicit',
+            budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
+            metricCatalogVersion: 2,
+        },
+    }
+    const build = metric =>
+        buildAnimationLabSemantics({
+            scenario: v2Scenario,
+            browser: { name: 'chromium', version: '140.0.0' },
+            attempts: [],
+            aggregateMetrics: [
+                decorateLabMetric(metric, { level: 'run' }, { acrossAttempts: true, budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V2 }),
+            ],
+        })
+
+    const observed = build(longTaskMetric(1, 3))
+    assert.equal(observed.findings[0].status, 'observed')
+    assert.equal(observed.findings[0].ruleId, 'long-task-count')
+    assert.deepEqual(observed.findings[0].budgetRefs, [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V2, ruleId: 'long-task-count' }])
+
+    const candidate = build(longTaskMetric(1, 1, 'partial'))
+    assert.equal(candidate.findings[0].status, 'candidate')
+    assert.equal(build(longTaskMetric(0, 0, 'partial')).findings.length, 0)
+    assert.equal(build({ ...longTaskMetric(0, 0), samples: null }).findings.length, 0)
 })
 
 test('preserves unsupported metrics instead of turning them into zero', () => {

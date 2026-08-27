@@ -32,6 +32,7 @@ import {
     actionWindowFromProbe,
     buildAnimationLabSemantics,
     decorateLabMetric,
+    measurementContractForReport,
     probeFrameContract,
     projectAttemptsForReport,
     reportScenarioActions,
@@ -129,6 +130,7 @@ async function measuredAttempt(
     })
     try {
         const attemptId = `attempt_${randomUUID().replaceAll('-', '')}`
+        const budgetRef = measurementContractForReport(scenario).budgetRef
         await page.addInitScript(
             browserProbeSource(probeKey, {
                 capability: probeCapability,
@@ -210,14 +212,14 @@ async function measuredAttempt(
                           : metric.status === 'unknown'
                             ? { ...metric, limitations: crossDocumentLimitations }
                             : metric
-                return decorateLabMetric(boundedMetric, { level: 'attempt', attemptId }, { evidenceId: 'runtime-browser' })
+                return decorateLabMetric(boundedMetric, { level: 'attempt', attemptId }, { evidenceId: 'runtime-browser', budgetRef })
             }),
             ...(probe.actionResults ?? []).flatMap(actionResult =>
                 actionResult.metrics.map(metric =>
                     decorateLabMetric(
                         metric,
                         { level: 'action', attemptId, actionId: actionResult.actionId },
-                        { evidenceId: 'runtime-browser' }
+                        { evidenceId: 'runtime-browser', budgetRef }
                     )
                 )
             ),
@@ -328,6 +330,7 @@ async function traceAttempt(
                         .some(category => category.trim() === 'disabled-by-default-devtools.screenshot')
             )
         const attemptId = `attempt_${randomUUID().replaceAll('-', '')}`
+        const budgetRef = measurementContractForReport(scenario).budgetRef
         const categoryMetrics: AnimationLabMetric[] = Object.entries(timeline.categoryDurationMs).map(([name, value]) =>
             decorateLabMetric(
                 {
@@ -350,7 +353,7 @@ async function traceAttempt(
                     evidenceLevel: 'runtime-observation',
                 },
                 { level: 'attempt', attemptId },
-                { evidenceId: 'cdp-trace' }
+                { evidenceId: 'cdp-trace', budgetRef }
             )
         )
         return {
@@ -419,6 +422,7 @@ async function lighthouseAttempt(
         const html = reports.find(report => typeof report === 'string' && report.trimStart().startsWith('<!')) ?? null
         const ended = new Date()
         const attemptId = `attempt_${randomUUID().replaceAll('-', '')}`
+        const budgetRef = measurementContractForReport(scenario).budgetRef
         return {
             summary,
             html,
@@ -431,7 +435,7 @@ async function lighthouseAttempt(
                 endedAt: ended.toISOString(),
                 durationMs: Math.max(0, performance.now() - monotonicStarted),
                 metrics: summary.metrics.map(metric =>
-                    decorateLabMetric(metric, { level: 'attempt', attemptId }, { evidenceId: 'lighthouse' })
+                    decorateLabMetric(metric, { level: 'attempt', attemptId }, { evidenceId: 'lighthouse', budgetRef })
                 ),
                 capabilities: { lighthouse: true, chromium: true },
                 limitations: [

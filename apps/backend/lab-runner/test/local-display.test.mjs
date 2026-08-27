@@ -163,27 +163,38 @@ test('projects only internally consistent budget summaries', () => {
     )
 })
 
-function budgetSemantics({ missingRuleId, breachRuleId } = {}) {
+function budgetSemantics({ missingRuleId, breachRuleId, budgetVersion = 1, longTask = {} } = {}) {
     const rules = [
         ['frame-tail', 'frame.duration.p95', 120],
         ['slow-frame-rate', 'frame.slow-rate', 120],
         ['jank-bursts', 'frame.jank-bursts', 120],
-        ['long-task-count', 'main.long-task.count', 1],
+        ['long-task-count', 'main.long-task.count', budgetVersion === 2 ? 0 : 1],
         ['input-delay', 'interaction.input-delay.p95', 3],
     ]
-    const budgetRef = { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 1 }
+    const budgetRef = { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion }
     return {
         measurementContract: { budgetRef },
         metrics: rules
             .filter(([ruleId]) => ruleId !== missingRuleId)
-            .map(([ruleId, metricId, minimumSamples]) => ({
-                metricId,
-                scope: { level: 'run' },
-                status: 'measured',
-                value: 0,
-                samples: minimumSamples,
-                budgetRefs: [{ ...budgetRef, ruleId }],
-            })),
+            .map(([ruleId, metricId, minimumSamples]) =>
+                ruleId === 'long-task-count'
+                    ? {
+                          metricId,
+                          scope: { level: 'run' },
+                          status: longTask.status ?? 'measured',
+                          value: longTask.value === undefined ? 0 : longTask.value,
+                          samples: longTask.samples === undefined ? minimumSamples : longTask.samples,
+                          budgetRefs: [{ ...budgetRef, ruleId }],
+                      }
+                    : {
+                          metricId,
+                          scope: { level: 'run' },
+                          status: 'measured',
+                          value: 0,
+                          samples: minimumSamples,
+                          budgetRefs: [{ ...budgetRef, ruleId }],
+                      }
+            ),
         findings: breachRuleId
             ? [
                   {
@@ -223,6 +234,46 @@ test('derives honest budget status from sufficient run evidence and observed fin
             status: 'attention',
         }
     )
+})
+
+test('keeps v1 zero-event Long Task evidence insufficient and accepts the explicit v2 observation', () => {
+    const v1 = buildLabLocalBudgetDisplayEvent(budgetSemantics({ longTask: { samples: 0 } }))
+    assert.equal(v1.budget.status, 'insufficient-evidence')
+    assert.equal(v1.budget.insufficientRules, 1)
+
+    const v2 = buildLabLocalBudgetDisplayEvent(budgetSemantics({ budgetVersion: 2 }))
+    assert.deepEqual(v2.budget, {
+        catalogVersion: 1,
+        budgetId: 'condev.animation.default',
+        budgetVersion: 2,
+        evaluatedRules: 5,
+        breachCount: 0,
+        insufficientRules: 0,
+        status: 'no-breach-observed',
+    })
+})
+
+test('keeps incomplete v2 Long Task evidence insufficient and gives observed breaches precedence', () => {
+    for (const longTask of [
+        { status: 'partial', value: 0, samples: 0 },
+        { status: 'partial', value: 1, samples: 1 },
+        { status: 'not-observed', value: null, samples: 0 },
+        { status: 'unsupported', value: null, samples: null },
+        { status: 'unknown', value: null, samples: null },
+        { status: 'measured', value: 0, samples: null },
+        { status: 'measured', value: 0, samples: 1 },
+        { status: 'measured', value: 1, samples: 0 },
+    ]) {
+        const event = buildLabLocalBudgetDisplayEvent(budgetSemantics({ budgetVersion: 2, longTask }))
+        assert.equal(event.budget.status, 'insufficient-evidence')
+        assert.equal(event.budget.insufficientRules, 1)
+    }
+
+    const breach = buildLabLocalBudgetDisplayEvent(
+        budgetSemantics({ budgetVersion: 2, breachRuleId: 'long-task-count', longTask: { value: 1, samples: 1 } })
+    )
+    assert.equal(breach.budget.status, 'attention')
+    assert.equal(breach.budget.breachCount, 1)
 })
 
 test('safePublish rejects unsafe input and contains synchronous and asynchronous sink failures', async () => {

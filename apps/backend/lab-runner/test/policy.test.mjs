@@ -24,6 +24,7 @@ test('uses a fixed package-default 60 Hz budget instead of self-calibrating to o
     const contract = measurementContractForReport(scenario)
     assert.equal(contract.expectedHz, 60)
     assert.equal(contract.source, 'package-default')
+    assert.equal(contract.budgetRef.budgetVersion, 1)
     assert.ok(Math.abs(contract.targetFrameMs - 1_000 / 60) < 0.001)
     assert.deepEqual(probeFrameContract(scenario), {
         expectedRefreshHz: 60,

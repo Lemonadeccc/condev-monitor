@@ -31,6 +31,7 @@ test('keeps animation fixture scenarios aligned with their root launch ports and
         assert.equal(packagePort, fixture.port, `${fixture.name} dev script must use its assigned fixture port`)
         assert.equal(scenarioUrl.port, packagePort, `${fixture.name} scenario and dev script ports must match`)
         assert.equal(scenario.measurementContract?.metricCatalogVersion, 2, `${fixture.name} must use metric catalog v2`)
+        assert.equal(scenario.measurementContract?.budgetRef?.budgetVersion, 2, `${fixture.name} must use budget v2`)
         assert.ok(scenario.measuredRuns >= 3, `${fixture.name} must have at least three measured runs`)
 
         const validation = validateAnimationLabScenario(scenario)

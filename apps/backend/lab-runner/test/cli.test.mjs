@@ -168,6 +168,7 @@ test('ships the generic scenario with enough bounded Trace headroom for the defa
         }
     )
     assert.equal(scenario.measurementContract.metricCatalogVersion, 2)
+    assert.equal(scenario.measurementContract.budgetRef.budgetVersion, 2)
     const claim = {
         runId,
         targetUrl: 'http://localhost:5173/',
@@ -192,6 +193,7 @@ test('ships the generic scenario with enough bounded Trace headroom for the defa
     })
 
     assert.equal(result.scenario.measurementContract.metricCatalogVersion, 2)
+    assert.equal(result.scenario.measurementContract.budgetRef.budgetVersion, 2)
     assert.equal(result.scenario.durationMs, claim.config.durationMs)
     assert.equal(result.scenario.trace.enabled, true)
     assert.ok(result.scenario.trace.maxDurationMs >= claim.config.durationMs + 500)

@@ -67,6 +67,23 @@ test('changes the protocol hash when reviewed actions or measurement conditions 
     assert.notEqual(createScenarioProtocolHash(changedContract), baseline)
 })
 
+test('treats a budget version change as protocol drift', () => {
+    const v1 = scenario()
+    v1.measurementContract = {
+        contractVersion: 2,
+        expectedHz: 60,
+        targetFrameMs: 16.666667,
+        source: 'explicit',
+        confidence: 'explicit',
+        budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 1 },
+        metricCatalogVersion: 2,
+    }
+    const v2 = structuredClone(v1)
+    v2.measurementContract.budgetRef.budgetVersion = 2
+
+    assert.notEqual(createScenarioProtocolHash(v1), createScenarioProtocolHash(v2))
+})
+
 test('normalizes optional defaults and Lighthouse category order', () => {
     const left = scenario()
     const right = scenario()

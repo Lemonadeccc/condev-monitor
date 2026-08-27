@@ -7,9 +7,11 @@ import {
     type AnimationLabScenario,
     type AnimationLabSemanticsV2,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
-    DEFAULT_ANIMATION_LAB_BUDGET_V1,
+    evaluateAnimationLabBudgetRule,
+    getAnimationLabBudgetV1,
     type LabActionWindowV2,
     type LabAttemptSummary,
+    type LabBudgetRefV1,
     type LabFindingV2,
     type LabMeasurementContractV2,
     type LabMetricScopeV2,
@@ -68,14 +70,19 @@ export function reportScenarioActions(scenario: AnimationLabScenario): LabReport
 export function decorateLabMetric(
     metric: AnimationLabMetric,
     scope: LabMetricScopeV2,
-    options: { evidenceId?: string; acrossAttempts?: boolean } = {}
+    options: { evidenceId?: string; acrossAttempts?: boolean; budgetRef?: LabBudgetRefV1 } = {}
 ): AnimationLabMetric {
     const entry = catalogEntry(metric)
     if (!entry) return metric
-    const budgetRefs = entry.defaultBudgetRuleIds.map(ruleId => ({
-        ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
-        ruleId,
-    }))
+    const budgetRef = options.budgetRef ?? DEFAULT_ANIMATION_LAB_BUDGET_REF_V1
+    const budget = getAnimationLabBudgetV1(budgetRef.budgetId, budgetRef.budgetVersion)
+    const budgetRefs =
+        budget?.catalogVersion === budgetRef.catalogVersion
+            ? entry.defaultBudgetRuleIds.flatMap(ruleId => {
+                  const rule = budget.rules.find(candidate => candidate.ruleId === ruleId)
+                  return rule?.metricId === entry.metricId ? [{ ...budgetRef, ruleId }] : []
+              })
+            : []
     return {
         ...metric,
         metricId: entry.metricId,
@@ -329,36 +336,29 @@ function technologyEvidence(
     return retained
 }
 
-function targetValue(rule: (typeof DEFAULT_ANIMATION_LAB_BUDGET_V1.rules)[number], contract: LabMeasurementContractV2): number {
-    return rule.target.kind === 'target-frame-multiple' ? contract.targetFrameMs * rule.target.value : rule.target.value
-}
-
-function violates(
-    value: number,
-    comparator: (typeof DEFAULT_ANIMATION_LAB_BUDGET_V1.rules)[number]['comparator'],
-    target: number
-): boolean {
-    if (comparator === '<=') return value > target
-    if (comparator === '<') return value >= target
-    if (comparator === '>=') return value < target
-    return value <= target
-}
-
 function findings(metrics: readonly AnimationLabMetricV2[], contract: LabMeasurementContractV2): LabFindingV2[] {
+    const budget = getAnimationLabBudgetV1(contract.budgetRef.budgetId, contract.budgetRef.budgetVersion)
+    if (!budget || budget.catalogVersion !== contract.budgetRef.catalogVersion) return []
     const output: LabFindingV2[] = []
     for (const metric of metrics) {
-        if (!finite(metric.value) || !['measured', 'partial'].includes(metric.status)) continue
         for (const budgetRef of metric.budgetRefs) {
-            const rule = DEFAULT_ANIMATION_LAB_BUDGET_V1.rules.find(item => item.ruleId === budgetRef.ruleId)
-            if (!rule || rule.metricId !== metric.metricId || (metric.samples ?? 0) < rule.minimumSamples) continue
-            const target = targetValue(rule, contract)
-            if (!violates(metric.value, rule.comparator, target)) continue
+            if (
+                budgetRef.catalogVersion !== budget.catalogVersion ||
+                budgetRef.budgetId !== budget.budgetId ||
+                budgetRef.budgetVersion !== budget.budgetVersion
+            ) {
+                continue
+            }
+            const rule = budget.rules.find(item => item.ruleId === budgetRef.ruleId)
+            if (!rule || rule.metricId !== metric.metricId) continue
+            const evaluation = evaluateAnimationLabBudgetRule(rule, metric, contract)
+            if (evaluation.status !== 'breach' && evaluation.status !== 'candidate-breach') continue
             const actionId = metric.scope.actionId
             output.push({
                 findingId: `finding-${rule.ruleId}-${metric.scope.level}-${actionId ?? 'all'}`,
                 ruleId: rule.ruleId,
-                severity: target > 0 && metric.value > target * 2 ? 'critical' : 'warning',
-                status: metric.status === 'measured' ? 'observed' : 'candidate',
+                severity: evaluation.target > 0 && finite(metric.value) && metric.value > evaluation.target * 2 ? 'critical' : 'warning',
+                status: evaluation.status === 'breach' ? 'observed' : 'candidate',
                 scope: metric.scope,
                 metricIds: [metric.metricId],
                 evidenceRefs: metric.evidenceRefs,

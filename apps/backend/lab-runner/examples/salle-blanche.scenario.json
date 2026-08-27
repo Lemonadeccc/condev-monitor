@@ -22,7 +22,7 @@
         "budgetRef": {
             "catalogVersion": 1,
             "budgetId": "condev.animation.default",
-            "budgetVersion": 1
+            "budgetVersion": 2
         },
         "metricCatalogVersion": 2
     },
