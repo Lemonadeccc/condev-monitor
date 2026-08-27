@@ -452,6 +452,9 @@ export interface AnimationHostMediaSummary extends AnimationHostEvidenceFamilySu
     corruptedVideoFramesDelta: number | null
     playbackDropRatio: number | null
     playbackQualityMeasuredSampleCount: number
+    /** Retained-tail status counts. Optional for snapshots produced before playback capability projection. */
+    playbackQualityUnsupportedSampleCount?: number
+    playbackQualityErrorSampleCount?: number
 }
 
 /** Bounded, local-only evidence from explicit framework, renderer, lifecycle, work, and media probes. */

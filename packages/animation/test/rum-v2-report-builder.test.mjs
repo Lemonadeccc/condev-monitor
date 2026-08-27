@@ -80,6 +80,30 @@ function capturePage() {
     return { runtime, snapshot: collector.stop() }
 }
 
+function captureMediaPage(playbackQualities, maxHostEvidenceSamples = 8) {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({
+        runtime,
+        explicitRefreshHz: 60,
+        maxFrames: 128,
+        maxHostEvidenceSamples,
+    }).start()
+    runtime.tick(0)
+    for (const playbackQuality of playbackQualities) {
+        runtime.tick(16)
+        assert.equal(
+            collector.recordMediaStats({
+                source: 'video-rvfc',
+                timestampMs: runtime.time,
+                callbackIntervalMs: 16,
+                playbackQuality,
+            }),
+            true
+        )
+    }
+    return { runtime, snapshot: collector.stop() }
+}
+
 function projectionOptions(runtime, overrides = {}) {
     return {
         eventId: 'event_page_12345678',
@@ -528,6 +552,198 @@ test('host adapter rings preserve exact retained evidence and truthful truncatio
         [0.05, 'partial']
     )
     assert.ok(report.captureQuality.reasons.includes('provider-truncated'))
+})
+
+test('RUM v2 preserves unsupported-only video playback quality without serializing media identity', () => {
+    const { runtime, snapshot } = captureMediaPage([{ status: 'unsupported' }])
+    assert.deepEqual(
+        [
+            snapshot.hostEvidence.media.playbackQualityMeasuredSampleCount,
+            snapshot.hostEvidence.media.playbackQualityUnsupportedSampleCount,
+            snapshot.hostEvidence.media.playbackQualityErrorSampleCount,
+        ],
+        [0, 1, 0]
+    )
+    snapshot.hostEvidence.media.videoUrl = 'https://private.example/video/customer-42.mp4?token=secret'
+    snapshot.hostEvidence.media.selector = '#private-video'
+    snapshot.hostEvidence.media.currentTime = 42
+
+    const report = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
+    const validation = validateNormalizedAnimationRumV2(report, { nowEpochMs: runtime.wallNow() })
+
+    assert.equal(validation.ok, true, validation.ok ? '' : validation.errors.join(', '))
+    assert.equal(report.capabilities['video-playback-quality'], 'unsupported')
+    assert.deepEqual(
+        [
+            metric(report, 'media.video-dropped-frame-rate.ratio').value,
+            metric(report, 'media.video-dropped-frame-rate.ratio').samples,
+            metric(report, 'media.video-dropped-frame-rate.ratio').status,
+        ],
+        [null, null, 'unsupported']
+    )
+    assert.equal(report.captureQuality.reasons.includes('source-field-incomplete'), false)
+    assert.doesNotMatch(JSON.stringify(report), /private\.example|customer-42|token=secret|private-video|videoUrl|currentTime/)
+})
+
+test('RUM v2 keeps playback-quality read errors unknown instead of disabled or zero', () => {
+    const { runtime, snapshot } = captureMediaPage([{ status: 'error' }])
+    const report = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
+    const validation = validateNormalizedAnimationRumV2(report, { nowEpochMs: runtime.wallNow() })
+
+    assert.equal(validation.ok, true, validation.ok ? '' : validation.errors.join(', '))
+    assert.deepEqual(
+        [
+            snapshot.hostEvidence.media.playbackQualityMeasuredSampleCount,
+            snapshot.hostEvidence.media.playbackQualityUnsupportedSampleCount,
+            snapshot.hostEvidence.media.playbackQualityErrorSampleCount,
+        ],
+        [0, 0, 1]
+    )
+    assert.equal(report.capabilities['video-playback-quality'], 'unknown')
+    assert.deepEqual(
+        [metric(report, 'media.video-dropped-frame-rate.ratio').value, metric(report, 'media.video-dropped-frame-rate.ratio').status],
+        [null, 'unknown']
+    )
+    assert.equal(report.captureQuality.reasons.includes('source-field-incomplete'), false)
+})
+
+test('RUM v2 treats a measured zero playback denominator as supported but not observed', () => {
+    const { runtime, snapshot } = captureMediaPage([
+        { status: 'measured', totalVideoFramesDelta: 0, droppedVideoFramesDelta: 0 },
+    ])
+    const report = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
+    const validation = validateNormalizedAnimationRumV2(report, { nowEpochMs: runtime.wallNow() })
+
+    assert.equal(validation.ok, true, validation.ok ? '' : validation.errors.join(', '))
+    assert.equal(snapshot.hostEvidence.media.totalVideoFramesDelta, 0)
+    assert.equal(snapshot.hostEvidence.media.droppedVideoFramesDelta, 0)
+    assert.equal(snapshot.hostEvidence.media.playbackDropRatio, null)
+    assert.equal(report.capabilities['video-playback-quality'], 'supported')
+    assert.deepEqual(
+        [
+            metric(report, 'media.video-dropped-frame-rate.ratio').value,
+            metric(report, 'media.video-dropped-frame-rate.ratio').samples,
+            metric(report, 'media.video-dropped-frame-rate.ratio').status,
+        ],
+        [null, null, 'not-observed']
+    )
+    assert.equal(report.captureQuality.reasons.includes('source-field-incomplete'), false)
+})
+
+test('RUM v2 keeps mixed retained playback evidence and ring truncation partial', () => {
+    const { runtime, snapshot } = captureMediaPage(
+        [
+            { status: 'unsupported' },
+            { status: 'measured', totalVideoFramesDelta: 10, droppedVideoFramesDelta: 1 },
+            { status: 'error' },
+        ],
+        2
+    )
+    const report = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
+    const validation = validateNormalizedAnimationRumV2(report, { nowEpochMs: runtime.wallNow() })
+
+    assert.equal(validation.ok, true, validation.ok ? '' : validation.errors.join(', '))
+    assert.deepEqual(
+        [
+            snapshot.hostEvidence.media.acceptedSampleCount,
+            snapshot.hostEvidence.media.retainedSampleCount,
+            snapshot.hostEvidence.media.droppedSampleCount,
+            snapshot.hostEvidence.media.playbackQualityMeasuredSampleCount,
+            snapshot.hostEvidence.media.playbackQualityUnsupportedSampleCount,
+            snapshot.hostEvidence.media.playbackQualityErrorSampleCount,
+        ],
+        [3, 2, 1, 1, 0, 1]
+    )
+    assert.equal(report.capabilities['video-playback-quality'], 'supported')
+    assert.deepEqual(
+        [metric(report, 'media.video-dropped-frame-rate.ratio').value, metric(report, 'media.video-dropped-frame-rate.ratio').status],
+        [0.1, 'partial']
+    )
+    assert.deepEqual(report.providerEvidence['media-adapter'].resourcesMedia, {
+        version: report.monitorVersion,
+        accepted: 3,
+        retained: 2,
+        evidence: 2,
+        dropped: 1,
+        rejected: 0,
+        truncated: true,
+    })
+    assert.ok(report.captureQuality.reasons.includes('provider-truncated'))
+    assert.equal(report.captureQuality.reasons.includes('source-field-incomplete'), false)
+})
+
+test('RUM v2 measures the supported subset of mixed playback evidence without degrading unrelated families', () => {
+    const { runtime, snapshot } = captureMediaPage([
+        { status: 'unsupported' },
+        { status: 'measured', totalVideoFramesDelta: 10, droppedVideoFramesDelta: 1 },
+        { status: 'error' },
+    ])
+    const report = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
+    const validation = validateNormalizedAnimationRumV2(report, { nowEpochMs: runtime.wallNow() })
+
+    assert.equal(validation.ok, true, validation.ok ? '' : validation.errors.join(', '))
+    assert.equal(report.capabilities['video-playback-quality'], 'supported')
+    assert.deepEqual(
+        [metric(report, 'media.video-dropped-frame-rate.ratio').value, metric(report, 'media.video-dropped-frame-rate.ratio').status],
+        [0.1, 'measured']
+    )
+    assert.equal(report.captureQuality.reasons.includes('source-field-incomplete'), false)
+})
+
+test('RUM v2 positive playback denominator remains measured with or without optional status counts', () => {
+    const { runtime, snapshot } = captureMediaPage([
+        { status: 'measured', totalVideoFramesDelta: 20, droppedVideoFramesDelta: 2 },
+    ])
+    const currentReport = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
+    const currentValidation = validateNormalizedAnimationRumV2(currentReport, { nowEpochMs: runtime.wallNow() })
+
+    assert.equal(currentValidation.ok, true, currentValidation.ok ? '' : currentValidation.errors.join(', '))
+    assert.equal(currentReport.capabilities['video-playback-quality'], 'supported')
+    assert.deepEqual(
+        [
+            metric(currentReport, 'media.video-dropped-frame-rate.ratio').value,
+            metric(currentReport, 'media.video-dropped-frame-rate.ratio').samples,
+            metric(currentReport, 'media.video-dropped-frame-rate.ratio').status,
+        ],
+        [0.1, 1, 'measured']
+    )
+
+    delete snapshot.hostEvidence.media.playbackQualityUnsupportedSampleCount
+    delete snapshot.hostEvidence.media.playbackQualityErrorSampleCount
+    const legacyReport = toAnimationRumV2PageReport(
+        snapshot,
+        projectionOptions(runtime, { eventId: 'event_page_legacy_1234' })
+    )
+    const legacyValidation = validateNormalizedAnimationRumV2(legacyReport, { nowEpochMs: runtime.wallNow() })
+
+    assert.equal(legacyValidation.ok, true, legacyValidation.ok ? '' : legacyValidation.errors.join(', '))
+    assert.equal(legacyReport.capabilities['video-playback-quality'], 'supported')
+    assert.deepEqual(
+        [
+            metric(legacyReport, 'media.video-dropped-frame-rate.ratio').value,
+            metric(legacyReport, 'media.video-dropped-frame-rate.ratio').samples,
+            metric(legacyReport, 'media.video-dropped-frame-rate.ratio').status,
+        ],
+        [0.1, 1, 'measured']
+    )
+})
+
+test('RUM v2 fails closed when only half of the optional playback status breakdown is present', () => {
+    const { runtime, snapshot } = captureMediaPage([
+        { status: 'measured', totalVideoFramesDelta: 20, droppedVideoFramesDelta: 2 },
+    ])
+    delete snapshot.hostEvidence.media.playbackQualityErrorSampleCount
+
+    const report = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
+    const validation = validateNormalizedAnimationRumV2(report, { nowEpochMs: runtime.wallNow() })
+
+    assert.equal(validation.ok, true, validation.ok ? '' : validation.errors.join(', '))
+    assert.equal(report.capabilities['video-playback-quality'], 'unknown')
+    assert.deepEqual(
+        [metric(report, 'media.video-dropped-frame-rate.ratio').value, metric(report, 'media.video-dropped-frame-rate.ratio').status],
+        [null, 'unknown']
+    )
+    assert.ok(report.captureQuality.reasons.includes('source-field-incomplete'))
 })
 
 test('rejected-only interaction quality stays partial without fabricating ring loss', () => {

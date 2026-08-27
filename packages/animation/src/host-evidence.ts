@@ -342,9 +342,11 @@ export class AnimationHostEvidenceRecorder {
         const phases = countRecord(FRAMEWORK_PHASES)
         const checkpoints = countRecord(LIFECYCLE_CHECKPOINTS)
         const workCategories = countRecord(WORK_CATEGORIES)
+        const playbackStatuses = countRecord(PLAYBACK_STATUSES)
         for (const sample of frameworkSamples) phases[sample.phase] += 1
         for (const sample of lifecycleSamples) checkpoints[sample.checkpoint] += 1
         for (const sample of workSamples) workCategories[sample.category] += 1
+        for (const sample of mediaSamples) playbackStatuses[sample.playbackQuality.status] += 1
         const playbackMeasured = mediaSamples.filter(sample => sample.playbackQuality.status === 'measured')
         const totalVideoFramesDelta =
             playbackMeasured.length === 0
@@ -447,7 +449,9 @@ export class AnimationHostEvidenceRecorder {
                     totalVideoFramesDelta !== null && droppedVideoFramesDelta !== null && totalVideoFramesDelta > 0
                         ? round(droppedVideoFramesDelta / totalVideoFramesDelta, 6)
                         : null,
-                playbackQualityMeasuredSampleCount: playbackMeasured.length,
+                playbackQualityMeasuredSampleCount: playbackStatuses.measured,
+                playbackQualityUnsupportedSampleCount: playbackStatuses.unsupported,
+                playbackQualityErrorSampleCount: playbackStatuses.error,
             },
         }
     }

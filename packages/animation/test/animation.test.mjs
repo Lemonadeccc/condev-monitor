@@ -795,6 +795,9 @@ test('explicit host evidence is bounded, capture-clocked, coverage-aware, and ex
     assert.equal(snapshot.hostEvidence.lifecycle.growthCandidate, null)
     assert.equal(snapshot.hostEvidence.work.categories.layout, 1)
     assert.equal(snapshot.hostEvidence.media.playbackDropRatio, 0.5)
+    assert.equal(snapshot.hostEvidence.media.playbackQualityMeasuredSampleCount, 1)
+    assert.equal(snapshot.hostEvidence.media.playbackQualityUnsupportedSampleCount, 0)
+    assert.equal(snapshot.hostEvidence.media.playbackQualityErrorSampleCount, 0)
     assert.equal(snapshot.coverage.renderer.status, 'partial')
     assert.equal(snapshot.coverage.resourcesMedia.status, 'partial')
     assert.equal(snapshot.coverage.memoryLifecycle.status, 'partial')
@@ -817,6 +820,8 @@ test('explicit host evidence is bounded, capture-clocked, coverage-aware, and ex
     const emptyRuntime = new FakeRuntime()
     const emptyMedia = new AnimationCollector({ runtime: emptyRuntime }).start().stop().hostEvidence.media
     assert.equal(emptyMedia.playbackQualityMeasuredSampleCount, 0)
+    assert.equal(emptyMedia.playbackQualityUnsupportedSampleCount, 0)
+    assert.equal(emptyMedia.playbackQualityErrorSampleCount, 0)
     assert.equal(emptyMedia.totalVideoFramesDelta, null)
     assert.equal(emptyMedia.droppedVideoFramesDelta, null)
     assert.equal(emptyMedia.corruptedVideoFramesDelta, null)
@@ -851,9 +856,27 @@ test('explicit host evidence is bounded, capture-clocked, coverage-aware, and ex
     )
     const unsupportedMedia = unsupportedMediaCollector.stop().hostEvidence.media
     assert.equal(unsupportedMedia.playbackQualityMeasuredSampleCount, 0)
+    assert.equal(unsupportedMedia.playbackQualityUnsupportedSampleCount, 1)
+    assert.equal(unsupportedMedia.playbackQualityErrorSampleCount, 0)
     assert.equal(unsupportedMedia.totalVideoFramesDelta, null)
     assert.equal(unsupportedMedia.droppedVideoFramesDelta, null)
     assert.equal(unsupportedMedia.corruptedVideoFramesDelta, null)
+
+    const errorMediaRuntime = new FakeRuntime()
+    const errorMediaCollector = new AnimationCollector({ runtime: errorMediaRuntime }).start()
+    assert.equal(
+        errorMediaCollector.recordMediaStats({
+            source: 'video-rvfc',
+            timestampMs: 0,
+            callbackIntervalMs: 16,
+            playbackQuality: { status: 'error' },
+        }),
+        true
+    )
+    const errorMedia = errorMediaCollector.stop().hostEvidence.media
+    assert.equal(errorMedia.playbackQualityMeasuredSampleCount, 0)
+    assert.equal(errorMedia.playbackQualityUnsupportedSampleCount, 0)
+    assert.equal(errorMedia.playbackQualityErrorSampleCount, 1)
 })
 
 test('unsupported observers remain unknown evidence, not numeric zero', () => {

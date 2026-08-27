@@ -1130,26 +1130,68 @@ function projectHostEvidence(state: ProjectionState, snapshot: AnimationSnapshot
     state.capabilities['media-adapter'] = mediaActive ? 'supported' : 'disabled'
     const mediaProvider = registerHostProvider(state, 'media-adapter', 'resourcesMedia', media)
     const playbackSamples = safeCount(media.playbackQualityMeasuredSampleCount)
+    // The status breakdown was added without changing the local snapshot schema.
+    // Its complete absence is a legacy snapshot; a half-present breakdown is corrupt.
+    const unsupportedCountPresent = media.playbackQualityUnsupportedSampleCount !== undefined
+    const errorCountPresent = media.playbackQualityErrorSampleCount !== undefined
+    const statusBreakdownPresent = unsupportedCountPresent || errorCountPresent
+    const statusBreakdownComplete = unsupportedCountPresent && errorCountPresent
+    const playbackUnsupported = unsupportedCountPresent ? safeCount(media.playbackQualityUnsupportedSampleCount) : null
+    const playbackErrors = errorCountPresent ? safeCount(media.playbackQualityErrorSampleCount) : null
+    const playbackStatusTotal =
+        statusBreakdownComplete && playbackSamples !== null && playbackUnsupported !== null && playbackErrors !== null
+            ? sumCounts(playbackSamples, playbackUnsupported, playbackErrors)
+            : null
+    const totalVideoFrames = safeCount(media.totalVideoFramesDelta)
+    const droppedVideoFrames = safeCount(media.droppedVideoFramesDelta)
     const playbackRatio = safeNumber(media.playbackDropRatio, 1)
+    const measuredAggregateValid =
+        playbackSamples !== null &&
+        (playbackSamples === 0
+            ? (media.totalVideoFramesDelta === null || media.totalVideoFramesDelta === undefined) &&
+              (media.droppedVideoFramesDelta === null || media.droppedVideoFramesDelta === undefined) &&
+              playbackRatio === null
+            : totalVideoFrames !== null &&
+              droppedVideoFrames !== null &&
+              droppedVideoFrames <= totalVideoFrames &&
+              (totalVideoFrames === 0
+                  ? droppedVideoFrames === 0 && playbackRatio === null
+                  : playbackRatio !== null && playbackRatio === round(droppedVideoFrames / totalVideoFrames, 6)))
+    const statusBreakdownValid =
+        !statusBreakdownPresent ||
+        (statusBreakdownComplete &&
+            playbackUnsupported !== null &&
+            playbackErrors !== null &&
+            playbackStatusTotal === mediaProvider.retained)
     const playbackValid =
         mediaProvider.valid &&
+        measuredAggregateValid &&
+        statusBreakdownValid &&
         playbackSamples !== null &&
         playbackSamples <= mediaProvider.retained &&
-        ((playbackSamples === 0 && playbackRatio === null) || (playbackSamples > 0 && playbackRatio !== null))
+        (playbackSamples > 0 || playbackRatio === null)
     if (!playbackValid) state.reasons.add('source-field-incomplete')
-    state.capabilities['video-playback-quality'] = !mediaActive
-        ? 'disabled'
-        : !playbackValid
-          ? 'unknown'
-          : playbackSamples > 0
-            ? 'supported'
-            : 'disabled'
+    const unsupportedOnly =
+        statusBreakdownComplete && playbackSamples === 0 && (playbackUnsupported ?? 0) > 0 && playbackErrors === 0
+    let playbackCapability: AnimationRumV2CapabilityState
+    if (!mediaProvider.valid || !playbackValid) playbackCapability = 'unknown'
+    else if (!mediaActive) playbackCapability = 'disabled'
+    else if ((playbackSamples ?? 0) > 0) playbackCapability = 'supported'
+    else if (unsupportedOnly && !mediaProvider.partial) playbackCapability = 'unsupported'
+    else playbackCapability = 'unknown'
+    state.capabilities['video-playback-quality'] = playbackCapability
+
+    let playbackStatus: AnimationRumV2MetricStatus
+    if (!playbackValid) playbackStatus = 'unknown'
+    else if ((playbackSamples ?? 0) === 0) playbackStatus = unsupportedOnly && !mediaProvider.partial ? 'unsupported' : 'unknown'
+    else if (playbackRatio === null) playbackStatus = 'not-observed'
+    else playbackStatus = mediaProvider.partial ? 'partial' : 'measured'
     putMetric(
         state,
         'media.video-dropped-frame-rate.ratio',
         playbackValid ? playbackRatio : null,
-        playbackValid ? playbackSamples : null,
-        !playbackValid ? 'unknown' : playbackRatio === null ? 'not-instrumented' : mediaProvider.partial ? 'partial' : 'measured'
+        playbackValid && playbackRatio !== null ? playbackSamples : null,
+        playbackStatus
     )
 }
 
