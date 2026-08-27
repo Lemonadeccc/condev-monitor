@@ -55,3 +55,19 @@ export type {
     WebGpuTimestampTimingEvidence,
     WebGpuTimestampWritesLike,
 } from './webgpu-timestamp-timer'
+export { WebGpuTransferRecorderOptionsError, createWebGpuTransferRecorder } from './webgpu-transfer-recorder'
+export type {
+    WebGpuReadbackEvidence,
+    WebGpuReadbackKind,
+    WebGpuTransferDeviceLike,
+    WebGpuTransferRecorder,
+    WebGpuTransferRecorderAggregate,
+    WebGpuTransferRecorderCapability,
+    WebGpuTransferRecorderOptions,
+    WebGpuTransferRecorderSnapshot,
+    WebGpuTransferTargetAdapterInspection,
+    WebGpuTransferTargetInspectionContext,
+    WebGpuTransferTargetRendererInspection,
+    WebGpuUploadEvidence,
+    WebGpuUploadKind,
+} from './webgpu-transfer-recorder'
