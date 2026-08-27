@@ -581,6 +581,51 @@ test('uses a true even-sample median for metrics and action windows', () => {
     assert.equal(semantics.actionWindows[0].timestamps.durationMs, 60)
 })
 
+test('keeps a measured aggregate valid when summed sample counts exceed the report bound', () => {
+    const attempts = Array.from({ length: 3 }, (_, index) => {
+        const attemptId = `bounded-samples-${index}`
+        return {
+            attemptId,
+            phase: 'measured',
+            index,
+            startedAt: '2026-08-26T00:00:00.000Z',
+            endedAt: '2026-08-26T00:00:01.000Z',
+            durationMs: 1_000,
+            metrics: [
+                decorateLabMetric(
+                    {
+                        family: 'resourcesMedia',
+                        name: 'videoDroppedFrameRate',
+                        stat: 'ratio',
+                        unit: 'ratio',
+                        value: (index + 1) / 10,
+                        samples: 4_000_000,
+                        status: 'measured',
+                        evidenceLevel: 'controlled-lab-measurement',
+                    },
+                    { level: 'attempt', attemptId }
+                ),
+            ],
+            capabilities: {},
+            limitations: [],
+        }
+    })
+    const aggregateMetrics = aggregateMeasuredAttempts(attempts)
+    const semantics = buildAnimationLabSemantics({
+        scenario,
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts,
+        aggregateMetrics,
+    })
+
+    assert.equal(aggregateMetrics[0].value, 0.2)
+    assert.equal(aggregateMetrics[0].samples, null)
+    assert.equal(aggregateMetrics[0].status, 'measured')
+    assert.ok(aggregateMetrics[0].limitations.includes('aggregate-sample-count-exceeds-contract-bound'))
+    assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
+    assert.equal(semantics.findings.length, 0)
+})
+
 test('marks a metric partial when it is missing from measured attempts', () => {
     const attempts = Array.from({ length: 10 }, (_, index) => {
         const attemptId = `coverage-${index}`

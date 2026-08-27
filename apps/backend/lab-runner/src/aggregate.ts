@@ -1,5 +1,7 @@
 import type { AnimationLabMetric, LabAttemptSummary } from '@condev-monitor/animation-lab'
 
+const MAX_RETAINED_AGGREGATE_SAMPLES = 10_000_000
+
 function aggregateScopeKey(metric: AnimationLabMetric): string {
     const scope = metric.scope
     if (scope?.level === 'action') return `action:${scope.actionId ?? ''}`
@@ -34,6 +36,7 @@ export function aggregateMeasuredAttempts(attempts: readonly LabAttemptSummary[]
             (total, metric) => total + (typeof metric.samples === 'number' && Number.isFinite(metric.samples) ? metric.samples : 0),
             0
         )
+        const retainedSamples = rawSamples <= MAX_RETAINED_AGGREGATE_SAMPLES ? rawSamples : null
         const unavailableStatus = group.every(metric => metric.status === 'unsupported')
             ? 'unsupported'
             : group.every(metric => metric.status === 'not-observed')
@@ -65,7 +68,7 @@ export function aggregateMeasuredAttempts(attempts: readonly LabAttemptSummary[]
         return {
             ...first,
             value: values.length > 0 ? Math.round(median(values) * 1_000_000) / 1_000_000 : null,
-            samples: rawSamples,
+            samples: retainedSamples,
             status,
             evidenceLevel,
             ...(first.metricId
@@ -77,6 +80,7 @@ export function aggregateMeasuredAttempts(attempts: readonly LabAttemptSummary[]
                           ...new Set(group.flatMap(metric => metric.limitations ?? [])),
                           `eligible-attempts-${values.length}`,
                           `total-attempts-${measuredAttempts.length}`,
+                          ...(retainedSamples === null ? ['aggregate-sample-count-exceeds-contract-bound'] : []),
                       ],
                   }
                 : {}),
