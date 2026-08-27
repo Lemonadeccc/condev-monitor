@@ -22,6 +22,53 @@ const client = init({
 
 This creates one Browser client, one transport, and one `AnimationIntegration`. With no DSN it creates no transport and runs only the local animation collector/panel. `routeKey` must be an already-redacted stable identifier and is never derived from the current URL. Privacy-safe coarse windows for load, pointer press/click, actual scroll, fine-pointer hover/motion, keyboard, window resize, and `VisualViewport` resize/pan are enabled by default. Pass `autoInputWindows: false` to disable all automatic windows, or use an options object for per-source opt-outs and bounded quiet-period tuning. Automatic windows retain only static SDK labels and timing boundaries—not coordinates, key values, selectors, element text, input values, or raw events. They also do not fabricate input-to-visual, pointer-age, progress, settle, or GPU evidence. Real business completion and independently measured quality should still use `client.animation.beginInteraction()` and `recordQuality()`.
 
+### Durable RUM v2 opt-in
+
+Omitting `contractVersion`, or passing `1`, preserves the existing `animation_rum` v1 transport. RUM v2 is an explicit opt-in on the same single Browser client and the same DSN URL:
+
+```ts
+import { init } from '@condev-monitor/monitor-sdk-browser/animation'
+
+const client = init({
+    dsn: import.meta.env.VITE_MONITOR_DSN,
+    release: '2026.08.27',
+    dist: '',
+    animation: {
+        devtools: import.meta.env.DEV,
+        rum: { contractVersion: 2, sampleRate: 0.1 },
+        context: {
+            routeKey: 'catalog.detail',
+            environment: 'production',
+            runtimeFamily: 'react',
+        },
+    },
+})
+```
+
+Before the DSN server accepts a v2 report, the signed-in application owner must configure and enable its RUM v2 policy and register the exact deployment tuple (`release`, `dist`, and `environment`). A supplied `routeKey` must also be registered and enabled. Page reports may omit `routeKey`; target reports may not. These registries are an authorization boundary, not values the SDK discovers from URLs, selectors, framework names, or the DOM.
+
+Explicit production target RUM is also caller-owned:
+
+```ts
+const element = document.querySelector('[data-animation-hero]')
+if (element) {
+    const hero = client.animation.registerRumTarget('hero-canvas', element)
+    const interaction = hero.beginInteraction('pointer')
+
+    // End this window when the product-defined visual outcome is complete.
+    interaction.end()
+
+    // Optional on route/component teardown. It is safe to call repeatedly.
+    hero.unregister()
+}
+```
+
+`routeKey` and `targetKey` must be static, already-redacted semantic keys registered by the owner. The API rejects URLs, paths, selectors, DOM ids, text-derived values, duplicate keys/elements, registration after finalization, and more than 16 live targets. The development overlay picker remains local-only and never enters this upload registry.
+
+`sampleRate: 0` is a hard local-only boundary: it creates no v2 delivery coordinator, IndexedDB queue, retry timer, LoAF side observer, target sidecar, or network request. With a positive rate, the sticky deterministic decision applies to the current page. A sampled-out page creates no current report or target sidecar, while its delivery coordinator may still drain older authorized reports already stored by this origin.
+
+The first sampled `hidden` or `pagehide` boundary freezes one page report and its registered target reports, including stable capture/event ids; retries reuse the exact payload. Normal `client.flush()` drains already frozen/durable work but does not end the animation capture. `client.animation.stop()` or `client.destroy()` finalizes it deterministically. A persisted BFCache `pagehide` waits queued persistence, releases leases, closes the IndexedDB connection, and resumes delivery after the matching `pageshow` without deleting durable reports. A `201` receipt with `persistedVia: 'postgres-outbox'` confirms durable PostgreSQL admission; it does not by itself claim that ClickHouse projection has already completed.
+
 For trusted discrete `pointerdown` and first `keydown` triggers, plus a standalone trusted `click` fallback, the Browser entry records a bounded local `snapshot.inputFrameScheduling` distribution. Each sample starts at the SDK capture-listener entry and ends at the collector's next shared main-thread `requestAnimationFrame` callback entry. It deliberately excludes untrusted synthetic events, repeated keys, monitor-overlay input, continuous pointer/scroll/hover traffic, resize, and load. This is a scheduling-opportunity proxy: it is not hardware input delay, INP, DOM change, paint, presentation, visual completion, or GPU completion. It has no universal default pass/fail threshold and is not projected into the closed `animation_rum` v1 contract. `maxInputFrameSchedulingSamples` bounds retained local samples; pending work is separately capped, and loss or lifecycle cancellation remains explicit instead of becoming a zero.
 
 The Browser animation entry also enables bounded, local-only `snapshot.pageEvidence` by default. It inventories anonymous whole-page CSS/Web Animations, automatically attaches standards-based RVFC/playback-quality probes to at most 16 videos, discovers at most 64 retained SVG/Canvas surfaces, classifies only future successful Canvas2D/WebGL/WebGL2/WebGPU `getContext()` calls, and reports hidden/offscreen and reduced-motion **review candidates**. Automatic video evidence aggregates at a bounded 250–1,000 ms cadence rather than writing one host sample per decoded callback. Pass `autoPageEvidence: false` for one complete opt-out, or an object such as `{ media: false, maxAnimations: 64, sampleIntervalMs: 4000 }` for per-family opt-outs and bounds. The snapshot never retains animation names, selectors, element text, attributes, keyframes, URLs/media sources, coordinates, keys, input values, or raw events. Surface existence does not prove renderer work; a running animation while hidden/offscreen does not prove wasted CPU/GPU work; and motion under the preference is not a violation until product semantics identify it as non-essential. Generic GPU time, draw calls, framework owners, and business completion therefore remain explicitly unsupported/not observed instead of numeric zeroes. `pageEvidence` is not projected into the closed `animation_rum` v1 wire contract.
@@ -297,7 +344,7 @@ recommendAnimationImprovements(final, {
 })
 ```
 
-## Condev integration and opt-in RUM
+## Condev integration and opt-in RUM v1
 
 `AnimationIntegration` implements core's structural `MonitorIntegration` using `setup(transport)`. Its stable integration name is `animation`; `init()` remains only as a compatibility alias.
 
@@ -386,7 +433,7 @@ The collapsed launcher and expanded panel keep independent viewport positions. D
 
 Pointer, click, wheel, context-menu and keyboard events stop at the overlay's Shadow Root bubble boundary, and panel overscroll is contained so the tool does not trigger ordinary page-level bubble handlers. Composed events remain observable to capture listeners before they reach the Shadow Root; capture-based integrations must exclude paths containing `[data-condev-animation-overlay]` and `[data-condev-animation-picker]`, as the example harness does.
 
-Target privacy is intentionally stricter than target display. The local Target view is held in memory and may show a bounded tag/role, adapter owner label, and local source candidate; it never reads id/class/text/input values, props/state, URLs, selectors, pixels, or shader source. None of the target snapshot is projected into `animation_rum` v1. Production page RUM remains the existing explicit opt-in aggregate path. A future target RUM version must require a caller-supplied redacted semantic `targetKey`, use a separate target capture/window identity, and synchronously update SDK, DSN, Worker, ClickHouse keys, Monitor API, and frontend. Sending target fields through today's strict v1 would be rejected and is not presented as supported.
+Target privacy is intentionally stricter than target display. The local Target view is held in memory and may show a bounded tag/role, adapter owner label, and local source candidate; it never reads id/class/text/input values, props/state, URLs, selectors, pixels, or shader source. None of the target snapshot is projected into `animation_rum` v1. The separately versioned RUM v2 path uploads target aggregates only after the application explicitly opts into v2, registers a static redacted `routeKey`/`targetKey` pair in the control plane, and calls `client.animation.registerRumTarget()`. Picker selections are never promoted to production targets.
 
 It returns a no-op handle in SSR, production, or an unknown build mode. If a bundler does not expose `NODE_ENV`, pass an explicit `production` boolean. Call `overlay.destroy()` during development teardown.
 
@@ -402,7 +449,7 @@ The implemented contracts and dependency-free host probes make missing evidence 
 - full Three/R3F/Canvas2D/WebGL/WebGPU renderer adapters, including sparse asynchronous WebGL timer queries or WebGPU timestamp queries; the current Three helper reads public counters and only validates already-resolved GPU evidence;
 - CDP/trace-backed per-frame JS, style, layout, paint, raster, composite, layer, and authored-source attribution;
 - media decode/upload/first-visible attribution and autoplay/visibility behavior beyond the implemented RVFC/playback-quality deltas; resource-to-first-visible attribution, route/unmount resource deltas, heap/lifecycle growth, hidden/offscreen work checks, and representative-device soak runs;
-- soft-navigation Web Vitals and a separately versioned, explicitly authorized target/quality RUM contract.
+- soft-navigation Web Vitals, automatic product-outcome detection, and automatic target discovery; RUM v2 intentionally accepts only explicitly authorized semantic targets and bounded evidence.
 
 Until those adapters or lab traces exist, coverage remains `not-instrumented`, `not-observed`, or `unsupported`; it must not be displayed as zero or treated as a pass.
 
