@@ -879,6 +879,49 @@ test('explicit host evidence is bounded, capture-clocked, coverage-aware, and ex
     assert.equal(errorMedia.playbackQualityErrorSampleCount, 1)
 })
 
+test('host renderer evidence rejects backend-specific GPU sources from a different backend', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+
+    assert.equal(
+        collector.recordRenderStats({
+            source: 'three-renderer-info',
+            backend: 'webgpu',
+            timestampMs: 0,
+            gpu: {
+                status: 'measured',
+                timeMs: 2.5,
+                source: 'webgl-disjoint-timer-query',
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+            },
+        }),
+        false
+    )
+    assert.equal(
+        collector.recordRenderStats({
+            source: 'three-renderer-info',
+            backend: 'unknown',
+            timestampMs: 0,
+            gpu: {
+                status: 'measured',
+                timeMs: 1.5,
+                source: 'host-timer-query',
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+            },
+        }),
+        true
+    )
+
+    const renderer = collector.stop().hostEvidence.renderer
+    assert.equal(renderer.rejectedSampleCount, 1)
+    assert.equal(renderer.gpuMeasuredSampleCount, 1)
+    assert.equal(renderer.gpuRejectedSampleCount, 0)
+})
+
 test('unsupported observers remain unknown evidence, not numeric zero', () => {
     const runtime = new FakeRuntime({
         capabilities: {
@@ -1980,6 +2023,36 @@ test('renderer adapters normalize bounded evidence and keep GPU timing fail-clos
     assert.equal(snapshot.metrics.gpuFrameMsP95, null)
     assert.equal(snapshot.evidence.gpu.source, 'unknown')
     assert.equal(snapshot.evidence.gpu.rejectionReason, 'source-unknown')
+
+    renderer = {
+        family: 'webgpu',
+        capability: { state: 'supported', observed: true, buffered: false },
+        metrics: { gpuFrameMsP95: 5 },
+        evidence: {
+            acceptedSampleCount: 1,
+            retainedSampleCount: 1,
+            droppedSampleCount: 0,
+            gpu: { valid: true, disjoint: false, contextLost: false, source: 'webgl-timer-query' },
+        },
+    }
+    snapshot = selection.snapshot().renderers[0]
+    assert.equal(snapshot.metrics.gpuFrameMsP95, null)
+    assert.equal(snapshot.evidence.gpu.rejectionReason, 'backend-source-mismatch')
+
+    renderer = {
+        ...renderer,
+        family: 'other',
+        metrics: { gpuFrameMsP95: 5 },
+        evidence: {
+            acceptedSampleCount: 1,
+            retainedSampleCount: 1,
+            droppedSampleCount: 0,
+            gpu: { valid: true, disjoint: false, contextLost: false, source: 'host-summary' },
+        },
+    }
+    snapshot = selection.snapshot().renderers[0]
+    assert.equal(snapshot.metrics.gpuFrameMsP95, 5)
+    assert.equal(snapshot.evidence.gpu.rejectionReason, null)
 
     renderer = {
         family: 'webgl',

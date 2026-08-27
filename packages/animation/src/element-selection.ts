@@ -1,3 +1,4 @@
+import { isTargetGpuTimingSourceCompatible } from './gpu-timing-compatibility'
 import { durationStatistics, round } from './statistics'
 import type {
     AnimationElementAnimationSummary,
@@ -644,7 +645,8 @@ function gpuTimingRejectionReason(
     valid: boolean | null,
     disjoint: boolean | null,
     contextLost: boolean | null,
-    source: AnimationGpuTimingSource
+    source: AnimationGpuTimingSource,
+    family: AnimationRendererFamily
 ): AnimationGpuTimingRejectionReason | null {
     if (rawMetric === undefined || rawMetric === null) return 'not-reported'
     if (normalizedMetric === null) return 'metric-invalid'
@@ -653,12 +655,14 @@ function gpuTimingRejectionReason(
     if (valid === false) return 'timer-invalid'
     if (valid !== true || disjoint !== false || contextLost !== false) return 'validity-unknown'
     if (source === 'unknown') return 'source-unknown'
+    if (!isTargetGpuTimingSourceCompatible(family, source)) return 'backend-source-mismatch'
     return null
 }
 
 function rendererEvidence(
     value: AnimationTargetAdapterRendererEvidence | undefined,
-    metrics: Partial<AnimationRendererMetrics> | undefined
+    metrics: Partial<AnimationRendererMetrics> | undefined,
+    family: AnimationRendererFamily
 ): AnimationTargetRendererEvidence {
     let startedAt = safeBoundedNonNegative(value?.window?.startedAt, MAX_RENDERER_EVIDENCE_TIME_MS)
     let endedAt = safeBoundedNonNegative(value?.window?.endedAt, MAX_RENDERER_EVIDENCE_TIME_MS)
@@ -690,7 +694,15 @@ function rendererEvidence(
             disjoint,
             contextLost,
             source,
-            rejectionReason: gpuTimingRejectionReason(metrics?.gpuFrameMsP95, normalizedGpuMetric, valid, disjoint, contextLost, source),
+            rejectionReason: gpuTimingRejectionReason(
+                metrics?.gpuFrameMsP95,
+                normalizedGpuMetric,
+                valid,
+                disjoint,
+                contextLost,
+                source,
+                family
+            ),
         },
     }
 }
@@ -903,7 +915,8 @@ export function createAnimationElementSelection(
                         }
                         const evidence = rendererEvidence(
                             canUseRendererEvidence ? inspection.renderer.evidence : undefined,
-                            canUseRendererEvidence ? inspection.renderer.metrics : undefined
+                            canUseRendererEvidence ? inspection.renderer.metrics : undefined,
+                            inspection.renderer.family
                         )
                         rendererInspections.push({
                             adapterId,

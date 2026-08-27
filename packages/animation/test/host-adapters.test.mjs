@@ -124,6 +124,30 @@ test('Three snapshot reads public counters and accepts GPU time only with comple
         },
     })
 
+    const mismatched = readThreeRendererSnapshot(renderer, {
+        backend: 'webgpu',
+        readGpuTiming: () => ({
+            timeMs: 2,
+            valid: true,
+            disjoint: false,
+            contextLost: false,
+            source: 'webgl-disjoint-timer-query',
+        }),
+    })
+    assert.deepEqual(mismatched.gpu, { status: 'invalid', source: 'webgl-disjoint-timer-query' })
+
+    const neutral = readThreeRendererSnapshot(renderer, {
+        backend: 'unknown',
+        readGpuTiming: () => ({
+            timeMs: 2,
+            valid: true,
+            disjoint: false,
+            contextLost: false,
+            source: 'host-timer-query',
+        }),
+    })
+    assert.equal(neutral.gpu.status, 'measured')
+
     for (const [reading, expectedStatus] of [
         [
             {

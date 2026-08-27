@@ -1,5 +1,6 @@
 // cspell:ignore rvfc
 
+import { isHostGpuTimingSourceCompatible } from './gpu-timing-compatibility'
 import type {
     AnimationFrameworkStatsSample,
     AnimationLifecycleCountEvidence,
@@ -231,7 +232,8 @@ export class AnimationHostEvidenceRecorder {
                   gpuSource &&
                   sample.gpu.valid === true &&
                   sample.gpu.disjoint === false &&
-                  sample.gpu.contextLost === false
+                  sample.gpu.contextLost === false &&
+                  isHostGpuTimingSourceCompatible(sample.backend, gpuSource)
                     ? {
                           status: 'measured' as const,
                           timeMs: gpuTime.value,

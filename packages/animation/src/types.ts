@@ -704,6 +704,7 @@ export type AnimationGpuTimingRejectionReason =
     | 'timer-disjoint'
     | 'context-lost'
     | 'source-unknown'
+    | 'backend-source-mismatch'
 
 export interface AnimationTargetRendererEvidenceWindow {
     startedAt: number | null

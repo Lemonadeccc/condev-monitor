@@ -9,6 +9,7 @@ import {
 } from '@condev-monitor/animation-rum-contract'
 
 import { AnimationOptionsError } from '../collector'
+import { isTargetGpuTimingSourceCompatible } from '../gpu-timing-compatibility'
 import { ANIMATION_MONITOR_VERSION, ANIMATION_RUM_MAX_WINDOW_DURATION_MS } from '../integration'
 import { round } from '../statistics'
 import type {
@@ -1107,22 +1108,24 @@ function projectHostEvidence(state: ProjectionState, snapshot: AnimationSnapshot
         ((gpuMeasured === 0 && renderer.gpuFrameMs === null) ||
             (gpuMeasured > 0 && statisticsMatchRetainedCount(renderer.gpuFrameMs, gpuMeasured)))
     if (!gpuCountsValid) state.reasons.add('source-field-incomplete')
-    state.capabilities['gpu-timer-query'] = !rendererActive
+    const gpuRejectedEvidence = gpuCountsValid && (gpuRejected > 0 || rendererProvider.rejected > 0)
+    const gpuCapability: AnimationRumV2CapabilityState = !rendererActive
         ? 'disabled'
         : !gpuCountsValid
           ? 'unknown'
           : gpuMeasured > 0
             ? 'supported'
-            : gpuRejected > 0
+            : gpuRejectedEvidence
               ? 'unknown'
               : 'disabled'
+    state.capabilities['gpu-timer-query'] = gpuCapability
     putDistribution(
         state,
         'renderer.gpu-frame.p95',
         gpuCountsValid ? renderer.gpuFrameMs : null,
         'p95',
         rendererStatus,
-        gpuCountsValid ? rendererFallback : 'unknown'
+        gpuCountsValid && gpuCapability !== 'unknown' ? rendererFallback : 'unknown'
     )
 
     const media = host.media
@@ -1171,8 +1174,7 @@ function projectHostEvidence(state: ProjectionState, snapshot: AnimationSnapshot
         playbackSamples <= mediaProvider.retained &&
         (playbackSamples > 0 || playbackRatio === null)
     if (!playbackValid) state.reasons.add('source-field-incomplete')
-    const unsupportedOnly =
-        statusBreakdownComplete && playbackSamples === 0 && (playbackUnsupported ?? 0) > 0 && playbackErrors === 0
+    const unsupportedOnly = statusBreakdownComplete && playbackSamples === 0 && (playbackUnsupported ?? 0) > 0 && playbackErrors === 0
     let playbackCapability: AnimationRumV2CapabilityState
     if (!mediaProvider.valid || !playbackValid) playbackCapability = 'unknown'
     else if (!mediaActive) playbackCapability = 'disabled'
@@ -1541,6 +1543,8 @@ function projectTargetRenderer(state: ProjectionState, target: AnimationElementS
     const samples = countsValid ? retained : null
     const status: AnimationRumV2MetricStatus = !countsValid ? 'unknown' : dropped > 0 || rejected > 0 ? 'partial' : 'measured'
     const gpu = safeNumber(renderer.metrics.gpuFrameMsP95)
+    const gpuSourceCompatible = isTargetGpuTimingSourceCompatible(renderer.family, renderer.evidence.gpu.source)
+    if (renderer.evidence.gpu.source !== 'unknown' && !gpuSourceCompatible) state.reasons.add('source-field-incomplete')
     const gpuValid =
         countsValid &&
         retained > 0 &&
@@ -1548,6 +1552,7 @@ function projectTargetRenderer(state: ProjectionState, target: AnimationElementS
         renderer.evidence.gpu.disjoint === false &&
         renderer.evidence.gpu.contextLost === false &&
         renderer.evidence.gpu.source !== 'unknown' &&
+        gpuSourceCompatible &&
         renderer.evidence.gpu.rejectionReason === null &&
         gpu !== null
     const gpuCapability: AnimationRumV2CapabilityState = gpuValid

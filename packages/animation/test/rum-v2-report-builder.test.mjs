@@ -490,6 +490,91 @@ test('target builder requires an explicit semantic target key and keeps direct, 
     )
 })
 
+test('target builder omits GPU timing whose source does not match the renderer backend', () => {
+    const { runtime, snapshot } = capturePage()
+    const target = targetSnapshot()
+    target.renderers[0].family = 'webgpu'
+    const report = toAnimationRumV2TargetReport(
+        snapshot,
+        target,
+        projectionOptions(runtime, {
+            eventId: 'event_target_gpu_mismatch',
+            captureId: 'capture_target_gpu_mismatch',
+            targetKey: 'hero-canvas',
+        })
+    )
+
+    assert.deepEqual([metric(report, 'renderer.gpu-frame.p95').value, metric(report, 'renderer.gpu-frame.p95').status], [null, 'unknown'])
+    assert.equal(report.capabilities['gpu-timer-query'], 'unknown')
+    assert.ok(report.captureQuality.reasons.includes('source-field-incomplete'))
+})
+
+test('target builder rejects host-only GPU sources and invalid renderer families from runtime snapshots', () => {
+    const cases = [
+        { family: 'webgl', source: 'webgl-disjoint-timer-query' },
+        { family: 'webgl', source: 'host-timer-query' },
+        { family: 'private-renderer', source: 'host-summary' },
+    ]
+
+    for (const [index, value] of cases.entries()) {
+        const { runtime, snapshot } = capturePage()
+        const target = targetSnapshot()
+        target.renderers[0].family = value.family
+        target.renderers[0].evidence.gpu.source = value.source
+        target.renderers[0].evidence.gpu.rejectionReason = null
+        const report = toAnimationRumV2TargetReport(
+            snapshot,
+            target,
+            projectionOptions(runtime, {
+                eventId: `event_target_gpu_closed_${index}`,
+                captureId: `capture_target_gpu_closed_${index}`,
+                targetKey: 'hero-canvas',
+            })
+        )
+
+        assert.deepEqual(
+            [metric(report, 'renderer.gpu-frame.p95').value, metric(report, 'renderer.gpu-frame.p95').status],
+            [null, 'unknown']
+        )
+        assert.equal(report.capabilities['gpu-timer-query'], 'unknown')
+        assert.ok(report.captureQuality.reasons.includes('source-field-incomplete'))
+    }
+})
+
+test('page builder reports rejected renderer evidence as unknown GPU instrumentation', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime, explicitRefreshHz: 60 }).start()
+    assert.equal(
+        collector.recordRenderStats({
+            source: 'three-renderer-info',
+            backend: 'webgpu',
+            timestampMs: 0,
+            gpu: {
+                status: 'measured',
+                timeMs: 2.5,
+                source: 'webgl-disjoint-timer-query',
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+            },
+        }),
+        false
+    )
+    const report = toAnimationRumV2PageReport(collector.stop(), projectionOptions(runtime))
+
+    assert.deepEqual(
+        [
+            metric(report, 'renderer.gpu-frame.p95').value,
+            metric(report, 'renderer.gpu-frame.p95').samples,
+            metric(report, 'renderer.gpu-frame.p95').status,
+        ],
+        [null, null, 'unknown']
+    )
+    assert.equal(report.capabilities['gpu-timer-query'], 'unknown')
+    assert.equal(report.providerEvidence['renderer-adapter'].renderer.rejected, 1)
+    assert.ok(report.captureQuality.reasons.includes('provider-rejected-samples'))
+})
+
 test('host adapter rings preserve exact retained evidence and truthful truncation', () => {
     const runtime = new FakeRuntime()
     const collector = new AnimationCollector({ runtime, explicitRefreshHz: 60, maxHostEvidenceSamples: 2 }).start()

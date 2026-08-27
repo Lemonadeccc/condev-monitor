@@ -8,6 +8,8 @@
  * changing application behavior.
  */
 
+import { isHostGpuTimingSourceCompatible } from './gpu-timing-compatibility'
+
 export type AnimationHostFramework = 'react' | 'preact' | 'vue' | 'angular' | 'svelte' | 'solid' | 'qwik' | 'lit' | 'vanilla' | 'other'
 
 export type AnimationFrameworkCommitPhase = 'mount' | 'update' | 'nested-update' | 'hydrate' | 'other'
@@ -315,6 +317,7 @@ function rendererContextLost(renderer: ThreeRendererLike): boolean | 'error' | u
 
 function readGpuEvidence(
     renderer: ThreeRendererLike,
+    backend: AnimationRendererBackend,
     readGpuTiming: ThreeRendererSnapshotOptions['readGpuTiming']
 ): AnimationGpuTimingEvidence {
     if (!readGpuTiming) return { status: 'not-provided' }
@@ -334,6 +337,7 @@ function readGpuEvidence(
     if (reading.contextLost !== false || contextLost === true) return { status: 'context-lost', ...(source ? { source } : {}) }
     if (reading.disjoint !== false) return { status: 'disjoint', ...(source ? { source } : {}) }
     if (reading.valid !== true || timeMs === undefined || !source) return { status: 'invalid', ...(source ? { source } : {}) }
+    if (!isHostGpuTimingSourceCompatible(backend, source)) return { status: 'invalid', source }
     return { status: 'measured', timeMs, source, valid: true, disjoint: false, contextLost: false }
 }
 
@@ -342,6 +346,7 @@ export function readThreeRendererSnapshot(
     options: ThreeRendererSnapshotOptions = {}
 ): AnimationRenderStatsSample {
     const now = options.now ?? defaultNow
+    const backend = normalizeRendererBackend(options.backend)
     const drawCalls = finiteCount(safeProperty(() => renderer.info?.render?.calls))
     const triangles = finiteCount(safeProperty(() => renderer.info?.render?.triangles))
     const lines = finiteCount(safeProperty(() => renderer.info?.render?.lines))
@@ -352,7 +357,7 @@ export function readThreeRendererSnapshot(
 
     return {
         source: 'three-renderer-info',
-        backend: normalizeRendererBackend(options.backend),
+        backend,
         timestampMs: safeNow(now),
         ...(drawCalls === undefined ? {} : { drawCalls }),
         ...(triangles === undefined ? {} : { triangles }),
@@ -361,7 +366,7 @@ export function readThreeRendererSnapshot(
         ...(geometries === undefined ? {} : { geometries }),
         ...(textures === undefined ? {} : { textures }),
         ...(programs === undefined ? {} : { programs }),
-        gpu: readGpuEvidence(renderer, options.readGpuTiming),
+        gpu: readGpuEvidence(renderer, backend, options.readGpuTiming),
     }
 }
 
