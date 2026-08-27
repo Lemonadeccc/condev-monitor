@@ -415,7 +415,9 @@ export interface AnimationHostFrameworkSummary extends AnimationHostEvidenceFami
 }
 
 export interface AnimationHostRendererSummary extends AnimationHostEvidenceFamilySummary {
-    backends: readonly ('webgl' | 'webgl2' | 'webgpu' | 'unknown')[]
+    backends: readonly ('canvas2d' | 'webgl' | 'webgl2' | 'webgpu' | 'unknown')[]
+    /** Backends attached to retained samples with at least one usable measurement. */
+    evidenceBackends: readonly ('canvas2d' | 'webgl' | 'webgl2' | 'webgpu' | 'unknown')[]
     drawCalls: DurationStatistics | null
     triangles: DurationStatistics | null
     lines: DurationStatistics | null

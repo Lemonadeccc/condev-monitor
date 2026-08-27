@@ -27,7 +27,8 @@ export interface AnimationFrameworkStatsSample {
     timestampMs: number
 }
 
-export type AnimationRendererBackend = 'webgl' | 'webgl2' | 'webgpu' | 'unknown'
+export type AnimationRendererBackend = 'canvas2d' | 'webgl' | 'webgl2' | 'webgpu' | 'unknown'
+export type AnimationThreeRendererBackend = Exclude<AnimationRendererBackend, 'canvas2d'>
 export type AnimationHostGpuTimingSource = 'webgl-disjoint-timer-query' | 'webgpu-timestamp-query' | 'host-timer-query'
 export type AnimationGpuTimingStatus = 'measured' | 'not-provided' | 'invalid' | 'disjoint' | 'context-lost' | 'error'
 
@@ -50,7 +51,7 @@ export type AnimationGpuTimingEvidence =
       }
 
 export interface AnimationRenderStatsSample {
-    source: 'three-renderer-info'
+    source: 'three-renderer-info' | 'renderer-host'
     backend: AnimationRendererBackend
     timestampMs: number
     drawCalls?: number
@@ -265,8 +266,42 @@ export interface ThreeGpuTimingReading {
     source?: AnimationHostGpuTimingSource
 }
 
-export interface ThreeRendererSnapshotOptions {
+/**
+ * A completed GPU timer result supplied by a renderer integration. The probe
+ * never starts a query or waits for the GPU; callers may only hand it evidence
+ * that their renderer has already resolved.
+ */
+export type RendererHostGpuTimingReading = ThreeGpuTimingReading
+
+/** Closed, engine-neutral renderer evidence read explicitly by the host. */
+export interface RendererHostReading {
+    drawCalls?: number
+    triangles?: number
+    lines?: number
+    points?: number
+    geometries?: number
+    textures?: number
+    programs?: number
+    contextLost?: boolean
+    gpu?: RendererHostGpuTimingReading | null
+}
+
+export interface RendererHostProbeOptions {
+    sink: Pick<AnimationHostEvidenceSink, 'recordRenderStats'>
+    /** Backend provenance is fixed by the integration, not inferred from counters. */
     backend?: AnimationRendererBackend
+    /** One explicit, side-effect-free read of public host counters per capture. */
+    read: () => RendererHostReading | null | undefined
+    now?: () => number
+}
+
+export interface RendererHostProbe {
+    capture(): AnimationRenderStatsSample | null
+    dispose(): void
+}
+
+export interface ThreeRendererSnapshotOptions {
+    backend?: AnimationThreeRendererBackend
     now?: () => number
     readGpuTiming?: () => ThreeGpuTimingReading | null | undefined
 }
@@ -288,6 +323,10 @@ const GPU_TIMING_SOURCES = new Set<AnimationHostGpuTimingSource>([
 ])
 
 function normalizeRendererBackend(backend: unknown): AnimationRendererBackend {
+    return backend === 'canvas2d' || backend === 'webgl' || backend === 'webgl2' || backend === 'webgpu' ? backend : 'unknown'
+}
+
+function normalizeThreeRendererBackend(backend: unknown): AnimationThreeRendererBackend {
     return backend === 'webgl' || backend === 'webgl2' || backend === 'webgpu' ? backend : 'unknown'
 }
 
@@ -296,6 +335,16 @@ function safeProperty<T>(read: () => T): T | undefined {
         return read()
     } catch {
         return undefined
+    }
+}
+
+type SafePropertyResult<T> = { ok: true; value: T } | { ok: false }
+
+function safePropertyResult<T>(read: () => T): SafePropertyResult<T> {
+    try {
+        return { ok: true, value: read() }
+    } catch {
+        return { ok: false }
     }
 }
 
@@ -341,12 +390,106 @@ function readGpuEvidence(
     return { status: 'measured', timeMs, source, valid: true, disjoint: false, contextLost: false }
 }
 
+function normalizeRendererHostGpuEvidence(
+    reading: RendererHostGpuTimingReading | null | undefined,
+    backend: AnimationRendererBackend,
+    contextLost: unknown
+): AnimationGpuTimingEvidence {
+    if (contextLost !== undefined && typeof contextLost !== 'boolean') return { status: 'error' }
+    if (contextLost === true) {
+        const source = GPU_TIMING_SOURCES.has(reading?.source as AnimationHostGpuTimingSource) ? reading?.source : undefined
+        return { status: 'context-lost', ...(source ? { source } : {}) }
+    }
+    if (!reading) return { status: 'not-provided' }
+
+    const source = GPU_TIMING_SOURCES.has(reading.source as AnimationHostGpuTimingSource) ? reading.source : undefined
+    const timeMs = finiteNonNegative(reading.timeMs)
+    if (reading.contextLost !== false) return { status: 'context-lost', ...(source ? { source } : {}) }
+    if (reading.disjoint !== false) return { status: 'disjoint', ...(source ? { source } : {}) }
+    if (reading.valid !== true || timeMs === undefined || !source) return { status: 'invalid', ...(source ? { source } : {}) }
+    if (!isHostGpuTimingSourceCompatible(backend, source)) return { status: 'invalid', source }
+    return { status: 'measured', timeMs, source, valid: true, disjoint: false, contextLost: false }
+}
+
+/**
+ * Creates a zero-dependency renderer probe around an explicit host read.
+ *
+ * It does not schedule frames, patch renderer methods, wait for the GPU, or
+ * inspect private fields. Explicit invalid counters reject the whole reading,
+ * and GPU provenance stays fail-closed before the sink sees the sample.
+ */
+export function createRendererHostProbe(options: RendererHostProbeOptions): RendererHostProbe {
+    const backend = normalizeRendererBackend(options.backend)
+    const now = options.now ?? defaultNow
+    let disposed = false
+
+    return {
+        capture(): AnimationRenderStatsSample | null {
+            if (disposed) return null
+
+            let reading: RendererHostReading | null | undefined
+            try {
+                reading = options.read()
+            } catch {
+                return null
+            }
+            if (typeof reading !== 'object' || reading === null) return null
+            try {
+                if (Array.isArray(reading)) return null
+            } catch {
+                return null
+            }
+            const snapshot = reading
+            const normalizedCounts: Partial<
+                Pick<AnimationRenderStatsSample, 'drawCalls' | 'triangles' | 'lines' | 'points' | 'geometries' | 'textures' | 'programs'>
+            > = {}
+            for (const field of ['drawCalls', 'triangles', 'lines', 'points', 'geometries', 'textures', 'programs'] as const) {
+                const property = safePropertyResult(() => snapshot[field])
+                if (!property.ok) return null
+                if (property.value === undefined) continue
+                const count = finiteCount(property.value)
+                // An explicitly supplied invalid counter is an invalid reading,
+                // not the same thing as an unobserved optional counter.
+                if (count === undefined) return null
+                normalizedCounts[field] = count
+            }
+            const contextLost = safePropertyResult(() => snapshot.contextLost)
+            if (contextLost.ok && contextLost.value !== undefined && typeof contextLost.value !== 'boolean') return null
+            const gpu = safePropertyResult(() => snapshot.gpu)
+            let gpuEvidence: AnimationGpuTimingEvidence
+            if (!contextLost.ok || !gpu.ok) {
+                gpuEvidence = { status: 'error' }
+            } else {
+                try {
+                    gpuEvidence = normalizeRendererHostGpuEvidence(gpu.value, backend, contextLost.value)
+                } catch {
+                    // Nested accessors and revoked proxies are untrusted host
+                    // boundaries too. They must never escape or become measured.
+                    gpuEvidence = { status: 'error' }
+                }
+            }
+            const sample: AnimationRenderStatsSample = {
+                source: 'renderer-host',
+                backend,
+                timestampMs: safeNow(now),
+                ...normalizedCounts,
+                gpu: gpuEvidence,
+            }
+            safeEmit(() => options.sink.recordRenderStats(sample))
+            return sample
+        },
+        dispose(): void {
+            disposed = true
+        },
+    }
+}
+
 export function readThreeRendererSnapshot(
     renderer: ThreeRendererLike,
     options: ThreeRendererSnapshotOptions = {}
 ): AnimationRenderStatsSample {
     const now = options.now ?? defaultNow
-    const backend = normalizeRendererBackend(options.backend)
+    const backend = normalizeThreeRendererBackend(options.backend)
     const drawCalls = finiteCount(safeProperty(() => renderer.info?.render?.calls))
     const triangles = finiteCount(safeProperty(() => renderer.info?.render?.triangles))
     const lines = finiteCount(safeProperty(() => renderer.info?.render?.lines))

@@ -6,6 +6,7 @@ import test from 'node:test'
 import {
     createFrameworkCommitProbe,
     createGsapLifecycleProbe,
+    createRendererHostProbe,
     createThreeRendererProbe,
     createVideoFrameProbe,
     readGsapLifecycleSnapshot,
@@ -75,6 +76,8 @@ test('public helpers normalize runtime enum escape values before a custom sink s
 
     const renderer = readThreeRendererSnapshot({}, { backend: 'https://private.example/renderer' })
     assert.equal(renderer.backend, 'unknown')
+    const impossibleCanvasThree = readThreeRendererSnapshot({}, { backend: 'canvas2d' })
+    assert.equal(impossibleCanvasThree.backend, 'unknown')
 
     const lifecycle = readGsapLifecycleSnapshot({}, { checkpoint: 'https://private.example/checkpoint' })
     assert.equal(lifecycle.checkpoint, 'manual')
@@ -217,6 +220,196 @@ test('Three probe cleanup is idempotent and sink exceptions cannot break capture
     probe.dispose()
     assert.equal(probe.capture(), null)
     assert.equal(calls, 1)
+})
+
+test('generic renderer host probe normalizes closed counters and resolved GPU evidence', () => {
+    const samples = []
+    const probe = createRendererHostProbe({
+        backend: 'webgl2',
+        now: () => 125,
+        read: () => ({
+            drawCalls: 0,
+            triangles: 0,
+            lines: 0,
+            points: 0,
+            geometries: 0,
+            textures: 0,
+            programs: 0,
+            contextLost: false,
+            gpu: {
+                timeMs: 0,
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+                source: 'webgl-disjoint-timer-query',
+            },
+        }),
+        sink: { recordRenderStats: sample => samples.push(sample) },
+    })
+
+    const captured = probe.capture()
+    assert.deepEqual(captured, {
+        source: 'renderer-host',
+        backend: 'webgl2',
+        timestampMs: 125,
+        drawCalls: 0,
+        triangles: 0,
+        lines: 0,
+        points: 0,
+        geometries: 0,
+        textures: 0,
+        programs: 0,
+        gpu: {
+            status: 'measured',
+            timeMs: 0,
+            source: 'webgl-disjoint-timer-query',
+            valid: true,
+            disjoint: false,
+            contextLost: false,
+        },
+    })
+    assert.deepEqual(samples, [captured])
+})
+
+test('generic renderer host probe is fail-closed, exception-safe, and disposable', () => {
+    let invalidSinkCalls = 0
+    const invalidProbe = createRendererHostProbe({
+        backend: 'webgpu',
+        read: () => ({ drawCalls: -1, triangles: 1.5, lines: 1_000_000_001, points: Number.NaN }),
+        sink: { recordRenderStats: () => (invalidSinkCalls += 1) },
+    })
+    assert.equal(invalidProbe.capture(), null)
+    assert.equal(invalidSinkCalls, 0)
+
+    let readCalls = 0
+    let sinkCalls = 0
+    let reading = {
+        drawCalls: 4,
+        triangles: 12,
+        textures: 2,
+        programs: 3,
+        contextLost: false,
+        gpu: {
+            timeMs: 2,
+            valid: true,
+            disjoint: false,
+            contextLost: false,
+            source: 'webgl-disjoint-timer-query',
+        },
+    }
+    const probe = createRendererHostProbe({
+        backend: 'webgpu',
+        read() {
+            readCalls += 1
+            return reading
+        },
+        sink: {
+            recordRenderStats() {
+                sinkCalls += 1
+                throw new Error('sink failure')
+            },
+        },
+    })
+
+    let mismatched
+    assert.doesNotThrow(() => {
+        mismatched = probe.capture()
+    })
+    assert.equal(mismatched.source, 'renderer-host')
+    assert.equal(mismatched.backend, 'webgpu')
+    assert.equal(mismatched.drawCalls, 4)
+    assert.equal(mismatched.triangles, 12)
+    assert.equal(mismatched.textures, 2)
+    assert.equal(mismatched.programs, 3)
+    assert.deepEqual(mismatched.gpu, { status: 'invalid', source: 'webgl-disjoint-timer-query' })
+
+    reading = { contextLost: true }
+    assert.deepEqual(probe.capture().gpu, { status: 'context-lost' })
+    assert.equal(sinkCalls, 2)
+    probe.dispose()
+    probe.dispose()
+    assert.equal(probe.capture(), null)
+    assert.equal(readCalls, 2)
+
+    const throwingRead = createRendererHostProbe({
+        read() {
+            throw new Error('read failure')
+        },
+        sink: { recordRenderStats: () => assert.fail('read failures must not reach the sink') },
+    })
+    assert.doesNotThrow(() => throwingRead.capture())
+    assert.equal(throwingRead.capture(), null)
+
+    const contextGetterFailure = createRendererHostProbe({
+        backend: 'webgl2',
+        read: () => ({
+            drawCalls: 1,
+            get contextLost() {
+                throw new Error('released context')
+            },
+            gpu: {
+                timeMs: 1,
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+                source: 'webgl-disjoint-timer-query',
+            },
+        }),
+        sink: { recordRenderStats() {} },
+    })
+    assert.deepEqual(contextGetterFailure.capture().gpu, { status: 'error' })
+
+    const nestedGpuFailure = createRendererHostProbe({
+        backend: 'webgl2',
+        read: () => ({
+            drawCalls: 1,
+            contextLost: false,
+            gpu: Object.defineProperty({}, 'source', {
+                get() {
+                    throw new Error('revoked GPU result')
+                },
+            }),
+        }),
+        sink: { recordRenderStats() {} },
+    })
+    assert.deepEqual(nestedGpuFailure.capture().gpu, { status: 'error' })
+
+    const target = {}
+    const { proxy, revoke } = Proxy.revocable(target, {})
+    revoke()
+    const revokedReading = createRendererHostProbe({
+        read: () => proxy,
+        sink: { recordRenderStats: () => assert.fail('revoked readings must not reach the sink') },
+    })
+    assert.doesNotThrow(() => revokedReading.capture())
+    assert.equal(revokedReading.capture(), null)
+
+    const invalidContextType = createRendererHostProbe({
+        read: () => ({ drawCalls: 1, contextLost: 'no' }),
+        sink: { recordRenderStats: () => assert.fail('invalid context state must not reach the sink') },
+    })
+    assert.equal(invalidContextType.capture(), null)
+})
+
+test('generic renderer host probe represents Canvas2D without accepting invented GPU time', () => {
+    const sample = createRendererHostProbe({
+        backend: 'canvas2d',
+        read: () => ({
+            drawCalls: 0,
+            gpu: {
+                timeMs: 1,
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+                source: 'host-timer-query',
+            },
+        }),
+        sink: { recordRenderStats() {} },
+    }).capture()
+
+    assert.equal(sample.backend, 'canvas2d')
+    assert.equal(sample.drawCalls, 0)
+    assert.deepEqual(sample.gpu, { status: 'invalid', source: 'host-timer-query' })
 })
 
 test('GSAP lifecycle probe uses public snapshots, tolerates child failures, and never kills business animations', () => {

@@ -1,7 +1,7 @@
 // Keep renderer provenance checks in one place so host and target adapters
 // cannot disagree about which backend produced a GPU timing value.
 
-const HOST_RENDERER_BACKENDS = new Set(['webgl', 'webgl2', 'webgpu', 'unknown'])
+const HOST_RENDERER_BACKENDS = new Set(['canvas2d', 'webgl', 'webgl2', 'webgpu', 'unknown'])
 const TARGET_RENDERER_FAMILIES = new Set(['dom', 'svg', 'canvas', 'canvas2d', 'webgl', 'webgl2', 'webgpu', 'other'])
 
 const HOST_GPU_TIMING_SOURCES = new Set(['webgl-disjoint-timer-query', 'webgpu-timestamp-query', 'host-timer-query'])
@@ -23,6 +23,9 @@ function matchesGpuTimingBackend(backend: string, source: string): boolean {
 export function isHostGpuTimingSourceCompatible(backend: unknown, source: unknown): boolean {
     if (typeof backend !== 'string' || !HOST_RENDERER_BACKENDS.has(backend)) return false
     if (typeof source !== 'string' || !HOST_GPU_TIMING_SOURCES.has(source)) return false
+    // Canvas2D exposes no renderer-independent GPU timer. A CPU duration or a
+    // neutral host summary must not be relabelled as GPU time.
+    if (backend === 'canvas2d') return false
     return matchesGpuTimingBackend(backend, source)
 }
 

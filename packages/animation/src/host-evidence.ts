@@ -27,7 +27,8 @@ const FRAMEWORKS = new Set<AnimationUiFramework>([
     'other',
 ])
 const FRAMEWORK_PHASES = ['mount', 'update', 'nested-update', 'hydrate', 'other'] as const
-const RENDERER_BACKENDS = ['webgl', 'webgl2', 'webgpu', 'unknown'] as const
+const RENDERER_BACKENDS = ['canvas2d', 'webgl', 'webgl2', 'webgpu', 'unknown'] as const
+const RENDERER_SOURCES = ['three-renderer-info', 'renderer-host'] as const
 const GPU_STATUSES = ['measured', 'not-provided', 'invalid', 'disjoint', 'context-lost', 'error'] as const
 const GPU_SOURCES = ['webgl-disjoint-timer-query', 'webgpu-timestamp-query', 'host-timer-query'] as const
 const LIFECYCLE_CHECKPOINTS = ['mount', 'after-interaction', 'unmount', 'manual'] as const
@@ -208,9 +209,10 @@ export class AnimationHostEvidenceRecorder {
     }
 
     recordRenderStats(sample: AnimationRenderStatsSample, capturedAt: number): boolean {
-        if (!isRecord(sample) || sample.source !== 'three-renderer-info' || !inSet(sample.backend, RENDERER_BACKENDS)) {
+        if (!isRecord(sample) || !inSet(sample.source, RENDERER_SOURCES) || !inSet(sample.backend, RENDERER_BACKENDS)) {
             return this.renderer.reject()
         }
+        if (sample.source === 'three-renderer-info' && sample.backend === 'canvas2d') return this.renderer.reject()
         const numericFields = {
             drawCalls: optionalCount(sample.drawCalls),
             triangles: optionalCount(sample.triangles),
@@ -338,6 +340,17 @@ export class AnimationHostEvidenceRecorder {
     snapshot(): AnimationHostEvidenceSummary {
         const frameworkSamples = this.framework.samples.toArray()
         const rendererSamples = this.renderer.samples.toArray()
+        const rendererEvidenceSamples = rendererSamples.filter(
+            sample =>
+                sample.drawCalls !== undefined ||
+                sample.triangles !== undefined ||
+                sample.lines !== undefined ||
+                sample.points !== undefined ||
+                sample.geometries !== undefined ||
+                sample.textures !== undefined ||
+                sample.programs !== undefined ||
+                sample.gpu.status === 'measured'
+        )
         const lifecycleSamples = this.lifecycle.samples.toArray()
         const workSamples = this.work.samples.toArray()
         const mediaSamples = this.media.samples.toArray()
@@ -387,6 +400,7 @@ export class AnimationHostEvidenceRecorder {
             renderer: {
                 ...this.renderer.summary(),
                 backends: [...new Set(rendererSamples.map(sample => sample.backend))].sort(),
+                evidenceBackends: [...new Set(rendererEvidenceSamples.map(sample => sample.backend))].sort(),
                 drawCalls: durationStatistics(
                     rendererSamples.flatMap(sample => (sample.drawCalls === undefined ? [] : [sample.drawCalls]))
                 ),

@@ -1033,6 +1033,78 @@ test('host renderer evidence rejects backend-specific GPU sources from a differe
     assert.equal(renderer.gpuRejectedSampleCount, 0)
 })
 
+test('host renderer evidence accepts only the closed renderer source set and preserves zero counters', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+
+    assert.equal(
+        collector.recordRenderStats({
+            source: 'renderer-host',
+            backend: 'webgl2',
+            timestampMs: 0,
+            drawCalls: 0,
+            triangles: 0,
+            gpu: { status: 'not-provided' },
+        }),
+        true
+    )
+    assert.equal(
+        collector.recordRenderStats({
+            source: 'private-renderer-source',
+            backend: 'webgl2',
+            timestampMs: 0,
+            drawCalls: 1,
+            gpu: { status: 'not-provided' },
+        }),
+        false
+    )
+    assert.equal(
+        collector.recordRenderStats({
+            source: 'renderer-host',
+            backend: 'canvas2d',
+            timestampMs: 0,
+            drawCalls: 0,
+            gpu: { status: 'not-provided' },
+        }),
+        true
+    )
+    assert.equal(
+        collector.recordRenderStats({
+            source: 'renderer-host',
+            backend: 'canvas2d',
+            timestampMs: 0,
+            gpu: {
+                status: 'measured',
+                timeMs: 1,
+                source: 'host-timer-query',
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+            },
+        }),
+        false
+    )
+    assert.equal(
+        collector.recordRenderStats({
+            source: 'three-renderer-info',
+            backend: 'canvas2d',
+            timestampMs: 0,
+            drawCalls: 1,
+            gpu: { status: 'not-provided' },
+        }),
+        false
+    )
+
+    const renderer = collector.stop().hostEvidence.renderer
+    assert.equal(renderer.acceptedSampleCount, 2)
+    assert.equal(renderer.rejectedSampleCount, 3)
+    assert.equal(renderer.evidenceSampleCount, 2)
+    assert.deepEqual(renderer.backends, ['canvas2d', 'webgl2'])
+    assert.deepEqual(renderer.evidenceBackends, ['canvas2d', 'webgl2'])
+    assert.equal(renderer.drawCalls.p95, 0)
+    assert.equal(renderer.triangles.p95, 0)
+})
+
 test('unsupported observers remain unknown evidence, not numeric zero', () => {
     const runtime = new FakeRuntime({
         capabilities: {
