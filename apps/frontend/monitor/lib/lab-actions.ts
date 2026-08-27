@@ -63,10 +63,14 @@ export type LabActionDiagnostics = {
 
 export type LabResolvedBudgetRule = {
     comparator: '<='
+    metricId: string
     target: number
     unit: LabMetric['unit']
     minimumSamples: number
+    zeroEventCountIsComplete: boolean
 }
+
+export type LabBudgetMetricEvaluation = 'breach' | 'candidate-breach' | 'within-budget' | 'insufficient-evidence'
 
 /** Expands only the bundled, versioned default catalog. Unknown catalogs remain unresolved. */
 export function resolveLabBudgetRule(
@@ -76,7 +80,7 @@ export function resolveLabBudgetRule(
     if (
         ref.catalogVersion !== 1 ||
         ref.budgetId !== 'condev.animation.default' ||
-        ref.budgetVersion !== 1 ||
+        (ref.budgetVersion !== 1 && ref.budgetVersion !== 2) ||
         !contract ||
         contract.budgetRef.catalogVersion !== ref.catalogVersion ||
         contract.budgetRef.budgetId !== ref.budgetId ||
@@ -86,18 +90,85 @@ export function resolveLabBudgetRule(
     }
     switch (ref.ruleId) {
         case 'frame-tail':
-            return { comparator: '<=', target: contract.targetFrameMs * 1.5, unit: 'ms', minimumSamples: 120 }
+            return {
+                comparator: '<=',
+                metricId: 'frame.duration.p95',
+                target: contract.targetFrameMs * 1.5,
+                unit: 'ms',
+                minimumSamples: 120,
+                zeroEventCountIsComplete: false,
+            }
         case 'slow-frame-rate':
-            return { comparator: '<=', target: 0.05, unit: 'ratio', minimumSamples: 120 }
+            return {
+                comparator: '<=',
+                metricId: 'frame.slow-rate',
+                target: 0.05,
+                unit: 'ratio',
+                minimumSamples: 120,
+                zeroEventCountIsComplete: false,
+            }
         case 'jank-bursts':
-            return { comparator: '<=', target: 0, unit: 'count', minimumSamples: 120 }
+            return {
+                comparator: '<=',
+                metricId: 'frame.jank-bursts',
+                target: 0,
+                unit: 'count',
+                minimumSamples: 120,
+                zeroEventCountIsComplete: false,
+            }
         case 'long-task-count':
-            return { comparator: '<=', target: 0, unit: 'count', minimumSamples: 1 }
+            return {
+                comparator: '<=',
+                metricId: 'main.long-task.count',
+                target: 0,
+                unit: 'count',
+                minimumSamples: ref.budgetVersion === 2 ? 0 : 1,
+                zeroEventCountIsComplete: ref.budgetVersion === 2,
+            }
         case 'input-delay':
-            return { comparator: '<=', target: 100, unit: 'ms', minimumSamples: 3 }
+            return {
+                comparator: '<=',
+                metricId: 'interaction.input-delay.p95',
+                target: 100,
+                unit: 'ms',
+                minimumSamples: 3,
+                zeroEventCountIsComplete: false,
+            }
         default:
             return null
     }
+}
+
+export function getLabBudgetRuleEvidenceRequirement(rule: LabResolvedBudgetRule): string {
+    return rule.zeroEventCountIsComplete
+        ? '完整 measured 观察允许 0 个 Long Task / Complete measured observation accepts zero Long Tasks'
+        : `最少 ${rule.minimumSamples.toLocaleString()} 个样本 / At least ${rule.minimumSamples.toLocaleString()} samples`
+}
+
+/** Mirrors the closed runner budget evaluator for evidence already accepted by the platform. */
+export function evaluateLabBudgetMetric(
+    metric: LabMetric,
+    ref: LabBudgetRuleRef,
+    contract: LabRunAnalysis['measurementContract'] | null | undefined
+): LabBudgetMetricEvaluation {
+    const rule = resolveLabBudgetRule(ref, contract)
+    const value = finite(metric.value)
+    const samples = finite(metric.samples)
+    if (
+        !rule ||
+        metric.metricId !== rule.metricId ||
+        value === null ||
+        value < 0 ||
+        samples === null ||
+        samples < rule.minimumSamples ||
+        !Number.isInteger(samples) ||
+        (metric.status !== 'measured' && metric.status !== 'partial')
+    ) {
+        return 'insufficient-evidence'
+    }
+    if (rule.zeroEventCountIsComplete && (value === 0) !== (samples === 0)) return 'insufficient-evidence'
+    if (metric.status === 'partial') return value > rule.target ? 'candidate-breach' : 'insufficient-evidence'
+    return value > rule.target ? 'breach' : 'within-budget'
 }
 
 function text(value: unknown, maxLength = 200): string | null {

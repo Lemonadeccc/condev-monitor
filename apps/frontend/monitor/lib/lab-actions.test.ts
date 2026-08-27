@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import type { LabRun, LabRunAnalysis, LabTimelineEvent } from '../types/lab'
-import { buildLabActionDiagnostics, resolveLabBudgetRule } from './lab-actions'
+import type { LabMetric, LabRun, LabRunAnalysis, LabTimelineEvent } from '../types/lab'
+import {
+    buildLabActionDiagnostics,
+    evaluateLabBudgetMetric,
+    getLabBudgetRuleEvidenceRequirement,
+    resolveLabBudgetRule,
+} from './lab-actions'
 
 const run: LabRun = {
     runId: 'run-1',
@@ -280,13 +285,65 @@ describe('resolveLabBudgetRule', () => {
         }
         assert.deepEqual(resolveLabBudgetRule({ ...contract.budgetRef, ruleId: 'frame-tail' }, contract), {
             comparator: '<=',
+            metricId: 'frame.duration.p95',
             target: 12.4999995,
             unit: 'ms',
             minimumSamples: 120,
+            zeroEventCountIsComplete: false,
         })
         assert.equal(
             resolveLabBudgetRule({ catalogVersion: 1, budgetId: 'unknown-budget', budgetVersion: 1, ruleId: 'frame-tail' }, contract),
             null
         )
+    })
+
+    it('distinguishes v1 and v2 Long Task zero-event evidence without displaying a zero-sample minimum', () => {
+        const contract = (budgetVersion: number): LabRunAnalysis['measurementContract'] => ({
+            contractVersion: 2,
+            expectedHz: 60,
+            targetFrameMs: 16.666667,
+            source: 'explicit',
+            confidence: 'explicit',
+            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion },
+            metricCatalogVersion: 2,
+        })
+        const ref = (budgetVersion: number) => ({
+            catalogVersion: 1 as const,
+            budgetId: 'condev.animation.default',
+            budgetVersion,
+            ruleId: 'long-task-count',
+        })
+        const metric = (overrides: Partial<LabMetric> = {}): LabMetric => ({
+            metricId: 'main.long-task.count',
+            family: 'mainThread',
+            name: 'longTaskCount',
+            stat: 'count',
+            unit: 'count',
+            value: 0,
+            samples: 0,
+            status: 'measured',
+            ...overrides,
+        })
+
+        const v1 = resolveLabBudgetRule(ref(1), contract(1))
+        const v2 = resolveLabBudgetRule(ref(2), contract(2))
+        assert.equal(v1?.minimumSamples, 1)
+        assert.equal(v1?.zeroEventCountIsComplete, false)
+        assert.equal(v2?.minimumSamples, 0)
+        assert.equal(v2?.zeroEventCountIsComplete, true)
+        assert.equal(evaluateLabBudgetMetric(metric(), ref(1), contract(1)), 'insufficient-evidence')
+        assert.equal(evaluateLabBudgetMetric(metric(), ref(2), contract(2)), 'within-budget')
+        assert.equal(evaluateLabBudgetMetric(metric({ value: 1, samples: 1 }), ref(2), contract(2)), 'breach')
+        assert.equal(evaluateLabBudgetMetric(metric({ value: 1, samples: 1, status: 'partial' }), ref(2), contract(2)), 'candidate-breach')
+        assert.equal(evaluateLabBudgetMetric(metric({ status: 'partial' }), ref(2), contract(2)), 'insufficient-evidence')
+        assert.equal(evaluateLabBudgetMetric(metric({ samples: null }), ref(2), contract(2)), 'insufficient-evidence')
+        assert.equal(evaluateLabBudgetMetric(metric({ samples: 1 }), ref(2), contract(2)), 'insufficient-evidence')
+        assert.equal(evaluateLabBudgetMetric(metric({ value: 1 }), ref(2), contract(2)), 'insufficient-evidence')
+
+        const requirement = getLabBudgetRuleEvidenceRequirement(v2!)
+        assert.match(requirement, /完整 measured 观察允许 0 个 Long Task/u)
+        assert.doesNotMatch(requirement, /最少\s*0/u)
+        assert.equal(resolveLabBudgetRule(ref(3), contract(3)), null)
+        assert.equal(resolveLabBudgetRule(ref(2), contract(1)), null)
     })
 })

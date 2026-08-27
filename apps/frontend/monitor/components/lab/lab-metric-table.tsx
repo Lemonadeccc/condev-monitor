@@ -1,7 +1,7 @@
 'use client'
 
 import { Badge } from '@/components/ui/badge'
-import { resolveLabBudgetRule } from '@/lib/lab-actions'
+import { evaluateLabBudgetMetric, getLabBudgetRuleEvidenceRequirement, resolveLabBudgetRule } from '@/lib/lab-actions'
 import {
     formatLabMetricValue,
     getLabLimitationLabel,
@@ -64,16 +64,42 @@ function metricKey(metric: LabMetric, index: number) {
     return [metric.metricId || `${metric.family}:${metric.name}:${metric.stat}`, metric.scope?.level || 'legacy', index].join(':')
 }
 
-function BudgetRuleLine({ ref, contract }: { ref: LabBudgetRuleRef; contract: LabRunAnalysis['measurementContract'] | null | undefined }) {
+function budgetEvidenceLabel(value: ReturnType<typeof evaluateLabBudgetMetric>) {
+    switch (value) {
+        case 'breach':
+            return '已观察到超限 / Observed breach'
+        case 'candidate-breach':
+            return '候选超限，证据不完整 / Candidate breach; incomplete evidence'
+        case 'within-budget':
+            return '完整证据未观察到超限 / No breach in complete evidence'
+        default:
+            return '证据不足 / Insufficient evidence'
+    }
+}
+
+function BudgetRuleLine({
+    ref,
+    contract,
+    metric,
+}: {
+    ref: LabBudgetRuleRef
+    contract: LabRunAnalysis['measurementContract'] | null | undefined
+    metric: LabMetric
+}) {
     const rule = resolveLabBudgetRule(ref, contract)
     return (
         <span className="grid gap-1">
             <span className="font-mono">{labBudgetRefLabel(ref)}</span>
             <span className="font-sans text-muted-foreground">
                 {rule
-                    ? `≤ ${formatLabMetricValue(rule.target, rule.unit)} · 最少 ${rule.minimumSamples.toLocaleString()} 个样本`
+                    ? `≤ ${formatLabMetricValue(rule.target, rule.unit)} · ${getLabBudgetRuleEvidenceRequirement(rule)}`
                     : '该版本规则未展开；不猜测阈值 / Versioned rule unavailable'}
             </span>
+            {rule ? (
+                <span className="font-sans text-muted-foreground">
+                    {budgetEvidenceLabel(evaluateLabBudgetMetric(metric, ref, contract))}
+                </span>
+            ) : null}
         </span>
     )
 }
@@ -193,7 +219,7 @@ export function LabMetricTable({
                                         <ul className="grid gap-2">
                                             {metric.budgetRefs.map(ref => (
                                                 <li key={labBudgetRefLabel(ref)}>
-                                                    <BudgetRuleLine ref={ref} contract={contract} />
+                                                    <BudgetRuleLine ref={ref} contract={contract} metric={metric} />
                                                 </li>
                                             ))}
                                         </ul>

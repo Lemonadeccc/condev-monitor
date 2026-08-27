@@ -6,7 +6,12 @@ import { type ReactNode, useMemo, useState } from 'react'
 import { LabMetricTable } from '@/components/lab/lab-metric-table'
 import { Badge } from '@/components/ui/badge'
 import { formatLabDuration } from '@/lib/lab'
-import { buildLabActionDiagnostics, type LabActionDiagnostic, resolveLabBudgetRule } from '@/lib/lab-actions'
+import {
+    buildLabActionDiagnostics,
+    getLabBudgetRuleEvidenceRequirement,
+    type LabActionDiagnostic,
+    resolveLabBudgetRule,
+} from '@/lib/lab-actions'
 import { formatLabMetricValue, getLabLimitationLabel, labBudgetRefLabel } from '@/lib/lab-metrics'
 import { cn } from '@/lib/utils'
 import type {
@@ -240,7 +245,7 @@ function BudgetRuleLine({ ref, contract }: { ref: LabBudgetRuleRef; contract: La
             <span>{labBudgetRefLabel(ref)}</span>
             <span className="font-sans text-muted-foreground">
                 {rule
-                    ? `${rule.comparator === '<=' ? '≤' : rule.comparator} ${formatLabMetricValue(rule.target, rule.unit)} · 最少 ${rule.minimumSamples.toLocaleString()} 个样本`
+                    ? `${rule.comparator === '<=' ? '≤' : rule.comparator} ${formatLabMetricValue(rule.target, rule.unit)} · ${getLabBudgetRuleEvidenceRequirement(rule)}`
                     : '该版本规则未展开；不猜测阈值'}
             </span>
         </span>
@@ -497,7 +502,7 @@ function ActionDetail({
                     </p>
                 ) : null}
                 <p className="mt-2 text-xs text-muted-foreground">
-                    平台只展开匹配 `condev.animation.default@1` 的本地版本化规则；未知 catalog 仍保持引用，不猜测阈值。
+                    平台只展开匹配 `condev.animation.default@1` 或 `@2` 的本地版本化规则；未知 catalog 仍保持引用，不猜测阈值。
                 </p>
             </section>
 
