@@ -13,6 +13,7 @@ import {
     buildAnimationRumV2KafkaMessage,
     createAnimationRumV2ClickHouseInsertPlan,
     prepareAnimationRumV2Payload,
+    prepareAnimationRumV2TrackingPayload,
     projectAnimationRumV2Rows,
     serializeAnimationRumV2KafkaEnvelope,
     validateAnimationRumV2KafkaEnvelope,
@@ -55,6 +56,56 @@ function assertValidationCode(callback, code) {
         return true
     })
 }
+
+test('strictly unwraps BrowserTransport metadata before canonical hashing', () => {
+    const report = createAnimationRumV2GoldenReport()
+    const direct = prepare(report)
+    const wrapped = prepareAnimationRumV2TrackingPayload(
+        {
+            ...report,
+            event_type: 'animation_rum',
+            message: '',
+            _eventId: report.eventId,
+            _clientCreatedAt: ANIMATION_RUM_V2_GOLDEN_NOW - 1_000,
+        },
+        GOLDEN_VALIDATION_OPTIONS
+    )
+
+    assert.equal(wrapped.canonicalText, direct.canonicalText)
+    assert.equal(wrapped.payloadHash, direct.payloadHash)
+    assert.equal('event_type' in wrapped.report, false)
+    assert.equal('_eventId' in wrapped.report, false)
+})
+
+test('rejects invalid tracking metadata without hiding report validation failures', () => {
+    const report = createAnimationRumV2GoldenReport()
+    const invalid = {
+        ...report,
+        event_type: 'other',
+        message: 'private free text',
+        _eventId: 'different_event_123',
+        _clientCreatedAt: Number.POSITIVE_INFINITY,
+        userEmail: 'must-not-persist@example.test',
+    }
+
+    for (const code of ['invalid_event_type', 'invalid_message', 'event_id_mismatch', 'invalid_client_created_at', 'forbidden_field']) {
+        assertValidationCode(() => prepareAnimationRumV2TrackingPayload(invalid, GOLDEN_VALIDATION_OPTIONS), code)
+    }
+})
+
+test('requires a plain tracking wrapper and rejects unknown transport fields', () => {
+    assertValidationCode(
+        () => prepareAnimationRumV2TrackingPayload(Object.create({ event_type: 'animation_rum' }), GOLDEN_VALIDATION_OPTIONS),
+        'invalid_tracking_wrapper'
+    )
+
+    const wrapped = {
+        ...createAnimationRumV2GoldenReport(),
+        event_type: 'animation_rum',
+        transportMetadata: 'not-allow-listed',
+    }
+    assertValidationCode(() => prepareAnimationRumV2TrackingPayload(wrapped, GOLDEN_VALIDATION_OPTIONS), 'unknown_root_field')
+})
 
 test('locks the canonical v1 report hash and field order', () => {
     const prepared = prepare()
@@ -432,5 +483,6 @@ test('loads the production CommonJS export', () => {
     const cjs = require('../build/cjs/index.cjs')
 
     assert.equal(typeof cjs.prepareAnimationRumV2Payload, 'function')
+    assert.equal(typeof cjs.prepareAnimationRumV2TrackingPayload, 'function')
     assert.equal(cjs.ANIMATION_RUM_V2_PAYLOAD_HASH_VERSION, 1)
 })
