@@ -25,6 +25,9 @@ export type {
     WebGlGpuTimerHostReading,
     WebGlGpuTimerOptions,
     WebGlGpuTimerSnapshot,
+    WebGlGpuTimerTargetAdapterInspection,
+    WebGlGpuTimerTargetInspectionContext,
+    WebGlGpuTimerTargetRendererInspection,
     WebGlGpuTimingEvidence,
 } from './webgl-gpu-timer'
 export { WebGpuTimestampTimerOptionsError, createWebGpuMultiPassTimestampTimer, createWebGpuTimestampTimer } from './webgpu-timestamp-timer'
