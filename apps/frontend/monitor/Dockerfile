@@ -14,6 +14,7 @@ ENV PNPM_CONFIG_PRODUCTION=false
 # Monorepo manifests
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/frontend/monitor/package.json ./apps/frontend/monitor/package.json
+COPY packages/animation-rum-contract/package.json ./packages/animation-rum-contract/package.json
 
 RUN corepack enable pnpm && corepack prepare pnpm@${PNPM_VERSION} --activate && pnpm i --frozen-lockfile
 
@@ -25,7 +26,7 @@ COPY --from=deps /corepack /corepack
 COPY . .
 
 ENV NEXT_TELEMETRY_DISABLED=1
-RUN corepack enable pnpm && pnpm --filter @condev-monitor/monitor-client build
+RUN corepack enable pnpm && pnpm turbo build --filter=@condev-monitor/monitor-client
 
 FROM base AS runner
 WORKDIR /app

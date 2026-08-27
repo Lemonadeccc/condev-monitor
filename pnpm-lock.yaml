@@ -474,6 +474,9 @@ importers:
 
   apps/frontend/monitor:
     dependencies:
+      '@condev-monitor/animation-rum-contract':
+        specifier: workspace:*
+        version: link:../../../packages/animation-rum-contract
       '@hookform/resolvers':
         specifier: ^5.2.2
         version: 5.2.2(react-hook-form@7.71.2(react@19.1.0))
