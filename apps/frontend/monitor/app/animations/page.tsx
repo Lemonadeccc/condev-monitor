@@ -1,7 +1,7 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { Activity, ArrowUpRight, History } from 'lucide-react'
+import { Activity, ArrowUpRight, History, Settings2 } from 'lucide-react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { useMemo } from 'react'
@@ -122,12 +122,20 @@ export default function AnimationsPage() {
                         onToChange={setTo}
                         onClearCustomRange={clearCustomRange}
                         extraActions={
-                            <Button asChild variant="outline" size="sm">
-                                <Link href={buildMonitorScopeHref('/animations/legacy', searchParams)}>
-                                    <History aria-hidden="true" />
-                                    旧版 v1
-                                </Link>
-                            </Button>
+                            <>
+                                <Button asChild variant="outline" size="sm">
+                                    <Link href={buildMonitorScopeHref('/animations/control', searchParams)}>
+                                        <Settings2 aria-hidden="true" />
+                                        采集设置
+                                    </Link>
+                                </Button>
+                                <Button asChild variant="outline" size="sm">
+                                    <Link href={buildMonitorScopeHref('/animations/legacy', searchParams)}>
+                                        <History aria-hidden="true" />
+                                        旧版 v1
+                                    </Link>
+                                </Button>
+                            </>
                         }
                     />
                 }

@@ -142,6 +142,7 @@ export function AIMonitorScopeActions(props: {
     applications: Application[]
     appId: string | null
     onAppChange: (appId: string) => void
+    disabled?: boolean
     range?: MonitorRangePreset
     onRangeChange?: (range: MonitorRangePreset) => void
     from?: string
@@ -151,8 +152,20 @@ export function AIMonitorScopeActions(props: {
     onClearCustomRange?: () => void
     extraActions?: ReactNode
 }) {
-    const { applications, appId, onAppChange, range, onRangeChange, from, to, onFromChange, onToChange, onClearCustomRange, extraActions } =
-        props
+    const {
+        applications,
+        appId,
+        onAppChange,
+        disabled = false,
+        range,
+        onRangeChange,
+        from,
+        to,
+        onFromChange,
+        onToChange,
+        onClearCustomRange,
+        extraActions,
+    } = props
 
     const hasCustomRange = Boolean(from || to)
 
@@ -160,7 +173,7 @@ export function AIMonitorScopeActions(props: {
         <div className="flex flex-wrap items-center gap-2">
             <DropdownMenu>
                 <DropdownMenuTrigger asChild>
-                    <Button variant="default" size="sm">
+                    <Button variant="default" size="sm" disabled={disabled}>
                         {applications.find(app => app.appId === appId)?.name ?? 'Select App'}
                     </Button>
                 </DropdownMenuTrigger>
