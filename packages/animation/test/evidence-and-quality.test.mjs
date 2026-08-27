@@ -208,6 +208,7 @@ test('document-lifetime Web Vitals are local, replay-safe sanitized evidence and
     assert.equal(snapshot.webVitals.latest.CLS, null)
     assert.equal(snapshot.capabilities.webVitalsAttribution, true)
     assert.equal(snapshot.capabilities.webVitalsDisabled, false)
+    assert.equal(snapshot.coverage.userOutcome.status, 'partial')
     assert.equal(runtime.vitalUnsubscribeCount, 1)
     const serializedVitals = JSON.stringify(snapshot.webVitals)
     assert.equal(serializedVitals.includes('private.example'), false)
@@ -225,6 +226,10 @@ test('document-lifetime Web Vitals are local, replay-safe sanitized evidence and
         false
     )
     assert.equal(JSON.stringify(rum).includes('1250'), false)
+    assert.deepEqual(rum.coverage.userOutcome, {
+        status: 'not-observed',
+        evidenceLevel: 'runtime-observation',
+    })
 })
 
 test('continuous interaction quality rejects invalid evidence, bounds samples, and reports explicit local summaries', () => {
@@ -280,6 +285,21 @@ test('continuous interaction quality rejects invalid evidence, bounds samples, a
     assert.equal(snapshot.coverage.motionQuality.status, 'partial')
     assert.equal(snapshot.coverage.memoryLifecycle.status, 'not-instrumented')
     assert.equal(snapshot.coverage.accessibility.status, 'not-instrumented')
+
+    const rum = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    assert.equal(rum.coverage.userOutcome.status, 'measured')
+    assert.deepEqual(rum.coverage.scrollGesture, {
+        status: 'not-instrumented',
+        evidenceLevel: 'unsupported-or-unknown',
+    })
+    assert.deepEqual(rum.coverage.motionQuality, {
+        status: 'not-instrumented',
+        evidenceLevel: 'unsupported-or-unknown',
+    })
 
     const recommendations = recommendAnimationImprovements(snapshot, {
         inputToVisualBudgetMs: 5,

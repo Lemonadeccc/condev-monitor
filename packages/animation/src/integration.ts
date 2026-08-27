@@ -459,77 +459,139 @@ export interface AnimationRumProjectionOptions {
     runtimeFamily?: AnimationRuntimeFamily
 }
 
-function projectRumCoverage(snapshot: AnimationSnapshot): AnimationRumCoverage {
-    const statuses = new Set(['measured', 'partial', 'not-observed', 'not-instrumented', 'unsupported'])
-    const evidenceLevels = new Set([
-        'field-measurement',
-        'controlled-lab-measurement',
-        'runtime-observation',
-        'static-candidate',
-        'unsupported-or-unknown',
-    ])
-    const sanitize = (value: unknown): AnimationRumCoverage['userOutcome'] => {
-        if (!value || typeof value !== 'object') {
-            return { status: 'not-observed', evidenceLevel: 'unsupported-or-unknown' }
-        }
-        const source = value as Record<string, unknown>
-        return {
-            status: statuses.has(String(source.status)) ? (source.status as AnimationRumCoverage['userOutcome']['status']) : 'not-observed',
-            evidenceLevel: evidenceLevels.has(String(source.evidenceLevel))
-                ? (source.evidenceLevel as AnimationRumCoverage['userOutcome']['evidenceLevel'])
-                : 'unsupported-or-unknown',
-        }
+function runtimeCoverage(
+    status: AnimationRumCoverage['userOutcome']['status'],
+    evidenceUnavailable = false
+): AnimationRumCoverage['userOutcome'] {
+    return {
+        status,
+        evidenceLevel:
+            evidenceUnavailable || status === 'unsupported' || status === 'not-instrumented'
+                ? 'unsupported-or-unknown'
+                : 'runtime-observation',
     }
-    const local = snapshot.coverage as Partial<AnimationRumCoverage>
-    const coverage: AnimationRumCoverage = {
-        userOutcome: sanitize(local.userOutcome),
-        frameCadence: sanitize(local.frameCadence),
-        mainThread: sanitize(local.mainThread),
-        renderingPipeline: sanitize(local.renderingPipeline),
-        renderer: sanitize(local.renderer),
-        scrollGesture: sanitize(local.scrollGesture),
-        resourcesMedia: sanitize(local.resourcesMedia),
-        memoryLifecycle: sanitize(local.memoryLifecycle),
-        workAvoidance: sanitize(local.workAvoidance),
-        accessibility: sanitize(local.accessibility),
-        motionQuality: sanitize(local.motionQuality),
-        monitorOverhead: sanitize(local.monitorOverhead),
+}
+
+function projectedMetricStatus(
+    metrics: readonly AnimationRumMetric[],
+    family: AnimationRumMetric['family'],
+    name: AnimationRumMetricName,
+    stat: AnimationRumMetric['stat']
+): AnimationRumMetric['status'] {
+    return metrics.find(item => item.family === family && item.name === name && item.stat === stat)?.status ?? 'unknown'
+}
+
+function combinedWireStatus(statuses: readonly AnimationRumMetric['status'][]): AnimationRumCoverage['userOutcome']['status'] {
+    if (statuses.includes('partial')) return 'partial'
+    const measuredCount = statuses.filter(status => status === 'measured').length
+    if (measuredCount > 0) return measuredCount === statuses.length ? 'measured' : 'partial'
+    if (statuses.length > 0 && statuses.every(status => status === 'unsupported')) return 'unsupported'
+    if (statuses.length > 0 && statuses.every(status => status === 'not-instrumented')) return 'not-instrumented'
+    return 'not-observed'
+}
+
+function combinedWireCoverage(statuses: readonly AnimationRumMetric['status'][]): AnimationRumCoverage['userOutcome'] {
+    const status = combinedWireStatus(statuses)
+    const evidenceUnavailable =
+        status === 'not-observed' && statuses.length > 0 && statuses.every(item => item === 'unsupported' || item === 'unknown')
+    return runtimeCoverage(status, evidenceUnavailable)
+}
+
+/**
+ * Derive production coverage only from values that survive the closed v1 wire
+ * projection. Local snapshot coverage also includes Web Vitals, Resource
+ * Timing, quality, host adapters, and Browser page evidence; copying those
+ * states would claim evidence that downstream consumers never receive.
+ */
+function projectRumCoverage(metrics: readonly AnimationRumMetric[]): AnimationRumCoverage {
+    const interactionCountStatus = projectedMetricStatus(metrics, 'userOutcome', 'interactionCount', 'count')
+    const interactionDurationStatus = projectedMetricStatus(metrics, 'userOutcome', 'interactionDurationMs', 'p95')
+    const hasInteractionEvidence = interactionCountStatus === 'measured' || interactionCountStatus === 'partial'
+    const eventMetricNames: readonly AnimationRumMetricName[] = ['eventTimingDurationMs', 'inputDelayMs', 'processingDurationMs']
+    const hasEventEvidence = eventMetricNames.some(name => {
+        const status = projectedMetricStatus(metrics, 'userOutcome', name, 'p95')
+        return status === 'measured' || status === 'partial'
+    })
+    const userOutcomeHasPartialMetric = metrics.some(item => item.family === 'userOutcome' && item.status === 'partial')
+    const userOutcomeStatus = userOutcomeHasPartialMetric
+        ? 'partial'
+        : hasInteractionEvidence
+          ? interactionDurationStatus === 'partial'
+              ? 'partial'
+              : 'measured'
+          : hasEventEvidence
+            ? 'partial'
+            : 'not-observed'
+
+    const frameCadenceStatus = projectedMetricStatus(metrics, 'frameCadence', 'frameDurationMs', 'p95')
+    const mainThreadCountStatuses = [
+        projectedMetricStatus(metrics, 'mainThread', 'longAnimationFrameCount', 'count'),
+        projectedMetricStatus(metrics, 'mainThread', 'longTaskCount', 'count'),
+    ]
+    const mainThreadStatuses = metrics.filter(item => item.family === 'mainThread').map(item => item.status)
+    const mainThreadStatus = mainThreadStatuses.includes('partial') ? 'partial' : combinedWireStatus(mainThreadCountStatuses)
+    const renderingPipelineStatuses = [
+        projectedMetricStatus(metrics, 'renderingPipeline', 'longAnimationFrameStyleLayoutTailMs', 'p95'),
+        projectedMetricStatus(metrics, 'renderingPipeline', 'presentationDelayMs', 'p95'),
+    ]
+    const monitorOverheadStatuses = [
+        projectedMetricStatus(metrics, 'monitorOverhead', 'callbackCount', 'count'),
+        projectedMetricStatus(metrics, 'monitorOverhead', 'callbackSelfTimeRatio', 'ratio'),
+        projectedMetricStatus(metrics, 'monitorOverhead', 'reportBuildSelfTimeMs', 'p95'),
+    ]
+    const monitorOverheadStatus = monitorOverheadStatuses.includes('partial')
+        ? 'partial'
+        : monitorOverheadStatuses.includes('measured')
+          ? 'measured'
+          : combinedWireStatus(monitorOverheadStatuses)
+    const notInstrumented = runtimeCoverage('not-instrumented')
+
+    return {
+        userOutcome: runtimeCoverage(userOutcomeStatus),
+        frameCadence: runtimeCoverage(
+            frameCadenceStatus === 'measured' || frameCadenceStatus === 'partial' || frameCadenceStatus === 'unsupported'
+                ? frameCadenceStatus
+                : 'not-observed'
+        ),
+        mainThread: mainThreadStatus === 'partial' ? runtimeCoverage('partial') : combinedWireCoverage(mainThreadCountStatuses),
+        renderingPipeline: combinedWireCoverage(renderingPipelineStatuses),
+        renderer: { ...notInstrumented },
+        scrollGesture: { ...notInstrumented },
+        resourcesMedia: { ...notInstrumented },
+        memoryLifecycle: { ...notInstrumented },
+        workAvoidance: { ...notInstrumented },
+        accessibility: { ...notInstrumented },
+        motionQuality: { ...notInstrumented },
+        monitorOverhead: runtimeCoverage(monitorOverheadStatus),
     }
-    const notInstrumented = {
-        status: 'not-instrumented' as const,
-        evidenceLevel: 'unsupported-or-unknown' as const,
-    }
-    coverage.renderer = { ...notInstrumented }
-    coverage.memoryLifecycle = { ...notInstrumented }
-    coverage.workAvoidance = { ...notInstrumented }
-    coverage.resourcesMedia =
-        snapshot.capabilities.resourceTiming === true
-            ? { status: 'partial', evidenceLevel: 'runtime-observation' }
-            : snapshot.capabilities.resourceTiming === false
-              ? { status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' }
-              : { status: 'not-observed', evidenceLevel: 'runtime-observation' }
-    return coverage
+}
+
+function projectedCapability(evidence: unknown): boolean | null {
+    if (!evidence || typeof evidence !== 'object') return null
+    const state = (evidence as Partial<CapabilityEvidence>).state
+    return state === 'supported' ? true : state === 'unsupported' ? false : null
 }
 
 function projectRumCapabilities(snapshot: AnimationSnapshot): AnimationRumCapabilities {
-    const value = (name: keyof AnimationRumCapabilities): boolean | null => {
-        const candidate = (snapshot.capabilities as Partial<AnimationRumCapabilities>)[name]
-        return candidate === true || candidate === false ? candidate : null
-    }
+    const paintTiming = snapshot.longAnimationFrames.paintTiming
+    const resourceTiming = snapshot.resourceTiming
+    const webVitals = snapshot.webVitals
     return {
-        'long-animation-frame': value('long-animation-frame'),
-        longtask: value('longtask'),
-        event: value('event'),
-        resourceTiming: value('resourceTiming'),
-        resourceTimingBufferEvents: value('resourceTimingBufferEvents'),
-        webVitalsAttribution: value('webVitalsAttribution'),
-        webVitalsSoftNavigation: value('webVitalsSoftNavigation'),
-        webVitalsDisabled: value('webVitalsDisabled'),
-        reducedMotionPreference: value('reducedMotionPreference'),
-        documentAnimationsInspection: value('documentAnimationsInspection'),
-        visibilityLifecycle: value('visibilityLifecycle'),
-        longAnimationFramePaintTime: value('longAnimationFramePaintTime'),
-        longAnimationFramePresentationTime: value('longAnimationFramePresentationTime'),
+        'long-animation-frame': projectedCapability(snapshot.longAnimationFrames.capability),
+        longtask: projectedCapability(snapshot.longTasks.capability),
+        event: projectedCapability(snapshot.eventTiming.capability),
+        resourceTiming: projectedCapability(resourceTiming?.capability),
+        resourceTimingBufferEvents: projectedCapability(resourceTiming?.bufferEventCapability),
+        webVitalsAttribution: webVitals?.capability.state === 'supported' && webVitals.capability.observed ? true : null,
+        webVitalsSoftNavigation: null,
+        webVitalsDisabled: typeof webVitals?.observedUpdateCount === 'number' ? false : null,
+        reducedMotionPreference: typeof snapshot.visibility.reducedMotion === 'boolean' ? true : null,
+        // Browser pageEvidence can inspect document animations locally, but it
+        // is not part of AnimationSnapshot v1 and cannot attest this wire bit.
+        documentAnimationsInspection: null,
+        visibilityLifecycle: ['visible', 'hidden', 'prerender'].includes(snapshot.visibility.current) ? true : null,
+        longAnimationFramePaintTime: projectedCapability(paintTiming?.paintTimeCapability),
+        longAnimationFramePresentationTime: projectedCapability(paintTiming?.presentationTimeCapability),
     }
 }
 
@@ -566,6 +628,7 @@ export function toAnimationRumSummary(snapshot: AnimationSnapshot, options: Anim
     }
     const windowDurationCapped = snapshot.elapsedMs > ANIMATION_RUM_MAX_WINDOW_DURATION_MS
     const windowDurationMs = round(Math.min(snapshot.elapsedMs, ANIMATION_RUM_MAX_WINDOW_DURATION_MS))
+    const metrics = projectMetrics(snapshot, windowDurationCapped)
     return {
         contractVersion: ANIMATION_RUM_CONTRACT_VERSION,
         snapshotSchemaVersion: snapshot.schemaVersion,
@@ -609,8 +672,8 @@ export function toAnimationRumSummary(snapshot: AnimationSnapshot, options: Anim
                       : 'unknown',
         },
         capabilities: projectRumCapabilities(snapshot),
-        coverage: projectRumCoverage(snapshot),
-        metrics: projectMetrics(snapshot, windowDurationCapped),
+        coverage: projectRumCoverage(metrics),
+        metrics,
     }
 }
 

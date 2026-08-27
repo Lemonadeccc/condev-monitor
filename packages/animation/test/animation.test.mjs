@@ -662,6 +662,12 @@ test('Resource Timing stays privacy-safe, capture-scoped, bounded, and local-onl
         rum.metrics.some(metric => metric.family === 'resourcesMedia' || metric.unit === 'bytes'),
         false
     )
+    assert.equal(rum.capabilities.resourceTiming, true)
+    assert.equal(rum.capabilities.resourceTimingBufferEvents, true)
+    assert.deepEqual(rum.coverage.resourcesMedia, {
+        status: 'not-instrumented',
+        evidenceLevel: 'unsupported-or-unknown',
+    })
 })
 
 test('explicit host evidence is bounded, capture-clocked, coverage-aware, and excluded from RUM v1', () => {
@@ -803,7 +809,7 @@ test('explicit host evidence is bounded, capture-clocked, coverage-aware, and ex
     assert.equal('hostEvidence' in rum, false)
     assert.doesNotMatch(JSON.stringify(rum.metrics), /gpuFrameMs|drawCalls|playbackDropRatio|renderMs/)
     assert.equal(rum.coverage.renderer.status, 'not-instrumented')
-    assert.equal(rum.coverage.resourcesMedia.status, 'not-observed')
+    assert.equal(rum.coverage.resourcesMedia.status, 'not-instrumented')
     assert.equal(rum.coverage.memoryLifecycle.status, 'not-instrumented')
     assert.equal(rum.coverage.workAvoidance.status, 'not-instrumented')
 
@@ -898,6 +904,41 @@ test('unsupported observers remain unknown evidence, not numeric zero', () => {
             assert.equal(metric.status, 'unknown')
         }
     }
+    assert.deepEqual(summary.coverage.mainThread, {
+        status: 'not-observed',
+        evidenceLevel: 'unsupported-or-unknown',
+    })
+})
+
+test('RUM coverage distinguishes unsupported wire observers from families absent from v1', () => {
+    const runtime = new FakeRuntime({
+        capabilities: {
+            'long-animation-frame': 'unsupported',
+            longtask: 'unsupported',
+            event: 'unsupported',
+            resource: 'unsupported',
+        },
+    })
+    const snapshot = new AnimationCollector({ runtime }).start().stop()
+    const summary = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+
+    assert.deepEqual(summary.coverage.mainThread, {
+        status: 'unsupported',
+        evidenceLevel: 'unsupported-or-unknown',
+    })
+    assert.deepEqual(summary.coverage.renderingPipeline, {
+        status: 'unsupported',
+        evidenceLevel: 'unsupported-or-unknown',
+    })
+    assert.deepEqual(summary.coverage.resourcesMedia, {
+        status: 'not-instrumented',
+        evidenceLevel: 'unsupported-or-unknown',
+    })
+    assert.equal(summary.coverage.userOutcome.status, 'not-observed')
 })
 
 test('every completed RUM window projects supported-zero LoAF and Long Task aggregates without distributions', () => {
@@ -944,6 +985,8 @@ test('every completed RUM window projects supported-zero LoAF and Long Task aggr
         const distribution = findMetric(completed, name, stat)
         assert.deepEqual([distribution.value, distribution.samples, distribution.status], [null, null, 'not-observed'])
     }
+    assert.equal(running.coverage.mainThread.status, 'measured')
+    assert.equal(completed.coverage.mainThread.status, 'measured')
 })
 
 test('late-start buffered replay excludes pre-capture entries and clips entries crossing capture start', () => {
@@ -1278,6 +1321,9 @@ test('RUM projection rebuilds nested allowlists and rejects runtime-family escap
     const snapshot = new AnimationCollector({ runtime }).start().stop()
     snapshot.capabilities.privateUrl = 'https://private.example/capability'
     snapshot.capabilities.longtask = 'https://private.example/not-a-boolean'
+    snapshot.capabilities['long-animation-frame'] = false
+    snapshot.capabilities.documentAnimationsInspection = true
+    snapshot.capabilities.webVitalsSoftNavigation = true
     snapshot.coverage.privateUrl = {
         status: 'measured',
         evidenceLevel: 'runtime-observation',
@@ -1294,7 +1340,11 @@ test('RUM projection rebuilds nested allowlists and rejects runtime-family escap
     assert.equal(Object.keys(report.capabilities).length, 13)
     assert.equal(Object.keys(report.coverage).length, 12)
     assert.deepEqual(Object.keys(report.coverage.userOutcome).sort(), ['evidenceLevel', 'status'])
-    assert.equal(report.capabilities.longtask, null)
+    assert.equal(report.capabilities['long-animation-frame'], true)
+    assert.equal(report.capabilities.longtask, true)
+    assert.equal(report.capabilities.documentAnimationsInspection, null)
+    assert.equal(report.capabilities.webVitalsSoftNavigation, null)
+    assert.equal(report.capabilities.visibilityLifecycle, null)
     assert.equal(report.context.visibilityState, 'unknown')
     assert.doesNotMatch(JSON.stringify(report), /private\.example|privateUrl|secret/)
     assert.throws(
@@ -1307,6 +1357,53 @@ test('RUM projection rebuilds nested allowlists and rejects runtime-family escap
             }),
         /runtimeFamily/
     )
+})
+
+test('animation RUM v1 keeps its exact closed set of 32 aggregate metric tuples', () => {
+    const runtime = new FakeRuntime()
+    const snapshot = new AnimationCollector({ runtime }).start().stop()
+    const report = toAnimationRumSummary(snapshot, {
+        capturedAtEpochMs: runtime.wallNow(),
+        sampleRate: 1,
+        samplingPolicyVersion: 1,
+    })
+    const tuples = report.metrics.map(metric => `${metric.family}|${metric.name}|${metric.stat}|${metric.unit}`).sort()
+
+    assert.equal(tuples.length, 32)
+    assert.deepEqual(tuples, [
+        'frameCadence|frameDurationMs|max|ms',
+        'frameCadence|frameDurationMs|p50|ms',
+        'frameCadence|frameDurationMs|p75|ms',
+        'frameCadence|frameDurationMs|p95|ms',
+        'frameCadence|frameDurationMs|p99|ms',
+        'frameCadence|inferredRefreshHz|latest|hz',
+        'frameCadence|jankBurstCount|count|count',
+        'frameCadence|longestSlowFrameRun|max|frames',
+        'frameCadence|missedFrameOpportunities|sum|frames',
+        'frameCadence|slowFrameRate|ratio|ratio',
+        'frameCadence|targetFrameMs|latest|ms',
+        'mainThread|longAnimationFrameBlockingMs|p95|ms',
+        'mainThread|longAnimationFrameCount|count|count',
+        'mainThread|longAnimationFrameDurationMs|p95|ms',
+        'mainThread|longAnimationFrameDurationMs|sum|ms',
+        'mainThread|longTaskCount|count|count',
+        'mainThread|longTaskDurationMs|max|ms',
+        'mainThread|longTaskDurationMs|p95|ms',
+        'mainThread|longTaskDurationMs|sum|ms',
+        'monitorOverhead|callbackCount|count|count',
+        'monitorOverhead|callbackSelfTimeRatio|ratio|ratio',
+        'monitorOverhead|reportBuildSelfTimeMs|p95|ms',
+        'renderingPipeline|longAnimationFrameStyleLayoutTailMs|p95|ms',
+        'renderingPipeline|presentationDelayMs|p95|ms',
+        'userOutcome|abandonedInteractions|count|count',
+        'userOutcome|cancelledInteractions|count|count',
+        'userOutcome|completedInteractions|count|count',
+        'userOutcome|eventTimingDurationMs|p95|ms',
+        'userOutcome|inputDelayMs|p95|ms',
+        'userOutcome|interactionCount|count|count',
+        'userOutcome|interactionDurationMs|p95|ms',
+        'userOutcome|processingDurationMs|p95|ms',
+    ])
 })
 
 test('RUM percentile sample counts and report-build status reflect their retained bounded rings', () => {
@@ -1407,6 +1504,9 @@ test('RUM keeps streaming totals measured while truncated ring distributions rem
     )
     assert.equal(findMetric('interactionDurationMs', 'p95').status, 'partial')
     assert.equal(findMetric('interactionDurationMs', 'p95').samples, 1)
+    assert.equal(summary.coverage.frameCadence.status, 'partial')
+    assert.equal(summary.coverage.mainThread.status, 'partial')
+    assert.equal(summary.coverage.userOutcome.status, 'partial')
 })
 
 test('RUM window duration is bounded and callback self-time ratio uses the complete capture aggregate', () => {
@@ -1448,6 +1548,8 @@ test('RUM window duration is bounded and callback self-time ratio uses the compl
     assert.equal(cappedCallbackRatio.status, 'partial')
     assert.equal(cappedLoafSum.status, 'partial')
     assert.equal(cappedLongTaskSum.status, 'partial')
+    assert.equal(capped.coverage.mainThread.status, 'partial')
+    assert.equal(capped.coverage.monitorOverhead.status, 'partial')
 
     snapshot.elapsedMs = Number.POSITIVE_INFINITY
     assert.throws(
