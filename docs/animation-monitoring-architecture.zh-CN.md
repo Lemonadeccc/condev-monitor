@@ -370,6 +370,8 @@ Firefox/WebKit 请求 trace 或 Lighthouse 时，会保留 0-duration 的显式 
 
 默认诊断合同固定为 60 Hz（16.666667 ms），不是根据已经变慢的页面自校准。兼容指标 `frame.refresh.inferred` 的准确含义是“可见页面 rAF 帧间隔 p50 推算出的回调节奏”，不是物理屏幕刷新率、compositor presentation FPS 或 GPU FPS；平台会显示这一限制，不能用它自动放宽预算。内置调查规则是 frame p95 `<=1.5×frame budget`（至少 120 帧）、slow-frame rate `<=5%`（至少 120 帧）、jank burst `<=0`（至少 120 帧）、Long Task count `<=0`（至少 1 个样本）和 input delay p95 `<=100 ms`（至少 3 个事件）。这些是版本化项目预算，不是浏览器标准或跨业务统一评分；高刷场景应在 scenario 明确写入 refresh contract。
 
+Event Timing 使用 `durationThreshold: 16` 观测，所以事件总时长、input delay、processing 和 presentation delay 的 p95（包括动作窗口）都是“浏览器在该阈值下暴露的条件样本分布”，不是全部输入事件的分位数。`interaction.count` 统计保留的 `PerformanceEventTiming` 条目，也没有按 `interactionId` 去重，不能解释成独立交互次数。Runner 会把这两项限制作为闭集代码保留到跨次聚合和 input-delay finding；数值仍可标为已测量，但 UI 必须同时展示样本边界。
+
 详情页按需显示五个视图：Overview 给重复测量的聚合；Animation 是动画/交互相关的 trace 子集；Performance 是完整有界 CDP 时间线及脱敏栈；Lighthouse 是另一轮 navigation 的分类、核心指标和失败审计；Artifacts 只列平台实际保存且当前有权下载的产物。Timeline/Lighthouse 前端代码按 tab 动态加载，避免诊断 UI 自身增加首屏成本。
 
 页面右下角 SDK 面板与平台 Labs 不复制同一份状态。SDK 面板显示当前真实页面的实时帧率、自动输入窗口、Coverage、页面/renderer surface 和手动选中目标证据，适合开发时即时排查；它不把外部 Runner 的场景声明冒充成本页运行时事实。平台 Labs 显示可复现实验的 action trigger、subject、outcome/window、声明与观测分离的技术证据、版本化预算、跨次聚合、finding、Performance trace 与 Lighthouse。Runner 可通过显式 `--local-display` 在所属终端显示动作位置和最终预算状态；这个 Node-owned 单向 sink 只接收闭集语义投影，不通过页面 global、`postMessage` 或 SDK overlay 建立可伪造的证据通道，sink 失败也不改变测量结果。这样线上 RUM、本地即时观察和可复现实验各自保留正确的证据边界。

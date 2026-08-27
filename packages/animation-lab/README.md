@@ -8,6 +8,8 @@ The page probe enables every standards-based, privacy-safe signal it can observe
 
 `frame.refresh.inferred` keeps its catalog-v1 identity for compatibility, but its measured value is specifically the observed visible-page rAF callback cadence derived as `1000 / frame-interval p50`. It is not a physical display refresh-rate measurement, compositor presentation FPS, or GPU FPS. Every decoded instance carries `observed-page-raf-cadence-not-display-refresh-rate`; use the explicit measurement-contract `expectedHz` and `targetFrameMs` for budgets rather than letting this observation relax the target.
 
+The Event Timing metrics are conditional distributions, not an inventory of every input. The page observer requests `durationThreshold: 16`, so the four duration p95 metrics and their action-window projections carry `event-timing-duration-threshold-16ms`. `interaction.count` counts retained `PerformanceEventTiming` entries and is not deduplicated by `interactionId`; it additionally carries `event-timing-entry-count-not-distinct-interactions`. These population limits survive attempt aggregation and any input-delay finding. A measured value is valid for the exposed population, but must not be relabelled as an all-input percentile or a distinct interaction count.
+
 ## Runtime boundary
 
 The package ships ESM, CommonJS, and type declarations for the Node-side runner and platform services. It is not injected into the page being measured and is not an alternative Browser SDK. The executable runner lives in `@condev-monitor/animation-lab-runner` and requires Node.js 22 or newer.
