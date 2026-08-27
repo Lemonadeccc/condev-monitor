@@ -902,6 +902,7 @@ test('explicit host evidence is bounded, capture-clocked, coverage-aware, and ex
     assert.equal(snapshot.hostEvidence.framework.window.endedAt, 20)
     assert.equal(snapshot.hostEvidence.framework.renderMs.p95, 2.95)
     assert.equal(snapshot.hostEvidence.renderer.gpuFrameMs.p95, 2.5)
+    assert.equal(snapshot.hostEvidence.renderer.gpuTimerCapability, 'supported')
     assert.equal(snapshot.hostEvidence.lifecycle.latestAnimationTotal, 2)
     assert.equal(snapshot.hostEvidence.lifecycle.growthCandidate, null)
     assert.equal(snapshot.hostEvidence.work.categories.layout, 1)
@@ -1031,6 +1032,103 @@ test('host renderer evidence rejects backend-specific GPU sources from a differe
     assert.equal(renderer.rejectedSampleCount, 1)
     assert.equal(renderer.gpuMeasuredSampleCount, 1)
     assert.equal(renderer.gpuRejectedSampleCount, 0)
+    assert.equal(renderer.gpuTimerCapability, 'supported')
+})
+
+test('host renderer evidence preserves explicit GPU timer capability and infers legacy callers', () => {
+    const summarize = sample => {
+        const runtime = new FakeRuntime()
+        const collector = new AnimationCollector({ runtime }).start()
+        const accepted = collector.recordRenderStats({
+            source: 'renderer-host',
+            backend: 'webgl2',
+            timestampMs: 0,
+            ...sample,
+        })
+        return { accepted, renderer: collector.stop().hostEvidence.renderer }
+    }
+
+    for (const gpuTimerCapability of ['supported', 'unsupported', 'disabled', 'unknown']) {
+        const { accepted, renderer } = summarize({ gpuTimerCapability, gpu: { status: 'not-provided' } })
+        assert.equal(accepted, true)
+        assert.equal(renderer.gpuTimerCapability, gpuTimerCapability)
+    }
+
+    assert.equal(
+        summarize({
+            gpu: {
+                status: 'measured',
+                timeMs: 1,
+                source: 'webgl-disjoint-timer-query',
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+            },
+        }).renderer.gpuTimerCapability,
+        'supported'
+    )
+    assert.equal(summarize({ gpu: { status: 'disjoint' } }).renderer.gpuTimerCapability, 'unknown')
+    assert.equal(summarize({ gpu: { status: 'not-provided' } }).renderer.gpuTimerCapability, 'disabled')
+
+    for (const sample of [
+        { gpuTimerCapability: 'future-capability', gpu: { status: 'not-provided' } },
+        {
+            gpuTimerCapability: 'unsupported',
+            gpu: {
+                status: 'measured',
+                timeMs: 1,
+                source: 'webgl-disjoint-timer-query',
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+            },
+        },
+        { gpuTimerCapability: 'disabled', gpu: { status: 'error' } },
+        { gpuTimerCapability: 'supported', gpu: { status: 'context-lost' } },
+        { gpuTimerCapability: 'supported', gpu: { status: 'error' } },
+        { backend: 'canvas2d', gpuTimerCapability: 'supported', gpu: { status: 'not-provided' } },
+    ]) {
+        const { backend = 'webgl2', ...reading } = sample
+        const runtime = new FakeRuntime()
+        const collector = new AnimationCollector({ runtime }).start()
+        const accepted = collector.recordRenderStats({
+            source: 'renderer-host',
+            backend,
+            timestampMs: 0,
+            ...reading,
+        })
+        const renderer = collector.stop().hostEvidence.renderer
+        assert.equal(accepted, false)
+        assert.equal(renderer.gpuTimerCapability, 'unknown')
+        assert.equal(renderer.rejectedSampleCount, 1)
+    }
+})
+
+test('host renderer GPU capability is stable across multiple probe capture orders', () => {
+    const summarize = capabilities => {
+        const runtime = new FakeRuntime()
+        const collector = new AnimationCollector({ runtime }).start()
+        for (const [index, gpuTimerCapability] of capabilities.entries()) {
+            runtime.time = index
+            assert.equal(
+                collector.recordRenderStats({
+                    source: 'renderer-host',
+                    backend: index === 0 ? 'webgl2' : 'webgl',
+                    timestampMs: index,
+                    gpuTimerCapability,
+                    gpu: { status: 'not-provided' },
+                }),
+                true
+            )
+        }
+        return collector.stop().hostEvidence.renderer.gpuTimerCapability
+    }
+
+    assert.equal(summarize(['supported', 'unsupported']), 'supported')
+    assert.equal(summarize(['unsupported', 'supported']), 'supported')
+    assert.equal(summarize(['unsupported', 'disabled']), 'unknown')
+    assert.equal(summarize(['disabled', 'unsupported']), 'unknown')
+    assert.equal(summarize(['unknown', 'unsupported']), 'unknown')
 })
 
 test('host renderer evidence accepts only the closed renderer source set and preserves zero counters', () => {
@@ -3181,6 +3279,7 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
         geometries: null,
         textures: statistics(4, 4),
         programs: statistics(2, 4),
+        gpuTimerCapability: 'supported',
         gpuFrameMs: statistics(2.5, 3),
         gpuMeasuredSampleCount: 3,
         gpuRejectedSampleCount: 1,
@@ -3384,6 +3483,7 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     assert.doesNotMatch(fakeNodeText(rendererHostMetric('geometries-p95')), /\b0(?:\.0+)?\b/)
     assert.match(fakeNodeText(rendererHostMetric('textures-p95')), /Textures p95 4/)
     assert.match(fakeNodeText(rendererHostMetric('programs-p95')), /Programs p95 2/)
+    assert.match(fakeNodeText(rendererHostMetric('gpu-timer-capability')), /GPU timer capability Supported/)
     assert.match(fakeNodeText(rendererHostMetric('gpu-frame-p95')), /GPU frame p95 2\.50 ms/)
     assert.match(fakeNodeText(rendererHostMetric('gpu-rejected')), /GPU rejected samples 1/)
     assert.match(fakeNodeText(rendererHostMetric('retained-tail')), /Retained tail truncated/)

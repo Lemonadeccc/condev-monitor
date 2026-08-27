@@ -521,6 +521,158 @@ test('page runtime stays canvas-backed when page evidence is disabled but a host
     assert.deepEqual([metric(report, 'renderer.draw-calls.p95').value, metric(report, 'renderer.draw-calls.p95').status], [0, 'measured'])
 })
 
+test('page builder projects explicit GPU timer capability and preserves legacy status inference', () => {
+    const capture = ({ gpuTimerCapability, gpu, omitCapability = false }) => {
+        const runtime = new FakeRuntime()
+        const collector = new AnimationCollector({ runtime, explicitRefreshHz: 60 }).start()
+        assert.equal(
+            collector.recordRenderStats({
+                source: 'renderer-host',
+                backend: 'webgl2',
+                timestampMs: 0,
+                drawCalls: 0,
+                ...(gpuTimerCapability === undefined ? {} : { gpuTimerCapability }),
+                gpu,
+            }),
+            true
+        )
+        const snapshot = collector.stop()
+        if (omitCapability) delete snapshot.hostEvidence.renderer.gpuTimerCapability
+        return { runtime, snapshot, report: toAnimationRumV2PageReport(snapshot, projectionOptions(runtime)) }
+    }
+
+    for (const [gpuTimerCapability, expectedStatus] of [
+        ['supported', 'not-observed'],
+        ['unsupported', 'unsupported'],
+        ['disabled', 'not-instrumented'],
+        ['unknown', 'unknown'],
+    ]) {
+        const { runtime, report } = capture({ gpuTimerCapability, gpu: { status: 'not-provided' } })
+        assert.equal(report.capabilities['gpu-timer-query'], gpuTimerCapability)
+        assert.deepEqual(
+            [metric(report, 'renderer.gpu-frame.p95').value, metric(report, 'renderer.gpu-frame.p95').status],
+            [null, expectedStatus]
+        )
+        assert.equal(validateNormalizedAnimationRumV2(report, { nowEpochMs: runtime.wallNow() }).ok, true)
+    }
+
+    const legacyDisabled = capture({ gpu: { status: 'not-provided' }, omitCapability: true }).report
+    assert.equal(legacyDisabled.capabilities['gpu-timer-query'], 'disabled')
+    assert.equal(metric(legacyDisabled, 'renderer.gpu-frame.p95').status, 'not-instrumented')
+
+    const legacyMeasured = capture({
+        gpu: {
+            status: 'measured',
+            timeMs: 1.25,
+            source: 'webgl-disjoint-timer-query',
+            valid: true,
+            disjoint: false,
+            contextLost: false,
+        },
+        omitCapability: true,
+    }).report
+    assert.equal(legacyMeasured.capabilities['gpu-timer-query'], 'supported')
+    assert.deepEqual(
+        [metric(legacyMeasured, 'renderer.gpu-frame.p95').value, metric(legacyMeasured, 'renderer.gpu-frame.p95').status],
+        [1.25, 'measured']
+    )
+
+    const mixedRuntime = new FakeRuntime()
+    const mixedCollector = new AnimationCollector({ runtime: mixedRuntime, explicitRefreshHz: 60 }).start()
+    assert.equal(
+        mixedCollector.recordRenderStats({
+            source: 'renderer-host',
+            backend: 'webgl2',
+            timestampMs: 0,
+            gpuTimerCapability: 'supported',
+            gpu: {
+                status: 'measured',
+                timeMs: 1.5,
+                source: 'webgl-disjoint-timer-query',
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+            },
+        }),
+        true
+    )
+    assert.equal(
+        mixedCollector.recordRenderStats({
+            source: 'renderer-host',
+            backend: 'webgl2',
+            timestampMs: 1,
+            gpuTimerCapability: 'supported',
+            gpu: { status: 'disjoint', source: 'webgl-disjoint-timer-query' },
+        }),
+        true
+    )
+    const mixedReport = toAnimationRumV2PageReport(mixedCollector.stop(), projectionOptions(mixedRuntime))
+    assert.equal(mixedReport.capabilities['gpu-timer-query'], 'supported')
+    assert.deepEqual(
+        [metric(mixedReport, 'renderer.gpu-frame.p95').value, metric(mixedReport, 'renderer.gpu-frame.p95').status],
+        [null, 'unknown']
+    )
+    assert.equal(mixedReport.captureQuality.reasons.includes('source-field-incomplete'), false)
+    assert.equal(validateNormalizedAnimationRumV2(mixedReport, { nowEpochMs: mixedRuntime.wallNow() }).ok, true)
+
+    const rejectedRuntime = new FakeRuntime()
+    const rejectedCollector = new AnimationCollector({ runtime: rejectedRuntime, explicitRefreshHz: 60 }).start()
+    assert.equal(
+        rejectedCollector.recordRenderStats({
+            source: 'renderer-host',
+            backend: 'webgl2',
+            timestampMs: 0,
+            gpuTimerCapability: 'supported',
+            gpu: { status: 'invalid', source: 'webgl-disjoint-timer-query' },
+        }),
+        true
+    )
+    const rejectedSnapshot = rejectedCollector.stop()
+    const rejectedReport = toAnimationRumV2PageReport(rejectedSnapshot, projectionOptions(rejectedRuntime))
+    assert.equal(rejectedReport.capabilities['gpu-timer-query'], 'supported')
+    assert.deepEqual(
+        [metric(rejectedReport, 'renderer.gpu-frame.p95').value, metric(rejectedReport, 'renderer.gpu-frame.p95').status],
+        [null, 'unknown']
+    )
+
+    rejectedSnapshot.hostEvidence.renderer.gpuTimerCapability = 'unsupported'
+    const contradictoryRejectedReport = toAnimationRumV2PageReport(rejectedSnapshot, projectionOptions(rejectedRuntime))
+    assert.equal(contradictoryRejectedReport.capabilities['gpu-timer-query'], 'unknown')
+    assert.equal(metric(contradictoryRejectedReport, 'renderer.gpu-frame.p95').status, 'unknown')
+    assert.ok(contradictoryRejectedReport.captureQuality.reasons.includes('source-field-incomplete'))
+})
+
+test('page builder fails closed for malformed or contradictory GPU timer capability summaries', () => {
+    for (const gpuTimerCapability of ['future-capability', 'unsupported']) {
+        const runtime = new FakeRuntime()
+        const collector = new AnimationCollector({ runtime, explicitRefreshHz: 60 }).start()
+        assert.equal(
+            collector.recordRenderStats({
+                source: 'renderer-host',
+                backend: 'webgl2',
+                timestampMs: 0,
+                gpu: {
+                    status: 'measured',
+                    timeMs: 1,
+                    source: 'webgl-disjoint-timer-query',
+                    valid: true,
+                    disjoint: false,
+                    contextLost: false,
+                },
+            }),
+            true
+        )
+        const snapshot = collector.stop()
+        snapshot.hostEvidence.renderer.gpuTimerCapability = gpuTimerCapability
+        const report = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
+
+        assert.equal(report.capabilities['gpu-timer-query'], 'unknown')
+        assert.equal(metric(report, 'renderer.gpu-frame.p95').status, 'unknown')
+        assert.ok(report.captureQuality.reasons.includes('source-field-incomplete'))
+        assert.equal(validateNormalizedAnimationRumV2(report, { nowEpochMs: runtime.wallNow() }).ok, true)
+    }
+})
+
 test('page runtime requires retained host measurements and recognizes Canvas2D without page evidence', () => {
     const metadataRuntime = new FakeRuntime()
     const metadataCollector = new AnimationCollector({ runtime: metadataRuntime, explicitRefreshHz: 60 }).start()

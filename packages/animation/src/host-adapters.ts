@@ -31,6 +31,7 @@ export type AnimationRendererBackend = 'canvas2d' | 'webgl' | 'webgl2' | 'webgpu
 export type AnimationThreeRendererBackend = Exclude<AnimationRendererBackend, 'canvas2d'>
 export type AnimationHostGpuTimingSource = 'webgl-disjoint-timer-query' | 'webgpu-timestamp-query' | 'host-timer-query'
 export type AnimationGpuTimingStatus = 'measured' | 'not-provided' | 'invalid' | 'disjoint' | 'context-lost' | 'error'
+export type AnimationGpuTimerCapability = 'supported' | 'unsupported' | 'disabled' | 'unknown'
 
 export type AnimationGpuTimingEvidence =
     | {
@@ -54,6 +55,8 @@ export interface AnimationRenderStatsSample {
     source: 'three-renderer-info' | 'renderer-host'
     backend: AnimationRendererBackend
     timestampMs: number
+    /** Explicit timer availability. Omission keeps legacy GPU-status inference. */
+    gpuTimerCapability?: AnimationGpuTimerCapability
     drawCalls?: number
     triangles?: number
     lines?: number
@@ -292,6 +295,8 @@ export type RendererHostGpuTimingReading =
 
 /** Closed, engine-neutral renderer evidence read explicitly by the host. */
 export interface RendererHostReading {
+    /** Explicit timer availability. Omission keeps legacy GPU-status inference. */
+    gpuTimerCapability?: AnimationGpuTimerCapability
     drawCalls?: number
     triangles?: number
     lines?: number
@@ -338,6 +343,7 @@ const GPU_TIMING_SOURCES = new Set<AnimationHostGpuTimingSource>([
     'webgpu-timestamp-query',
     'host-timer-query',
 ])
+const GPU_TIMER_CAPABILITIES = new Set<AnimationGpuTimerCapability>(['supported', 'unsupported', 'disabled', 'unknown'])
 
 function normalizeRendererBackend(backend: unknown): AnimationRendererBackend {
     return backend === 'canvas2d' || backend === 'webgl' || backend === 'webgl2' || backend === 'webgpu' ? backend : 'unknown'
@@ -504,6 +510,14 @@ export function createRendererHostProbe(options: RendererHostProbeOptions): Rend
             }
             const contextLost = safePropertyResult(() => snapshot.contextLost)
             if (contextLost.ok && contextLost.value !== undefined && typeof contextLost.value !== 'boolean') return null
+            const gpuTimerCapability = safePropertyResult(() => snapshot.gpuTimerCapability)
+            if (
+                !gpuTimerCapability.ok ||
+                (gpuTimerCapability.value !== undefined && !GPU_TIMER_CAPABILITIES.has(gpuTimerCapability.value))
+            ) {
+                return null
+            }
+            if (backend === 'canvas2d' && gpuTimerCapability.value === 'supported') return null
             const gpu = safePropertyResult(() => snapshot.gpu)
             let gpuEvidence: AnimationGpuTimingEvidence
             if (!contextLost.ok || !gpu.ok) {
@@ -517,10 +531,21 @@ export function createRendererHostProbe(options: RendererHostProbeOptions): Rend
                     gpuEvidence = { status: 'error' }
                 }
             }
+            if (
+                gpuTimerCapability.value !== undefined &&
+                ((gpuEvidence.status === 'measured' && gpuTimerCapability.value !== 'supported') ||
+                    (gpuTimerCapability.value === 'supported' &&
+                        (gpuEvidence.status === 'context-lost' || gpuEvidence.status === 'error')) ||
+                    ((gpuTimerCapability.value === 'unsupported' || gpuTimerCapability.value === 'disabled') &&
+                        gpuEvidence.status !== 'not-provided'))
+            ) {
+                return null
+            }
             const sample: AnimationRenderStatsSample = {
                 source: 'renderer-host',
                 backend,
                 timestampMs: safeNow(now),
+                ...(gpuTimerCapability.value === undefined ? {} : { gpuTimerCapability: gpuTimerCapability.value }),
                 ...normalizedCounts,
                 gpu: gpuEvidence,
             }

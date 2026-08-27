@@ -1,4 +1,5 @@
 import { createAnimationElementPicker } from './element-picker'
+import type { AnimationGpuTimerCapability } from './host-adapters'
 import { type LiveFrameRateResult, measureLiveFrameRate } from './live-frame-rate'
 import { collectorStateText, overlayText, resolveOverlayLocale } from './overlay-i18n'
 import {
@@ -71,6 +72,32 @@ interface OverlayViewport {
 
 function finiteRatio(value: unknown): value is number {
     return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1
+}
+
+function rendererGpuTimerCapability(renderer: AnimationSnapshot['hostEvidence']['renderer'] | undefined): AnimationGpuTimerCapability {
+    const measured = renderer?.gpuMeasuredSampleCount
+    const rejected = renderer?.gpuRejectedSampleCount
+    const capability = renderer?.gpuTimerCapability
+    if (capability !== undefined) {
+        if (typeof measured === 'number' && measured > 0 && capability !== 'supported') return 'unknown'
+        if (
+            (capability === 'unsupported' || capability === 'disabled') &&
+            ((typeof rejected === 'number' && rejected > 0) || renderer?.gpuFrameMs !== null)
+        ) {
+            return 'unknown'
+        }
+        return capability
+    }
+    if (typeof measured === 'number' && measured > 0) return 'supported'
+    if ((typeof rejected === 'number' && rejected > 0) || (renderer?.rejectedSampleCount ?? 0) > 0) return 'unknown'
+    return (renderer?.acceptedSampleCount ?? 0) > 0 ? 'disabled' : 'unknown'
+}
+
+function gpuTimerCapabilityText(locale: AnimationOverlayLocale, capability: AnimationGpuTimerCapability): string {
+    if (capability === 'supported') return overlayText(locale, 'capabilitySupported')
+    if (capability === 'unsupported') return overlayText(locale, 'capabilityUnsupported')
+    if (capability === 'disabled') return overlayText(locale, 'capabilityDisabled')
+    return overlayText(locale, 'capabilityUnknown')
 }
 
 function normalizedPosition(value: unknown): OverlayNormalizedPosition | undefined {
@@ -1467,6 +1494,13 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             'programs-p95',
             overlayText(locale, 'rendererProgramsP95'),
             formatOverlayMeasurement(renderer?.programs?.p95, 'count', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'renderer',
+            'gpu-timer-capability',
+            overlayText(locale, 'rendererGpuTimerCapability'),
+            gpuTimerCapabilityText(locale, rendererGpuTimerCapability(renderer))
         )
         appendHostEvidenceFact(
             facts,

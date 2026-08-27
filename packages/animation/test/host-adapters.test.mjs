@@ -247,6 +247,7 @@ test('generic renderer host probe normalizes closed counters and resolved GPU ev
         backend: 'webgl2',
         now: () => 125,
         read: () => ({
+            gpuTimerCapability: 'supported',
             drawCalls: 0,
             triangles: 0,
             lines: 0,
@@ -271,6 +272,7 @@ test('generic renderer host probe normalizes closed counters and resolved GPU ev
         source: 'renderer-host',
         backend: 'webgl2',
         timestampMs: 125,
+        gpuTimerCapability: 'supported',
         drawCalls: 0,
         triangles: 0,
         lines: 0,
@@ -288,6 +290,52 @@ test('generic renderer host probe normalizes closed counters and resolved GPU ev
         },
     })
     assert.deepEqual(samples, [captured])
+})
+
+test('generic renderer host probe preserves only closed GPU timer capabilities', () => {
+    for (const gpuTimerCapability of ['supported', 'unsupported', 'disabled', 'unknown']) {
+        const sample = createRendererHostProbe({
+            backend: 'webgl2',
+            read: () => ({ gpuTimerCapability, gpu: null }),
+            sink: { recordRenderStats() {} },
+        }).capture()
+        assert.equal(sample.gpuTimerCapability, gpuTimerCapability)
+        assert.deepEqual(sample.gpu, { status: 'not-provided' })
+    }
+
+    let sinkCalls = 0
+    for (const read of [
+        () => ({ gpuTimerCapability: 'future-capability', gpu: null }),
+        () => ({
+            gpuTimerCapability: 'unsupported',
+            gpu: { status: 'measured', timeMs: 1, source: 'webgl-disjoint-timer-query' },
+        }),
+        () => ({ gpuTimerCapability: 'disabled', gpu: { status: 'disjoint', source: 'webgl-disjoint-timer-query' } }),
+        () => ({ gpuTimerCapability: 'supported', gpu: { status: 'context-lost', source: 'webgl-disjoint-timer-query' } }),
+        () => ({ gpuTimerCapability: 'supported', gpu: { status: 'error', source: 'webgl-disjoint-timer-query' } }),
+        () =>
+            Object.defineProperty({}, 'gpuTimerCapability', {
+                get() {
+                    throw new Error('released timer')
+                },
+            }),
+    ]) {
+        const probe = createRendererHostProbe({
+            backend: 'webgl2',
+            read,
+            sink: { recordRenderStats: () => (sinkCalls += 1) },
+        })
+        assert.equal(probe.capture(), null)
+    }
+    assert.equal(sinkCalls, 0)
+
+    const canvasProbe = createRendererHostProbe({
+        backend: 'canvas2d',
+        read: () => ({ gpuTimerCapability: 'supported', gpu: null }),
+        sink: { recordRenderStats: () => (sinkCalls += 1) },
+    })
+    assert.equal(canvasProbe.capture(), null)
+    assert.equal(sinkCalls, 0)
 })
 
 test('generic renderer host probe accepts closed GPU status readings without invented timing values', () => {

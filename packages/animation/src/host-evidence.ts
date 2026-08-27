@@ -3,6 +3,7 @@
 import { isHostGpuTimingSourceCompatible } from './gpu-timing-compatibility'
 import type {
     AnimationFrameworkStatsSample,
+    AnimationGpuTimerCapability,
     AnimationLifecycleCountEvidence,
     AnimationLifecycleStatsSample,
     AnimationMediaStatsSample,
@@ -31,6 +32,7 @@ const RENDERER_BACKENDS = ['canvas2d', 'webgl', 'webgl2', 'webgpu', 'unknown'] a
 const RENDERER_SOURCES = ['three-renderer-info', 'renderer-host'] as const
 const GPU_STATUSES = ['measured', 'not-provided', 'invalid', 'disjoint', 'context-lost', 'error'] as const
 const GPU_SOURCES = ['webgl-disjoint-timer-query', 'webgpu-timestamp-query', 'host-timer-query'] as const
+const GPU_TIMER_CAPABILITIES = ['supported', 'unsupported', 'disabled', 'unknown'] as const
 const LIFECYCLE_CHECKPOINTS = ['mount', 'after-interaction', 'unmount', 'manual'] as const
 const LIFECYCLE_STATUSES = ['measured', 'unsupported', 'error'] as const
 const WORK_CATEGORIES = ['script', 'layout', 'paint', 'composite', 'other'] as const
@@ -162,6 +164,28 @@ function latestMeasuredCount(
     return null
 }
 
+function aggregateGpuTimerCapability(samples: readonly StoredRendererSample[], rejectedSampleCount: number): AnimationGpuTimerCapability {
+    const explicit = new Set(samples.flatMap(sample => (sample.gpuTimerCapability === undefined ? [] : [sample.gpuTimerCapability])))
+
+    // The summary can contain multiple probes and contexts. Actual timing or
+    // one explicitly supported timer proves that this page has a usable
+    // provider, independent of capture order or a second unsupported surface.
+    if (samples.some(sample => sample.gpu.status === 'measured') || explicit.has('supported')) return 'supported'
+
+    // Legacy failures and explicit uncertainty cannot be collapsed into an
+    // unsupported or disabled verdict. Rejected samples have no trustworthy
+    // provider identity, so they also make the global state unknown.
+    const legacyFailure = samples.some(sample => sample.gpuTimerCapability === undefined && sample.gpu.status !== 'not-provided')
+    if (explicit.has('unknown') || legacyFailure || rejectedSampleCount > 0) return 'unknown'
+
+    if (explicit.size === 1) return explicit.values().next().value ?? 'unknown'
+    if (explicit.size > 1) return 'unknown'
+
+    // Legacy adapters with no result only proved that no timer evidence was
+    // installed in this capture.
+    return 'disabled'
+}
+
 /**
  * Local, bounded sink for explicit host adapters. Caller timestamps are ignored;
  * the collector supplies its own monotonic capture clock.
@@ -213,6 +237,9 @@ export class AnimationHostEvidenceRecorder {
             return this.renderer.reject()
         }
         if (sample.source === 'three-renderer-info' && sample.backend === 'canvas2d') return this.renderer.reject()
+        const gpuTimerCapability = inSet(sample.gpuTimerCapability, GPU_TIMER_CAPABILITIES) ? sample.gpuTimerCapability : undefined
+        if (sample.gpuTimerCapability !== undefined && gpuTimerCapability === undefined) return this.renderer.reject()
+        if (sample.backend === 'canvas2d' && gpuTimerCapability === 'supported') return this.renderer.reject()
         const numericFields = {
             drawCalls: optionalCount(sample.drawCalls),
             triangles: optionalCount(sample.triangles),
@@ -247,12 +274,21 @@ export class AnimationHostEvidenceRecorder {
                     : null
                 : { status: sample.gpu.status }
         if (!gpu) return this.renderer.reject()
+        if (
+            gpuTimerCapability !== undefined &&
+            ((gpu.status === 'measured' && gpuTimerCapability !== 'supported') ||
+                (gpuTimerCapability === 'supported' && (gpu.status === 'context-lost' || gpu.status === 'error')) ||
+                ((gpuTimerCapability === 'unsupported' || gpuTimerCapability === 'disabled') && gpu.status !== 'not-provided'))
+        ) {
+            return this.renderer.reject()
+        }
         const evidence = Object.values(numericFields).some(field => field.value !== undefined) || gpu.status === 'measured'
         return this.renderer.accept(
             {
                 source: sample.source,
                 backend: sample.backend,
                 capturedAt,
+                ...(gpuTimerCapability === undefined ? {} : { gpuTimerCapability }),
                 ...Object.fromEntries(
                     Object.entries(numericFields).flatMap(([name, field]) => (field.value === undefined ? [] : [[name, field.value]]))
                 ),
@@ -401,6 +437,7 @@ export class AnimationHostEvidenceRecorder {
                 ...this.renderer.summary(),
                 backends: [...new Set(rendererSamples.map(sample => sample.backend))].sort(),
                 evidenceBackends: [...new Set(rendererEvidenceSamples.map(sample => sample.backend))].sort(),
+                gpuTimerCapability: aggregateGpuTimerCapability(rendererSamples, this.renderer.rejectedSampleCount),
                 drawCalls: durationStatistics(
                     rendererSamples.flatMap(sample => (sample.drawCalls === undefined ? [] : [sample.drawCalls]))
                 ),

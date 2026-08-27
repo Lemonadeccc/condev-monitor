@@ -10,6 +10,7 @@ import {
 
 import { AnimationOptionsError } from '../collector'
 import { isTargetGpuTimingSourceCompatible } from '../gpu-timing-compatibility'
+import type { AnimationGpuTimerCapability } from '../host-adapters'
 import { ANIMATION_MONITOR_VERSION, ANIMATION_RUM_MAX_WINDOW_DURATION_MS } from '../integration'
 import { round } from '../statistics'
 import type {
@@ -77,6 +78,7 @@ const RUNTIME_BACKENDS = new Set<AnimationRumV2RuntimeBackend>([
 ])
 const VIEWPORT_BUCKETS = new Set(['tiny', 'small', 'medium', 'large', 'xlarge', 'unknown'])
 const DPR_BUCKETS = new Set(['1', '1.5', '2', '3', '4+', 'unknown'])
+const GPU_TIMER_CAPABILITIES = new Set<AnimationGpuTimerCapability>(['supported', 'unsupported', 'disabled', 'unknown'])
 
 type Scope = AnimationRumV2Report['scope']
 type MetricDefinition = (typeof ANIMATION_RUM_V2_METRIC_CATALOG)[number]
@@ -1134,6 +1136,11 @@ function projectHostEvidence(state: ProjectionState, snapshot: AnimationSnapshot
     )
     const gpuMeasured = safeCount(renderer.gpuMeasuredSampleCount)
     const gpuRejected = safeCount(renderer.gpuRejectedSampleCount)
+    const gpuTimerCapabilityValue: unknown = renderer.gpuTimerCapability
+    const explicitGpuTimerCapability = GPU_TIMER_CAPABILITIES.has(gpuTimerCapabilityValue as AnimationGpuTimerCapability)
+        ? (gpuTimerCapabilityValue as AnimationGpuTimerCapability)
+        : null
+    const gpuTimerCapabilityFieldValid = gpuTimerCapabilityValue === undefined || explicitGpuTimerCapability !== null
     const gpuCountsValid =
         rendererProvider.valid &&
         gpuMeasured !== null &&
@@ -1141,25 +1148,30 @@ function projectHostEvidence(state: ProjectionState, snapshot: AnimationSnapshot
         gpuMeasured + gpuRejected <= rendererProvider.retained &&
         ((gpuMeasured === 0 && renderer.gpuFrameMs === null) ||
             (gpuMeasured > 0 && statisticsMatchRetainedCount(renderer.gpuFrameMs, gpuMeasured)))
-    if (!gpuCountsValid) state.reasons.add('source-field-incomplete')
+    const gpuCapabilityContradiction =
+        gpuCountsValid &&
+        explicitGpuTimerCapability !== null &&
+        ((gpuMeasured > 0 && explicitGpuTimerCapability !== 'supported') ||
+            ((explicitGpuTimerCapability === 'unsupported' || explicitGpuTimerCapability === 'disabled') &&
+                (gpuRejected > 0 || rendererProvider.rejected > 0)))
+    if (!gpuCountsValid || !gpuTimerCapabilityFieldValid || gpuCapabilityContradiction) {
+        state.reasons.add('source-field-incomplete')
+    }
     const gpuRejectedEvidence = gpuCountsValid && (gpuRejected > 0 || rendererProvider.rejected > 0)
     const gpuCapability: AnimationRumV2CapabilityState = !rendererActive
         ? 'disabled'
-        : !gpuCountsValid
+        : !gpuCountsValid || !gpuTimerCapabilityFieldValid || gpuCapabilityContradiction
           ? 'unknown'
-          : gpuMeasured > 0
-            ? 'supported'
-            : gpuRejectedEvidence
-              ? 'unknown'
-              : 'disabled'
+          : (explicitGpuTimerCapability ?? (gpuMeasured > 0 ? 'supported' : gpuRejectedEvidence ? 'unknown' : 'disabled'))
     state.capabilities['gpu-timer-query'] = gpuCapability
+    const gpuMetricStatus: AnimationRumV2MetricStatus = !gpuCountsValid ? 'unknown' : gpuRejected > 0 ? 'unknown' : rendererStatus
     putDistribution(
         state,
         'renderer.gpu-frame.p95',
         gpuCountsValid ? renderer.gpuFrameMs : null,
         'p95',
-        rendererStatus,
-        gpuCountsValid && gpuCapability !== 'unknown' ? rendererFallback : 'unknown'
+        gpuMetricStatus,
+        gpuCountsValid && gpuCapability !== 'unknown' && gpuRejected === 0 ? rendererFallback : 'unknown'
     )
 
     const media = host.media

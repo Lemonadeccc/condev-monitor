@@ -1,5 +1,7 @@
 // cspell:ignore gsap
 
+import type { AnimationGpuTimerCapability } from './host-adapters'
+
 export type CapabilityState = 'supported' | 'unsupported' | 'unknown'
 export type CollectorState = 'idle' | 'running' | 'stopped' | 'destroyed'
 export type FrameBudgetSource = 'explicit' | 'inferred'
@@ -418,6 +420,8 @@ export interface AnimationHostRendererSummary extends AnimationHostEvidenceFamil
     backends: readonly ('canvas2d' | 'webgl' | 'webgl2' | 'webgpu' | 'unknown')[]
     /** Backends attached to retained samples with at least one usable measurement. */
     evidenceBackends: readonly ('canvas2d' | 'webgl' | 'webgl2' | 'webgpu' | 'unknown')[]
+    /** Explicit aggregate timer availability; omitted legacy snapshots are inferred from GPU status counts. */
+    gpuTimerCapability?: AnimationGpuTimerCapability
     drawCalls: DurationStatistics | null
     triangles: DurationStatistics | null
     lines: DurationStatistics | null
