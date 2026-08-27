@@ -409,32 +409,33 @@ pnpm --filter aisdk-rag-chatbox dev
 
 ### DSN Server（`apps/backend/dsn-server/.env`）
 
-| 变量                                                                                  | 作用                                                                           |
-| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `PORT`                                                                                | DSN server 监听端口，默认 `8082`                                               |
-| `DSN_BODY_LIMIT`                                                                      | Express JSON / URL encoded / text body 限制。Replay 包大时要调大               |
-| `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE` | 必填。负责写入、查询监控数据并统一数据库名                                     |
-| `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                     | Postgres 查负责人邮箱与 sourcemap 元数据                                       |
-| `MONITOR_API_URL`                                                                     | ClickHouse 里没有 Replay 配置时，回源调用 `GET /api/application/public/config` |
-| `ALERT_EMAIL_FALLBACK`                                                                | 找不到应用负责人邮箱时的兜底收件人                                             |
-| `APP_OWNER_EMAIL_CACHE_TTL_MS`                                                        | `appId -> owner email` 缓存 TTL                                                |
-| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`                                       | Sourcemap 内存缓存大小和 TTL                                                   |
-| `RESEND_API_KEY`, `RESEND_FROM`                                                       | 告警邮件使用 Resend                                                            |
-| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                                               | 告警邮件使用 SMTP                                                              |
-| `EMAIL_PASS`, `EMAIL_PASSWORD`                                                        | dsn-server 邮件模块兼容读取的旧变量名                                          |
-| `INGEST_MODE`                                                                         | `kafka`（部署默认）或 `direct`（直写 ClickHouse）                              |
-| `KAFKA_ENABLED`                                                                       | Kafka 生产者总开关。`INGEST_MODE=kafka` 时设为 `true`                          |
-| `KAFKA_BROKERS`                                                                       | Kafka broker 地址，逗号分隔                                                    |
-| `KAFKA_CLIENT_ID`                                                                     | Kafka 生产者 client 标识                                                       |
-| `KAFKA_EVENTS_TOPIC`                                                                  | SDK 事件 topic，默认 `monitor.sdk.events.v1`                                   |
-| `KAFKA_REPLAYS_TOPIC`                                                                 | Replay 上传 topic，默认 `monitor.sdk.replays.v1`                               |
-| `KAFKA_FALLBACK_TO_CLICKHOUSE`                                                        | 为 `true` 时，Kafka 发布失败会兜底直写 ClickHouse                              |
-| `INBOUND_MAX_PAYLOAD_BYTES`                                                           | 每个请求允许的最大 payload 大小（反序列化前）                                  |
-| `INBOUND_UA_BLACKLIST`                                                                | 需拒绝的 user-agent 子串，逗号分隔                                             |
-| `INBOUND_RELEASE_BLACKLIST`                                                           | 需拒绝的 release 标识，逗号分隔                                                |
-| `RATE_LIMIT_EVENTS_PER_SEC`                                                           | 每应用令牌桶补充速率（事件/秒）                                                |
-| `RATE_LIMIT_BURST`                                                                    | 每应用令牌桶突发容量                                                           |
-| `RATE_LIMIT_MAX_APPS`                                                                 | 限流追踪的最大应用数                                                           |
+| 变量                                                                                  | 作用                                                                                                          |
+| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `PORT`                                                                                | DSN server 监听端口，默认 `8082`                                                                              |
+| `DSN_BODY_LIMIT`                                                                      | Express JSON / URL encoded / text body 限制。Replay 包大时要调大                                              |
+| `CLICKHOUSE_URL`, `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE` | 必填。负责写入、查询监控数据并统一数据库名                                                                    |
+| `DB_HOST`, `DB_PORT`, `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                     | Postgres 查负责人邮箱与 sourcemap 元数据                                                                      |
+| `MONITOR_API_URL`                                                                     | ClickHouse 里没有 Replay 配置时，回源调用 `GET /api/application/public/config`                                |
+| `ALERT_EMAIL_FALLBACK`                                                                | 找不到应用负责人邮箱时的兜底收件人                                                                            |
+| `APP_OWNER_EMAIL_CACHE_TTL_MS`                                                        | `appId -> owner email` 缓存 TTL                                                                               |
+| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`                                       | Sourcemap 内存缓存大小和 TTL                                                                                  |
+| `RESEND_API_KEY`, `RESEND_FROM`                                                       | 告警邮件使用 Resend                                                                                           |
+| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                                               | 告警邮件使用 SMTP                                                                                             |
+| `EMAIL_PASS`, `EMAIL_PASSWORD`                                                        | dsn-server 邮件模块兼容读取的旧变量名                                                                         |
+| `INGEST_MODE`                                                                         | `kafka`（部署默认）或 `direct`；Animation RUM v2 会通过所选传输排空持久化 Postgres Outbox                     |
+| `KAFKA_ENABLED`                                                                       | Kafka 生产者总开关；为 `false` 时，即使 `INGEST_MODE=kafka`，Animation RUM v2 Outbox 也会改由 ClickHouse 排空 |
+| `ANIMATION_RUM_V2_OUTBOX_ENABLED`                                                     | 仅在需要暂停排空 Animation RUM v2 Outbox 时设为 `false`；Postgres 仍会持久接收数据                            |
+| `KAFKA_BROKERS`                                                                       | Kafka broker 地址，逗号分隔                                                                                   |
+| `KAFKA_CLIENT_ID`                                                                     | Kafka 生产者 client 标识                                                                                      |
+| `KAFKA_EVENTS_TOPIC`                                                                  | SDK 事件 topic，默认 `monitor.sdk.events.v1`                                                                  |
+| `KAFKA_REPLAYS_TOPIC`                                                                 | Replay 上传 topic，默认 `monitor.sdk.replays.v1`                                                              |
+| `KAFKA_FALLBACK_TO_CLICKHOUSE`                                                        | 旧协议/非 v2 的回退开关；RUM v2 会持续重试持久化 Outbox，不会在单条消息中途切换传输                           |
+| `INBOUND_MAX_PAYLOAD_BYTES`                                                           | 每个请求允许的最大 payload 大小（反序列化前）                                                                 |
+| `INBOUND_UA_BLACKLIST`                                                                | 需拒绝的 user-agent 子串，逗号分隔                                                                            |
+| `INBOUND_RELEASE_BLACKLIST`                                                           | 需拒绝的 release 标识，逗号分隔                                                                               |
+| `RATE_LIMIT_EVENTS_PER_SEC`                                                           | 每应用令牌桶补充速率（事件/秒）                                                                               |
+| `RATE_LIMIT_BURST`                                                                    | 每应用令牌桶突发容量                                                                                          |
+| `RATE_LIMIT_MAX_APPS`                                                                 | 限流追踪的最大应用数                                                                                          |
 
 ### 前端 / Rewrite 相关变量
 
