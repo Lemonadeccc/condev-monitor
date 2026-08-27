@@ -63,6 +63,7 @@ export interface LongAnimationFrameDiagnosticsSnapshot {
 
 interface LongAnimationFrameDiagnosticsAccumulator {
     record(diagnostics: PrivateLongAnimationFrameDiagnostics): void
+    markIncomplete(): void
     snapshot(observerState?: PerformanceRuntimeCapabilityState): LongAnimationFrameDiagnosticsSnapshot
 }
 
@@ -189,6 +190,7 @@ type ObserverState = {
     observer: PerformanceObserver
     subscribers: Set<ObserverSubscriber>
     buffered: boolean
+    lastDrainSucceeded: boolean | null
 }
 
 function disconnectSafely(observer: PerformanceObserver | null | undefined): void {
@@ -827,8 +829,12 @@ function unavailableDiagnosticAggregate(
 function diagnosticAggregate(
     aggregate: DiagnosticAccumulatorState,
     observerState: PerformanceRuntimeCapabilityState,
-    observedLoafCount: number
+    observedLoafCount: number,
+    captureIncomplete: boolean
 ): LongAnimationFrameDiagnosticAggregate {
+    if (captureIncomplete && aggregate.acceptedCount === 0) {
+        return unavailableDiagnosticAggregate('unknown', 'unknown', aggregate)
+    }
     if (observedLoafCount === 0) {
         if (observerState === 'unsupported') return unavailableDiagnosticAggregate('unsupported', 'unsupported')
         if (observerState === 'unknown') return unavailableDiagnosticAggregate('unknown', 'unknown')
@@ -846,7 +852,8 @@ function diagnosticAggregate(
     const truncated = aggregate.droppedSampleCount > 0
     const retainedCount = aggregate.retainedDurations.length
     const p95Value = diagnosticP95(aggregate.retainedDurations)
-    const incomplete = aggregate.sourceIncomplete || aggregate.countSaturated || aggregate.rejectedCount > 0 || truncated
+    const incomplete =
+        captureIncomplete || aggregate.sourceIncomplete || aggregate.countSaturated || aggregate.rejectedCount > 0 || truncated
     return {
         capability,
         count: aggregate.acceptedCount,
@@ -870,6 +877,7 @@ function createLongAnimationFrameDiagnosticsAccumulator(
     const capacity = resolveDiagnosticSampleCapacity(options.maxSamples)
     const countLimit = resolveDiagnosticCountLimit(options.maxCount)
     let observedLoafCount = 0
+    let captureIncomplete = false
     const firstUIEventToFrameEnd = createDiagnosticAccumulatorState()
     const attributedForcedStyleAndLayout = createDiagnosticAccumulatorState()
 
@@ -879,10 +887,23 @@ function createLongAnimationFrameDiagnosticsAccumulator(
             recordDiagnosticSample(firstUIEventToFrameEnd, diagnostics.firstUIEventToFrameEnd, capacity, countLimit)
             recordDiagnosticSample(attributedForcedStyleAndLayout, diagnostics.attributedForcedStyleAndLayout, capacity, countLimit)
         },
+        markIncomplete(): void {
+            captureIncomplete = true
+        },
         snapshot(observerState = 'supported'): LongAnimationFrameDiagnosticsSnapshot {
             return {
-                loafFirstUiEventToFrameEnd: diagnosticAggregate(firstUIEventToFrameEnd, observerState, observedLoafCount),
-                loafAttributedForcedStyleLayout: diagnosticAggregate(attributedForcedStyleAndLayout, observerState, observedLoafCount),
+                loafFirstUiEventToFrameEnd: diagnosticAggregate(
+                    firstUIEventToFrameEnd,
+                    observerState,
+                    observedLoafCount,
+                    captureIncomplete
+                ),
+                loafAttributedForcedStyleLayout: diagnosticAggregate(
+                    attributedForcedStyleAndLayout,
+                    observerState,
+                    observedLoafCount,
+                    captureIncomplete
+                ),
             }
         },
     }
@@ -916,22 +937,34 @@ export function observeLongAnimationFrameDiagnostics(
         }
     }
     return {
-        state: observationState,
+        get state(): PerformanceRuntimeCapabilityState {
+            return observationState
+        },
         // This logical capture excludes the observer's pre-subscription queue,
         // even when it reuses an underlying observer originally opened buffered.
         buffered: false,
-        ...(observationReason ? { reason: observationReason } : {}),
+        get reason(): string | undefined {
+            return observationReason
+        },
         snapshot: () => accumulator.snapshot(observationState),
         disconnect(): void {
             if (!active) {
                 subscription()
                 return
             }
+            const observerState = registry.observers.get('long-animation-frame')
+            let finalDrainSucceeded = false
             try {
                 // Keep the safe projector active while the shared observer
                 // drains queued records at this final reporting boundary.
                 subscription()
+                finalDrainSucceeded = observerState?.lastDrainSucceeded === true
             } finally {
+                if (!finalDrainSucceeded) {
+                    accumulator.markIncomplete()
+                    observationState = 'unknown'
+                    observationReason = 'long-animation-frame final drain failed'
+                }
                 active = false
                 diagnostics.subscribers.delete(diagnosticSubscriber)
                 if (diagnostics.subscribers.size === 0) diagnostics.projector = null
@@ -974,6 +1007,7 @@ function createObserverState(
         observer: null as unknown as PerformanceObserver,
         subscribers: new Set([firstSubscriber]),
         buffered: false,
+        lastDrainSucceeded: null,
     }
 
     try {
@@ -1046,9 +1080,11 @@ function drainObserverState(entryType: PerformanceRuntimeEntryType, state: Obser
     try {
         const entries = state.observer.takeRecords()
         dispatchPerformanceEntries(entryType, state, entries)
+        state.lastDrainSucceeded = true
         return true
     } catch {
         // takeRecords and non-native observer lists are both isolated.
+        state.lastDrainSucceeded = false
         return false
     }
 }
