@@ -5,6 +5,7 @@ import { DataSource } from 'typeorm'
 
 import { ApplicationService } from '../application/application.service'
 import { resolveClickhouseDatabase } from '../shared/clickhouse-utils'
+import { createAnimationRumV2ProjectionSql } from './animation-rum-v2-projection-sql'
 
 const APP_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/
 const CAPTURE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{7,79}$/
@@ -37,7 +38,19 @@ type OutboxAggregateRow = {
 }
 
 type CountAggregateRow = { count: unknown }
-type ProjectionRow = { capture_id?: unknown; event_id?: unknown }
+type ProjectionRow = {
+    capture_id?: unknown
+    event_id?: unknown
+    scope?: unknown
+    metric_count?: unknown
+    provider_evidence_count?: unknown
+    projection_observed_metric_count?: unknown
+    projection_matching_metric_count?: unknown
+    projection_mismatched_metric_identity_count?: unknown
+    projection_observed_provider_evidence_count?: unknown
+    projection_matching_provider_evidence_count?: unknown
+    projection_mismatched_provider_identity_count?: unknown
+}
 type ProjectionCandidate = { captureId: string; eventId: string }
 
 type BoundedCount = { count: number; truncated: boolean }
@@ -54,8 +67,11 @@ type OutboxAggregate = {
 type ProjectionView = {
     availability: ProjectionAvailability
     matched: number | null
+    storageComplete: number | null
     missingAfterGrace: number | null
     identityMismatch: number | null
+    childCountMismatch: number | null
+    childIdentityMismatch: number | null
 }
 
 export const ANIMATION_RUM_V2_PIPELINE_CLOCK = Symbol('ANIMATION_RUM_V2_PIPELINE_CLOCK')
@@ -68,11 +84,19 @@ export const ANIMATION_RUM_V2_PIPELINE_LIMITS = Object.freeze({
 })
 
 const DATABASE_ROW_LIMIT = ANIMATION_RUM_V2_PIPELINE_LIMITS.comparisonLimit + 1
+const CLICKHOUSE_CAPTURE_CHILD_LIMITS = Object.freeze({ metrics: 128, providerEvidence: 96 })
+const CLICKHOUSE_EXPECTED_ROWS_TO_READ =
+    ANIMATION_RUM_V2_PIPELINE_LIMITS.comparisonLimit *
+    (1 + CLICKHOUSE_CAPTURE_CHILD_LIMITS.metrics + CLICKHOUSE_CAPTURE_CHILD_LIMITS.providerEvidence)
+// FINAL reads physical replacement versions and whole marks before collapsing
+// them, so the cap needs bounded read-amplification room above logical maxima.
+const CLICKHOUSE_READ_AMPLIFICATION_FACTOR = 2
+const CLICKHOUSE_MAX_ROWS_TO_READ = CLICKHOUSE_EXPECTED_ROWS_TO_READ * CLICKHOUSE_READ_AMPLIFICATION_FACTOR
 const CLICKHOUSE_READ_SETTINGS = Object.freeze({
     max_execution_time: 5,
     max_result_rows: String(ANIMATION_RUM_V2_PIPELINE_LIMITS.comparisonLimit),
     result_overflow_mode: 'throw' as const,
-    max_rows_to_read: '50000',
+    max_rows_to_read: String(CLICKHOUSE_MAX_ROWS_TO_READ),
     max_memory_usage: '67108864',
     max_threads: 2,
 })
@@ -223,8 +247,11 @@ export class AnimationRumV2PipelineService {
                 availability: projection.availability,
                 eligible: { count: candidates.length, truncated: comparisonTruncated },
                 matched: projection.matched,
+                storageComplete: projection.storageComplete,
                 missingAfterGrace: projection.missingAfterGrace,
                 identityMismatch: projection.identityMismatch,
+                childCountMismatch: projection.childCountMismatch,
+                childIdentityMismatch: projection.childIdentityMismatch,
             },
             semantics: {
                 publishedMeans: 'kafka-broker-ack-only' as const,
@@ -335,7 +362,9 @@ export class AnimationRumV2PipelineService {
             boundedDue <= count.count &&
             boundedRetrying <= count.count &&
             boundedLeased <= count.count &&
-            (count.count === 0 ? maxAttemptCount === null && oldestPendingAt === null : maxAttemptCount !== null && oldestPendingAt !== null)
+            (count.count === 0
+                ? maxAttemptCount === null && oldestPendingAt === null
+                : maxAttemptCount !== null && oldestPendingAt !== null)
 
         return {
             pending: { count: count.count, truncated: count.truncated },
@@ -350,17 +379,47 @@ export class AnimationRumV2PipelineService {
 
     private async readProjection(appId: string, candidates: ProjectionCandidate[]): Promise<ProjectionView> {
         if (candidates.length === 0) {
-            return { availability: 'not-checked', matched: null, missingAfterGrace: null, identityMismatch: null }
+            return {
+                availability: 'not-checked',
+                matched: null,
+                storageComplete: null,
+                missingAfterGrace: null,
+                identityMismatch: null,
+                childCountMismatch: null,
+                childIdentityMismatch: null,
+            }
         }
 
         const expected = new Map(candidates.map(candidate => [candidate.captureId, candidate.eventId] as const))
         try {
             const result = await this.clickhouse.query({
                 query: `
-                    SELECT capture_id, event_id
-                    FROM ${this.database}.animation_rum_captures_v2 FINAL
-                    WHERE app_id = {appId:String}
-                      AND capture_id IN {captureIds:Array(String)}
+                    WITH ${createAnimationRumV2ProjectionSql({
+                        database: this.database,
+                        selectedCaptureMarkersSql: `
+                            SELECT app_id,
+                                   capture_id,
+                                   event_id,
+                                   scope,
+                                   metric_count,
+                                   provider_evidence_count
+                            FROM ${this.database}.animation_rum_captures_v2 FINAL
+                            WHERE app_id = {appId:String}
+                              AND capture_id IN {captureIds:Array(String)}
+                        `,
+                    })}
+                    SELECT capture_id AS capture_id,
+                           event_id AS event_id,
+                           scope AS scope,
+                           metric_count AS metric_count,
+                           provider_evidence_count AS provider_evidence_count,
+                           projection_observed_metric_count AS projection_observed_metric_count,
+                           projection_matching_metric_count AS projection_matching_metric_count,
+                           projection_mismatched_metric_identity_count AS projection_mismatched_metric_identity_count,
+                           projection_observed_provider_evidence_count AS projection_observed_provider_evidence_count,
+                           projection_matching_provider_evidence_count AS projection_matching_provider_evidence_count,
+                           projection_mismatched_provider_identity_count AS projection_mismatched_provider_identity_count
+                    FROM projection_checked_captures
                     ORDER BY capture_id
                     LIMIT ${ANIMATION_RUM_V2_PIPELINE_LIMITS.comparisonLimit}
                 `,
@@ -373,29 +432,99 @@ export class AnimationRumV2PipelineService {
 
             const seen = new Set<string>()
             let matched = 0
+            let storageComplete = 0
             let identityMismatch = 0
+            let childCountMismatch = 0
+            let childIdentityMismatch = 0
             for (const row of json.data) {
                 const captureId = typeof row.capture_id === 'string' ? row.capture_id : null
                 const eventId = typeof row.event_id === 'string' ? row.event_id : null
-                if (!captureId || !eventId || !expected.has(captureId) || seen.has(captureId)) {
+                if (!captureId || !expected.has(captureId) || seen.has(captureId)) {
+                    throw new Error('Invalid ClickHouse pipeline projection identity set')
+                }
+                seen.add(captureId)
+                if (!eventId || expected.get(captureId) !== eventId) {
                     identityMismatch += 1
                     continue
                 }
-                seen.add(captureId)
-                if (expected.get(captureId) === eventId) matched += 1
-                else identityMismatch += 1
+
+                matched += 1
+                const scope = row.scope === 'page' || row.scope === 'target' ? row.scope : null
+                const expectedMetricCount = safeInteger(row.metric_count, CLICKHOUSE_CAPTURE_CHILD_LIMITS.metrics)
+                const expectedProviderEvidenceCount = safeInteger(
+                    row.provider_evidence_count,
+                    CLICKHOUSE_CAPTURE_CHILD_LIMITS.providerEvidence
+                )
+                const observedMetricCount = safeInteger(row.projection_observed_metric_count, CLICKHOUSE_MAX_ROWS_TO_READ)
+                const matchingMetricCount = safeInteger(row.projection_matching_metric_count, CLICKHOUSE_MAX_ROWS_TO_READ)
+                const mismatchedMetricIdentityCount = safeInteger(
+                    row.projection_mismatched_metric_identity_count,
+                    CLICKHOUSE_MAX_ROWS_TO_READ
+                )
+                const observedProviderEvidenceCount = safeInteger(
+                    row.projection_observed_provider_evidence_count,
+                    CLICKHOUSE_MAX_ROWS_TO_READ
+                )
+                const matchingProviderEvidenceCount = safeInteger(
+                    row.projection_matching_provider_evidence_count,
+                    CLICKHOUSE_MAX_ROWS_TO_READ
+                )
+                const mismatchedProviderIdentityCount = safeInteger(
+                    row.projection_mismatched_provider_identity_count,
+                    CLICKHOUSE_MAX_ROWS_TO_READ
+                )
+
+                const childCounts = {
+                    expectedMetricCount,
+                    expectedProviderEvidenceCount,
+                    observedMetricCount,
+                    matchingMetricCount,
+                    mismatchedMetricIdentityCount,
+                    observedProviderEvidenceCount,
+                    matchingProviderEvidenceCount,
+                    mismatchedProviderIdentityCount,
+                }
+                const hasInvalidCount = Object.values(childCounts).some(value => value === null)
+                const hasChildIdentityMismatch =
+                    scope === null ||
+                    hasInvalidCount ||
+                    mismatchedMetricIdentityCount !== 0 ||
+                    mismatchedProviderIdentityCount !== 0 ||
+                    observedMetricCount !== Number(matchingMetricCount) + Number(mismatchedMetricIdentityCount) ||
+                    observedProviderEvidenceCount !== Number(matchingProviderEvidenceCount) + Number(mismatchedProviderIdentityCount)
+                if (hasChildIdentityMismatch) {
+                    childIdentityMismatch += 1
+                    continue
+                }
+
+                if (matchingMetricCount !== expectedMetricCount || matchingProviderEvidenceCount !== expectedProviderEvidenceCount) {
+                    childCountMismatch += 1
+                    continue
+                }
+                storageComplete += 1
             }
 
             return {
                 availability: 'available',
                 matched,
+                storageComplete,
                 missingAfterGrace: expected.size - seen.size,
                 identityMismatch,
+                childCountMismatch,
+                childIdentityMismatch,
             }
         } catch {
             // Never expose connection details, SQL, ClickHouse errors, or raw
             // rows through this authenticated diagnostic response.
-            return { availability: 'unavailable', matched: null, missingAfterGrace: null, identityMismatch: null }
+            return {
+                availability: 'unavailable',
+                matched: null,
+                storageComplete: null,
+                missingAfterGrace: null,
+                identityMismatch: null,
+                childCountMismatch: null,
+                childIdentityMismatch: null,
+            }
         }
     }
 
@@ -410,7 +539,14 @@ export class AnimationRumV2PipelineService {
         eligibleCount: number
         projection: ProjectionView
     }): PipelineStatus {
-        if (input.statePairMismatch > 0 || (input.projection.identityMismatch ?? 0) > 0) return 'inconsistent'
+        if (
+            input.statePairMismatch > 0 ||
+            (input.projection.identityMismatch ?? 0) > 0 ||
+            (input.projection.childCountMismatch ?? 0) > 0 ||
+            (input.projection.childIdentityMismatch ?? 0) > 0 ||
+            (input.projection.availability === 'available' && input.projection.storageComplete !== input.projection.matched)
+        )
+            return 'inconsistent'
         if (input.recentReceiptQuarantined > 0 || input.recentOutboxQuarantined > 0) return 'quarantined'
 
         const oldestPendingAt = input.pending.oldestPendingAt ? Date.parse(input.pending.oldestPendingAt) : Number.NaN

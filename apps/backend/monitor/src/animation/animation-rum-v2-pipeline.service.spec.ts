@@ -36,22 +36,54 @@ const publishedReceipt = (overrides: Partial<ReceiptFixture> = {}): ReceiptFixtu
     ...overrides,
 })
 
-const projectionResult = (data: Array<{ capture_id: string; event_id: string }>) => ({ json: async () => ({ data }) })
+type ProjectionFixture = {
+    capture_id: string
+    event_id: string
+    scope: 'page' | 'target'
+    metric_count: number | string
+    provider_evidence_count: number | string
+    projection_observed_metric_count: number | string
+    projection_matching_metric_count: number | string
+    projection_mismatched_metric_identity_count: number | string
+    projection_observed_provider_evidence_count: number | string
+    projection_matching_provider_evidence_count: number | string
+    projection_mismatched_provider_identity_count: number | string
+}
 
-function createService(options: {
-    receipts?: ReceiptFixture[]
-    pending?: Record<string, unknown>
-    quarantinedCount?: unknown
-    projectionRows?: Array<{ capture_id: string; event_id: string }>
-    projectionError?: unknown
-    postgresError?: unknown
-    ownershipError?: unknown
-} = {}) {
+const projectionRow = (overrides: Partial<ProjectionFixture> = {}): ProjectionFixture => ({
+    capture_id: 'capture_12345678',
+    event_id: 'event_12345678',
+    scope: 'page',
+    metric_count: 1,
+    provider_evidence_count: 0,
+    projection_observed_metric_count: 1,
+    projection_matching_metric_count: 1,
+    projection_mismatched_metric_identity_count: 0,
+    projection_observed_provider_evidence_count: 0,
+    projection_matching_provider_evidence_count: 0,
+    projection_mismatched_provider_identity_count: 0,
+    ...overrides,
+})
+
+const projectionResult = (data: ProjectionFixture[]) => ({ json: async () => ({ data }) })
+
+function createService(
+    options: {
+        receipts?: ReceiptFixture[]
+        pending?: Record<string, unknown>
+        quarantinedCount?: unknown
+        projectionRows?: ProjectionFixture[]
+        projectionError?: unknown
+        postgresError?: unknown
+        ownershipError?: unknown
+    } = {}
+) {
     const receipts = options.receipts ?? [publishedReceipt()]
     const pending = options.pending ?? pendingAggregate()
     const quarantinedCount = options.quarantinedCount ?? '0'
     const dataSource = {
-        query: jest.fn(async (sql: string, _params?: unknown[]) => {
+        query: jest.fn(async (sql: string, params?: unknown[]) => {
+            void params
             if (options.postgresError) throw options.postgresError
             if (sql.includes('animation_rum_v2_capture_receipt AS receipt')) return receipts
             if (sql.includes("outbox.state = 'pending'")) return [pending]
@@ -60,15 +92,14 @@ function createService(options: {
         }),
     }
     const clickhouse = {
-        query: jest.fn(async (_request: unknown) => {
+        query: jest.fn(async (request: unknown) => {
+            void request
             if (options.projectionError) throw options.projectionError
-            return projectionResult(options.projectionRows ?? [{ capture_id: 'capture_12345678', event_id: 'event_12345678' }])
+            return projectionResult(options.projectionRows ?? [projectionRow()])
         }),
     }
     const applications = {
-        assertOwned: options.ownershipError
-            ? jest.fn().mockRejectedValue(options.ownershipError)
-            : jest.fn().mockResolvedValue(undefined),
+        assertOwned: options.ownershipError ? jest.fn().mockRejectedValue(options.ownershipError) : jest.fn().mockResolvedValue(undefined),
     }
     const service = new AnimationRumV2PipelineService(
         dataSource as any,
@@ -101,8 +132,11 @@ describe('AnimationRumV2PipelineService', () => {
                     availability: 'available',
                     eligible: { count: 1, truncated: false },
                     matched: 1,
+                    storageComplete: 1,
                     missingAfterGrace: 0,
                     identityMismatch: 0,
+                    childCountMismatch: 0,
+                    childIdentityMismatch: 0,
                 },
                 semantics: {
                     publishedMeans: 'kafka-broker-ack-only',
@@ -118,17 +152,21 @@ describe('AnimationRumV2PipelineService', () => {
         expect(applications.assertOwned.mock.invocationCallOrder[0]).toBeLessThan(clickhouse.query.mock.invocationCallOrder[0])
         expect(dataSource.query).toHaveBeenCalledTimes(3)
         expect(dataSource.query.mock.calls.every(call => call[1]?.[0] === APP_ID && call[1]?.[1] === 41)).toBe(true)
-        expect(dataSource.query.mock.calls.every(call => call[0].includes(`LIMIT ${ANIMATION_RUM_V2_PIPELINE_LIMITS.comparisonLimit + 1}`))).toBe(
-            true
-        )
+        expect(
+            dataSource.query.mock.calls.every(call => call[0].includes(`LIMIT ${ANIMATION_RUM_V2_PIPELINE_LIMITS.comparisonLimit + 1}`))
+        ).toBe(true)
         expect(dataSource.query.mock.calls.every(call => !call[0].includes('envelope_text'))).toBe(true)
 
         const query = clickhouse.query.mock.calls[0][0] as any
         expect(query.query).toContain('animation_rum_captures_v2 FINAL')
+        expect(query.query).toContain('animation_rum_metrics_v2 FINAL')
+        expect(query.query).toContain('animation_rum_provider_evidence_v2 FINAL')
+        expect(query.query).toContain('metric.event_id = marker.event_id AND metric.scope = marker.scope')
+        expect(query.query).toContain('provider.event_id = marker.event_id AND provider.scope = marker.scope')
         expect(query.query).toContain(`LIMIT ${ANIMATION_RUM_V2_PIPELINE_LIMITS.comparisonLimit}`)
         expect(query.query_params).toEqual({ appId: APP_ID, captureIds: ['capture_12345678'] })
         expect(query.clickhouse_settings).toEqual(
-            expect.objectContaining({ max_result_rows: '500', max_rows_to_read: '50000', max_memory_usage: '67108864', max_threads: 2 })
+            expect.objectContaining({ max_result_rows: '500', max_rows_to_read: '225000', max_memory_usage: '67108864', max_threads: 2 })
         )
         expect(JSON.stringify(response)).not.toContain('capture_12345678')
         expect(JSON.stringify(response)).not.toContain('event_12345678')
@@ -165,6 +203,19 @@ describe('AnimationRumV2PipelineService', () => {
             }),
         })
         await expect(freshPending.service.read(41, APP_ID)).resolves.toEqual(expect.objectContaining({ status: 'in-flight' }))
+
+        const freshPublished = createService({
+            receipts: [
+                publishedReceipt({
+                    updatedAt: '2026-08-27T11:59:30.000Z',
+                    publishedAt: '2026-08-27T11:59:30.000Z',
+                }),
+            ],
+        })
+        await expect(freshPublished.service.read(41, APP_ID)).resolves.toEqual(
+            expect.objectContaining({ status: 'in-flight', projection: expect.objectContaining({ availability: 'not-checked' }) })
+        )
+        expect(freshPublished.clickhouse.query).not.toHaveBeenCalled()
 
         const stalePending = createService({
             receipts: [],
@@ -203,20 +254,92 @@ describe('AnimationRumV2PipelineService', () => {
         expect(missingResponse).toEqual(
             expect.objectContaining({
                 status: 'delayed',
-                projection: expect.objectContaining({ matched: 0, missingAfterGrace: 1, identityMismatch: 0 }),
+                projection: expect.objectContaining({
+                    matched: 0,
+                    storageComplete: 0,
+                    missingAfterGrace: 1,
+                    identityMismatch: 0,
+                    childCountMismatch: 0,
+                    childIdentityMismatch: 0,
+                }),
             })
         )
 
-        const wrongEvent = createService({ projectionRows: [{ capture_id: 'capture_12345678', event_id: 'event_wrong_1234' }] })
+        const wrongEvent = createService({ projectionRows: [projectionRow({ event_id: 'event_wrong_1234' })] })
         const wrongEventResponse = await wrongEvent.service.read(41, APP_ID)
         expect(wrongEventResponse).toEqual(
+            expect.objectContaining({
+                status: 'inconsistent',
+                projection: expect.objectContaining({
+                    matched: 0,
+                    storageComplete: 0,
+                    missingAfterGrace: 0,
+                    identityMismatch: 1,
+                    childCountMismatch: 0,
+                    childIdentityMismatch: 0,
+                }),
+            })
+        )
+        expect(JSON.stringify(wrongEventResponse)).not.toContain('capture_12345678')
+        expect(JSON.stringify(wrongEventResponse)).not.toContain('event_wrong_1234')
+
+        const emptyEvent = createService({ projectionRows: [projectionRow({ event_id: '' })] })
+        const emptyEventResponse = await emptyEvent.service.read(41, APP_ID)
+        expect(emptyEventResponse).toEqual(
             expect.objectContaining({
                 status: 'inconsistent',
                 projection: expect.objectContaining({ matched: 0, missingAfterGrace: 0, identityMismatch: 1 }),
             })
         )
-        expect(JSON.stringify(wrongEventResponse)).not.toContain('capture_12345678')
-        expect(JSON.stringify(wrongEventResponse)).not.toContain('event_wrong_1234')
+    })
+
+    it('partitions matched markers into complete, child-count, and child-identity outcomes', async () => {
+        const receipts = [
+            publishedReceipt({ captureId: 'capture_11111111', eventId: 'event_11111111' }),
+            publishedReceipt({ captureId: 'capture_22222222', eventId: 'event_22222222' }),
+            publishedReceipt({ captureId: 'capture_33333333', eventId: 'event_33333333' }),
+        ]
+        const projectionRows = [
+            projectionRow({ capture_id: 'capture_11111111', event_id: 'event_11111111' }),
+            projectionRow({
+                capture_id: 'capture_22222222',
+                event_id: 'event_22222222',
+                provider_evidence_count: 1,
+                projection_observed_provider_evidence_count: 0,
+                projection_matching_provider_evidence_count: 0,
+            }),
+            projectionRow({
+                capture_id: 'capture_33333333',
+                event_id: 'event_33333333',
+                projection_observed_metric_count: 1,
+                projection_matching_metric_count: 0,
+                projection_mismatched_metric_identity_count: 1,
+            }),
+        ]
+        const { service } = createService({ receipts, projectionRows })
+
+        const response = await service.read(41, APP_ID)
+
+        expect(response).toEqual(
+            expect.objectContaining({
+                status: 'inconsistent',
+                projection: expect.objectContaining({
+                    matched: 3,
+                    storageComplete: 1,
+                    childCountMismatch: 1,
+                    childIdentityMismatch: 1,
+                    identityMismatch: 0,
+                    missingAfterGrace: 0,
+                }),
+            })
+        )
+        expect(
+            (response.projection.storageComplete ?? 0) +
+                (response.projection.childCountMismatch ?? 0) +
+                (response.projection.childIdentityMismatch ?? 0)
+        ).toBe(response.projection.matched)
+        expect(JSON.stringify(response)).not.toContain('capture_11111111')
+        expect(JSON.stringify(response)).not.toContain('event_33333333')
     })
 
     it('degrades a ClickHouse failure to unknown without returning the raw error', async () => {
@@ -230,8 +353,11 @@ describe('AnimationRumV2PipelineService', () => {
                 projection: expect.objectContaining({
                     availability: 'unavailable',
                     matched: null,
+                    storageComplete: null,
                     missingAfterGrace: null,
                     identityMismatch: null,
+                    childCountMismatch: null,
+                    childIdentityMismatch: null,
                 }),
             })
         )
@@ -277,7 +403,7 @@ describe('AnimationRumV2PipelineService', () => {
             const suffix = String(index).padStart(8, '0')
             return publishedReceipt({ captureId: `capture_${suffix}`, eventId: `event_${suffix}` })
         })
-        const projectionRows = receipts.slice(0, 500).map(row => ({ capture_id: row.captureId, event_id: row.eventId }))
+        const projectionRows = receipts.slice(0, 500).map(row => projectionRow({ capture_id: row.captureId, event_id: row.eventId }))
         const { service, clickhouse } = createService({ receipts, projectionRows })
 
         const response = await service.read(41, APP_ID)
