@@ -1,3 +1,5 @@
+import { createAnimationRumV2GoldenReport } from '@condev-monitor/animation-rum-contract/testing'
+
 import { ANIMATION_RUM_FAMILIES } from '../../shared/animation-rum-v1'
 import { SpanController } from './span.controller'
 
@@ -28,6 +30,11 @@ function animationReport() {
         ),
         metrics: [{ family: 'frameCadence', name: 'frameDurationMs', stat: 'p95', unit: 'ms', value: 16, samples: 1, status: 'measured' }],
     }
+}
+
+function animationV2Report() {
+    const report = createAnimationRumV2GoldenReport()
+    return { ...report, event_type: 'animation_rum', message: '', _eventId: report.eventId }
 }
 
 describe('SpanController', () => {
@@ -92,6 +99,30 @@ describe('SpanController', () => {
 
         expect(rateLimiter.check).toHaveBeenCalledWith('legacy app id', 1)
         expect(spanService.tracking).toHaveBeenCalledTimes(1)
+    })
+
+    it('accepts the one-character v2 app id boundary', () => {
+        const rateLimiter = { check: jest.fn().mockReturnValue({ exceeded: false }) }
+        const spanService = { tracking: jest.fn().mockReturnValue({ ok: true }) }
+        const controller = new SpanController(spanService as any, rateLimiter as any, {} as any, {} as any)
+        const res = { status: jest.fn().mockReturnThis(), header: jest.fn().mockReturnThis() }
+
+        controller.tracking('a', animationV2Report(), res as any)
+
+        expect(rateLimiter.check).toHaveBeenCalledWith('a', 1)
+        expect(spanService.tracking).toHaveBeenCalledTimes(1)
+    })
+
+    it('leaves a mixed ordinary lane available when a v2 app id is invalid', () => {
+        const rateLimiter = { check: jest.fn().mockReturnValue({ exceeded: false }) }
+        const spanService = { tracking: jest.fn().mockReturnValue({ ok: true }) }
+        const controller = new SpanController(spanService as any, rateLimiter as any, {} as any, {} as any)
+        const res = { status: jest.fn().mockReturnThis(), header: jest.fn().mockReturnThis() }
+        const body = [{ event_type: 'performance', message: 'navigation' }, animationV2Report()]
+
+        controller.tracking('legacy app id', body, res as any)
+
+        expect(spanService.tracking).toHaveBeenCalledWith('legacy app id', body)
     })
 
     it('applies the shared inbound policy before the dedicated route persists', async () => {
