@@ -32,6 +32,55 @@ export interface RuntimeLongAnimationFrameEntry {
     presentationTime?: number | null
 }
 
+export type LongAnimationFrameDiagnosticStatus = 'measured' | 'partial' | 'not-observed' | 'unsupported' | 'unknown'
+
+/**
+ * Bounded aggregate for one optional LoAF diagnostic. It intentionally carries
+ * no script attribution, URL, function name, DOM identity, selector, or raw
+ * timestamp. Counts and p95 samples are explicitly bounded. `dropped` and
+ * `truncated` describe only accepted durations omitted from the p95 reservoir;
+ * count saturation is reported as partial without violating sample accounting.
+ */
+export interface LongAnimationFrameDiagnosticAggregate {
+    capability: PerformanceRuntimeCapabilityState
+    /** Bounded valid sample count. Zero is meaningful when capability is supported. */
+    count: number | null
+    /** Nearest-rank p95 over retained valid durations; null is never rewritten to zero. */
+    p95Ms: number | null
+    accepted: number | null
+    rejected: number | null
+    retained: number | null
+    dropped: number | null
+    truncated: boolean
+    /** Distribution integrity; a supported no-candidate count remains the explicit number 0. */
+    status: LongAnimationFrameDiagnosticStatus
+}
+
+export interface LongAnimationFrameDiagnosticsSnapshot {
+    loafFirstUiEventToFrameEnd: LongAnimationFrameDiagnosticAggregate
+    loafAttributedForcedStyleLayout: LongAnimationFrameDiagnosticAggregate
+}
+
+interface LongAnimationFrameDiagnosticsAccumulator {
+    record(diagnostics: PrivateLongAnimationFrameDiagnostics): void
+    snapshot(observerState?: PerformanceRuntimeCapabilityState): LongAnimationFrameDiagnosticsSnapshot
+}
+
+export interface LongAnimationFrameDiagnosticsOptions {
+    /** Maximum accepted durations retained for each p95. Defaults to 2,048. */
+    maxSamples?: number
+    /** Maximum accepted and rejected counts retained separately. Saturation makes status partial. Defaults to 1,000,000,000. */
+    maxCount?: number
+}
+
+export interface LongAnimationFrameDiagnosticsObservation {
+    readonly state: PerformanceRuntimeCapabilityState
+    readonly buffered: boolean
+    readonly reason?: string
+    snapshot(): LongAnimationFrameDiagnosticsSnapshot
+    disconnect(): void
+}
+
 export interface RuntimeEventTimingEntry {
     entryType: 'event'
     name: string
@@ -124,6 +173,7 @@ export type PageLifecycleSubscriber = (event: PageLifecycleEvent) => void
 export type ResourceTimingBufferSubscriber = () => void
 
 type RuntimeEntrySubscriber = (entry: PerformanceRuntimeEntry) => void
+type LongAnimationFrameDiagnosticSubscriber = (diagnostics: PrivateLongAnimationFrameDiagnostics) => void
 type LifecycleSubscriber = {
     callback: PageLifecycleSubscriber
     priority: number
@@ -172,6 +222,10 @@ interface PerformanceRuntimeRegistry {
         bound: boolean
         handler: (() => void) | null
     }
+    loafDiagnostics: {
+        subscribers: Set<LongAnimationFrameDiagnosticSubscriber>
+        projector: ((loaf: object, startTime: number, duration: number) => PrivateLongAnimationFrameDiagnostics) | null
+    }
 }
 
 const REGISTRY_KEY = Symbol.for('@condev-monitor/performance-runtime/v1')
@@ -196,6 +250,10 @@ function createRegistry(): PerformanceRuntimeRegistry {
             bound: false,
             handler: null,
         },
+        loafDiagnostics: {
+            subscribers: new Set(),
+            projector: null,
+        },
     }
 }
 
@@ -206,6 +264,10 @@ function getRegistry(): PerformanceRuntimeRegistry {
         subscribers: new Set(),
         bound: false,
         handler: null,
+    }
+    root[REGISTRY_KEY].loafDiagnostics ??= {
+        subscribers: new Set(),
+        projector: null,
     }
     return root[REGISTRY_KEY]
 }
@@ -411,6 +473,131 @@ function finiteNonNegativeNumber(value: unknown): number | null {
     return number !== null && number >= 0 ? number : null
 }
 
+type LongAnimationFrameDiagnosticCapability = PerformanceRuntimeCapabilityState
+
+interface LongAnimationFrameDiagnosticSample {
+    capability: LongAnimationFrameDiagnosticCapability
+    candidate: boolean
+    durationMs: number | null
+    sourceIncomplete: boolean
+}
+
+interface PrivateLongAnimationFrameDiagnostics {
+    firstUIEventToFrameEnd: LongAnimationFrameDiagnosticSample
+    attributedForcedStyleAndLayout: LongAnimationFrameDiagnosticSample
+}
+
+interface DiagnosticAccumulatorState {
+    capability: LongAnimationFrameDiagnosticCapability | null
+    candidateCount: number
+    acceptedCount: number
+    rejectedCount: number
+    retainedDurations: number[]
+    droppedSampleCount: number
+    sourceIncomplete: boolean
+    countSaturated: boolean
+}
+
+const DEFAULT_LOAF_DIAGNOSTIC_MAX_SAMPLES = 2_048
+const MAX_LOAF_DIAGNOSTIC_SAMPLES = 20_000
+const MAX_LOAF_SCRIPTS_PER_FRAME = 512
+const MAX_LOAF_DIAGNOSTIC_DURATION_MS = 60 * 60 * 1_000
+const MAX_DIAGNOSTIC_COUNT = 1_000_000_000
+
+function incrementDiagnosticCount(value: number, maximum = MAX_DIAGNOSTIC_COUNT): number {
+    return Math.min(maximum, value + 1)
+}
+
+function hasProperty(value: object, property: PropertyKey): boolean {
+    try {
+        return property in value
+    } catch {
+        return false
+    }
+}
+
+function readProperty(value: object, property: PropertyKey): unknown {
+    try {
+        return (value as Record<PropertyKey, unknown>)[property]
+    } catch {
+        return undefined
+    }
+}
+
+function firstUIEventDiagnostic(loaf: object, startTime: number, duration: number): LongAnimationFrameDiagnosticSample {
+    if (!hasProperty(loaf, 'firstUIEventTimestamp')) {
+        return { capability: 'unsupported', candidate: false, durationMs: null, sourceIncomplete: false }
+    }
+
+    const timestamp = readProperty(loaf, 'firstUIEventTimestamp')
+    if (timestamp === 0) {
+        return { capability: 'supported', candidate: false, durationMs: null, sourceIncomplete: false }
+    }
+
+    const frameEnd = startTime + duration
+    const numericTimestamp = typeof timestamp === 'number' && Number.isFinite(timestamp) ? timestamp : null
+    const elapsed = numericTimestamp === null ? null : frameEnd - numericTimestamp
+    const durationMs =
+        elapsed !== null &&
+        Number.isFinite(frameEnd) &&
+        duration >= 0 &&
+        numericTimestamp !== null &&
+        numericTimestamp > 0 &&
+        elapsed >= 0 &&
+        elapsed <= MAX_LOAF_DIAGNOSTIC_DURATION_MS
+            ? elapsed
+            : null
+
+    return { capability: 'supported', candidate: true, durationMs, sourceIncomplete: false }
+}
+
+function forcedStyleAndLayoutDiagnostic(loaf: object): LongAnimationFrameDiagnosticSample {
+    if (!hasProperty(loaf, 'scripts')) {
+        return { capability: 'unsupported', candidate: false, durationMs: null, sourceIncomplete: false }
+    }
+
+    const scripts = readProperty(loaf, 'scripts')
+    if (!Array.isArray(scripts)) {
+        return { capability: 'unknown', candidate: true, durationMs: null, sourceIncomplete: true }
+    }
+    if (scripts.length === 0) {
+        return { capability: 'unknown', candidate: false, durationMs: null, sourceIncomplete: false }
+    }
+
+    const sourceIncomplete = scripts.length > MAX_LOAF_SCRIPTS_PER_FRAME
+    const inspectedCount = Math.min(scripts.length, MAX_LOAF_SCRIPTS_PER_FRAME)
+    let exposedCount = 0
+    let complete = !sourceIncomplete
+    let sum = 0
+
+    for (let index = 0; index < inspectedCount; index += 1) {
+        const script = scripts[index]
+        if (script === null || typeof script !== 'object' || !hasProperty(script, 'forcedStyleAndLayoutDuration')) {
+            complete = false
+            continue
+        }
+        exposedCount += 1
+        const value = readProperty(script, 'forcedStyleAndLayoutDuration')
+        if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+            complete = false
+            continue
+        }
+        sum += value
+        if (!Number.isFinite(sum) || sum > MAX_LOAF_DIAGNOSTIC_DURATION_MS) complete = false
+    }
+
+    const capability: LongAnimationFrameDiagnosticCapability = exposedCount > 0 ? 'supported' : sourceIncomplete ? 'unknown' : 'unsupported'
+    const durationMs = complete && exposedCount === scripts.length ? sum : null
+    return { capability, candidate: true, durationMs, sourceIncomplete }
+}
+
+function projectLongAnimationFrameDiagnostics(loaf: object, startTime: number, duration: number): PrivateLongAnimationFrameDiagnostics {
+    return {
+        firstUIEventToFrameEnd: firstUIEventDiagnostic(loaf, startTime, duration),
+        attributedForcedStyleAndLayout: forcedStyleAndLayoutDiagnostic(loaf),
+    }
+}
+
 const RESOURCE_INITIATOR_TYPES = new Set<RuntimeResourceInitiatorType>([
     'audio',
     'beacon',
@@ -528,6 +715,231 @@ function snapshotEntry<T extends PerformanceRuntimeEntryType>(entryType: T, entr
     } as PerformanceRuntimeEntryMap[T]
 }
 
+function resolveDiagnosticSampleCapacity(value: number | undefined): number {
+    if (value === undefined) return DEFAULT_LOAF_DIAGNOSTIC_MAX_SAMPLES
+    if (!Number.isInteger(value) || value < 1 || value > MAX_LOAF_DIAGNOSTIC_SAMPLES) {
+        throw new TypeError(`maxSamples must be an integer between 1 and ${MAX_LOAF_DIAGNOSTIC_SAMPLES}`)
+    }
+    return value
+}
+
+function resolveDiagnosticCountLimit(value: number | undefined): number {
+    if (value === undefined) return MAX_DIAGNOSTIC_COUNT
+    if (!Number.isInteger(value) || value < 1 || value > MAX_DIAGNOSTIC_COUNT) {
+        throw new TypeError(`maxCount must be an integer between 1 and ${MAX_DIAGNOSTIC_COUNT}`)
+    }
+    return value
+}
+
+function createDiagnosticAccumulatorState(): DiagnosticAccumulatorState {
+    return {
+        capability: null,
+        candidateCount: 0,
+        acceptedCount: 0,
+        rejectedCount: 0,
+        retainedDurations: [],
+        droppedSampleCount: 0,
+        sourceIncomplete: false,
+        countSaturated: false,
+    }
+}
+
+function combineDiagnosticCapability(
+    current: LongAnimationFrameDiagnosticCapability | null,
+    incoming: LongAnimationFrameDiagnosticCapability
+): LongAnimationFrameDiagnosticCapability {
+    if (current === 'supported' || incoming === 'supported') return 'supported'
+    if (current === 'unsupported' || incoming === 'unsupported') return 'unsupported'
+    return 'unknown'
+}
+
+function recordDiagnosticSample(
+    aggregate: DiagnosticAccumulatorState,
+    sample: LongAnimationFrameDiagnosticSample,
+    capacity: number,
+    countLimit: number
+): void {
+    aggregate.capability = combineDiagnosticCapability(aggregate.capability, sample.capability)
+    if (!sample.candidate) return
+
+    if (aggregate.candidateCount >= countLimit) {
+        aggregate.countSaturated = true
+    } else {
+        aggregate.candidateCount += 1
+    }
+    if (sample.sourceIncomplete) aggregate.sourceIncomplete = true
+    if (sample.durationMs === null || sample.sourceIncomplete) {
+        if (aggregate.rejectedCount >= countLimit) {
+            aggregate.countSaturated = true
+        } else {
+            aggregate.rejectedCount += 1
+        }
+        return
+    }
+
+    if (aggregate.acceptedCount >= countLimit) {
+        aggregate.countSaturated = true
+        // This candidate cannot be represented as an accepted duration. Keep
+        // `dropped` reserved for accepted p95 samples that were not retained so
+        // retained + dropped always equals accepted.
+        if (aggregate.rejectedCount < countLimit) aggregate.rejectedCount += 1
+        return
+    }
+    aggregate.acceptedCount += 1
+    if (aggregate.retainedDurations.length < capacity) {
+        aggregate.retainedDurations.push(sample.durationMs)
+    } else {
+        aggregate.droppedSampleCount = incrementDiagnosticCount(aggregate.droppedSampleCount)
+    }
+}
+
+function roundDiagnosticValue(value: number): number {
+    return Math.round(value * 1_000_000) / 1_000_000
+}
+
+function diagnosticP95(values: readonly number[]): number | null {
+    if (values.length === 0) return null
+    const sorted = [...values].sort((left, right) => left - right)
+    const index = Math.min(sorted.length - 1, Math.max(0, Math.ceil(sorted.length * 0.95) - 1))
+    const value = sorted[index]
+    return value === undefined ? null : roundDiagnosticValue(value)
+}
+
+function unavailableDiagnosticAggregate(
+    status: Extract<LongAnimationFrameDiagnosticStatus, 'not-observed' | 'unsupported' | 'unknown'>,
+    capability: PerformanceRuntimeCapabilityState,
+    aggregate?: DiagnosticAccumulatorState
+): LongAnimationFrameDiagnosticAggregate {
+    const hasCandidateEvidence = (aggregate?.candidateCount ?? 0) > 0
+    return {
+        capability,
+        count: null,
+        p95Ms: null,
+        accepted: hasCandidateEvidence ? (aggregate?.acceptedCount ?? null) : null,
+        rejected: hasCandidateEvidence ? (aggregate?.rejectedCount ?? null) : null,
+        retained: hasCandidateEvidence ? (aggregate?.retainedDurations.length ?? null) : null,
+        dropped: hasCandidateEvidence ? (aggregate?.droppedSampleCount ?? null) : null,
+        truncated: Boolean(aggregate && aggregate.droppedSampleCount > 0),
+        status,
+    }
+}
+
+function diagnosticAggregate(
+    aggregate: DiagnosticAccumulatorState,
+    observerState: PerformanceRuntimeCapabilityState,
+    observedLoafCount: number
+): LongAnimationFrameDiagnosticAggregate {
+    if (observedLoafCount === 0) {
+        if (observerState === 'unsupported') return unavailableDiagnosticAggregate('unsupported', 'unsupported')
+        if (observerState === 'unknown') return unavailableDiagnosticAggregate('unknown', 'unknown')
+        return unavailableDiagnosticAggregate('not-observed', 'unknown')
+    }
+
+    const capability = aggregate.capability ?? 'unknown'
+    if (capability === 'unsupported') {
+        return unavailableDiagnosticAggregate('unsupported', capability, aggregate)
+    }
+    if (capability === 'unknown') {
+        return unavailableDiagnosticAggregate(aggregate.candidateCount > 0 ? 'unknown' : 'not-observed', capability, aggregate)
+    }
+
+    const truncated = aggregate.droppedSampleCount > 0
+    const retainedCount = aggregate.retainedDurations.length
+    const p95Value = diagnosticP95(aggregate.retainedDurations)
+    const incomplete = aggregate.sourceIncomplete || aggregate.countSaturated || aggregate.rejectedCount > 0 || truncated
+    return {
+        capability,
+        count: aggregate.acceptedCount,
+        p95Ms: p95Value,
+        accepted: aggregate.acceptedCount,
+        rejected: aggregate.rejectedCount,
+        retained: retainedCount,
+        dropped: aggregate.droppedSampleCount,
+        truncated,
+        status: p95Value === null ? (incomplete ? 'partial' : 'not-observed') : incomplete ? 'partial' : 'measured',
+    }
+}
+
+/**
+ * Accumulates only the privacy-safe projection created inside the shared
+ * PerformanceObserver boundary; raw attribution never enters this state.
+ */
+function createLongAnimationFrameDiagnosticsAccumulator(
+    options: LongAnimationFrameDiagnosticsOptions = {}
+): LongAnimationFrameDiagnosticsAccumulator {
+    const capacity = resolveDiagnosticSampleCapacity(options.maxSamples)
+    const countLimit = resolveDiagnosticCountLimit(options.maxCount)
+    let observedLoafCount = 0
+    const firstUIEventToFrameEnd = createDiagnosticAccumulatorState()
+    const attributedForcedStyleAndLayout = createDiagnosticAccumulatorState()
+
+    return {
+        record(diagnostics): void {
+            observedLoafCount = incrementDiagnosticCount(observedLoafCount)
+            recordDiagnosticSample(firstUIEventToFrameEnd, diagnostics.firstUIEventToFrameEnd, capacity, countLimit)
+            recordDiagnosticSample(attributedForcedStyleAndLayout, diagnostics.attributedForcedStyleAndLayout, capacity, countLimit)
+        },
+        snapshot(observerState = 'supported'): LongAnimationFrameDiagnosticsSnapshot {
+            return {
+                loafFirstUiEventToFrameEnd: diagnosticAggregate(firstUIEventToFrameEnd, observerState, observedLoafCount),
+                loafAttributedForcedStyleLayout: diagnosticAggregate(attributedForcedStyleAndLayout, observerState, observedLoafCount),
+            }
+        },
+    }
+}
+
+/** Uses the process-wide LoAF observer and exposes aggregate snapshots only. */
+export function observeLongAnimationFrameDiagnostics(
+    options: LongAnimationFrameDiagnosticsOptions = {}
+): LongAnimationFrameDiagnosticsObservation {
+    const accumulator = createLongAnimationFrameDiagnosticsAccumulator(options)
+    const registry = getRegistry()
+    const diagnostics = registry.loafDiagnostics
+    const diagnosticSubscriber: LongAnimationFrameDiagnosticSubscriber = value => accumulator.record(value)
+    // Join/create the shared observer without asking the platform to replay its
+    // historical buffer. Then deliver any records already queued in a reused
+    // observer to its existing subscribers before this capture is registered.
+    const subscription = observePerformanceEntries('long-animation-frame', () => undefined, { buffered: false })
+    let observationState = subscription.state
+    let observationReason = subscription.reason
+    let active = false
+    if (subscription.state === 'supported') {
+        const observerState = registry.observers.get('long-animation-frame')
+        if (observerState && drainObserverState('long-animation-frame', observerState)) {
+            diagnostics.subscribers.add(diagnosticSubscriber)
+            diagnostics.projector ??= projectLongAnimationFrameDiagnostics
+            active = true
+        } else {
+            observationState = 'unknown'
+            observationReason = 'long-animation-frame capture boundary drain failed'
+            subscription()
+        }
+    }
+    return {
+        state: observationState,
+        // This logical capture excludes the observer's pre-subscription queue,
+        // even when it reuses an underlying observer originally opened buffered.
+        buffered: false,
+        ...(observationReason ? { reason: observationReason } : {}),
+        snapshot: () => accumulator.snapshot(observationState),
+        disconnect(): void {
+            if (!active) {
+                subscription()
+                return
+            }
+            try {
+                // Keep the safe projector active while the shared observer
+                // drains queued records at this final reporting boundary.
+                subscription()
+            } finally {
+                active = false
+                diagnostics.subscribers.delete(diagnosticSubscriber)
+                if (diagnostics.subscribers.size === 0) diagnostics.projector = null
+            }
+        },
+    }
+}
+
 /** Returns true only when the browser explicitly lists the entry type. */
 export function supportsPerformanceEntryType(entryType: PerformanceRuntimeEntryType): boolean {
     return detectPerformanceEntryType(entryType) === true
@@ -611,6 +1023,18 @@ function dispatchPerformanceEntries(
             continue
         }
         if (!snapshot) continue
+        if (entryType === 'long-animation-frame') {
+            const diagnostics = getRegistry().loafDiagnostics
+            if (diagnostics.projector && diagnostics.subscribers.size > 0) {
+                try {
+                    const safeProjection = diagnostics.projector(entry, snapshot.startTime, snapshot.duration)
+                    for (const subscriber of [...diagnostics.subscribers]) callSafely(subscriber, safeProjection)
+                } catch {
+                    // A malformed/polyfilled LoAF must not suppress the shared
+                    // aggregation-safe entry delivered below.
+                }
+            }
+        }
         for (const subscriber of [...state.subscribers]) {
             if (entryType === 'event' && snapshot.duration < subscriber.durationThreshold) continue
             callSafely(subscriber.callback, snapshot)
@@ -618,12 +1042,14 @@ function dispatchPerformanceEntries(
     }
 }
 
-function drainObserverState(entryType: PerformanceRuntimeEntryType, state: ObserverState): void {
+function drainObserverState(entryType: PerformanceRuntimeEntryType, state: ObserverState): boolean {
     try {
         const entries = state.observer.takeRecords()
         dispatchPerformanceEntries(entryType, state, entries)
+        return true
     } catch {
         // takeRecords and non-native observer lists are both isolated.
+        return false
     }
 }
 
