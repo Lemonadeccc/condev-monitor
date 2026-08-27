@@ -407,6 +407,17 @@ function metricValue(value: unknown, unit: AnimationLabMetric['unit'], label: st
 
 function metricLimitations(metricId: string): string[] {
     if (metricId === 'frame.refresh.inferred') return ['observed-page-raf-cadence-not-display-refresh-rate']
+    if (metricId === 'interaction.count') {
+        return ['event-timing-duration-threshold-16ms', 'event-timing-entry-count-not-distinct-interactions']
+    }
+    if (
+        metricId === 'interaction.event-duration.p95' ||
+        metricId === 'interaction.input-delay.p95' ||
+        metricId === 'interaction.processing.p95' ||
+        metricId === 'interaction.presentation.p95'
+    ) {
+        return ['event-timing-duration-threshold-16ms']
+    }
     if (metricId.startsWith('pipeline.loaf-render-start-to-paint')) return ['loaf-only-over-50ms']
     if (metricId.startsWith('pipeline.loaf-paint-to-presentation')) {
         return ['loaf-only-over-50ms', 'presentation-time-implementation-dependent']

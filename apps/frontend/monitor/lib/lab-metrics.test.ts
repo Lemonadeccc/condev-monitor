@@ -27,6 +27,8 @@ const V2_METRIC_IDS = [
 
 const V2_LIMITATION_CODES = [
     'observed-page-raf-cadence-not-display-refresh-rate',
+    'event-timing-duration-threshold-16ms',
+    'event-timing-entry-count-not-distinct-interactions',
     'input-capture-listener-to-next-raf-callback-proxy',
     'not-paint-or-presentation-timing',
     'trusted-discrete-input-only',
@@ -170,6 +172,8 @@ describe('Lab catalog v2 metric presentation', () => {
             getLabLimitationLabel('observed-page-raf-cadence-not-display-refresh-rate').en,
             /not the physical display refresh rate/u
         )
+        assert.match(getLabLimitationLabel('event-timing-duration-threshold-16ms').zhCN, /不代表全部输入事件/u)
+        assert.match(getLabLimitationLabel('event-timing-entry-count-not-distinct-interactions').en, /not distinct interactions/u)
         assert.equal(formatLabMetricValue(null, 'ms'), '未采集 / 未知')
         assert.equal(formatLabMetricValue(0, 'count'), '0 次')
         assert.equal(formatLabMetricValue(3, 'count'), '3 次')

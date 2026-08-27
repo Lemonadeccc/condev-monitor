@@ -60,6 +60,13 @@ const loafPaintMetricIds = [
     'pipeline.loaf-paint-to-presentation.count',
     'pipeline.loaf-paint-to-presentation.p95',
 ]
+const eventTimingMetricIds = [
+    'interaction.event-duration.p95',
+    'interaction.input-delay.p95',
+    'interaction.processing.p95',
+    'interaction.presentation.p95',
+    'interaction.count',
+]
 const inputFrameSchedulingMetricIds = ['main.input-capture-to-next-raf-callback.count', 'main.input-capture-to-next-raf-callback.p95']
 const loafFirstUIEventMetricIds = ['interaction.loaf-first-ui-event-to-frame-end.count', 'interaction.loaf-first-ui-event-to-frame-end.p95']
 const loafForcedStyleLayoutMetricIds = [
@@ -159,10 +166,27 @@ test('rebuilds a catalog-only probe result and replaces page limitations with ru
     const observedRafCadence = decoded.metrics.find(item => item.name === 'inferredRefreshHz')
     assert.deepEqual(observedRafCadence.limitations, ['observed-page-raf-cadence-not-display-refresh-rate'])
     assert.equal(decoded.actionResults.length, 1)
-    assert.deepEqual(decoded.actionResults[0].metrics, raw.actionResults[0].metrics)
+    assert.deepEqual(
+        decoded.actionResults[0].metrics.map(({ limitations: _limitations, ...item }) => item),
+        raw.actionResults[0].metrics
+    )
     assert.deepEqual(decoded.capabilities, raw.capabilities)
     assert.ok(decoded.limitations.every(value => /^[a-z0-9-]+$/.test(value)))
     assert.equal(JSON.stringify(decoded).includes('private page prose'), false)
+})
+
+test('discloses the conditional Event Timing population and entry-count semantics', () => {
+    const decoded = decodePageProbeResult(rawResult(), expectedActions)
+    const rootEventTiming = decoded.metrics.filter(item => eventTimingMetricIds.includes(metricId(item)))
+    const actionEventTiming = decoded.actionResults[0].metrics.filter(item => eventTimingMetricIds.includes(metricId(item)))
+
+    assert.equal(rootEventTiming.length, 5)
+    assert.equal(actionEventTiming.length, 4)
+    assert.ok([...rootEventTiming, ...actionEventTiming].every(item => item.limitations.includes('event-timing-duration-threshold-16ms')))
+    const count = rootEventTiming.find(item => metricId(item) === 'interaction.count')
+    assert.ok(count.limitations.includes('event-timing-entry-count-not-distinct-interactions'))
+    assert.equal(count.status, 'measured')
+    assert.equal(count.value, 1)
 })
 
 test('decodes catalog v2 LoAF paint phases without changing the default v1 payload contract', () => {
@@ -460,7 +484,7 @@ test('downgrades only sample-derived metrics for the truncated stream', () => {
     assert.equal(actionInputDelay.status, 'partial')
     assert.ok(actionInputDelay.limitations.includes('page-probe-event-timing-samples-truncated'))
     assert.equal(eventCount.status, 'measured')
-    assert.equal(eventCount.limitations, undefined)
+    assert.deepEqual(eventCount.limitations, ['event-timing-duration-threshold-16ms', 'event-timing-entry-count-not-distinct-interactions'])
     assert.equal(frameP95.status, 'measured')
 })
 

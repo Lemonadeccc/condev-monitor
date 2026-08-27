@@ -635,6 +635,54 @@ test('does not upgrade cross-document partial samples or their findings to obser
     assert.ok(semantics.findings[0].limitations.includes('cross-document-sampling-partial'))
 })
 
+test('preserves the Event Timing threshold population on aggregates and input-delay findings', () => {
+    const attempts = Array.from({ length: 3 }, (_, index) => {
+        const attemptId = `event-timing-${index}`
+        return {
+            attemptId,
+            phase: 'measured',
+            index,
+            startedAt: '2026-08-26T00:00:00.000Z',
+            endedAt: '2026-08-26T00:00:01.000Z',
+            durationMs: 1_000,
+            metrics: [
+                decorateLabMetric(
+                    {
+                        family: 'userOutcome',
+                        name: 'inputDelayMs',
+                        stat: 'p95',
+                        unit: 'ms',
+                        value: 150,
+                        samples: 3,
+                        status: 'measured',
+                        evidenceLevel: 'controlled-lab-measurement',
+                        limitations: ['event-timing-duration-threshold-16ms'],
+                    },
+                    { level: 'attempt', attemptId }
+                ),
+            ],
+            capabilities: {},
+            limitations: [],
+        }
+    })
+    const aggregateMetrics = aggregateMeasuredAttempts(attempts)
+    const semantics = buildAnimationLabSemantics({
+        scenario,
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts,
+        aggregateMetrics,
+    })
+
+    assert.equal(aggregateMetrics[0].metricId, 'interaction.input-delay.p95')
+    assert.equal(aggregateMetrics[0].samples, 9)
+    assert.ok(aggregateMetrics[0].limitations.includes('event-timing-duration-threshold-16ms'))
+    const finding = semantics.findings.find(item => item.ruleId === 'input-delay')
+    assert.equal(finding.status, 'observed')
+    assert.ok(finding.limitations.includes('event-timing-duration-threshold-16ms'))
+    assert.ok(finding.limitations.includes('diagnostic-project-budget-not-web-standard'))
+    assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
+})
+
 test('keeps a budget violation from a truncated page-probe distribution as a candidate', () => {
     const attempts = Array.from({ length: 3 }, (_, index) => {
         const attemptId = `truncated-probe-${index}`

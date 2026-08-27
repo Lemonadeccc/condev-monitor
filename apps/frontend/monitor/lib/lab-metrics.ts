@@ -95,6 +95,14 @@ const LIMITATION_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
         zhCN: '该值由页面可见 rAF 帧间隔 p50 推算，不是物理屏幕刷新率、合成器呈现 FPS 或 GPU FPS。',
         en: 'Derived from the visible page rAF frame-interval p50; it is not the physical display refresh rate, compositor presentation FPS, or GPU FPS.',
     },
+    'event-timing-duration-threshold-16ms': {
+        zhCN: 'Event Timing 只包含浏览器按 16 ms duration threshold 暴露的条目，不代表全部输入事件。',
+        en: 'Event Timing includes only entries exposed under the 16 ms duration threshold; it does not represent every input event.',
+    },
+    'event-timing-entry-count-not-distinct-interactions': {
+        zhCN: '该计数是 PerformanceEventTiming 条目数，未按 interactionId 去重，不等于独立交互次数。',
+        en: 'This is a count of PerformanceEventTiming entries, not distinct interactions deduplicated by interactionId.',
+    },
     'loaf-only-over-50ms': {
         zhCN: '仅覆盖超过 50 ms 的 LoAF，不代表全部帧。',
         en: 'Covers LoAF entries over 50 ms only, not every frame.',
