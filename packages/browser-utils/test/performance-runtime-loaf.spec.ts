@@ -362,6 +362,91 @@ describe('privacy-safe LoAF diagnostic aggregates', () => {
         expect(diagnostics.snapshot().loafAttributedForcedStyleLayout).toMatchObject({ count: 1, p95Ms: 4, status: 'measured' })
     })
 
+    it('fails the final drain closed by downgrading retained samples to partial', () => {
+        const diagnostics = observeLongAnimationFrameDiagnostics()
+        observers[0]!.emit([
+            loaf({ startTime: 100, duration: 50, firstUIEventTimestamp: 140, scripts: [{ forcedStyleAndLayoutDuration: 4 }] }),
+        ])
+        observers[0]!.takeRecords.mockImplementationOnce(() => {
+            throw new Error('final takeRecords failed')
+        })
+
+        diagnostics.disconnect()
+
+        expect(diagnostics.state).toBe('unknown')
+        expect(diagnostics.reason).toBe('long-animation-frame final drain failed')
+        const snapshot = diagnostics.snapshot()
+        expectAggregateInvariants(snapshot)
+        expect(snapshot.loafFirstUiEventToFrameEnd).toMatchObject({
+            capability: 'supported',
+            count: 1,
+            p95Ms: 10,
+            accepted: 1,
+            retained: 1,
+            dropped: 0,
+            truncated: false,
+            status: 'partial',
+        })
+        expect(snapshot.loafAttributedForcedStyleLayout).toMatchObject({
+            capability: 'supported',
+            count: 1,
+            p95Ms: 4,
+            accepted: 1,
+            retained: 1,
+            dropped: 0,
+            truncated: false,
+            status: 'partial',
+        })
+    })
+
+    it('fails the final drain closed as unknown when no valid samples exist', () => {
+        const diagnostics = observeLongAnimationFrameDiagnostics()
+        observers[0]!.takeRecords.mockImplementationOnce(() => {
+            throw new Error('final takeRecords failed')
+        })
+
+        diagnostics.disconnect()
+
+        expect(diagnostics.state).toBe('unknown')
+        expect(diagnostics.reason).toBe('long-animation-frame final drain failed')
+        const snapshot = diagnostics.snapshot()
+        expectAggregateInvariants(snapshot)
+        expect(snapshot.loafFirstUiEventToFrameEnd).toEqual({
+            capability: 'unknown',
+            count: null,
+            p95Ms: null,
+            accepted: null,
+            rejected: null,
+            retained: null,
+            dropped: null,
+            truncated: false,
+            status: 'unknown',
+        })
+        expect(snapshot.loafAttributedForcedStyleLayout).toEqual(snapshot.loafFirstUiEventToFrameEnd)
+    })
+
+    it('does not poison a remaining diagnostic subscriber when another final drain fails', () => {
+        const first = observeLongAnimationFrameDiagnostics()
+        const second = observeLongAnimationFrameDiagnostics()
+        observers[0]!.emit([
+            loaf({ startTime: 100, duration: 50, firstUIEventTimestamp: 140, scripts: [{ forcedStyleAndLayoutDuration: 2 }] }),
+        ])
+        observers[0]!.takeRecords.mockImplementationOnce(() => {
+            throw new Error('first final takeRecords failed')
+        })
+
+        first.disconnect()
+        observers[0]!.emit([
+            loaf({ startTime: 200, duration: 50, firstUIEventTimestamp: 240, scripts: [{ forcedStyleAndLayoutDuration: 3 }] }),
+        ])
+
+        expect(first.snapshot().loafFirstUiEventToFrameEnd).toMatchObject({ count: 1, status: 'partial' })
+        expect(second.state).toBe('supported')
+        expect(second.reason).toBeUndefined()
+        expect(second.snapshot().loafFirstUiEventToFrameEnd).toMatchObject({ count: 2, p95Ms: 10, status: 'measured' })
+        second.disconnect()
+    })
+
     it('reports observer unsupported and unknown states without manufacturing zero', () => {
         diagnosticsUnsupported()
         diagnosticsUnknown()
