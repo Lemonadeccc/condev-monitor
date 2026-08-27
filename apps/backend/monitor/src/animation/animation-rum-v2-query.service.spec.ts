@@ -41,6 +41,7 @@ const captureRow = (overrides: Record<string, unknown> = {}) => ({
     runtime_backend: 'webgl2',
     capabilities_json: JSON.stringify({
         'long-animation-frame': 'supported',
+        'renderer-adapter': 'supported',
         'gpu-timer-query': 'unsupported',
         url: 'https://private.invalid/path',
     }),
@@ -140,6 +141,32 @@ describe('AnimationRumV2QueryService', () => {
                             capture_value_p95: 21,
                             capture_value_min: 17,
                             capture_value_max: 21,
+                            normalized_captures_with_value: 0,
+                        },
+                        {
+                            scope: 'target',
+                            metric_id: 'renderer.gpu-frame.p95',
+                            relation: 'adapter',
+                            owner: 'renderer-adapter',
+                            capture_count: 4,
+                            measured_capture_count: 1,
+                            partial_capture_count: 0,
+                            not_observed_capture_count: 1,
+                            not_instrumented_capture_count: 0,
+                            unsupported_capture_count: 1,
+                            unknown_capture_count: 1,
+                            captures_with_value: 1,
+                            measured_captures_with_value: 1,
+                            partial_captures_with_value: 0,
+                            reported_samples: 8,
+                            measured_reported_samples: 8,
+                            partial_reported_samples: 0,
+                            capture_value_avg: 2.4,
+                            capture_value_p50: 2.2,
+                            capture_value_p75: 2.3,
+                            capture_value_p95: 2.6,
+                            capture_value_min: 2,
+                            capture_value_max: 2.7,
                             normalized_captures_with_value: 0,
                         },
                         {
@@ -275,7 +302,7 @@ describe('AnimationRumV2QueryService', () => {
                 }),
             })
         )
-        expect(response.metrics).toHaveLength(2)
+        expect(response.metrics).toHaveLength(3)
         expect(response.metrics.find(metric => metric?.metricId === 'frame.duration.p95')).toEqual(
             expect.objectContaining({
                 metricId: 'frame.duration.p95',
@@ -306,6 +333,27 @@ describe('AnimationRumV2QueryService', () => {
                     max: null,
                 },
                 valuePerMinute: expect.objectContaining({ capturesWithValue: 1, p95: 6 }),
+            })
+        )
+        expect(response.metrics.find(metric => metric?.metricId === 'renderer.gpu-frame.p95')).toEqual(
+            expect.objectContaining({
+                family: 'renderer',
+                scope: 'target',
+                relation: 'adapter',
+                owner: 'renderer-adapter',
+                statusCounts: {
+                    measured: 1,
+                    partial: 0,
+                    notObserved: 1,
+                    notInstrumented: 0,
+                    unsupported: 1,
+                    unknown: 1,
+                },
+                measuredCaptures: 1,
+                partialCaptures: 0,
+                excludedPartialCaptures: 0,
+                captureValue: expect.objectContaining({ measuredCaptures: 1, p95: 2.6 }),
+                valuePerMinute: null,
             })
         )
 
@@ -565,12 +613,12 @@ describe('AnimationRumV2QueryService', () => {
                     result([
                         {
                             scope: 'target',
-                            metric_id: 'frame.duration.p95',
-                            relation: 'target-temporal-overlap',
-                            owner: 'browser-core',
-                            value: 18.5,
-                            samples: 120,
-                            status: 'measured',
+                            metric_id: 'renderer.gpu-frame.p95',
+                            relation: 'adapter',
+                            owner: 'renderer-adapter',
+                            value: null,
+                            samples: null,
+                            status: 'unsupported',
                         },
                     ])
                 )
@@ -578,15 +626,15 @@ describe('AnimationRumV2QueryService', () => {
                     result([
                         {
                             scope: 'target',
-                            owner: 'browser-core',
-                            family: 'frameCadence',
+                            owner: 'renderer-adapter',
+                            family: 'renderer',
                             provider_version: '2.0.0',
-                            accepted: 120,
-                            retained: 100,
-                            evidence: 100,
-                            dropped: 20,
+                            accepted: 1,
+                            retained: 1,
+                            evidence: 1,
+                            dropped: 0,
                             rejected: 0,
-                            truncated: 1,
+                            truncated: 0,
                         },
                     ])
                 )
@@ -625,26 +673,30 @@ describe('AnimationRumV2QueryService', () => {
         expect(Object.keys(response.capture.capabilities)).toEqual([...ANIMATION_RUM_V2_CAPABILITIES])
         expect(Object.keys(response.capture.coverage)).toEqual([...ANIMATION_RUM_FAMILIES])
         expect(response.capture.capabilities).not.toHaveProperty('url')
+        expect(response.capture.capabilities['renderer-adapter']).toBe('supported')
+        expect(response.capture.capabilities['gpu-timer-query']).toBe('unsupported')
         expect(response.capture.coverage).not.toHaveProperty('metadata')
         expect(response.metrics).toEqual([
             expect.objectContaining({
-                metricId: 'frame.duration.p95',
-                relation: 'target-temporal-overlap',
-                owner: 'browser-core',
-                value: 18.5,
+                metricId: 'renderer.gpu-frame.p95',
+                relation: 'adapter',
+                owner: 'renderer-adapter',
+                value: null,
+                samples: null,
+                status: 'unsupported',
             }),
         ])
         expect(response.providerEvidence).toEqual([
             {
-                owner: 'browser-core',
-                family: 'frameCadence',
+                owner: 'renderer-adapter',
+                family: 'renderer',
                 providerVersion: '2.0.0',
-                accepted: 120,
-                retained: 100,
-                evidence: 100,
-                dropped: 20,
+                accepted: 1,
+                retained: 1,
+                evidence: 1,
+                dropped: 0,
                 rejected: 0,
-                truncated: true,
+                truncated: false,
             },
         ])
         expect(response.relationships).toEqual(
