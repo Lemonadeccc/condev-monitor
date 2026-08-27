@@ -79,12 +79,19 @@ import {
     createThreeRendererProbe,
     createVideoFrameProbe,
 } from '@condev-monitor/monitor-sdk-animation'
+import { createWebGlGpuTimer } from '@condev-monitor/monitor-sdk-animation-renderer'
 
 const animation = new AnimationCollector()
 animation.start()
 
 const framework = createFrameworkCommitProbe({ sink: animation, framework: 'react' })
 // React: <Profiler onRender={framework.onReactProfilerRender}>…</Profiler>
+
+const gpuTimer = createWebGlGpuTimer({
+    gl,
+    backend: 'webgl2',
+    disjointQueryOwnership: 'exclusive',
+})
 
 const rendererHost = createRendererHostProbe({
     sink: animation,
@@ -93,7 +100,7 @@ const rendererHost = createRendererHostProbe({
         drawCalls: publicRendererStats.drawCalls,
         triangles: publicRendererStats.triangles,
         contextLost: gl.isContextLost(),
-        gpu: gpuTimer.readLatestResolved(), // 只能读取已异步完成的结果
+        gpu: gpuTimer.takeLatestEvidence(), // 一次性读取已异步完成的结果
     }),
 })
 rendererHost.capture()
@@ -102,9 +109,19 @@ const three = createThreeRendererProbe({
     sink: animation,
     renderer,
     backend: 'webgl2',
-    readGpuTiming: () => gpuTimer.readLatestResolved(),
+    readGpuTiming: () => gpuTimer.takeLatestEvidence(),
 })
-three.capture()
+
+function renderFrame() {
+    gpuTimer.poll()
+    const measuring = gpuTimer.beginFrame()
+    try {
+        renderer.render(scene, camera)
+    } finally {
+        if (measuring) gpuTimer.endFrame()
+    }
+    rendererHost.capture() // 或 three.capture()；同一结果不能消费两次
+}
 
 const gsapLifecycle = createGsapLifecycleProbe({ sink: animation, gsap, scrollTrigger: ScrollTrigger })
 gsapLifecycle.capture('mount')
@@ -266,7 +283,7 @@ Renderer window 必须与目标 collector 使用同一个 `AnimationRuntime.now(
 - WebGPU：render/compute pass、dispatch/workgroup/storage texture、buffer/texture bytes、有效 timestamp query、device lost、异步 readback；
 - media texture：RVFC cadence、presented/dropped、decode→upload→first-visible、hidden/offscreen pause；不读取或上报 `src/currentSrc`。
 
-`performance.now()` 包围 `render()` 或 `queue.submit()` 只能叫 CPU submission，不能冒充 GPU time。`gpuFrameMsP95` 采用 fail-closed：只有 adapter 同时声明 `valid:true`、`disjoint:false`、`contextLost:false`，且 source 与 renderer family 匹配时才保留。`webgl`/`webgl2` 对应 `webgl-timer-query`，`webgpu` 对应 `webgpu-timestamp-query`；中性的 `host-summary` 可用于任一合法 renderer family。未报告、无效、validity unknown、disjoint、context lost、source unknown、host 专用来源混入 target，或 backend/source 错配，都输出 `gpuFrameMsP95:null` 和闭集 `rejectionReason`；错配原因为 `backend-source-mismatch`。RUM v2 投影会再次执行同一闭集兼容校验，运行时被篡改或旧快照也不能把错配值上报。这只是证据校验合同；SDK 目前没有替宿主执行真实 GPU query。DOM Picker 只能选中 canvas 宿主；Three mesh、Pixi display object、Babylon mesh 等内部对象需要 renderer 的 raycast/hit-test adapter，跨源 iframe 和 OffscreenCanvas Worker 需要各自 bridge。
+`performance.now()` 包围 `render()` 或 `queue.submit()` 只能叫 CPU submission，不能冒充 GPU time。`gpuFrameMsP95` 采用 fail-closed：只有 adapter 同时声明完整 validity，且 source 与 renderer family 匹配时才保留。`webgl`/`webgl2` 对应 timer query，`webgpu` 对应 timestamp query；中性的 host summary 只接受合法 renderer family。未报告、无效、validity unknown、disjoint、context lost、source unknown、host 专用来源混入 target，或 backend/source 错配，都输出 `gpuFrameMsP95:null` 和闭集 `rejectionReason`；错配原因为 `backend-source-mismatch`。RUM v2 投影会再次执行同一闭集兼容校验，运行时被篡改或旧快照也不能把错配值上报。可选 `packages/animation-renderer` 已实现 WebGL 1/2 的稀疏异步 query，但必须由宿主同步包围完整 renderer frame、显式声明独占 disjoint/timer-query 状态，并在 context restoration 后重建；WebGPU timestamp query 仍未实现。DOM Picker 只能选中 canvas 宿主；Three mesh、Pixi display object、Babylon mesh 等内部对象需要 renderer 的 raycast/hit-test adapter，跨源 iframe 和 OffscreenCanvas Worker 需要各自 bridge。
 
 ## 代码归属
 
@@ -424,21 +441,21 @@ Chrome 扩展落地时按官方边界拆分：DevTools page 创建 panel，conte
 
 ## 不同框架的代码放在哪里
 
-| 能力                           | 开发位置                                                                                | 说明                                                                                                            |
-| ------------------------------ | --------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| 所有 Web 页面共同结果          | `packages/animation`                                                                    | frame、LoAF、Long Task、Event Timing、interaction、coverage；不依赖框架                                         |
-| 原生 DOM/Web Components 目标   | `packages/animation`                                                                    | Picker、CSS/WAAPI、几何/连接/Canvas backing pixels；原生是一等实现，不是失败 fallback                           |
-| 页面级共享采集运行时           | `packages/browser-utils`                                                                | 一个 rAF clock、每种 entry 一个 PerformanceObserver、共享 Web Vitals、visibility/BFCache 生命周期               |
-| React / Next                   | 当前 core Profiler/manual helper；后续 `packages/animation-react`                       | helper 采 render/base-render；commit duration 仅接独立实测，后续 adapter 再补 owner/why-update/hydration        |
-| Vue / Angular / Svelte / Solid | 后续各自 `packages/animation-*`                                                         | 使用公开 dev/performance hook 或显式 marks，不修改框架私有对象                                                  |
-| GSAP / Lenis / ScrollTrigger   | 当前 core GSAP/ScrollTrigger inventory helper；后续 `packages/animation-gsap`           | 由宿主传入实例，使用 public API；后续补 Lenis/ticker、自动 checkpoint 和等价循环 analyzer，不重复捆绑 GSAP      |
-| Three / R3F / WebGL / WebGPU   | 当前 core 通用 renderer-host + Three counter helper；后续 `packages/animation-renderer` | 已接显式 public counters/context loss；后续补薄引擎映射、targets/真实 async timer query/upload/readback/dispose |
-| Canvas / media                 | 当前 Canvas direct、Canvas2D host counter + Video RVFC helper；后续专项包               | 已有 backing geometry/显式 counter/RVFC/drop delta；后续补 readback/decode/upload/first-visible/visibility      |
-| Chrome F12 UI                  | 后续 `apps/frontend/animation-devtools-extension`                                       | 只消费 collector/schema，不再实现一套指标                                                                       |
-| Electron / 浏览器 WebView      | `packages/animation` + 后续 host bridge                                                 | 标准浏览器信号按 capability 降级；宿主生命周期和设备信息由 bridge 补充                                          |
-| React Native                   | 后续 `packages/animation-react-native`                                                  | JS/UI thread frame、navigation、native driver 由 iOS/Android bridge 映射到同一 family                           |
-| 小程序                         | 后续 `packages/animation-miniapp`                                                       | 每个平台单独 adapter；不能把不存在的 PerformanceObserver 伪装为 0                                               |
-| 原生 iOS/Android/Flutter       | 独立平台 SDK，再复用 RUM wire contract                                                  | 不属于浏览器子包；需要平台 frame/jank、主线程、GPU 和 lifecycle API                                             |
+| 能力                           | 开发位置                                                                       | 说明                                                                                                                        |
+| ------------------------------ | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| 所有 Web 页面共同结果          | `packages/animation`                                                           | frame、LoAF、Long Task、Event Timing、interaction、coverage；不依赖框架                                                     |
+| 原生 DOM/Web Components 目标   | `packages/animation`                                                           | Picker、CSS/WAAPI、几何/连接/Canvas backing pixels；原生是一等实现，不是失败 fallback                                       |
+| 页面级共享采集运行时           | `packages/browser-utils`                                                       | 一个 rAF clock、每种 entry 一个 PerformanceObserver、共享 Web Vitals、visibility/BFCache 生命周期                           |
+| React / Next                   | 当前 core Profiler/manual helper；后续 `packages/animation-react`              | helper 采 render/base-render；commit duration 仅接独立实测，后续 adapter 再补 owner/why-update/hydration                    |
+| Vue / Angular / Svelte / Solid | 后续各自 `packages/animation-*`                                                | 使用公开 dev/performance hook 或显式 marks，不修改框架私有对象                                                              |
+| GSAP / Lenis / ScrollTrigger   | 当前 core GSAP/ScrollTrigger inventory helper；后续 `packages/animation-gsap`  | 由宿主传入实例，使用 public API；后续补 Lenis/ticker、自动 checkpoint 和等价循环 analyzer，不重复捆绑 GSAP                  |
+| Three / R3F / WebGL / WebGPU   | core 通用 renderer-host + Three counter helper + `packages/animation-renderer` | 已接 public counters/context loss 与可选 WebGL1/2 async GPU frame timer；后续补 WebGPU、薄引擎映射、targets/upload/readback |
+| Canvas / media                 | 当前 Canvas direct、Canvas2D host counter + Video RVFC helper；后续专项包      | 已有 backing geometry/显式 counter/RVFC/drop delta；后续补 readback/decode/upload/first-visible/visibility                  |
+| Chrome F12 UI                  | 后续 `apps/frontend/animation-devtools-extension`                              | 只消费 collector/schema，不再实现一套指标                                                                                   |
+| Electron / 浏览器 WebView      | `packages/animation` + 后续 host bridge                                        | 标准浏览器信号按 capability 降级；宿主生命周期和设备信息由 bridge 补充                                                      |
+| React Native                   | 后续 `packages/animation-react-native`                                         | JS/UI thread frame、navigation、native driver 由 iOS/Android bridge 映射到同一 family                                       |
+| 小程序                         | 后续 `packages/animation-miniapp`                                              | 每个平台单独 adapter；不能把不存在的 PerformanceObserver 伪装为 0                                                           |
+| 原生 iOS/Android/Flutter       | 独立平台 SDK，再复用 RUM wire contract                                         | 不属于浏览器子包；需要平台 frame/jank、主线程、GPU 和 lifecycle API                                                         |
 
 这些 adapter 只补框架 ownership 和渲染器内部信号。frame p95、INP、Long Task 等用户结果不会因为 React 或 Vue 而换一套定义；React commit 次数也不能与 Vue update 次数或 Three draw calls 直接横向评分。
 
@@ -476,7 +493,7 @@ Lemon Bureau 在五个页面共用的 `js/lenis-scroll.js` 初始化，Nico Palm
 4. lifecycle/work avoidance：active rAF/ticker/listener/observer、route 前后 delta、资源斜率、hidden/offscreen work、十分钟 soak；
 5. accessibility：reduced-motion 实际违规、autoplay pause、键盘/触控等价与 Canvas/WebGL 语义 fallback。
 
-本轮已经补上其中的基础证据合同：target direct 的 Canvas 分轴尺寸/resize；连续交互的 input-to-visual、sample age、coalesced、progress/alignment、settle/overshoot 和 controller conflict；五类 page-level host evidence sink，以及 framework commit、通用 renderer-host、Three counter、GSAP lifecycle、Video RVFC helper。通用/Three/GSAP/Video helper 可以从显式传入的宿主 public evidence 读取闭集值，但它们仍不自动发现 framework owner、不执行真实 GPU query、不做 heap/post-GC 泄漏判定，也不接管业务 cleanup。
+本轮已经补上其中的基础证据合同：target direct 的 Canvas 分轴尺寸/resize；连续交互的 input-to-visual、sample age、coalesced、progress/alignment、settle/overshoot 和 controller conflict；五类 page-level host evidence sink，以及 framework commit、通用 renderer-host、Three counter、GSAP lifecycle、Video RVFC helper。通用/Three/GSAP/Video helper 可以从显式传入的宿主 public evidence 读取闭集值；可选 renderer 包额外执行独占、稀疏、非阻塞的 WebGL1/2 GPU frame query。它们仍不自动发现 framework owner、不执行 WebGPU timestamp query、不做 heap/post-GC 泄漏判定，也不接管业务 cleanup。
 
 因此当前指标不是“少到无效”，而是 browser-core v1 已覆盖页面结果层，Resource Timing 和显式 host helper 覆盖一部分专项证据；通用 framework 自动归因、完整 renderer/media、heap/lifecycle analyzer 仍缺。新增指标必须按上述家族逐步进入 adapter，不能把文章关键词数量当技术采用率，也不能把静态文章模式直接当某个运行页面已经存在的性能问题。
 
@@ -523,7 +540,7 @@ Animation RUM 与其他监控表统一使用 `CLICKHOUSE_DATABASE` 指定的库�
 
 1. 完整 framework/motion adapters：React/Next owner/why-update/真实 commit、Vue/Angular/Svelte/Solid 自动更新归因，以及 GSAP/Lenis/ScrollTrigger ticker/自动 checkpoint/等价循环 analyzer；当前 core helper 只接显式 Profiler/manual/public inventory；
 2. 完整 renderer/media adapters：Three/R3F/Pixi/Babylon 的薄公开映射，Canvas2D/WebGL/WebGPU 的 pass/target/upload/readback/context/device 数据，以及 decode/upload/first-visible/visibility；当前通用 renderer-host helper 已接闭集 public counters，Three 与 Video helper 已接公开状态，但资源与生命周期语义仍不完整；
-3. 真实 GPU query：异步、稀疏、非重叠的 WebGL timer query 或 WebGPU timestamp query，并验证 availability、disjoint、context/device lost 和探针开销；当前 SDK 只做 fail-closed 合同校验；
+3. GPU query 后续：WebGL1/2 已有可选的异步、稀疏、非阻塞 frame timer，并验证 availability、disjoint、context loss、独占 ownership、队列和一次性消费；仍缺 WebGPU timestamp query、跨重复 bundle 的强制仲裁、真实设备 capability/开销矩阵与引擎自带 profiler 协调；
 4. CDP/trace 深层归因：首版 Labs 已有有界 JS、style/layout、paint/composite、raster/GPU 类别时间线与脱敏生成源码栈；仍缺 source map 到 authored source、逐帧 layer/CPU profile 专门视图和跨浏览器等价实现。浏览器 SDK 的 LoAF tail 和可选 PaintTimingMixin 只覆盖长帧，不能替代全帧 trace、源码归因或真实 GPU timer；
 5. resource/media/lifecycle 深层证据：resource-to-first-visible、media decode/upload/first-visible、route/unmount 前后 listener/observer/ticker/resource/heap delta、hidden/offscreen work，以及代表设备至少十分钟 soak/post-GC plateau；
 6. soft-navigation Web Vitals、跨源 iframe/OffscreenCanvas Worker bridge、inner-scene hit-test，以及经过新版本数据合同授权的 target/quality RUM。
