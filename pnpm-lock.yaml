@@ -1130,6 +1130,12 @@ importers:
 
   packages/animation-rum-contract: {}
 
+  packages/animation-rum-ingest:
+    dependencies:
+      '@condev-monitor/animation-rum-contract':
+        specifier: workspace:*
+        version: link:../animation-rum-contract
+
   packages/browser:
     dependencies:
       '@condev-monitor/monitor-sdk-animation':

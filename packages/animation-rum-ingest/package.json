@@ -1,0 +1,38 @@
+{
+    "name": "@condev-monitor/animation-rum-ingest",
+    "version": "0.1.0",
+    "private": true,
+    "type": "module",
+    "description": "Canonical server-side ingestion boundaries for Condev Animation RUM v2",
+    "main": "build/cjs/index.cjs",
+    "module": "build/esm/index.js",
+    "types": "build/types/index.d.ts",
+    "exports": {
+        ".": {
+            "import": {
+                "types": "./build/types/index.d.ts",
+                "default": "./build/esm/index.js"
+            },
+            "require": {
+                "types": "./build/types/index.d.ts",
+                "default": "./build/cjs/index.cjs"
+            }
+        }
+    },
+    "files": [
+        "build",
+        "README.md"
+    ],
+    "scripts": {
+        "clean": "rimraf build",
+        "build": "pnpm clean && pnpm build:transpile && pnpm build:types",
+        "build:transpile": "tsup",
+        "build:types": "tsc -p tsconfig.types.json",
+        "typecheck": "tsc -p tsconfig.json --noEmit",
+        "test": "pnpm --filter @condev-monitor/animation-rum-contract build && pnpm build && node --test test/*.test.mjs"
+    },
+    "dependencies": {
+        "@condev-monitor/animation-rum-contract": "workspace:*"
+    },
+    "license": "Apache-2.0"
+}
