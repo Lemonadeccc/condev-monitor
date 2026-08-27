@@ -84,25 +84,28 @@ The deployment compose injects variables from `.devcontainer/.env` into ClickHou
 
 ### Variables You Should Always Review
 
-| Variable                                                            | Why it matters                                    |
-| ------------------------------------------------------------------- | ------------------------------------------------- |
-| `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                         | Postgres bootstrap and backend connection         |
-| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE` | ClickHouse bootstrap and backend connection       |
-| `FRONTEND_URL`                                                      | Email links and frontend base URL                 |
-| `MAIL_ON`                                                           | Enables or disables actual email flow             |
-| `RESEND_API_KEY`, `RESEND_FROM`                                     | Resend mail mode                                  |
-| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                             | SMTP mail mode                                    |
-| `AUTH_REQUIRE_EMAIL_VERIFICATION`                                   | Controls whether login requires verified email    |
-| `DSN_BODY_LIMIT`                                                    | dsn-server request size limit                     |
-| `CADDY_DSN_MAX_BODY_SIZE`                                           | reverse-proxy request size limit                  |
-| `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                                     | ClickHouse write limit                            |
-| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`                     | sourcemap resolution cache controls               |
-| `INGEST_MODE`                                                       | `kafka` or `direct`, controls DSN ingest pipeline |
-| `KAFKA_BROKERS`                                                     | Broker addresses for DSN and event worker         |
-| `KAFKA_CONSUMER_GROUP`                                              | Consumer group for event worker                   |
-| `KAFKA_EVENTS_TOPIC`, `KAFKA_REPLAYS_TOPIC`, `KAFKA_AI_TOPIC`       | Topic names used by DSN and event worker          |
-| `EMBEDDING_MODEL_ID`                                                | HuggingFace model for issue embeddings            |
-| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`          | LLM integration for issue analysis                |
+| Variable                                                                       | Why it matters                                    |
+| ------------------------------------------------------------------------------ | ------------------------------------------------- |
+| `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                                    | Postgres bootstrap and backend connection         |
+| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`            | ClickHouse bootstrap and backend connection       |
+| `FRONTEND_URL`                                                                 | Email links and frontend base URL                 |
+| `MAIL_ON`                                                                      | Enables or disables actual email flow             |
+| `RESEND_API_KEY`, `RESEND_FROM`                                                | Resend mail mode                                  |
+| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                                        | SMTP mail mode                                    |
+| `AUTH_REQUIRE_EMAIL_VERIFICATION`                                              | Controls whether login requires verified email    |
+| `DSN_BODY_LIMIT`                                                               | dsn-server request size limit                     |
+| `CADDY_DSN_MAX_BODY_SIZE`                                                      | reverse-proxy request size limit                  |
+| `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                                                | ClickHouse write limit                            |
+| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`                                | sourcemap resolution cache controls               |
+| `INGEST_MODE`                                                                  | `kafka` or `direct`, controls DSN ingest pipeline |
+| `ANIMATION_RUM_V2_RECEIPT_RETENTION_DAYS`                                      | Postgres receipt lifetime for new RUM v2 captures |
+| `ANIMATION_RUM_V2_QUARANTINE_ENVELOPE_RETENTION_DAYS`                          | Canonical quarantine-envelope lifetime            |
+| `ANIMATION_RUM_V2_RETENTION_ENABLED`, `ANIMATION_RUM_V2_RETENTION_INTERVAL_MS` | Retention worker switch and cadence               |
+| `KAFKA_BROKERS`                                                                | Broker addresses for DSN and event worker         |
+| `KAFKA_CONSUMER_GROUP`                                                         | Consumer group for event worker                   |
+| `KAFKA_EVENTS_TOPIC`, `KAFKA_REPLAYS_TOPIC`, `KAFKA_AI_TOPIC`                  | Topic names used by DSN and event worker          |
+| `EMBEDDING_MODEL_ID`                                                           | HuggingFace model for issue embeddings            |
+| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`                     | LLM integration for issue analysis                |
 
 ### Postgres migration mode
 
@@ -258,6 +261,34 @@ In the default `lemonade` database, the shipped ClickHouse schema also:
 
 ---
 
+## Animation RUM v2 Delivery and Retention
+
+Animation RUM v2 has three independent durability and retention layers:
+
+| Layer      | Default behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Browser    | Each delivery scope defaults to 200 reports. A record becomes eligible for operation-driven pruning after 24 hours and is removed when that scope next persists or attempts delivery; this is not a hard deletion deadline. A report gets at most 8 delivery attempts with exponential delay from 1 second to 5 minutes.                                                                                                                                                       |
+| Postgres   | HTTP `201` means durable admission to the receipt/outbox pair, not ClickHouse completion. The dispatcher retries from 1 second to 5 minutes with jitter and quarantines after 288 attempts by default. Quarantined canonical envelopes become eligible for cleanup after 7 days. Terminal receipts become eligible after 180 days, but only when no own/dependent outbox or child receipt remains; targets are removed before pages. Pending rows are never retention-cleaned. |
+| ClickHouse | RUM v2 provider evidence, metrics, and capture completion markers retain 90 days from `captured_at`.                                                                                                                                                                                                                                                                                                                                                                           |
+
+The Postgres deadlines are eligibility thresholds, not exact deletion times. The worker runs once at DSN startup and then every hour by default, uses a global advisory leader lock, skips locked applications, and applies application/row/time budgets. `ANIMATION_RUM_V2_RETENTION_ENABLED=false` stops automatic cleanup but does not stop `expires_at` from being written on new receipts.
+
+Retention defaults and allowed ranges:
+
+| Variable                                              | Default   | Allowed range                                        |
+| ----------------------------------------------------- | --------- | ---------------------------------------------------- |
+| `ANIMATION_RUM_V2_RECEIPT_RETENTION_DAYS`             | `180`     | integer `120`–`365`; invalid values fail DSN startup |
+| `ANIMATION_RUM_V2_QUARANTINE_ENVELOPE_RETENTION_DAYS` | `7`       | `1`–`30`                                             |
+| `ANIMATION_RUM_V2_RETENTION_INTERVAL_MS`              | `3600000` | `60000`–`86400000`                                   |
+| `ANIMATION_RUM_V2_RETENTION_APP_LIMIT`                | `25`      | `1`–`100`                                            |
+| `ANIMATION_RUM_V2_RETENTION_BATCH_SIZE`               | `100`     | `10`–`500`                                           |
+| `ANIMATION_RUM_V2_RETENTION_MAX_ROWS_PER_CYCLE`       | `1000`    | `100`–`5000`                                         |
+| `ANIMATION_RUM_V2_RETENTION_MAX_CYCLE_MS`             | `10000`   | `1000`–`60000`                                       |
+
+Invalid operational tuning values fall back to their defaults. The complete DSN variable list is in `README.md`.
+
+---
+
 ## Ingest Pipeline
 
 The default deploy mode uses Kafka as the ingest buffer:
@@ -270,7 +301,9 @@ The default deploy mode uses Kafka as the ingest buffer:
 6. Event Worker batch-inserts into ClickHouse `events` table
 7. A materialized view (`events_to_legacy_mv`) mirrors writes to `base_monitor_storage` for backward compatibility
 
-Setting `INGEST_MODE=direct` in the DSN server bypasses Kafka and writes directly to ClickHouse. This is useful for local development or as a fallback when Kafka is unavailable (`KAFKA_FALLBACK_TO_CLICKHOUSE=true`).
+For Animation RUM v2, `INGEST_MODE=kafka` plus `KAFKA_ENABLED=true` drains the durable Postgres outbox through Kafka; broker acknowledgement records `published`, and the Event Worker later writes the ClickHouse completion marker. Every other combination drains that same outbox directly to ClickHouse and records `persisted` only after the completion marker succeeds. Transport failures remain in the selected outbox path for retry and never switch a message mid-flight. `ANIMATION_RUM_V2_OUTBOX_ENABLED=false` pauses delivery only; the retention worker is independent.
+
+For legacy/non-v2 events, `INGEST_MODE=direct` bypasses Kafka and `KAFKA_FALLBACK_TO_CLICKHOUSE=true` can provide fallback behavior. That fallback flag does not control RUM v2.
 
 ---
 

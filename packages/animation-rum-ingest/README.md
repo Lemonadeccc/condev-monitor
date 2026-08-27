@@ -12,7 +12,7 @@
 - Old `receivedAt` values remain valid for backlog and replay. Timestamps more than five minutes ahead of the Worker's current clock fail closed so future versions cannot dominate ClickHouse replacement or retention behavior.
 - ClickHouse projection derives metric identity from the closed registry. Insert plans put provider evidence and metrics before the capture completion marker.
 
-The Kafka envelope intentionally does not contain the payload hash. PostgreSQL admission receipts own the hash and the outbox stores the exact serialized envelope. Retries must reuse that stored envelope and its original `receivedAt`.
+The Kafka envelope intentionally does not contain the payload hash. PostgreSQL admission receipts own the hash and the outbox stores the exact serialized envelope. Retries must reuse that stored envelope and its original `receivedAt`. When delivery is quarantined, the exact envelope becomes eligible for bounded asynchronous cleanup after 7 days by default; worker cadence, locks, budgets, and the retention switch mean this is not a hard deletion deadline. Its privacy-safe identity receipt remains independently eligible for cleanup after the configured 120–365 day retention period.
 
 ## Storage boundary
 

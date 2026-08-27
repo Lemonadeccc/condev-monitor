@@ -83,25 +83,28 @@ cp .devcontainer/.env.example .devcontainer/.env
 
 ### 一定要检查的变量
 
-| 变量                                                                | 为什么重要                               |
-| ------------------------------------------------------------------- | ---------------------------------------- |
-| `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                         | Postgres 初始化和后端连接都依赖它        |
-| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE` | ClickHouse 初始化和后端连接都依赖它      |
-| `FRONTEND_URL`                                                      | 邮件里的链接和前端公网地址               |
-| `MAIL_ON`                                                           | 控制是否真的发邮件                       |
-| `RESEND_API_KEY`, `RESEND_FROM`                                     | Resend 邮件模式                          |
-| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                             | SMTP 邮件模式                            |
-| `AUTH_REQUIRE_EMAIL_VERIFICATION`                                   | 控制登录前是否必须验证邮箱               |
-| `DSN_BODY_LIMIT`                                                    | dsn-server 请求体上限                    |
-| `CADDY_DSN_MAX_BODY_SIZE`                                           | 反向代理层请求体上限                     |
-| `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                                     | ClickHouse 写入上限                      |
-| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`                     | sourcemap 解析缓存控制                   |
-| `INGEST_MODE`                                                       | `kafka` 或 `direct`，控制 DSN 写入管道   |
-| `KAFKA_BROKERS`                                                     | DSN 和 event worker 的 Kafka broker 地址 |
-| `KAFKA_CONSUMER_GROUP`                                              | event worker 的消费者组                  |
-| `KAFKA_EVENTS_TOPIC`, `KAFKA_REPLAYS_TOPIC`, `KAFKA_AI_TOPIC`       | DSN 与 event worker 使用的 topic 名称    |
-| `EMBEDDING_MODEL_ID`                                                | Issue 嵌入向量使用的 HuggingFace 模型    |
-| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`          | Issue 分析 LLM 集成                      |
+| 变量                                                                           | 为什么重要                               |
+| ------------------------------------------------------------------------------ | ---------------------------------------- |
+| `DB_USERNAME`, `DB_PASSWORD`, `DB_DATABASE`                                    | Postgres 初始化和后端连接都依赖它        |
+| `CLICKHOUSE_USERNAME`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE`            | ClickHouse 初始化和后端连接都依赖它      |
+| `FRONTEND_URL`                                                                 | 邮件里的链接和前端公网地址               |
+| `MAIL_ON`                                                                      | 控制是否真的发邮件                       |
+| `RESEND_API_KEY`, `RESEND_FROM`                                                | Resend 邮件模式                          |
+| `EMAIL_SENDER`, `EMAIL_SENDER_PASSWORD`                                        | SMTP 邮件模式                            |
+| `AUTH_REQUIRE_EMAIL_VERIFICATION`                                              | 控制登录前是否必须验证邮箱               |
+| `DSN_BODY_LIMIT`                                                               | dsn-server 请求体上限                    |
+| `CADDY_DSN_MAX_BODY_SIZE`                                                      | 反向代理层请求体上限                     |
+| `CLICKHOUSE_MAX_HTTP_BODY_SIZE`                                                | ClickHouse 写入上限                      |
+| `SOURCEMAP_CACHE_MAX`, `SOURCEMAP_CACHE_TTL_MS`                                | sourcemap 解析缓存控制                   |
+| `INGEST_MODE`                                                                  | `kafka` 或 `direct`，控制 DSN 写入管道   |
+| `ANIMATION_RUM_V2_RECEIPT_RETENTION_DAYS`                                      | 新 RUM v2 回执在 Postgres 中的保留期     |
+| `ANIMATION_RUM_V2_QUARANTINE_ENVELOPE_RETENTION_DAYS`                          | 隔离规范信封的保留期                     |
+| `ANIMATION_RUM_V2_RETENTION_ENABLED`, `ANIMATION_RUM_V2_RETENTION_INTERVAL_MS` | Retention worker 开关与执行间隔          |
+| `KAFKA_BROKERS`                                                                | DSN 和 event worker 的 Kafka broker 地址 |
+| `KAFKA_CONSUMER_GROUP`                                                         | event worker 的消费者组                  |
+| `KAFKA_EVENTS_TOPIC`, `KAFKA_REPLAYS_TOPIC`, `KAFKA_AI_TOPIC`                  | DSN 与 event worker 使用的 topic 名称    |
+| `EMBEDDING_MODEL_ID`                                                           | Issue 嵌入向量使用的 HuggingFace 模型    |
+| `LLM_PROVIDER`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`                     | Issue 分析 LLM 集成                      |
 
 ### Postgres 迁移模式
 
@@ -256,6 +259,34 @@ pnpm docker:stop
 
 ---
 
+## Animation RUM v2 投递与保留
+
+Animation RUM v2 有三层相互独立的持久化与保留机制：
+
+| 层级       | 默认行为                                                                                                                                                                                                                                                                                                                 |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 浏览器     | 每个 delivery scope 默认保留上限为 200 条。记录在 24 小时后进入由操作触发的清理资格，并在该 scope 下次持久化或尝试投递时清理；这不是硬删除期限。每条最多尝试投递 8 次，指数退避从 1 秒增长到 5 分钟。                                                                                                                    |
+| Postgres   | HTTP `201` 只表示 receipt/outbox 已持久接收，并不表示 ClickHouse 已完成。Dispatcher 默认在 1 秒到 5 分钟之间带抖动重试，288 次后隔离。隔离规范信封在 7 天后进入可清理状态；终态回执在 180 天后进入可清理状态，但仍有自身/依赖 Outbox 或子回执时必须保留，并按 target 再 page 的顺序删除。Retention 永不删除 pending 行。 |
+| ClickHouse | RUM v2 provider evidence、metrics 与 capture completion marker 从 `captured_at` 起保留 90 天。                                                                                                                                                                                                                           |
+
+Postgres 中的期限是“到期后有资格清理”，不是精确删除 SLA。Worker 会在 DSN 启动时运行一次，之后默认每小时运行；它使用全局 advisory leader 锁，跳过已锁应用，并受应用数、行数和时间预算限制。`ANIMATION_RUM_V2_RETENTION_ENABLED=false` 会停止自动清理，但新回执仍会写入 `expires_at`。
+
+Retention 默认值与允许范围：
+
+| 变量                                                  | 默认值    | 允许范围                                  |
+| ----------------------------------------------------- | --------- | ----------------------------------------- |
+| `ANIMATION_RUM_V2_RECEIPT_RETENTION_DAYS`             | `180`     | 整数 `120`–`365`；非法值会使 DSN 启动失败 |
+| `ANIMATION_RUM_V2_QUARANTINE_ENVELOPE_RETENTION_DAYS` | `7`       | `1`–`30`                                  |
+| `ANIMATION_RUM_V2_RETENTION_INTERVAL_MS`              | `3600000` | `60000`–`86400000`                        |
+| `ANIMATION_RUM_V2_RETENTION_APP_LIMIT`                | `25`      | `1`–`100`                                 |
+| `ANIMATION_RUM_V2_RETENTION_BATCH_SIZE`               | `100`     | `10`–`500`                                |
+| `ANIMATION_RUM_V2_RETENTION_MAX_ROWS_PER_CYCLE`       | `1000`    | `100`–`5000`                              |
+| `ANIMATION_RUM_V2_RETENTION_MAX_CYCLE_MS`             | `10000`   | `1000`–`60000`                            |
+
+非法的运维调优值会回退到默认值。完整的 DSN 变量列表见 `README.zh-CN.md`。
+
+---
+
 ## 摄取管道
 
 默认部署模式使用 Kafka 作为摄取缓冲区：
@@ -268,7 +299,9 @@ pnpm docker:stop
 6. Event Worker 批量写入 ClickHouse `events` 表
 7. 物化视图（`events_to_legacy_mv`）将写入镜像到 `base_monitor_storage` 以保持向后兼容
 
-在 DSN server 设置 `INGEST_MODE=direct` 可跳过 Kafka 直接写入 ClickHouse。适用于本地开发或 Kafka 不可用时的回退（`KAFKA_FALLBACK_TO_CLICKHOUSE=true`）。
+对于 Animation RUM v2，只有 `INGEST_MODE=kafka` 且 `KAFKA_ENABLED=true` 时才会通过 Kafka 排空持久化 Postgres Outbox；broker ACK 记录为 `published`，Event Worker 随后写入 ClickHouse completion marker。其他组合都通过 ClickHouse 直接排空同一个 Outbox，且只有 completion marker 成功后才记录 `persisted`。传输失败会留在已选的 Outbox 路径重试，不会让单条消息中途切换传输。`ANIMATION_RUM_V2_OUTBOX_ENABLED=false` 只暂停投递；Retention worker 独立运行。
+
+对于旧协议/非 v2 事件，`INGEST_MODE=direct` 会绕过 Kafka，`KAFKA_FALLBACK_TO_CLICKHOUSE=true` 可提供回退。该回退开关不控制 RUM v2。
 
 ---
 
