@@ -30,6 +30,8 @@ test('package exports resolve for ESM, CommonJS, and declarations', async () => 
     assert.equal(typeof cjs.createWebGlGpuTimer, 'function')
     assert.equal(typeof esm.createWebGpuTimestampTimer, 'function')
     assert.equal(typeof cjs.createWebGpuTimestampTimer, 'function')
+    assert.equal(typeof esm.createCanvas2dRecorder, 'function')
+    assert.equal(typeof cjs.createCanvas2dRecorder, 'function')
 })
 
 test('runtime bundle contains no blocking, scheduling, or context-destroy calls', () => {
@@ -39,6 +41,8 @@ test('runtime bundle contains no blocking, scheduling, or context-destroy calls'
         assert.doesNotMatch(source, /\.flush\s*\(/u)
         assert.doesNotMatch(source, /\.getError\s*\(/u)
         assert.doesNotMatch(source, /requestAnimationFrame|setInterval|\.loseContext\s*\(/u)
+        assert.doesNotMatch(source, /CanvasRenderingContext2D\.prototype|OffscreenCanvasRenderingContext2D\.prototype/u)
+        assert.doesNotMatch(source, /HTMLCanvasElement\.prototype|\.getContext\s*\(|new Proxy\s*\(/u)
         assert.doesNotMatch(source, /\.submit\s*\(|\.onSubmittedWorkDone\s*\(/u)
         assert.doesNotMatch(source, /\.pushErrorScope\s*\(|\.popErrorScope\s*\(/u)
         assert.doesNotMatch(source, /writeTimestamp|timestampPeriod/u)

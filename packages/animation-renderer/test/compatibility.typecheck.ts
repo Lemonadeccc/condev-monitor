@@ -1,4 +1,11 @@
-import type { RendererHostGpuTimingReading, RendererHostReading, ThreeRendererSnapshotOptions } from '@condev-monitor/monitor-sdk-animation'
+import type {
+    AnimationTargetAdapterInspection,
+    AnimationTargetAdapterInspectionContext,
+    AnimationTargetAdapterRendererInspection,
+    RendererHostGpuTimingReading,
+    RendererHostReading,
+    ThreeRendererSnapshotOptions,
+} from '@condev-monitor/monitor-sdk-animation'
 
 import type {
     WebGlGpuTimer,
@@ -11,7 +18,7 @@ import type {
     WebGpuQuerySetLike,
     WebGpuTimestampTimingEvidence,
 } from '../src'
-import { createWebGpuTimestampTimer } from '../src'
+import { createCanvas2dRecorder, createWebGpuTimestampTimer } from '../src'
 
 declare const evidence: WebGlGpuTimingEvidence
 const rendererHostReading: RendererHostGpuTimingReading = evidence
@@ -91,3 +98,18 @@ const completeWebGpuRendererHostReading: RendererHostReading = {
     drawCalls: 1,
 }
 void completeWebGpuRendererHostReading
+
+declare const canvasContext: CanvasRenderingContext2D
+const canvasRecorder = createCanvas2dRecorder({
+    context: canvasContext,
+    frameBoundary: 'complete-canvas-frame',
+    drawCallCoverage: 'complete-frame',
+})
+const canvasHostReading: RendererHostReading | null = canvasRecorder.takeRendererHostReading()
+void canvasHostReading
+declare const targetContext: AnimationTargetAdapterInspectionContext
+const canvasRendererInspection: AnimationTargetAdapterRendererInspection = canvasRecorder.inspectWindow(targetContext.evidenceWindow)
+void canvasRendererInspection
+const canvasInspectionProvider: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null =
+    canvasRecorder.inspect
+void canvasInspectionProvider
