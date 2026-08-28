@@ -9,6 +9,8 @@
  */
 
 import { isHostGpuTimingSourceCompatible } from './gpu-timing-compatibility'
+import { BoundedRing, durationStatistics } from './statistics'
+import type { DurationStatistics } from './types'
 
 export type AnimationHostFramework = 'react' | 'preact' | 'vue' | 'angular' | 'svelte' | 'solid' | 'qwik' | 'lit' | 'vanilla' | 'other'
 
@@ -917,6 +919,202 @@ export function createGsapLifecycleCycleAnalyzer(options: GsapLifecycleCycleAnal
         dispose(): void {
             disposed = true
             phase = 'idle'
+        },
+    }
+}
+
+export type GsapTickerCallback = (timeSeconds: number, deltaTimeMs: number, frame: number) => void
+
+/** Narrow public GSAP ticker surface supplied by the host application. */
+export interface GsapTickerLike {
+    add(callback: GsapTickerCallback): void
+    remove(callback: GsapTickerCallback): void
+}
+
+export interface GsapTickerObserverOptions {
+    ticker: Partial<GsapTickerLike>
+    /** Bounded retained delta-time tail. Defaults to 256 and is capped at 4,096. */
+    capacity?: number
+    /** Optional application-owned cadence threshold; no universal default is inferred. */
+    slowTickThresholdMs?: number
+}
+
+export type GsapTickerObserverStatus = 'idle' | 'observing' | 'unsupported' | 'add-failed' | 'remove-failed' | 'disposed'
+
+export interface GsapTickerCadenceSnapshot {
+    status: GsapTickerObserverStatus
+    running: boolean
+    /** True when the observer could not prove that its listener was removed. */
+    cleanupFailed: boolean
+    capacity: number
+    acceptedTickCount: number
+    retainedTickCount: number
+    droppedTickCount: number
+    rejectedTickCount: number
+    truncated: boolean
+    slowTickThresholdMs: number | null
+    /** Full-stream count against the caller-owned threshold, not a page FPS verdict. */
+    slowTickTotalObservedCount: number | null
+    /** Retained GSAP ticker callback delta distribution; it is not presented-frame time. */
+    deltaTimeMs: DurationStatistics | null
+}
+
+export interface GsapTickerObserver {
+    readonly running: boolean
+    start(): boolean
+    /** Returns false when listener removal could not be proved. */
+    stop(): boolean
+    snapshot(): GsapTickerCadenceSnapshot
+    reset(): void
+    dispose(): void
+}
+
+function incrementBoundedCount(value: number): number {
+    return Math.min(MAX_HOST_COUNT, value + 1)
+}
+
+/**
+ * Observes the public GSAP ticker callback cadence without controlling GSAP.
+ *
+ * The observer calls `ticker.add(listener)` with no ordering arguments and
+ * removes that exact listener identity. It never reads or changes ticker FPS,
+ * lag smoothing, animation time, or browser frame scheduling. GSAP delta time
+ * may be smoothed or background-throttled, so this result must not be labelled
+ * page FPS, display cadence, or presented-frame timing.
+ */
+export function createGsapTickerObserver(options: GsapTickerObserverOptions): GsapTickerObserver {
+    const capacity = boundedCycleInteger(options.capacity, 256, 1, 4_096)
+    const normalizedThreshold = finiteNonNegative(options.slowTickThresholdMs, 10_000)
+    const slowTickThresholdMs = normalizedThreshold !== undefined && normalizedThreshold > 0 ? normalizedThreshold : null
+    let ticker: Partial<GsapTickerLike> | null = null
+    let tickerReadFailed = false
+    try {
+        // Pin one registration target. A mutable options object must not redirect
+        // teardown to a different ticker after start.
+        ticker = options.ticker
+    } catch {
+        tickerReadFailed = true
+    }
+    let deltas = new BoundedRing<number>(capacity)
+    let rejectedTickCount = 0
+    let slowTickTotalObservedCount = 0
+    let collecting = false
+    let registered = false
+    let registeredRemove: GsapTickerLike['remove'] | null = null
+    let cleanupFailed = false
+    let disposed = false
+    let status: GsapTickerObserverStatus = tickerReadFailed ? 'add-failed' : 'idle'
+
+    const listener: GsapTickerCallback = (_timeSeconds, deltaTimeMs): void => {
+        if (!collecting || disposed) return
+        const normalizedDelta = finiteNonNegative(deltaTimeMs)
+        if (normalizedDelta === undefined || normalizedDelta <= 0) {
+            rejectedTickCount = incrementBoundedCount(rejectedTickCount)
+            return
+        }
+        deltas.push(normalizedDelta)
+        if (slowTickThresholdMs !== null && normalizedDelta > slowTickThresholdMs) {
+            slowTickTotalObservedCount = incrementBoundedCount(slowTickTotalObservedCount)
+        }
+    }
+
+    const removeListener = (successStatus: GsapTickerObserverStatus, failureStatus: GsapTickerObserverStatus): boolean => {
+        collecting = false
+        if (!registered) {
+            if (status === 'observing') status = successStatus
+            return true
+        }
+        if (!ticker || !registeredRemove) {
+            cleanupFailed = true
+            status = failureStatus
+            return false
+        }
+        try {
+            registeredRemove.call(ticker, listener)
+            registered = false
+            registeredRemove = null
+            cleanupFailed = false
+            status = successStatus
+            return true
+        } catch {
+            cleanupFailed = true
+            status = failureStatus
+            return false
+        }
+    }
+
+    return {
+        get running(): boolean {
+            return collecting
+        },
+        start(): boolean {
+            if (disposed || collecting || registered) return false
+            let add: GsapTickerLike['add'] | undefined
+            let remove: GsapTickerLike['remove'] | undefined
+            try {
+                add = ticker?.add
+                remove = ticker?.remove
+            } catch {
+                status = 'add-failed'
+                return false
+            }
+            if (!ticker || typeof add !== 'function' || typeof remove !== 'function') {
+                status = 'unsupported'
+                return false
+            }
+            // Treat registration as uncertain before invoking host code: an
+            // implementation may attach the callback and then throw.
+            registered = true
+            registeredRemove = remove
+            try {
+                // Default ordering observes after GSAP core updates and does not
+                // prioritize the monitor ahead of application animation work.
+                add.call(ticker, listener)
+            } catch {
+                status = 'add-failed'
+                removeListener('add-failed', 'add-failed')
+                return false
+            }
+            collecting = true
+            cleanupFailed = false
+            status = 'observing'
+            return true
+        },
+        stop(): boolean {
+            if (disposed) return removeListener('disposed', 'disposed')
+            if (status === 'add-failed') return removeListener('add-failed', 'add-failed')
+            if (status === 'unsupported') return true
+            return removeListener('idle', 'remove-failed')
+        },
+        snapshot(): GsapTickerCadenceSnapshot {
+            const retained = deltas.toArray()
+            return {
+                status,
+                running: collecting,
+                cleanupFailed,
+                capacity,
+                acceptedTickCount: deltas.totalCount,
+                retainedTickCount: deltas.retainedCount,
+                droppedTickCount: deltas.droppedCount,
+                rejectedTickCount,
+                truncated: deltas.droppedCount > 0,
+                slowTickThresholdMs,
+                slowTickTotalObservedCount: slowTickThresholdMs === null ? null : slowTickTotalObservedCount,
+                deltaTimeMs: durationStatistics(retained),
+            }
+        },
+        reset(): void {
+            if (disposed) return
+            deltas = new BoundedRing<number>(capacity)
+            rejectedTickCount = 0
+            slowTickTotalObservedCount = 0
+        },
+        dispose(): void {
+            if (disposed && !registered) return
+            collecting = false
+            disposed = true
+            removeListener('disposed', 'disposed')
+            status = 'disposed'
         },
     }
 }
