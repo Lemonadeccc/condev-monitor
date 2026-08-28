@@ -16,6 +16,15 @@ export type {
     Canvas2dTargetRendererInspection,
     Canvas2dUploadEvidence,
 } from './canvas2d-recorder'
+export { ThreeRendererAdapterOptionsError, createThreeRendererAdapter } from './three-renderer-adapter'
+export type {
+    ThreeAnimationMonitorPort,
+    ThreeRendererAdapter,
+    ThreeRendererAdapterOptions,
+    ThreeRendererHostReading,
+    ThreeRendererProbePort,
+    ThreeRendererPublicLike,
+} from './three-renderer-adapter'
 export { WebGlGpuTimerOptionsError, createWebGlGpuTimer } from './webgl-gpu-timer'
 export type {
     WebGlGpuTimer,
