@@ -51,6 +51,21 @@ const V2_LIMITATION_CODES = [
     'page-probe-input-frame-scheduling-samples-truncated',
 ] as const
 
+const V3_VIDEO_LIMITATION_CODES = [
+    'video-playback-quality-window-counter-delta',
+    'video-playback-quality-window-object-identity-only',
+    'video-playback-quality-not-decode-presentation-or-gpu-timing',
+    'video-playback-quality-window-partial-surface-coverage',
+    'video-playback-quality-window-coverage-unavailable',
+    'video-playback-quality-window-element-added',
+    'video-playback-quality-window-element-removed',
+    'video-playback-quality-window-counter-discontinuity',
+    'video-playback-quality-window-read-error',
+    'video-playback-quality-window-no-video-elements',
+    'video-playback-quality-window-zero-total-frame-delta',
+    'video-playback-quality-api-unsupported',
+] as const
+
 function metric(metricId: string, scope: LabMetric['scope']): LabMetric {
     return {
         metricId,
@@ -142,6 +157,20 @@ describe('Lab catalog v2 metric presentation', () => {
             zhCN: 'LoAF 归因的强制样式 / 布局有效帧样本数',
             en: 'LoAF-attributed forced style / layout valid frame samples',
         })
+    })
+
+    it('presents the catalog-v3 action-window video metric and every closed limitation bilingually', () => {
+        assert.deepEqual(getLabMetricLabel({ metricId: 'media.video-window-dropped-frame-rate', name: 'videoWindowDroppedFrameRate' }), {
+            zhCN: '动作窗口视频丢帧率',
+            en: 'Action-window video dropped-frame rate',
+        })
+        for (const limitation of V3_VIDEO_LIMITATION_CODES) {
+            const label = getLabLimitationLabel(limitation)
+            assert.ok(label.zhCN.length > 5, limitation)
+            assert.ok(label.en.length > 5, limitation)
+            assert.notEqual(label.zhCN, `限制：${limitation}`)
+            assert.notEqual(label.en, limitation)
+        }
     })
 
     it('keeps run metrics separate from action and attempt evidence', () => {
