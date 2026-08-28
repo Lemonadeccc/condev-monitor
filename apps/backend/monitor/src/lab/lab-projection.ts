@@ -22,6 +22,8 @@ const MAX_REPORT_WINDOW_MS = 2 * 60 * 60 * 1000
 const MAX_TRACE_INPUT_EVENTS = 2_000_000
 const MAX_METRICS = 512
 const MAX_COMPACT_SUMMARY_LIMITATIONS = 64
+const ELIGIBLE_ATTEMPTS_LIMITATION_PREFIX = 'eligible-attempts-'
+const TOTAL_ATTEMPTS_LIMITATION_PREFIX = 'total-attempts-'
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,159}$/
 const SCENARIO_PROTOCOL_HASH = /^[a-f0-9]{64}$/
 const LIGHTHOUSE_METRIC_IDS = new Set([
@@ -469,6 +471,32 @@ function sameBudgetRefs(
     )
 }
 
+function attemptCoverageLimitations(metricValue: AnimationLabMetricV2Projection): string[] {
+    return metricValue.limitations.filter(
+        limitation => limitation.startsWith(ELIGIBLE_ATTEMPTS_LIMITATION_PREFIX) || limitation.startsWith(TOTAL_ATTEMPTS_LIMITATION_PREFIX)
+    )
+}
+
+function aggregateAttemptCoverageLimitations(eligibleAttempts: number, totalAttempts: number): [string, string] {
+    return [`${ELIGIBLE_ATTEMPTS_LIMITATION_PREFIX}${eligibleAttempts}`, `${TOTAL_ATTEMPTS_LIMITATION_PREFIX}${totalAttempts}`]
+}
+
+function assertAggregateAttemptCoverage(
+    metricValue: AnimationLabMetricV2Projection,
+    eligibleAttempts: number,
+    totalAttempts: number
+): void {
+    const [expectedEligible, expectedTotal] = aggregateAttemptCoverageLimitations(eligibleAttempts, totalAttempts)
+    const retained = attemptCoverageLimitations(metricValue)
+    if (
+        retained.length !== 2 ||
+        retained.filter(item => item === expectedEligible).length !== 1 ||
+        retained.filter(item => item === expectedTotal).length !== 1
+    ) {
+        throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} has invalid attempt coverage`)
+    }
+}
+
 function assertDiagnosticAggregateMetric(
     metricValue: AnimationLabMetricV2Projection,
     phase: DiagnosticPhase,
@@ -560,6 +588,9 @@ function assertV2AggregateMetrics(
             if (!expandedMetric(metricValue)) {
                 throw new BadRequestException(`animation-report measured attempt ${attemptIndex} must use expanded catalog metrics`)
             }
+            if (attemptCoverageLimitations(metricValue).length > 0) {
+                throw new BadRequestException(`animation-report measured attempt ${attemptIndex} cannot claim aggregate attempt coverage`)
+            }
             const identity = aggregateScopeIdentity(metricValue)
             if (attemptIdentities.has(identity)) {
                 throw new BadRequestException(`animation-report measured attempt ${attemptIndex} contains duplicate metric scope identity`)
@@ -580,10 +611,13 @@ function assertV2AggregateMetrics(
         const identity = aggregateScopeIdentity(metricValue)
         const sourceMetrics = sources.get(identity) ?? []
         const capabilityBacked = CAPABILITY_BACKED_METRIC_IDS_V2.has(metricValue.metricId)
-        const requiresCompleteSources = (measuredAttempts.length >= 3 && metricValue.scope.level === 'run') || capabilityBacked
-        if (requiresCompleteSources && (measuredAttempts.length === 0 || sourceMetrics.length !== measuredAttempts.length)) {
+        if (measuredAttempts.length === 0 || sourceMetrics.length === 0) {
             throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} is missing measured-attempt evidence`)
         }
+        const values = sourceMetrics
+            .map(item => item.value)
+            .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
+        assertAggregateAttemptCoverage(metricValue, values.length, measuredAttempts.length)
         const rawSamples = sourceMetrics.reduce((total, item) => total + (typeof item.samples === 'number' ? item.samples : 0), 0)
         const samplesOverflow = rawSamples > ANIMATION_LAB_METRIC_SAMPLES_MAX
         const expectedSamples = samplesOverflow ? null : rawSamples
@@ -596,24 +630,38 @@ function assertV2AggregateMetrics(
         ) {
             throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} conflicts with measured attempts`)
         }
-        if (measuredAttempts.length >= 3 && sourceMetrics.length === measuredAttempts.length) {
-            const values = sourceMetrics
-                .map(item => item.value)
-                .filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
-            const expectedStatus: AnimationLabMetricV2Projection['status'] =
-                values.length >= 3 && values.length === measuredAttempts.length && sourceMetrics.every(item => item.status === 'measured')
-                    ? 'measured'
-                    : values.length > 0
-                      ? 'partial'
-                      : sourceMetrics.every(item => item.status === 'unsupported')
-                        ? 'unsupported'
-                        : sourceMetrics.every(item => item.status === 'not-observed')
-                          ? 'not-observed'
-                          : 'unknown'
-            const expectedValue = values.length > 0 ? roundedMedian(values) : null
-            if (metricValue.status !== expectedStatus || metricValue.value !== expectedValue || metricValue.samples !== expectedSamples) {
-                throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} conflicts with measured attempts`)
-            }
+        const expectedStatus: AnimationLabMetricV2Projection['status'] =
+            values.length >= 3 && values.length === measuredAttempts.length && sourceMetrics.every(item => item.status === 'measured')
+                ? 'measured'
+                : values.length > 0
+                  ? 'partial'
+                  : sourceMetrics.every(item => item.status === 'unsupported')
+                    ? 'unsupported'
+                    : sourceMetrics.every(item => item.status === 'not-observed')
+                      ? 'not-observed'
+                      : 'unknown'
+        const expectedValue = values.length > 0 ? roundedMedian(values) : null
+        const expectedEvidenceLevel: AnimationLabMetricV2Projection['evidenceLevel'] =
+            expectedStatus === 'unsupported' || expectedStatus === 'unknown'
+                ? 'unsupported-or-unknown'
+                : (sourceMetrics.find(item => item.evidenceLevel !== 'unsupported-or-unknown')?.evidenceLevel ??
+                  'controlled-lab-measurement')
+        const expectedEvidenceRefs = [...new Set(sourceMetrics.flatMap(item => item.evidenceRefs))]
+        const expectedLimitations = [
+            ...new Set(sourceMetrics.flatMap(item => item.limitations)),
+            ...aggregateAttemptCoverageLimitations(values.length, measuredAttempts.length),
+            ...(samplesOverflow ? [ANIMATION_LAB_AGGREGATE_SAMPLE_OVERFLOW_LIMITATION] : []),
+        ]
+        if (
+            metricValue.status !== expectedStatus ||
+            metricValue.value !== expectedValue ||
+            metricValue.samples !== expectedSamples ||
+            metricValue.evidenceLevel !== expectedEvidenceLevel ||
+            !sameBudgetRefs(sourceMetrics[0]!.budgetRefs, metricValue.budgetRefs) ||
+            !sameStringArray(expectedEvidenceRefs, metricValue.evidenceRefs) ||
+            !sameStringArray(expectedLimitations, metricValue.limitations)
+        ) {
+            throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} conflicts with measured attempts`)
         }
 
         const capabilityValues = measuredAttempts.map(item => aggregateCapabilityForMetric(metricValue.metricId, item.capabilities))
