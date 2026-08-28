@@ -1,6 +1,6 @@
 ---
 name: cancel
-description: '[OMX] Cancel any active OMX mode (autopilot, ralph, ultrawork, ecomode, ultraqa, swarm, ultrapilot, pipeline, team)'
+description: "[OMX] Cancel any active OMX mode (autopilot, ralph, ultrawork, ecomode, ultraqa, swarm, ultrapilot, pipeline, team)"
 ---
 
 # Cancel Skill
@@ -16,7 +16,6 @@ a last resort.
 ## What It Does
 
 Automatically detects which mode is active and cancels it:
-
 - **Autopilot**: Stops workflow, preserves progress for resume
 - **Ralph**: Stops persistence loop, clears linked ultrawork if applicable
 - **Ultrawork**: Stops parallel execution (standalone or linked)
@@ -38,7 +37,6 @@ Or say: "cancelomc", "stopomc"
 ## Auto-Detection
 
 `/cancel` follows the session-aware state contract:
-
 - By default the command inspects the current session via `state_list_active` and `state_get_status`, navigating `.omx/state/sessions/{sessionId}/…` to discover which mode is active.
 - When a session id is provided or already known, that session-scoped path is authoritative. Legacy files in `.omx/state/*.json` are consulted only as a compatibility fallback if the session id is missing or empty.
 - Swarm is a shared SQLite/marker mode (`.omx/state/swarm.db` / `.omx/state/swarm-active.marker`) and is not session-scoped.
@@ -49,16 +47,15 @@ Or say: "cancelomc", "stopomc"
 For Ralph-targeted cancellation (standalone or linked), completion is defined by post-conditions:
 
 1. Target Ralph state is terminalized, not silently removed:
-    - `active=false`
-    - `current_phase='cancelled'`
-    - `completed_at` is set (ISO timestamp)
+   - `active=false`
+   - `current_phase='cancelled'`
+   - `completed_at` is set (ISO timestamp)
 2. If Ralph is linked to Ultrawork or Ecomode in the same scope, that linked mode is also terminalized/non-active.
-3. Cancellation MUST remain scope-safe: no mutation of unrelated sessions.
+4. Cancellation MUST remain scope-safe: no mutation of unrelated sessions.
 
 See: `docs/contracts/ralph-cancel-contract.md`.
 
 Active modes are still cancelled in dependency order:
-
 1. Autopilot (includes linked ultragoal/ultraqa/ecomode cleanup plus explicit legacy Ralph cleanup)
 2. Ralph (cleans its linked ultrawork or ecomode)
 3. Ultrawork (standalone)
@@ -76,83 +73,37 @@ When cancellation targets Ralph state in a scope, completion requires all of the
 
 1. Ralph state is terminal in that same scope: `active=false`, `current_phase='cancelled'` (or linked terminal phase), and `completed_at` is set.
 2. Linked Ultrawork/Ecomode in the same scope is also terminal/non-active.
-3. Unrelated sessions are untouched.
+4. Unrelated sessions are untouched.
 
-## Force Clear All
+## Exact-scope force compatibility
 
-Use `--force` or `--all` when you need to erase every session plus legacy artifacts, e.g., to reset the workspace entirely.
+`--force` is a compatibility flag for the same proven current scope as bare cancellation. It does not widen cancellation to other sessions, legacy roots, Team runtimes, or workspace artifacts. Its only additional behavior is exact-session native-stop cleanup after the same ownership checks.
 
-```
+`--all` is intentionally unsupported. Workspace-wide destructive cancellation requires a separately reviewed command and authority contract. Unknown flags and mixed flag combinations fail before mutation.
+
+### Exact canonical recovery under resumed ownership drift
+
+The native `PreToolUse` exemption accepts an inherited non-empty `NODE_EXTRA_CA_CERTS` only for the exact canonical `omx cancel` command shape (and workflow-supported `--force`). This does not relax `NODE_OPTIONS`, loader/import hooks, `OPENSSL_CONF`, shell startup/function injection, PATH/PATHEXT shadowing, leading assignments, command chaining, noncanonical executable resolution, or unrelated commands.
+
+For session-scoped cancellation, a stale top-level `owner_codex_session_id` in `skill-active-state.json` may be replaced—not aliased—only inside the existing cancellation transaction after the current pointer, native owner sidecar, canonical target session, and all nested owner/session evidence agree. Displaced owner evidence must be positively absent or stale/dead; live, malformed, foreign, indeterminate, nested-contradictory, or cross-session evidence fails closed. If the skill marker is absent, mode-only cancellation keeps its existing behavior and does not create one.
+
+The replacement and terminal skill state are serialized as one final skill payload. Cancellation retains all-target prevalidation, `O_NOFOLLOW`, content/identity revalidation, per-file sync, and reverse rollback. These are in-process transaction guarantees, not crash-atomic multi-file visibility; rollback restoration failures are reported rather than presented as successful cleanup.
+
+```text
+/cancel
 /cancel --force
 ```
 
-```
-/cancel --all
-```
+### Argument contract
 
-Steps under the hood:
+- no arguments: cancel only the provably current session/root scope;
+- `--force`: same scope, plus exact-session native-stop cleanup;
+- `--all`: reject without mutation;
+- unknown or multiple flags: reject without mutation.
 
-1. `state_list_active` enumerates `.omx/state/sessions/{sessionId}/…` to find every known session.
-2. `state_clear` runs once per session to drop that session’s files.
-3. A global `state_clear` without `session_id` removes legacy files under `.omx/state/*.json`, `.omx/state/swarm*.db`, and compatibility artifacts (see list).
-4. Team artifacts (`.omx/state/team/*/`, tmux sessions matching `omx-team-*`) are best-effort cleared as part of the legacy fallback.
+### State discovery
 
-Every `state_clear` command honors the `session_id` argument, so even force mode still uses the session-aware paths first before deleting legacy files.
-
-Legacy compatibility list (removed only under `--force`/`--all`):
-
-- `.omx/state/autopilot-state.json`
-- `.omx/state/ralph-state.json`
-- `.omx/state/ralph-plan-state.json`
-- `.omx/state/ralph-verification.json`
-- `.omx/state/ultrawork-state.json`
-- `.omx/state/ecomode-state.json`
-- `.omx/state/ultraqa-state.json`
-- `.omx/state/swarm.db`
-- `.omx/state/swarm.db-wal`
-- `.omx/state/swarm.db-shm`
-- `.omx/state/swarm-active.marker`
-- `.omx/state/swarm-tasks.db`
-- `.omx/state/ultrapilot-state.json`
-- `.omx/state/ultrapilot-ownership.json`
-- `.omx/state/pipeline-state.json`
-- `.omx/state/plan-consensus.json`
-- `.omx/state/ralplan-state.json`
-- `.omx/state/boulder.json`
-- `.omx/state/hud-state.json`
-- `.omx/state/subagent-tracking.json`
-- `.omx/state/subagent-tracker.lock`
-- `.omx/state/rate-limit-daemon.pid`
-- `.omx/state/rate-limit-daemon.log`
-- `.omx/state/checkpoints/` (directory)
-- `.omx/state/sessions/` (empty directory cleanup after clearing sessions)
-
-## Implementation Steps
-
-When you invoke this skill:
-
-### 1. Parse Arguments
-
-```bash
-# Check for --force or --all flags
-FORCE_MODE=false
-if [[ "$*" == *"--force"* ]] || [[ "$*" == *"--all"* ]]; then
-  FORCE_MODE=true
-fi
-```
-
-### 2. Detect Active Modes
-
-The skill now relies on the session-aware state contract rather than hard-coded file paths:
-
-1. Call `state_list_active` to enumerate `.omx/state/sessions/{sessionId}/…` and discover every active session.
-2. For each session id, call `state_get_status` to learn which mode is running (`autopilot`, `ralph`, `ultrawork`, etc.) and whether dependent modes exist.
-3. If a `session_id` was supplied to `/cancel`, skip legacy fallback entirely and operate solely within that session path; otherwise, consult legacy files in `.omx/state/*.json` only if the state tools report no active session. Swarm remains a shared SQLite/marker mode outside session scoping.
-4. Any cancellation logic in this doc mirrors the dependency order discovered via state tools (autopilot → ralph → …).
-
-### 3A. Force Mode (if --force or --all)
-
-Use force mode to clear every session plus legacy artifacts via `state_clear`. Direct file removal is reserved for legacy cleanup when the state tools report no active sessions.
+Cancellation derives writable targets from the already-proven writable scope. Compatibility discovery may inform status, but never grants write authority. Unrelated session, legacy-root, Team, and run-dir state remains untouched unless it is independently proven as the exact cancellation target.
 
 ### 3B. Smart Cancellation (default)
 
@@ -168,7 +119,6 @@ ls .omx/state/team/*/config.json 2>/dev/null
 **Two-pass cancellation protocol:**
 
 **Pass 1: Graceful Shutdown**
-
 ```
 For each team found in .omx/state/team/:
   1. Read config.json to get team_name and workers list
@@ -180,7 +130,6 @@ For each team found in .omx/state/team/:
 ```
 
 **Pass 2: Force Kill**
-
 ```
 After graceful pass:
   1. For each remaining alive worker:
@@ -191,7 +140,6 @@ After graceful pass:
 ```
 
 **Cleanup:**
-
 ```
   1. Strip AGENTS.md team worker overlay (<!-- OMX:TEAM:WORKER:START/END -->)
   2. Remove team state directory: rm -rf .omx/state/team/{name}/
@@ -200,7 +148,6 @@ After graceful pass:
 ```
 
 **Structured Cancel Report:**
-
 ```
 Team "{team_name}" cancelled:
   - Workers signaled: N
@@ -211,7 +158,6 @@ Team "{team_name}" cancelled:
 ```
 
 **Implementation note:** The cancel skill is executed by the LLM, not as a bash script. When you detect an active team:
-
 1. Check `.omx/state/team/*/config.json` for active teams
 2. For each worker in config.workers, write shutdown inbox and send trigger
 3. Wait briefly for workers to exit (15s timeout)
@@ -338,52 +284,49 @@ echo "  - Ralph (.omx/state/ralph-state.json)"
 echo "  - Ultrawork (.omx/state/ultrawork-state.json)"
 echo "  - UltraQA (.omx/state/ultraqa-state.json)"
 echo ""
-echo "Use --force to clear all state files anyway."
+echo "Use --force for exact-session native-stop cleanup without widening scope."
+
 ```
 
 ## Implementation Notes
 
 The cancel skill runs as follows:
+1. Parse arguments strictly. Bare cancellation and a single `--force` are accepted; `--all`, unknown flags, and multiple flags fail before mutation.
+2. Resolve one writable scope and treat compatibility discovery as read-only.
+3. Cancel only active state files whose exact scope, ownership fields, and frozen file identity are proven.
+4. With `--force`, remove only the selected session's native-stop entry after the same proof and revalidation.
+5. Leave unrelated sessions, legacy compatibility roots, Team artifacts, and tmux sessions untouched.
 
-1. Parse the `--force` / `--all` flags, tracking whether cleanup should span every session or stay scoped to the current session id.
-2. Use `state_list_active` to enumerate known session ids and `state_get_status` to learn the active mode (`autopilot`, `ralph`, `ultrawork`, etc.) for each session.
-3. When operating in default mode, call `state_clear` with that session_id to remove only the session’s files, then run mode-specific cleanup (autopilot → ralph → …) based on the state tool signals.
-4. In force mode, iterate every active session, call `state_clear` per session, then run a global `state_clear` without `session_id` to drop legacy files (`.omx/state/*.json`, compatibility artifacts) and report success. Swarm remains a shared SQLite/marker mode outside session scoping.
-5. Team artifacts (`.omx/state/team/*/`, tmux sessions matching `omx-team-*`) remain best-effort cleanup items invoked during the legacy/global pass.
-
-State tools always honor the `session_id` argument, so even force mode still clears the session-scoped paths before deleting compatibility-only legacy state.
-
-Mode-specific subsections below describe what extra cleanup each handler performs after the state-wide operations finish.
-
+Mode-specific subsections below describe same-scope dependency ordering only.
 ## Messages Reference
 
-| Mode           | Success Message                                                         |
-| -------------- | ----------------------------------------------------------------------- |
-| Autopilot      | "Autopilot cancelled at phase: {phase}. Progress preserved for resume." |
-| Ralph          | "Ralph cancelled. Persistent mode deactivated."                         |
-| Ultrawork      | "Ultrawork cancelled. Parallel execution mode deactivated."             |
-| Ecomode        | "Ecomode cancelled. Token-efficient execution mode deactivated."        |
-| UltraQA        | "UltraQA cancelled. QA cycling workflow stopped."                       |
-| Swarm          | "Swarm cancelled. Coordinated agents stopped."                          |
-| Ultrapilot     | "Ultrapilot cancelled. Parallel autopilot workers stopped."             |
-| Pipeline       | "Pipeline cancelled. Sequential agent chain stopped."                   |
-| Team           | "Team cancelled. Teammates shut down and cleaned up."                   |
-| Plan Consensus | "Plan Consensus cancelled. Planning session ended."                     |
-| Force          | "All OMX modes cleared. You are free to start fresh."                   |
-| None           | "No active OMX modes detected."                                         |
+| Mode | Success Message |
+|------|-----------------|
+| Autopilot | "Autopilot cancelled at phase: {phase}. Progress preserved for resume." |
+| Ralph | "Ralph cancelled. Persistent mode deactivated." |
+| Ultrawork | "Ultrawork cancelled. Parallel execution mode deactivated." |
+| Ecomode | "Ecomode cancelled. Token-efficient execution mode deactivated." |
+| UltraQA | "UltraQA cancelled. QA cycling workflow stopped." |
+| Swarm | "Swarm cancelled. Coordinated agents stopped." |
+| Ultrapilot | "Ultrapilot cancelled. Parallel autopilot workers stopped." |
+| Pipeline | "Pipeline cancelled. Sequential agent chain stopped." |
+| Team | "Team cancelled. Teammates shut down and cleaned up." |
+| Plan Consensus | "Plan Consensus cancelled. Planning session ended." |
+| Force | "All OMX modes cleared. You are free to start fresh." |
+| None | "No active OMX modes detected." |
 
 ## What Gets Preserved
 
-| Mode           | State Preserved                          | Resume Command |
-| -------------- | ---------------------------------------- | -------------- |
-| Autopilot      | Yes (phase, files, spec, plan, verdicts) | `/autopilot`   |
-| Ralph          | No                                       | N/A            |
-| Ultrawork      | No                                       | N/A            |
-| UltraQA        | No                                       | N/A            |
-| Swarm          | No                                       | N/A            |
-| Ultrapilot     | No                                       | N/A            |
-| Pipeline       | No                                       | N/A            |
-| Plan Consensus | Yes (plan file path preserved)           | N/A            |
+| Mode | State Preserved | Resume Command |
+|------|-----------------|----------------|
+| Autopilot | Yes (phase, files, spec, plan, verdicts) | `/autopilot` |
+| Ralph | No | N/A |
+| Ultrawork | No | N/A |
+| UltraQA | No | N/A |
+| Swarm | No | N/A |
+| Ultrapilot | No | N/A |
+| Pipeline | No | N/A |
+| Plan Consensus | Yes (plan file path preserved) | N/A |
 
 ## Notes
 
@@ -392,22 +335,10 @@ Mode-specific subsections below describe what extra cleanup each handler perform
 - **Safe**: Only clears linked Ultrawork, preserves standalone Ultrawork
 - **Local-only**: Clears state files in `.omx/state/` directory
 - **Resume-friendly**: Autopilot state is preserved for seamless resume
-- **Team-aware**: Detects tmux-based teams and performs graceful shutdown with force-kill fallback
+- **Team-aware**: Team cancellation is permitted only when the selected state carries exact same-scope Team authority; unrelated Team artifacts and tmux sessions remain untouched.
 
 ## Tmux Team Cleanup
 
-When cancelling team mode, the cancel skill should:
+Cancellation MUST NOT enumerate or kill every `omx-team-*` session and MUST NOT recursively delete `.omx/state/team/`. Team shutdown requires the exact frozen Team root, internal name, session, leader pane, and runtime identity selected by the authorized state transition. When that proof is unavailable or changes, cancellation fails closed without signals, pane actions, overlay edits, or Team-state deletion.
 
-1. **Kill all team tmux sessions**: `tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^omx-team-'` and kill each
-2. **Remove team state directories**: `rm -rf .omx/state/team/*/`
-3. **Strip AGENTS.md overlay**: Remove content between `<!-- OMX:TEAM:WORKER:START -->` and `<!-- OMX:TEAM:WORKER:END -->`
-
-### Force Clear Addition
-
-When `--force` is used, also clean up:
-
-```bash
-rm -rf .omx/state/team/                  # All team state
-# Kill all omx-team-* tmux sessions
-tmux list-sessions -F '#{session_name}' 2>/dev/null | grep '^omx-team-' | while read s; do tmux kill-session -t "$s" 2>/dev/null; done
-```
+`--force` does not widen Team scope. It only enables exact-session native-stop cleanup after the same authority checks.

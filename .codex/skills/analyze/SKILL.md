@@ -16,7 +16,6 @@ Use this skill to answer the user’s question through **read-only repository an
 - the user wants to understand architecture, behavior, causality, impact, or tradeoffs before changing anything
 
 Examples:
-
 - why a workflow behaves a certain way
 - how a feature is wired across modules
 - what likely explains a failure, regression, or mismatch
@@ -87,7 +86,6 @@ Parallel exploration is allowed when it improves quality, but it must stay runti
 - Do not imply that `$team` is available in plain Codex/App sessions.
 
 A good default split for complex analysis is:
-
 - one lane for primary code path / contracts
 - one lane for config / orchestration / generated surfaces
 - one lane for tests / docs / secondary corroboration
@@ -113,36 +111,30 @@ A good default split for complex analysis is:
 Structure the answer so the user can see what is known, what is inferred, and how confident the synthesis is.
 
 ### Question
-
 [Restate the user’s question briefly]
 
 ### Ranked synthesis
-
-| Rank | Explanation | Confidence          | Basis                         |
-| ---- | ----------- | ------------------- | ----------------------------- |
-| 1    | ...         | High / Medium / Low | strongest supporting evidence |
-| 2    | ...         | High / Medium / Low | why it trails                 |
-| 3    | ...         | High / Medium / Low | why it remains possible       |
+| Rank | Explanation | Confidence | Basis |
+|------|-------------|------------|-------|
+| 1 | ... | High / Medium / Low | strongest supporting evidence |
+| 2 | ... | High / Medium / Low | why it trails |
+| 3 | ... | High / Medium / Low | why it remains possible |
 
 ### Evidence
-
 - `path/to/file:line-line` — what this artifact directly shows
 - `path/to/file:line-line` — corroborating evidence
 
 ### Inference
-
 - What the evidence most strongly implies
 - Why weaker alternatives were down-ranked
 
 ### Unknowns / limits
-
 - What the repository evidence does not establish
 - What would need to be checked next to reduce uncertainty
 
 ## Quality bar
 
 A good analyze response is:
-
 - read-only and question-aligned
 - ranked rather than flat
 - explicit about confidence

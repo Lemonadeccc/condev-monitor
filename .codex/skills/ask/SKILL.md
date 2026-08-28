@@ -1,6 +1,6 @@
 ---
 name: ask
-description: '[OMX] Ask a local external advisor CLI (Claude or Gemini) and capture a reusable artifact'
+description: "[OMX] Ask a local external advisor CLI (Claude or Gemini) and capture a reusable artifact"
 ---
 
 # Ask (Local Advisor CLI)
@@ -49,7 +49,6 @@ After local execution, save a markdown artifact to:
 ```
 
 Minimum artifact sections:
-
 1. Original user task
 2. Backend and final prompt sent to the CLI
 3. Raw CLI output

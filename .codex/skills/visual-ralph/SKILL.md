@@ -1,6 +1,6 @@
 ---
 name: visual-ralph
-description: '[OMX] Visual Ralph orchestration for frontend UI from generated references, static references, or live URL targets, using $ralph with built-in visual verdict and pixel-diff evidence until the implementation matches and leaves a reproducible design system.'
+description: "[OMX] Visual Ralph orchestration for frontend UI from generated references, static references, or live URL targets, using $ralph with built-in visual verdict and pixel-diff evidence until the implementation matches and leaves a reproducible design system."
 ---
 
 # Visual Ralph Skill
@@ -37,7 +37,6 @@ This is an orchestration skill. It composes existing skills and must not add run
 ### 1. Ground the target repo
 
 Before stack-specific choices, inspect local evidence:
-
 - package manager and scripts,
 - frontend framework and routing structure,
 - styling system and design-token conventions,
@@ -51,7 +50,6 @@ Do not hardcode React, Vue, Tailwind, Playwright, or any other stack unless the 
 For live URL requests, capture or document the URL-derived reference inside the Visual Ralph artifacts and carry forward viewport, content-state, and interaction constraints. Do not invoke `$web-clone`; that standalone skill is hard-deprecated.
 
 Live URL reference artifacts must include:
-
 - source URL and permission/scope note,
 - viewport(s), route/state, and any seed/login assumptions,
 - captured baseline screenshot path or documented capture command/tool,
@@ -61,7 +59,6 @@ Live URL reference artifacts must include:
 For generated UI concepts, use `$imagegen` to produce the reference from the user's UI description.
 
 Prompt requirements:
-
 - classify as `ui-mockup`, unless another imagegen taxonomy is clearly better,
 - include viewport/aspect ratio and intended surface,
 - specify layout, hierarchy, typography direction, color mood, and any exact text,
@@ -83,7 +80,6 @@ For project-bound implementation, copy the approved reference into the workspace
 Stop after reference generation or URL-derived reference capture and ask the user to approve one reference image/state or request a targeted regeneration/capture adjustment.
 
 Before approval:
-
 - do not start frontend implementation,
 - do not invoke `$ralph`,
 - do not treat a rough image as final.
@@ -93,7 +89,6 @@ After approval, the confirmed image or URL-derived baseline becomes the visual s
 ### 4. Hand off to `$ralph` for implementation
 
 Invoke `$ralph` with:
-
 - the approved reference image path or URL-derived baseline artifact,
 - source URL, viewport(s), content state, and interaction parity notes for live URL tasks,
 - the user description,
@@ -106,7 +101,6 @@ Ralph may iterate autonomously after approval. It should edit code, run the app,
 ### 5. Use Visual Ralph verdict before every next edit
 
 For each visual iteration:
-
 1. Capture the current generated screenshot with recorded viewport/state.
 2. Run the Visual Ralph verdict step comparing the approved reference and generated screenshot. Use the `vision` agent for image understanding when needed.
 3. Treat the JSON verdict as authoritative.
@@ -126,7 +120,6 @@ Record final diff evidence with the reference/screenshot artifacts so the result
 The implementation is incomplete unless the visual match is encoded in repo-native reusable artifacts. Depending on the project, this may mean CSS variables, theme tokens, Tailwind config, component variants, Storybook stories, updates that align with DESIGN.md, or existing equivalents.
 
 Capture at least the applicable:
-
 - colors,
 - spacing scale,
 - typography scale/weights,
@@ -139,7 +132,6 @@ Prefer existing token/component patterns. Do not introduce a new design-system l
 ## Completion checklist
 
 Do not declare done until all are true:
-
 - Approved reference image or URL-derived reference artifact is saved in the workspace.
 - Screenshot reproduction command, viewport, route, seed/state, and output paths are documented.
 - Visual Ralph verdict final score is `>= 90` against the approved reference.

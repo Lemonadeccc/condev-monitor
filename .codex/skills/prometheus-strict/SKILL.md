@@ -1,7 +1,7 @@
 ---
 name: prometheus-strict
-description: '[OMX] Clean-room interview-driven planner: Metis clarifies, Momus challenges, Oracle synthesizes, then hands off to $ultragoal/$team.'
-argument-hint: '<goal or problem statement>'
+description: "[OMX] Clean-room interview-driven planner: Metis clarifies, Momus challenges, Oracle synthesizes, then hands off to $ultragoal/$team."
+argument-hint: "<goal or problem statement>"
 ---
 
 # Prometheus Strict
@@ -17,28 +17,25 @@ The output is a planning-only artifact for `$ultragoal` and, when independent la
 </Purpose>
 
 <Use_When>
-
 - The task is important enough that a shallow plan could produce wrong work.
 - Requirements are partially known but acceptance criteria, boundaries, risks, or validation are incomplete.
 - The user wants a strict interview before execution.
 - A future `$ultragoal` story needs durable scope, tests, and handoff sequencing.
 - A team split may be needed, but the lanes are not yet safe to assign.
-  </Use_When>
+</Use_When>
 
 <Do_Not_Use_When>
-
 - The user asks for immediate implementation of a clear, low-risk change; use the normal executor path.
 - The task is only a repository lookup or explanation; use `explore`/`analyze` as appropriate.
 - The user needs adversarial execution QA after code changes; use `$ultraqa`.
 - The user wants hook behavior, Sisyphus behavior, or a `start-work` port. Those are explicit non-goals.
-  </Do_Not_Use_When>
+</Do_Not_Use_When>
 
 <Why_This_Exists>
 OMX already has `$plan`, `$ralplan`, and `$deep-interview`. Prometheus Strict exists for a narrower case: an explicit clean-room strict-planning lane with named clarification, critique, and synthesis roles, plus a durable `.omx/plans/prometheus-strict/` handoff contract. It is not a replacement for execution workflows.
 </Why_This_Exists>
 
 <Execution_Policy>
-
 - Stay planning-only. Do not edit source code during this skill unless the user starts a separate execution workflow afterward.
 - Preserve clean-room boundaries. Do not copy or imitate OMO wording, source, prompts, runtime behavior, or control flow.
 - Keep non-goals visible: No hook implementation. No Sisyphus/start-work port. No automatic external-production actions.
@@ -80,11 +77,10 @@ The 6-item checklist is: objective / scope IN+OUT / acceptance / test strategy /
 - (c) stop-blocker: use when hostility/`<turn_aborted>` is detected via `<hostility_detection>` with subtype `hostility_exit`, or when the next action is destructive, credential-gated, external-production, and cannot be defaulted safely.
 
 Edge cases:
-
 1. Zero-questions-but-complete-checklist → option (b) explicit handoff. Do not emit an empty `omx question` form.
 2. Round-5-cap with incomplete checklist → option (a) emit one more question batch with surviving UNKNOWN items annotated, OR option (b) handoff with UNKNOWN items carried forward to Oracle as `<unresolved_blocker>` entries.
 3. Hostility/`<turn_aborted>` → option (c) for anger, profanity, or aborted-turn via `hostility_exit`; option (b) for dismissive-delegation (`알아서` / "you decide") with absorbed gaps annotated.
-   </Turn_Termination_Rules>
+</Turn_Termination_Rules>
 
 <Steps>
 ### 1. Intake and Safety Bounds
@@ -148,17 +144,15 @@ Prometheus Strict stops with a plan unless the user explicitly invokes or author
 $ultragoal "<Oracle plan summary or .omx/plans/prometheus-strict/<slug>.md>"
 $team <N>:executor "execute the approved Ultragoal story in parallel lanes"  # only when warranted
 ```
-
 </Steps>
 
 <Tool_Usage>
-
 - Use read-only repository inspection to verify referenced files, commands, and existing conventions.
 - Treat Metis research fan-out as part of planning, not execution: dispatch `explore` / exact `gpt-5.6-terra` `researcher` evidence-gathering before question generation for non-trivial intents, then re-prefill and ask only surviving CRITICAL gaps.
 - Use `prometheus-strict-metis`, `prometheus-strict-momus`, and `prometheus-strict-oracle` sequentially; do not fan out implementation work from this skill.
 - Use `$ultragoal` only as the recommended execution handoff after the plan is ready.
 - Use `$team` only when parallel lanes are independent and verifiable.
-  </Tool_Usage>
+</Tool_Usage>
 
 ## State Management
 
@@ -167,7 +161,6 @@ Prometheus Strict does not own a long-running runtime loop. If a durable plannin
 Do not create hook state, Sisyphus state, or `start-work` compatibility state for this skill.
 
 <Final_Checklist>
-
 - [ ] Target result is explicit.
 - [ ] Scope and non-goals are explicit.
 - [ ] Acceptance criteria are measurable.
@@ -179,7 +172,7 @@ Do not create hook state, Sisyphus state, or `start-work` compatibility state fo
 - [ ] Handoff recommends `$ultragoal` and `$team` only when warranted.
 - [ ] Clean-room credit is preserved.
 - [ ] No hook implementation or Sisyphus/start-work port was introduced.
-      </Final_Checklist>
+</Final_Checklist>
 
 <Advanced>
 ## Output Contract
@@ -190,38 +183,30 @@ If writing a durable plan file, store this markdown at `.omx/plans/prometheus-st
 ## Prometheus Strict Plan
 
 ### Target Result
-
 - <one-sentence objective>
 
 ### Clarified Requirements (Metis)
-
 - <requirement / acceptance criterion>
 
 ### Critique Resolved (Momus)
-
 - <risk or objection> -> <resolution>
 
 ### Oracle Execution Plan
-
 1. <sequenced step or lane>
 
 ### Verification Matrix
-
-| Claim   | Required evidence                  | Owner/lane |
-| ------- | ---------------------------------- | ---------- |
-| <claim> | <test/build/lint/e2e/doc evidence> | <owner>    |
+| Claim | Required evidence | Owner/lane |
+| --- | --- | --- |
+| <claim> | <test/build/lint/e2e/doc evidence> | <owner> |
 
 ### Artifact
-
 - Durable plan path: `.omx/plans/prometheus-strict/<slug>.md` or `N/A - inline plan only`
 
 ### Handoff
-
 - Recommended next workflow: <$ultragoal / $team / direct execution / none>
 - Stop condition: <what proves the plan is ready or why it is blocked>
 
 ### Clean-Room Credit
-
 Inspired by OMO Prometheus (`code-yeongyu/oh-my-openagent`), reimplemented from concept under MIT.
 ```
 

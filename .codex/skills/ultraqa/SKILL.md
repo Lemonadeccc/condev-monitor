@@ -1,6 +1,6 @@
 ---
 name: ultraqa
-description: '[OMX] Adversarial dynamic e2e QA workflow - generate hostile scenarios, test, verify, fix, report, and clean up'
+description: "[OMX] Adversarial dynamic e2e QA workflow - generate hostile scenarios, test, verify, fix, report, and clean up"
 ---
 
 # UltraQA Skill
@@ -22,14 +22,14 @@ UltraQA finds real behavior failures by combining normal verification commands w
 
 Parse the goal from arguments. Supported formats:
 
-| Invocation                    | Goal Type   | What to Check                                                                                      |
-| ----------------------------- | ----------- | -------------------------------------------------------------------------------------------------- |
-| `/ultraqa --tests`            | tests       | Existing tests plus adversarial dynamic e2e scenarios for the changed behavior                     |
-| `/ultraqa --build`            | build       | Build succeeds and generated smoke/e2e probes still run against the built artifact when applicable |
-| `/ultraqa --lint`             | lint        | Lint passes and no generated harness/test artifact violates project hygiene                        |
-| `/ultraqa --typecheck`        | typecheck   | Typecheck passes and generated typed harnesses compile when applicable                             |
-| `/ultraqa --custom "pattern"` | custom      | Custom success pattern is verified against behavior, not trusted as misleading success output      |
-| `/ultraqa --interactive`      | interactive | CLI/service behavior is tested with generated hostile and edge-case interactions                   |
+| Invocation | Goal Type | What to Check |
+|------------|-----------|---------------|
+| `/ultraqa --tests` | tests | Existing tests plus adversarial dynamic e2e scenarios for the changed behavior |
+| `/ultraqa --build` | build | Build succeeds and generated smoke/e2e probes still run against the built artifact when applicable |
+| `/ultraqa --lint` | lint | Lint passes and no generated harness/test artifact violates project hygiene |
+| `/ultraqa --typecheck` | typecheck | Typecheck passes and generated typed harnesses compile when applicable |
+| `/ultraqa --custom "pattern"` | custom | Custom success pattern is verified against behavior, not trusted as misleading success output |
+| `/ultraqa --interactive` | interactive | CLI/service behavior is tested with generated hostile and edge-case interactions |
 
 If no structured goal is provided, interpret the argument as a custom behavior goal and derive a runnable e2e strategy from repository context.
 
@@ -72,61 +72,59 @@ Generated harnesses are part of the QA evidence chain; until setup succeeds, the
 ### Cycle N (Max 5)
 
 1. **PLAN ADVERSARIAL QA**
-    - Restate the goal, success criteria, safety bounds, and stop condition.
-    - Inspect repository context enough to identify runnable surfaces, test commands, state files, and cleanup paths.
-    - Build or update the required scenario matrix before running commands.
+   - Restate the goal, success criteria, safety bounds, and stop condition.
+   - Inspect repository context enough to identify runnable surfaces, test commands, state files, and cleanup paths.
+   - Build or update the required scenario matrix before running commands.
 
 2. **RUN BASELINE VERIFICATION**
-    - `--tests`: Run the project's test command.
-    - `--build`: Run the project's build command.
-    - `--lint`: Run the project's lint command.
-    - `--typecheck`: Run the project's type check command.
-    - `--custom`: Run the appropriate command and check the pattern plus exit status and failure markers.
-    - `--interactive`: Use qa-tester or an equivalent CLI/service harness:
-        ```
-        Use `/prompts:qa-tester` with:
-        Goal: [describe what to verify]
-        Service: [how to start]
-        Test cases: [normal, hostile, malformed, interruption, resume, stale-state, dirty-worktree, hung-command, flaky, and misleading-output scenarios]
-        ```
+   - `--tests`: Run the project's test command.
+   - `--build`: Run the project's build command.
+   - `--lint`: Run the project's lint command.
+   - `--typecheck`: Run the project's type check command.
+   - `--custom`: Run the appropriate command and check the pattern plus exit status and failure markers.
+   - `--interactive`: Use qa-tester or an equivalent CLI/service harness:
+     ```
+     Use `/prompts:qa-tester` with:
+     Goal: [describe what to verify]
+     Service: [how to start]
+     Test cases: [normal, hostile, malformed, interruption, resume, stale-state, dirty-worktree, hung-command, flaky, and misleading-output scenarios]
+     ```
 
 3. **RUN ADVERSARIAL DYNAMIC E2E SCENARIOS**
-    - Execute the scenario matrix using existing e2e tests, generated temporary tests, or generated harnesses.
-    - Model malicious/hostile user behavior explicitly, including prompt injection and attempts to bypass safety or verification.
-    - Exercise malformed input, repeated interruptions, cancel/resume, stale state, dirty worktree handling, hung commands, flaky tests, and misleading success output when relevant.
-    - Capture commands, exit codes, important output excerpts, artifacts, and cleanup status.
+   - Execute the scenario matrix using existing e2e tests, generated temporary tests, or generated harnesses.
+   - Model malicious/hostile user behavior explicitly, including prompt injection and attempts to bypass safety or verification.
+   - Exercise malformed input, repeated interruptions, cancel/resume, stale state, dirty worktree handling, hung commands, flaky tests, and misleading success output when relevant.
+   - Capture commands, exit codes, important output excerpts, artifacts, and cleanup status.
 
 4. **CHECK RESULT**
-    - **YES** only if baseline verification and adversarial e2e scenarios passed, generated artifacts are cleaned up or intentionally tracked, and the report has complete evidence.
-    - **NO** if any scenario failed, was skipped without justification, left debris, relied on misleading output, or lacked evidence. Continue to step 5.
+   - **YES** only if baseline verification and adversarial e2e scenarios passed, generated artifacts are cleaned up or intentionally tracked, and the report has complete evidence.
+   - **NO** if any scenario failed, was skipped without justification, left debris, relied on misleading output, or lacked evidence. Continue to step 5.
 
 5. **ARCHITECT DIAGNOSIS**
-
-    ```
-    Use `/prompts:architect` with:
-    Goal: [goal type and behavior]
-    Scenario matrix: [rows, commands, failures, evidence]
-    Output: [test/build/e2e/harness output]
-    Provide root cause, safety implications, and specific fix recommendations.
-    ```
+   ```
+   Use `/prompts:architect` with:
+   Goal: [goal type and behavior]
+   Scenario matrix: [rows, commands, failures, evidence]
+   Output: [test/build/e2e/harness output]
+   Provide root cause, safety implications, and specific fix recommendations.
+   ```
 
 6. **FIX ISSUES**
-
-    ```
-    Use `/prompts:executor` with:
-    Issue: [architect diagnosis]
-    Files: [affected files]
-    Constraints: preserve unrelated dirty work, clean temporary harnesses, keep safety bounds
-    Apply the fix precisely as recommended.
-    ```
+   ```
+   Use `/prompts:executor` with:
+   Issue: [architect diagnosis]
+   Files: [affected files]
+   Constraints: preserve unrelated dirty work, clean temporary harnesses, keep safety bounds
+   Apply the fix precisely as recommended.
+   ```
 
 7. **CLEAN UP AND ROLLBACK**
-    - Remove temporary harnesses, fixtures, logs, spawned processes, and state files unless they are intentional deliverables.
-    - Roll back failed experimental edits that are not part of the final fix.
-    - Re-check the worktree and record remaining intentional changes or residual debris.
+   - Remove temporary harnesses, fixtures, logs, spawned processes, and state files unless they are intentional deliverables.
+   - Roll back failed experimental edits that are not part of the final fix.
+   - Re-check the worktree and record remaining intentional changes or residual debris.
 
 8. **REPEAT**
-    - Go back to step 1 with the updated scenario matrix and failure history.
+   - Go back to step 1 with the updated scenario matrix and failure history.
 
 ## Safety Bounds
 
@@ -141,13 +139,13 @@ UltraQA must stay inside these safety bounds:
 
 ## Exit Conditions
 
-| Condition             | Action                                                                                                                 |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| **Goal Met**          | Exit with success: `ULTRAQA COMPLETE: Goal met after N cycles` plus the structured report                              |
-| **Cycle 5 Reached**   | Exit with diagnosis: `ULTRAQA STOPPED: Max cycles` plus failures, fixes attempted, residual risks, and evidence        |
-| **Same Failure 3x**   | Exit early: `ULTRAQA STOPPED: Same failure detected 3 times` plus root cause, safety notes, and next owner             |
-| **Safety Boundary**   | Exit: `ULTRAQA BLOCKED: [destructive/credentialed/external-production/unbounded action]` plus safe substitute evidence |
-| **Environment Error** | Exit: `ULTRAQA ERROR: [tmux/port/dependency/hung command issue]` plus cleanup status                                   |
+| Condition | Action |
+|-----------|--------|
+| **Goal Met** | Exit with success: `ULTRAQA COMPLETE: Goal met after N cycles` plus the structured report |
+| **Cycle 5 Reached** | Exit with diagnosis: `ULTRAQA STOPPED: Max cycles` plus failures, fixes attempted, residual risks, and evidence |
+| **Same Failure 3x** | Exit early: `ULTRAQA STOPPED: Same failure detected 3 times` plus root cause, safety notes, and next owner |
+| **Safety Boundary** | Exit: `ULTRAQA BLOCKED: [destructive/credentialed/external-production/unbounded action]` plus safe substitute evidence |
+| **Environment Error** | Exit: `ULTRAQA ERROR: [tmux/port/dependency/hung command issue]` plus cleanup status |
 
 ## Structured Report
 
@@ -157,40 +155,32 @@ Every terminal UltraQA result must include this report shape:
 # UltraQA Report
 
 ## Goal and success criteria
-
 - Goal:
 - Stop condition:
 - Safety bounds applied:
 
 ## Scenario matrix
-
-| ID  | User/attacker model | Scenario | Command/harness | Expected signal | Actual result | Status | Evidence | Cleanup |
-| --- | ------------------- | -------- | --------------- | --------------- | ------------- | ------ | -------- | ------- |
+| ID | User/attacker model | Scenario | Command/harness | Expected signal | Actual result | Status | Evidence | Cleanup |
+|----|---------------------|----------|-----------------|-----------------|---------------|--------|----------|---------|
 
 ## Commands run
-
 - `[exit code] command` — purpose, duration/timeout, key output evidence
 
 ## Failures found
-
 - Scenario ID, failure signal, root cause, user impact, safety impact
 
 ## Fixes applied
-
 - Files changed, rationale, linked failing scenario(s), regression evidence
 
 ## Cleanup and rollback
-
 - Generated artifacts removed or intentionally kept
 - State/process cleanup performed
 - Worktree status before/after
 
 ## Residual risks
-
 - Untested or blocked scenarios with reasons and safe substitutes
 
 ## Evidence
-
 - Test output, e2e logs, harness output, screenshots/transcripts when relevant, and rerun/flake evidence
 ```
 

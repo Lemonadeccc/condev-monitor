@@ -1,6 +1,6 @@
 ---
 name: code-review
-description: '[OMX] Run a comprehensive code review'
+description: "[OMX] Run a comprehensive code review"
 ---
 
 # Code Review Skill
@@ -10,7 +10,6 @@ Conduct a thorough code review for quality, security, and maintainability with s
 ## When to Use
 
 This skill activates when:
-
 - User requests "review this code", "code review"
 - Before merging a pull request
 - After implementing a major feature
@@ -26,47 +25,48 @@ This skill activates when:
 Delegates to the `code-reviewer` and `architect` agents in parallel for a two-lane review:
 
 1. **Identify Changes**
-    - Run `git diff` to find changed files
-    - Determine scope of review (specific files or entire PR)
+   - Run `git diff` to find changed files
+   - Determine scope of review (specific files or entire PR)
 
 2. **Launch Parallel Review Lanes**
-    - **`code-reviewer` lane** - owns spec compliance, security, code quality, performance, and maintainability findings
-    - **`architect` lane** - owns the devil's-advocate / design-tradeoff perspective
-    - Both lanes run in parallel on a clean context with explicit scope and artifacts, and produce distinct outputs before final synthesis
-    - If either lane cannot be launched or does not return evidence, report `independent review unavailable`; do **not** substitute the current/authoring lane, and do **not** approve or mark the review merge-ready.
+   - **`code-reviewer` lane** - owns spec compliance, security, code quality, performance, and maintainability findings
+   - **`architect` lane** - owns the devil's-advocate / design-tradeoff perspective
+   - Both lanes run in parallel on a clean context with explicit scope and artifacts, and produce distinct outputs before final synthesis
+   - If either lane cannot be launched or does not return evidence, report `independent review unavailable`; do **not** substitute the current/authoring lane, and do **not** approve or mark the review merge-ready.
 
 3. **Review Categories**
-    - **Security** - Hardcoded secrets, injection risks, XSS, CSRF
-    - **Code Quality** - Function size, complexity, nesting depth
-    - **Performance** - Algorithm efficiency, N+1 queries, caching
-    - **Best Practices** - Naming, documentation, error handling
-    - **Maintainability** - Duplication, coupling, testability
+   - **Security** - Hardcoded secrets, injection risks, XSS, CSRF
+   - **Code Quality** - Function size, complexity, nesting depth
+   - **Performance** - Algorithm efficiency, N+1 queries, caching
+   - **Best Practices** - Naming, documentation, error handling
+   - **Maintainability** - Duplication, coupling, testability
 
 4. **Severity Rating**
-    - **CRITICAL** - Security vulnerability (must fix before merge)
-    - **HIGH** - Bug or major code smell (should fix before merge)
-    - **MEDIUM** - Minor issue (fix when possible)
-    - **LOW** - Style/suggestion (consider fixing)
+   - **CRITICAL** - Security vulnerability (must fix before merge)
+   - **HIGH** - Bug or major code smell (should fix before merge)
+   - **MEDIUM** - Minor issue (fix when possible)
+   - **LOW** - Style/suggestion (consider fixing)
 
 5. **Architectural Status Contract**
-    - **CLEAR** - No unresolved architectural blocker was found
-    - **WATCH** - Non-blocking design/tradeoff concern that must appear in the final synthesis
-    - **BLOCK** - Unresolved design concern that prevents a merge-ready verdict
+   - **CLEAR** - No unresolved architectural blocker was found
+   - **WATCH** - Non-blocking design/tradeoff concern that must appear in the final synthesis
+   - **BLOCK** - Unresolved design concern that prevents a merge-ready verdict
 
 6. **Specific Recommendations**
-    - File:line locations for each issue
-    - Concrete fix suggestions
-    - Code examples where applicable
+   - File:line locations for each issue
+   - Concrete fix suggestions
+   - Code examples where applicable
 
 7. **Final Synthesis**
-    - Combine the `code-reviewer` recommendation and the architect status into one final verdict
-    - Approval requires explicit evidence from both independent lanes; missing or failed delegation is a blocking unavailable-review state, not an approval fallback
-    - Deterministic merge gating rules:
-        - If architect status is **BLOCK**, final recommendation is **REQUEST CHANGES**
-        - Else if `code-reviewer` recommendation is **REQUEST CHANGES**, final recommendation is **REQUEST CHANGES**
-        - Else if architect status is **WATCH**, final recommendation is **COMMENT**
-        - Else final recommendation follows the `code-reviewer` lane
-    - The final report must make architect blockers impossible to miss
+   - Combine the `code-reviewer` recommendation and the architect status into one final verdict
+   - Approval requires explicit evidence from both independent lanes; missing or failed delegation is a blocking unavailable-review state, not an approval fallback
+   - Deterministic merge gating rules:
+     - If architect status is **BLOCK**, final recommendation is **REQUEST CHANGES**
+     - Else if `code-reviewer` recommendation is **REQUEST CHANGES**, final recommendation is **REQUEST CHANGES**
+     - Else if architect status is **WATCH**, final recommendation is **COMMENT**
+     - Else final recommendation follows the `code-reviewer` lane
+   - The final report must make architect blockers impossible to miss
+
 
 ## State/HUD Phase Contract
 
@@ -143,28 +143,24 @@ Run both lanes in parallel, then synthesize them with the deterministic rules ab
 The code-reviewer agent SHOULD consult Codex for cross-validation.
 
 ### Protocol
-
 1. **Form your OWN review FIRST** - Complete the review independently
 2. **Consult for validation** - Cross-check findings with Codex
 3. **Critically evaluate** - Never blindly adopt external findings
 4. **Graceful optional consultation fallback** - Never block because optional external consultation tools are unavailable; this does not waive the required independent `code-reviewer` and `architect` lanes
 
 ### When to Consult
-
 - Security-sensitive code changes
 - Complex architectural patterns
 - Unfamiliar codebases or languages
 - High-stakes production code
 
 ### When to Skip
-
 - Simple refactoring
 - Well-understood patterns
 - Time-critical reviews
 - Small, isolated changes
 
 ### Tool Usage
-
 Prefer native `code-reviewer` agent consultation or CLI-backed `ask_codex` surfaces when available. Optional MCP compatibility ask tools may be used only when already enabled. If optional external consultation tools are unavailable, continue with the required independent `code-reviewer` and `architect` lanes; do not replace those lanes with self-review.
 
 **Note:** Codex calls can take up to 1 hour. Consider the review timeline before consulting.
@@ -231,7 +227,6 @@ Address any WATCH concerns before treating the change as merge-ready.
 The `code-reviewer` lane checks:
 
 ### Security
-
 - [ ] No hardcoded secrets (API keys, passwords, tokens)
 - [ ] All user inputs sanitized
 - [ ] SQL/NoSQL injection prevention
@@ -240,7 +235,6 @@ The `code-reviewer` lane checks:
 - [ ] Authentication/authorization properly enforced
 
 ### Code Quality
-
 - [ ] Functions < 50 lines (guideline)
 - [ ] Cyclomatic complexity < 10
 - [ ] No deeply nested code (> 4 levels)
@@ -248,14 +242,12 @@ The `code-reviewer` lane checks:
 - [ ] Clear, descriptive naming
 
 ### Performance
-
 - [ ] No N+1 query patterns
 - [ ] Appropriate caching where applicable
 - [ ] Efficient algorithms (avoid O(n²) when O(n) possible)
 - [ ] No unnecessary re-renders (React/Vue)
 
 ### Best Practices
-
 - [ ] Error handling present and appropriate
 - [ ] Logging at appropriate levels
 - [ ] Documentation for public APIs
@@ -278,6 +270,7 @@ The `architect` lane checks:
 **REQUEST CHANGES** - `code-reviewer` returns REQUEST CHANGES, architect status is `BLOCK`, or required independent review delegation is unavailable/skipped/failed
 **COMMENT** - `code-reviewer` returns COMMENT with architect status `CLEAR`, architect status is `WATCH`, or only LOW/MEDIUM improvements remain
 
+
 ## Scenario Examples
 
 **Good:** The user says `continue` after the workflow already has a clear next step. Continue the current branch of work instead of restarting or re-asking the same question.
@@ -289,27 +282,21 @@ The `architect` lane checks:
 ## Use with Other Skills
 
 **With Team:**
-
 ```
 /team "review recent auth changes and report findings"
 ```
-
 Includes coordinated review execution across specialized agents.
 
 **With Ralph:**
-
 ```
 /ralph code-review then fix all issues
 ```
-
 On the explicit Ralph path, review findings should flow into automatic fix follow-up without another permission prompt. Plain `code-review` itself remains read-only and does **not** promise auto-fix.
 
 **With Ultrawork:**
-
 ```
 /ultrawork review all files in src/
 ```
-
 Parallel code review across multiple files.
 
 ## Best Practices

@@ -18,36 +18,35 @@ compact solutions.
    All original features, outputs, and behaviors must remain intact.
 
 2. **Apply Project Standards**: Follow the established coding conventions:
-    - Use ES modules with proper import sorting and `.js` extensions
-    - Prefer `function` keyword over arrow functions for top-level declarations
-    - Use explicit return type annotations for top-level functions
-    - Maintain consistent naming conventions (camelCase for variables, PascalCase for types)
-    - Follow TypeScript strict mode patterns
+   - Use ES modules with proper import sorting and `.js` extensions
+   - Prefer `function` keyword over arrow functions for top-level declarations
+   - Use explicit return type annotations for top-level functions
+   - Maintain consistent naming conventions (camelCase for variables, PascalCase for types)
+   - Follow TypeScript strict mode patterns
 
 3. **Enhance Clarity**: Simplify code structure by:
-    - Reducing unnecessary complexity and nesting
-    - Eliminating redundant code and abstractions
-    - Improving readability through clear variable and function names
-    - Consolidating related logic
-    - Removing unnecessary comments that describe obvious code
-    - IMPORTANT: Avoid nested ternary operators — prefer `switch` statements or `if`/`else`
-      chains for multiple conditions
-    - Choose clarity over brevity — explicit code is often better than overly compact code
+   - Reducing unnecessary complexity and nesting
+   - Eliminating redundant code and abstractions
+   - Improving readability through clear variable and function names
+   - Consolidating related logic
+   - Removing unnecessary comments that describe obvious code
+   - IMPORTANT: Avoid nested ternary operators — prefer `switch` statements or `if`/`else`
+     chains for multiple conditions
+   - Choose clarity over brevity — explicit code is often better than overly compact code
 
 4. **Maintain Balance**: Avoid over-simplification that could:
-    - Reduce code clarity or maintainability
-    - Create overly clever solutions that are hard to understand
-    - Combine too many concerns into single functions or components
-    - Remove helpful abstractions that improve code organization
-    - Prioritize "fewer lines" over readability (e.g., nested ternaries, dense one-liners)
-    - Make the code harder to debug or extend
+   - Reduce code clarity or maintainability
+   - Create overly clever solutions that are hard to understand
+   - Combine too many concerns into single functions or components
+   - Remove helpful abstractions that improve code organization
+   - Prioritize "fewer lines" over readability (e.g., nested ternaries, dense one-liners)
+   - Make the code harder to debug or extend
 
 5. **Focus Scope**: Only refine code that has been recently modified or touched in the
    current session, unless explicitly instructed to review a broader scope.
-   </scope_guard>
+</scope_guard>
 
 <ask_gate>
-
 - Work ALONE. Do not spawn sub-agents.
 - Do not introduce behavior changes — only structural simplifications.
 - Do not add features, tests, or documentation unless explicitly requested.
@@ -56,8 +55,8 @@ compact solutions.
 - Run diagnostics on each modified file to verify zero type errors after changes.
 - Treat newer user task updates as local overrides for the active simplification scope while preserving earlier non-conflicting constraints.
 - If correctness depends on further inspection or diagnostics, keep using those tools until the simplification result is grounded.
-  </ask_gate>
-  </constraints>
+</ask_gate>
+</constraints>
 
 <explore>
 1. Identify the recently modified code sections provided
@@ -71,18 +70,16 @@ compact solutions.
 <execution_loop>
 <success_criteria>
 A simplification pass is complete ONLY when ALL of these are true:
-
 1. All recently modified code has been reviewed for simplification opportunities.
 2. Applied changes preserve exact functionality.
 3. `lsp_diagnostics` reports zero errors on modified files.
 4. Code is demonstrably simpler and more maintainable.
 5. No behavior changes introduced.
 6. Output includes concrete verification evidence.
-   </success_criteria>
+</success_criteria>
 
 <verification_loop>
 After simplification:
-
 1. Run `lsp_diagnostics` on all modified files.
 2. Confirm no type errors or warnings introduced.
 3. Verify functionality is preserved (no behavior changes).

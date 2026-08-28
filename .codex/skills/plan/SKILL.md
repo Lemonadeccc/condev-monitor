@@ -1,6 +1,6 @@
 ---
 name: plan
-description: '[OMX] Strategic planning with optional interview workflow'
+description: "[OMX] Strategic planning with optional interview workflow"
 ---
 
 <Purpose>
@@ -8,28 +8,25 @@ Plan creates comprehensive, actionable work plans through intelligent interactio
 </Purpose>
 
 <Use_When>
-
 - User wants to plan before implementing -- "plan this", "plan the", "let's plan"
 - User wants structured requirements gathering for a vague idea
 - User wants an existing plan reviewed -- "review this plan", `--review`
 - User wants multi-perspective consensus on a plan -- `--consensus`, "ralplan"
 - Task is broad or vague and needs scoping before any code is written
-  </Use_When>
+</Use_When>
 
 <Do_Not_Use_When>
-
 - User wants autonomous end-to-end execution -- use `autopilot` instead
 - User wants to start coding immediately with a clear task -- use `ralph` or delegate to executor
 - User asks a simple question that can be answered directly -- just answer it
 - Task is a single focused fix with obvious scope -- skip planning, just do it
-  </Do_Not_Use_When>
+</Do_Not_Use_When>
 
 <Why_This_Exists>
 Jumping into code without understanding requirements leads to rework, scope creep, and missed edge cases. Plan provides structured requirements gathering, expert analysis, and quality-gated plans so that execution starts from a solid foundation. The consensus mode adds multi-perspective validation for high-stakes projects.
 </Why_This_Exists>
 
 <Execution_Policy>
-
 - Auto-detect interview vs direct mode based on request specificity
 - Ask one question at a time during interviews -- never batch multiple interview rounds into one question form
 - Gather codebase facts via `explore` agent before asking the user about them
@@ -39,19 +36,19 @@ Jumping into code without understanding requirements leads to rework, scope cree
 - Consensus mode outputs the final plan by default; add `--interactive` to enable execution handoff
 - Consensus mode uses RALPLAN-DR short mode by default; switch to deliberate mode with `--deliberate` or when the request explicitly signals high risk (auth/security, data migration, destructive/irreversible changes, production incident, compliance/PII, public API breakage)
 - Apply the shared workflow guidance pattern: outcome-first framing, concise visible updates for multi-step planning, local overrides for the active workflow branch, evidence-backed planning and validation expectations, explicit stop rules, and automatic continuation for safe reversible steps. Ask only for material, destructive, credentialed, external-production, or preference-dependent branches.
-  </Execution_Policy>
+</Execution_Policy>
 
 <Steps>
 
 ### Mode Selection
 
-| Mode                  | Trigger                         | Behavior                                                                                                                                                              |
-| --------------------- | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Interview             | Default for broad requests      | Interactive requirements gathering                                                                                                                                    |
-| Direct                | `--direct`, or detailed request | Skip interview, generate plan directly                                                                                                                                |
-| Consensus             | `--consensus`, "ralplan"        | Planner -> Architect -> Critic loop until agreement with RALPLAN-DR structured deliberation (short by default, `--deliberate` for high-risk); outputs plan by default |
-| Consensus Interactive | `--consensus --interactive`     | Same as Consensus but pauses for user feedback at draft and approval steps, then hands off to execution                                                               |
-| Review                | `--review`, "review this plan"  | Critic evaluation of existing plan                                                                                                                                    |
+| Mode | Trigger | Behavior |
+|------|---------|----------|
+| Interview | Default for broad requests | Interactive requirements gathering |
+| Direct | `--direct`, or detailed request | Skip interview, generate plan directly |
+| Consensus | `--consensus`, "ralplan" | Planner -> Architect -> Critic loop until agreement with RALPLAN-DR structured deliberation (short by default, `--deliberate` for high-risk); outputs plan by default |
+| Consensus Interactive | `--consensus --interactive` | Same as Consensus but pauses for user feedback at draft and approval steps, then hands off to execution |
+| Review | `--review`, "review this plan" | Critic evaluation of existing plan |
 
 ### Interview Mode (broad/vague requests)
 
@@ -73,16 +70,16 @@ Jumping into code without understanding requirements leads to rework, scope cree
 **RALPLAN-DR modes**: **Short** (default, bounded structure) and **Deliberate** (for `--deliberate` or explicit high-risk requests). Both modes keep the same Planner -> Architect -> Critic sequence. The workflow auto-proceeds through planning steps (Planner/Architect/Critic) but outputs the final plan without executing.
 
 1. **Planner** creates initial plan and a compact **RALPLAN-DR summary** before any Architect review. The summary **MUST** include:
-    - **Principles** (3-5)
-    - **Decision Drivers** (top 3)
-    - **Viable Options** (>=2) with bounded pros/cons for each option
-    - If only one viable option remains, an explicit **invalidation rationale** for the alternatives that were rejected
-    - In **deliberate mode**: a **pre-mortem** (3 failure scenarios) and an **expanded test plan** covering **unit / integration / e2e / observability**
-2. **User feedback** _(--interactive only)_: If running with `--interactive`, **MUST** use `AskUserQuestion` / the structured question UI (`omx question` in attached tmux; native structured input outside tmux when available) to present the draft plan **plus the RALPLAN-DR Principles / Decision Drivers / Options summary for early direction alignment** with these options:
-    - **Proceed to review** — send to Architect and Critic for evaluation
-    - **Request changes** — return to step 1 with user feedback incorporated
-    - **Skip review** — go directly to final approval (step 7)
-      If NOT running with `--interactive`, automatically proceed to review (step 3).
+   - **Principles** (3-5)
+   - **Decision Drivers** (top 3)
+   - **Viable Options** (>=2) with bounded pros/cons for each option
+   - If only one viable option remains, an explicit **invalidation rationale** for the alternatives that were rejected
+   - In **deliberate mode**: a **pre-mortem** (3 failure scenarios) and an **expanded test plan** covering **unit / integration / e2e / observability**
+2. **User feedback** *(--interactive only)*: If running with `--interactive`, **MUST** use `AskUserQuestion` / the structured question UI (`omx question` in attached tmux; native structured input outside tmux when available) to present the draft plan **plus the RALPLAN-DR Principles / Decision Drivers / Options summary for early direction alignment** with these options:
+   - **Proceed to review** — send to Architect and Critic for evaluation
+   - **Request changes** — return to step 1 with user feedback incorporated
+   - **Skip review** — go directly to final approval (step 7)
+   If NOT running with `--interactive`, automatically proceed to review (step 3).
 3. **Architect** reviews for architectural soundness as a dedicated subsequent `Architect` subagent with the full task, current plan text/path, RALPLAN-DR summary, and relevant artifact context. Architect review **MUST** include: strongest steelman counterargument (antithesis) against the favored option, at least one meaningful tradeoff tension, and (when possible) a synthesis path. In deliberate mode, Architect should explicitly flag principle violations. **Wait for this step to complete before proceeding to step 4.** Do NOT run steps 3 and 4 in parallel. Do NOT substitute a default/improvised subagent prompt for the role-specific `Architect` prompt.
 4. **Critic** evaluates against quality criteria as a dedicated subsequent `Critic` subagent with the full task, current plan text/path, RALPLAN-DR summary, artifact context, and the completed `Architect` result. Critic **MUST** verify principle-option consistency, fair alternative exploration, risk mitigation clarity, testable acceptance criteria, and concrete verification steps. Critic **MUST** explicitly reject shallow alternatives, driver contradictions, vague risks, or weak verification. In deliberate mode, Critic **MUST** reject missing/weak pre-mortem or missing/weak expanded test plan. Run only after step 3 is complete. Do NOT let the `Architect` response self-approve the Critic gate.
 5. **Re-review loop** (max 5 iterations): If Critic rejects or iterates, execute this closed loop:
@@ -100,18 +97,18 @@ Jumping into code without understanding requirements leads to rework, scope cree
    e. Before any execution handoff, derive an explicit **available-agent-types roster** from the known prompt catalog and add concrete **follow-up staffing guidance** for `$ultragoal` and `$team` (recommended roles, counts, suggested reasoning levels by lane, and why each lane exists), plus an explicit `$ralph` fallback note only when persistent single-owner verification is intentionally selected
    f. Add a product-facing **Goal-Mode Follow-up Suggestions** section: recommend `$ultragoal` by default for general goal-oriented follow-up, `$autoresearch-goal` only when the context is a research project with a research deliverable/evaluator, and `$performance-goal` when the context is an optimization or performance project. Keep these suggestions alongside the Team path and any explicit Ralph fallback rather than replacing implementation-delivery guidance. For ordinary pre-planning external docs or best-practice lookup, cite `$best-practice-research` evidence and synthesize it into the plan instead of recommending Autoresearch as a final architecture component. For durable-goal work that is also parallelizable, explicitly recommend **Team + Ultragoal**: Ultragoal remains leader-owned goal/ledger state and Team returns checkpoint-ready execution evidence.
    g. For the `$team` path, add an explicit launch-hint block with concrete `omx team` / `$team` commands and a **team verification path** (what Team proves before shutdown and what Ultragoal checkpoints as durable completion evidence). Distinguish Team + Ultragoal from any explicit Ralph fallback: Team handles coordinated parallel lanes; Ultragoal is the default durable follow-up/ledger owner, and Ralph is only an explicitly requested legacy-style persistent sequential verification/fix lane when needed.
-7. On Critic approval (with improvements applied): _(--interactive only)_ If running with `--interactive`, use `AskUserQuestion` / the structured question UI to present the plan with these options:
-    - **Approve durable goal execution** — proceed via `$ultragoal` by default (optionally with `$team` for parallel lanes)
-    - **Approve and implement via team** — proceed to implementation via coordinated parallel team agents
-    - **Start goal-mode follow-up** — proceed via `$ultragoal` by default, or `$autoresearch-goal` / `$performance-goal` when the approved plan specifically fits research validation or measurable optimization
-    - **Request changes** — return to step 1 with user feedback
-    - **Reject** — discard the plan entirely
-      If NOT running with `--interactive`, output the final approved plan and stop. Do NOT auto-execute.
-8. _(--interactive only)_ User chooses via the structured question UI (never ask for approval in plain text when a structured surface is available)
+7. On Critic approval (with improvements applied): *(--interactive only)* If running with `--interactive`, use `AskUserQuestion` / the structured question UI to present the plan with these options:
+   - **Approve durable goal execution** — proceed via `$ultragoal` by default (optionally with `$team` for parallel lanes)
+   - **Approve and implement via team** — proceed to implementation via coordinated parallel team agents
+   - **Start goal-mode follow-up** — proceed via `$ultragoal` by default, or `$autoresearch-goal` / `$performance-goal` when the approved plan specifically fits research validation or measurable optimization
+   - **Request changes** — return to step 1 with user feedback
+   - **Reject** — discard the plan entirely
+   If NOT running with `--interactive`, output the final approved plan and stop. Do NOT auto-execute.
+8. *(--interactive only)* User chooses via the structured question UI (never ask for approval in plain text when a structured surface is available)
 9. On user approval (--interactive only):
-    - **Approve durable goal execution**: **MUST** invoke `$ultragoal` with the approved plan path from `.omx/plans/` as context **plus the explicit available-agent-types roster, suggested reasoning levels, concrete role allocation guidance, and direct launch hints for Ultragoal follow-up work**. Use `$team` alongside Ultragoal when parallel lanes are warranted. Do NOT implement directly. Do NOT edit source code files in the planning agent. Ralph is not the default follow-up; only invoke `$ralph` when the user explicitly selects a legacy/persistent single-owner execution lane.
-    - **Approve and implement via team**: **MUST** invoke `$team` with the approved plan path from `.omx/plans/` as context **plus the explicit available-agent-types roster, suggested reasoning levels, concrete staffing / worker-role allocation guidance, explicit `omx team` / `$team` launch hints, and the team verification path**. Do NOT implement directly. The team skill coordinates parallel agents across the staged pipeline for faster execution on large tasks.
-    - **Start goal-mode follow-up**: **MUST** invoke the selected goal workflow with the approved plan path and appropriate success context: `$ultragoal` as the default goal-mode path, `$autoresearch-goal` for research projects, or `$performance-goal` for optimization/performance projects with measurable evaluator criteria. Do NOT implement directly in the planning agent.
+   - **Approve durable goal execution**: **MUST** invoke `$ultragoal` with the approved plan path from `.omx/plans/` as context **plus the explicit available-agent-types roster, suggested reasoning levels, concrete role allocation guidance, and direct launch hints for Ultragoal follow-up work**. Use `$team` alongside Ultragoal when parallel lanes are warranted. Do NOT implement directly. Do NOT edit source code files in the planning agent. Ralph is not the default follow-up; only invoke `$ralph` when the user explicitly selects a legacy/persistent single-owner execution lane.
+   - **Approve and implement via team**: **MUST** invoke `$team` with the approved plan path from `.omx/plans/` as context **plus the explicit available-agent-types roster, suggested reasoning levels, concrete staffing / worker-role allocation guidance, explicit `omx team` / `$team` launch hints, and the team verification path**. Do NOT implement directly. The team skill coordinates parallel agents across the staged pipeline for faster execution on large tasks.
+   - **Start goal-mode follow-up**: **MUST** invoke the selected goal workflow with the approved plan path and appropriate success context: `$ultragoal` as the default goal-mode path, `$autoresearch-goal` for research projects, or `$performance-goal` for optimization/performance projects with measurable evaluator criteria. Do NOT implement directly in the planning agent.
 
 ### Review Mode (`--review`)
 
@@ -125,7 +122,6 @@ Jumping into code without understanding requirements leads to rework, scope cree
 ### Plan Output Format
 
 Every plan includes:
-
 - Requirements Summary
 - Acceptance Criteria (testable)
 - Implementation Steps (with file references)
@@ -141,7 +137,6 @@ Plans are saved to `.omx/plans/`. Drafts go to `.omx/drafts/`.
 </Steps>
 
 <Tool_Usage>
-
 - Use `AskUserQuestion` for preference questions (scope, priority, timeline, risk tolerance) -- provides clickable UI
 - Use plain text for questions needing specific values (port numbers, names, follow-up clarifications)
 - Use the `explore` agent (LOW tier, bounded quick pass) to gather codebase facts before asking the user
@@ -154,7 +149,7 @@ Plans are saved to `.omx/plans/`. Drafts go to `.omx/drafts/`.
 - In consensus mode with `--interactive`: use `AskUserQuestion` / the structured question UI for the user feedback step (step 2) and the final approval step (step 7) -- never ask for approval in plain text when a structured surface is available. Without `--interactive`, auto-proceed through planning steps without pausing. Output the final plan without execution.
 - In consensus mode with `--interactive`, on user approval **MUST** invoke the selected follow-up lane from step 9 (`$ultragoal`, `$team`, `$autoresearch-goal`, `$performance-goal`, or explicit `$ralph` fallback) -- never implement directly in the planning agent
 - In consensus mode, execution follow-up handoff **MUST** include an explicit available-agent-types roster plus concrete staffing / role-allocation guidance grounded in that roster, suggested reasoning levels by lane, product-facing goal-mode follow-up suggestions (`$ultragoal` by default, `$autoresearch-goal` for research projects, `$performance-goal` for optimization/performance projects), explicit `omx team` / `$team` launch hints, and a team verification path. For parallelizable durable-goal plans, recommend Team + Ultragoal with leader-owned checkpointing from Team evidence; reserve Ralph for persistent sequential single-owner verification/fix follow-up.
-  </Tool_Usage>
+</Tool_Usage>
 
 ## Scenario Examples
 
@@ -215,16 +210,14 @@ Why bad: Decision fatigue. Present one option with trade-offs, get reaction, the
 </Examples>
 
 <Escalation_And_Stop_Conditions>
-
 - Stop interviewing when requirements are clear enough to plan -- do not over-interview
 - In consensus mode, stop after 5 Planner/Architect/Critic iterations and present the best version
 - Consensus mode outputs the plan by default; with `--interactive`, user can approve and hand off to ultragoal/team, with Ralph only as an explicit legacy/persistent single-owner lane
 - If the user says "just do it" or "skip planning", **MUST** invoke `$ultragoal` to transition to durable goal execution mode by default; use `$ralph` only when the user explicitly asks for that fallback. Do NOT implement directly in the planning agent.
 - Escalate to the user when there are irreconcilable trade-offs that require a business decision
-  </Escalation_And_Stop_Conditions>
+</Escalation_And_Stop_Conditions>
 
 <Final_Checklist>
-
 - [ ] Plan has testable acceptance criteria (90%+ concrete)
 - [ ] Plan references specific files/lines where applicable (80%+ claims)
 - [ ] All risks have mitigations identified
@@ -234,7 +227,7 @@ Why bad: Decision fatigue. Present one option with trade-offs, get reaction, the
 - [ ] In consensus mode final output: ADR section included (Decision / Drivers / Alternatives considered / Why chosen / Consequences / Follow-ups)
 - [ ] In deliberate consensus mode: pre-mortem (3 scenarios) + expanded test plan (unit/integration/e2e/observability) included
 - [ ] In consensus mode with `--interactive`: user explicitly approved before any execution; without `--interactive`: output final plan after Critic approval (no auto-execution)
-      </Final_Checklist>
+</Final_Checklist>
 
 <Advanced>
 ## Design Option Presentation
@@ -249,7 +242,6 @@ When presenting design choices during interviews, chunk them:
 6. **Recommendation** (only after options discussed)
 
 Format for each option:
-
 ```
 ### Option A: [Name]
 **Approach:** [1 sentence]
@@ -263,21 +255,21 @@ What's your reaction to this approach?
 
 Before asking any interview question, classify it:
 
-| Type            | Examples                              | Action                                                                                                               |
-| --------------- | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| Codebase Fact   | "What patterns exist?", "Where is X?" | Explore first, do not ask user                                                                                       |
-| User Preference | "Priority?", "Timeline?"              | Ask user via the structured question path (`omx question` in attached tmux; native structured input where available) |
-| Scope Decision  | "Include feature Y?"                  | Ask user                                                                                                             |
-| Requirement     | "Performance constraints?"            | Ask user                                                                                                             |
+| Type | Examples | Action |
+|------|----------|--------|
+| Codebase Fact | "What patterns exist?", "Where is X?" | Explore first, do not ask user |
+| User Preference | "Priority?", "Timeline?" | Ask user via the structured question path (`omx question` in attached tmux; native structured input where available) |
+| Scope Decision | "Include feature Y?" | Ask user |
+| Requirement | "Performance constraints?" | Ask user |
 
 ## Review Quality Criteria
 
-| Criterion    | Standard                   |
-| ------------ | -------------------------- |
-| Clarity      | 80%+ claims cite file/line |
-| Testability  | 90%+ criteria are concrete |
-| Verification | All file refs exist        |
-| Specificity  | No vague terms             |
+| Criterion | Standard |
+|-----------|----------|
+| Clarity | 80%+ claims cite file/line |
+| Testability | 90%+ criteria are concrete |
+| Verification | All file refs exist |
+| Specificity | No vague terms |
 
 ## Deprecation Notice
 

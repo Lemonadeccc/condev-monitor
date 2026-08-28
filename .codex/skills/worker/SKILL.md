@@ -1,6 +1,6 @@
 ---
 name: worker
-description: '[OMX] Team worker protocol (ACK, mailbox, task lifecycle) for tmux-based OMX teams'
+description: "[OMX] Team worker protocol (ACK, mailbox, task lifecycle) for tmux-based OMX teams"
 ---
 
 # Worker Skill
@@ -27,11 +27,11 @@ When a worker inbox tells you to load this skill, resolve the first existing pat
 ## Startup Protocol (ACK)
 
 1. Parse `OMX_TEAM_WORKER` into:
-    - `teamName` (before the `/`)
-    - `workerName` (after the `/`, usually `worker-<n>`)
+   - `teamName` (before the `/`)
+   - `workerName` (after the `/`, usually `worker-<n>`)
 2. Send a startup ACK to the lead mailbox **before task work**:
-    - Recipient worker id: `leader-fixed`
-    - Body: one short deterministic line (recommended: `ACK: <workerName> initialized`).
+   - Recipient worker id: `leader-fixed`
+   - Body: one short deterministic line (recommended: `ACK: <workerName> initialized`).
 3. After ACK, proceed to your inbox instructions.
 
 The lead will see your message in:
@@ -39,7 +39,6 @@ The lead will see your message in:
 `<team_state_root>/team/<teamName>/mailbox/leader-fixed.json`
 
 Use CLI interop:
-
 - `omx team api send-message --input <json> --json` with `{team_name, from_worker, to_worker:"leader-fixed", body}`
 
 Copy/paste template:
@@ -51,25 +50,25 @@ omx team api send-message --input "{\"team_name\":\"<teamName>\",\"from_worker\"
 ## Inbox + Tasks
 
 1. Resolve canonical team state root in this order:
-    1. `OMX_TEAM_STATE_ROOT` env
-    2. worker identity `team_state_root`
-    3. team config/manifest `team_state_root`
-    4. local cwd fallback (`.omx/state`)
+   1) `OMX_TEAM_STATE_ROOT` env
+   2) worker identity `team_state_root`
+   3) team config/manifest `team_state_root`
+   4) local cwd fallback (`.omx/state`)
 2. Read your inbox:
    `<team_state_root>/team/<teamName>/workers/<workerName>/inbox.md`
 3. Pick the first unblocked task assigned to you.
 4. Read the task file:
    `<team_state_root>/team/<teamName>/tasks/task-<id>.json` (example: `task-1.json`)
 5. Task id format:
-    - The MCP/state API uses the numeric id (`"1"`), not `"task-1"`.
-    - Never use legacy `tasks/{id}.json` wording.
+   - The MCP/state API uses the numeric id (`"1"`), not `"task-1"`.
+   - Never use legacy `tasks/{id}.json` wording.
 6. Claim the task (do NOT start work without a claim) using claim-safe lifecycle CLI interop (`omx team api claim-task --json`).
 7. Do the work.
 8. Complete/fail the task via lifecycle transition CLI interop (`omx team api transition-task-status --json`) from `in_progress` to `completed` or `failed`.
-    - Do NOT directly write lifecycle fields (`status`, `owner`, `result`, `error`) in task files.
+   - Do NOT directly write lifecycle fields (`status`, `owner`, `result`, `error`) in task files.
 9. Use `omx team api release-task-claim --json` only for rollback/requeue to `pending` (not for completion).
 10. Update your worker status:
-    `<team_state_root>/team/<teamName>/workers/<workerName>/status.json` with `{"state":"idle", ...}`
+   `<team_state_root>/team/<teamName>/workers/<workerName>/status.json` with `{"state":"idle", ...}`
 
 ## Mailbox
 
@@ -84,7 +83,6 @@ Note: leader dispatch is state-first. The durable queue lives at:
 Hooks/watchers may nudge you after mailbox/inbox state is already written.
 
 Use CLI interop:
-
 - `omx team api mailbox-list --json` to read
 - `omx team api mailbox-mark-delivered --json` to acknowledge delivery
 
@@ -102,6 +100,7 @@ Worker sessions should treat team state + CLI interop as the source of truth.
 - Prefer inbox/mailbox/task state and `omx team api ... --json` operations.
 - Do **not** rely on ad-hoc tmux keystrokes as a primary delivery channel.
 - If a manual trigger arrives (for example `tmux send-keys` nudge), treat it only as a prompt to re-check state and continue through the normal claim-safe lifecycle.
+
 
 ## Team Big Five / ATEM Coordination Gate
 

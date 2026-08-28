@@ -1,6 +1,6 @@
 ---
 name: design
-description: '[OMX] Canonical repo-local DESIGN.md workflow for product, UI/UX, and frontend decision source of truth'
+description: "[OMX] Canonical repo-local DESIGN.md workflow for product, UI/UX, and frontend decision source of truth"
 ---
 
 # Design Skill
@@ -73,44 +73,37 @@ Use the structure below. Preserve useful existing content, remove contradictions
 # Design
 
 ## Source of truth
-
 - Status: Draft | Active | Needs refresh
 - Last refreshed: YYYY-MM-DD
 - Primary product surfaces:
 - Evidence reviewed:
 
 ## Brand
-
 - Personality:
 - Trust signals:
 - Avoid:
 
 ## Product goals
-
 - Goals:
 - Non-goals:
 - Success signals:
 
 ## Personas and jobs
-
 - Primary personas:
 - User jobs:
 - Key contexts of use:
 
 ## Information architecture
-
 - Primary navigation:
 - Core routes/screens:
 - Content hierarchy:
 
 ## Design principles
-
 - Principle 1:
 - Principle 2:
 - Tradeoffs:
 
 ## Visual language
-
 - Color:
 - Typography:
 - Spacing/layout rhythm:
@@ -119,14 +112,12 @@ Use the structure below. Preserve useful existing content, remove contradictions
 - Imagery/iconography:
 
 ## Components
-
 - Existing components to reuse:
 - New/changed components:
 - Variants and states:
 - Token/component ownership:
 
 ## Accessibility
-
 - Target standard:
 - Keyboard/focus behavior:
 - Contrast/readability:
@@ -134,13 +125,11 @@ Use the structure below. Preserve useful existing content, remove contradictions
 - Reduced motion and sensory considerations:
 
 ## Responsive behavior
-
 - Supported breakpoints/devices:
 - Layout adaptations:
 - Touch/hover differences:
 
 ## Interaction states
-
 - Loading:
 - Empty:
 - Error:
@@ -149,13 +138,11 @@ Use the structure below. Preserve useful existing content, remove contradictions
 - Offline/slow network, if applicable:
 
 ## Content voice
-
 - Tone:
 - Terminology:
 - Microcopy rules:
 
 ## Implementation constraints
-
 - Framework/styling system:
 - Design-token constraints:
 - Performance constraints:
@@ -163,7 +150,6 @@ Use the structure below. Preserve useful existing content, remove contradictions
 - Test/screenshot expectations:
 
 ## Open questions
-
 - [ ] Question / owner / impact
 ```
 

@@ -1,7 +1,7 @@
 ---
 name: best-practice-research
-description: '[OMX] Bounded best-practice research wrapper using official/upstream evidence first'
-argument-hint: '<technology|decision|practice question>'
+description: "[OMX] Bounded best-practice research wrapper using official/upstream evidence first"
+argument-hint: "<technology|decision|practice question>"
 ---
 
 # Best-Practice Research
@@ -59,28 +59,22 @@ This skill is terminal and read-only by default. It gathers evidence and produce
 ## Best-Practice Research: <question>
 
 ### Direct Recommendation
-
 <actionable guidance or decision support>
 
 ### Evidence Used
-
 - Official/upstream: <source URL> — <what it establishes>
 - Supplemental, if any: <source URL> — <why it is secondary>
 
 ### Version / Date Context
-
 <versions, dates, release channels, or unknowns>
 
 ### Repo-Local Context
-
 <facts from explore, or "not needed">
 
 ### Boundaries / Non-goals
-
 <what this research does not decide>
 
 ### Handoff
-
 <planning/execution/test implications; name the next workflow — `$ralplan` for planning, `$ultragoal`/`$team`/`executor` for execution — and note that this skill stops here unless the user explicitly switches workflows>
 ```
 

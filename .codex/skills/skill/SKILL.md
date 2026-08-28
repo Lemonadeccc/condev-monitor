@@ -1,7 +1,7 @@
 ---
 name: skill
-description: '[OMX] Manage local skills - list, add, remove, search, edit, setup wizard'
-argument-hint: '<command> [args]'
+description: "[OMX] Manage local skills - list, add, remove, search, edit, setup wizard"
+argument-hint: "<command> [args]"
 ---
 
 # Skill Management CLI
@@ -15,7 +15,6 @@ Meta-skill for managing oh-my-codex skills via CLI-like commands.
 Show all local skills organized by scope.
 
 **Behavior:**
-
 1. Scan user skills at `~/.codex/skills/`
 2. Scan project skills at `.codex/skills/`
 3. Parse YAML frontmatter for metadata
@@ -43,18 +42,17 @@ PROJECT SKILLS (.codex/skills/):
 Interactive wizard for creating a new skill.
 
 **Behavior:**
-
 1. **Ask for skill name** (if not provided in command)
-    - Validate: lowercase, hyphens only, no spaces
+   - Validate: lowercase, hyphens only, no spaces
 2. **Ask for description**
-    - Clear, concise one-liner
+   - Clear, concise one-liner
 3. **Ask for triggers** (comma-separated keywords)
-    - Example: "error, fix, debug"
+   - Example: "error, fix, debug"
 4. **Ask for argument hint** (optional)
-    - Example: "<file> [options]"
+   - Example: "<file> [options]"
 5. **Ask for scope:**
-    - `user` → `~/.codex/skills/<name>/SKILL.md`
-    - `project` → `.codex/skills/<name>/SKILL.md`
+   - `user` → `~/.codex/skills/<name>/SKILL.md`
+   - `project` → `.codex/skills/<name>/SKILL.md`
 6. **Create skill file** with template:
 
 ```yaml
@@ -86,9 +84,7 @@ argument-hint: "<args>"
 ## Examples
 
 ```
-
 /oh-my-codex:<name> example-arg
-
 ```
 
 ## Notes
@@ -100,7 +96,6 @@ argument-hint: "<args>"
 8. **Suggest:** "Edit `/skill edit <name>` to customize content"
 
 **Example:**
-
 ```
 User: /skill add custom-logger
 Assistant: Creating new skill 'custom-logger'...
@@ -121,23 +116,21 @@ Scope (user/project): user
 Remove a skill by name.
 
 **Behavior:**
-
 1. **Search for skill** in both scopes:
-    - `~/.codex/skills/<name>/SKILL.md`
-    - `.codex/skills/<name>/SKILL.md`
+   - `~/.codex/skills/<name>/SKILL.md`
+   - `.codex/skills/<name>/SKILL.md`
 2. **If found:**
-    - Display skill info (name, description, scope)
-    - **Ask for confirmation:** "Delete '<name>' skill from <scope>? (yes/no)"
+   - Display skill info (name, description, scope)
+   - **Ask for confirmation:** "Delete '<name>' skill from <scope>? (yes/no)"
 3. **If confirmed:**
-    - Delete entire skill directory (e.g., `~/.codex/skills/<name>/`)
-    - Report: "✓ Removed skill '<name>' from <scope>"
+   - Delete entire skill directory (e.g., `~/.codex/skills/<name>/`)
+   - Report: "✓ Removed skill '<name>' from <scope>"
 4. **If not found:**
-    - Report: "✗ Skill '<name>' not found in user or project scope"
+   - Report: "✗ Skill '<name>' not found in user or project scope"
 
 **Safety:** Never delete without explicit user confirmation.
 
 **Example:**
-
 ```
 User: /skill remove old-logger
 Assistant: Found skill 'old-logger' in user scope:
@@ -157,33 +150,31 @@ Assistant: ✓ Removed skill 'old-logger' from user scope
 Edit an existing skill interactively.
 
 **Behavior:**
-
 1. **Find skill** by name (search both scopes)
 2. **Read current content** via Read tool
 3. **Display current values:**
-    ```
-    Current skill 'custom-logger':
-    - Description: Enhanced logging with structured output
-    - Triggers: log, logger, logging
-    - Argument hint: <level> [message]
-    - Scope: user
-    ```
+   ```
+   Current skill 'custom-logger':
+   - Description: Enhanced logging with structured output
+   - Triggers: log, logger, logging
+   - Argument hint: <level> [message]
+   - Scope: user
+   ```
 4. **Ask what to change:**
-    - `description` - Update description
-    - `triggers` - Update trigger keywords
-    - `argument-hint` - Update argument hint
-    - `content` - Edit full markdown content
-    - `rename` - Rename skill (move file)
-    - `cancel` - Exit without changes
+   - `description` - Update description
+   - `triggers` - Update trigger keywords
+   - `argument-hint` - Update argument hint
+   - `content` - Edit full markdown content
+   - `rename` - Rename skill (move file)
+   - `cancel` - Exit without changes
 5. **For selected field:**
-    - Show current value
-    - Ask for new value
-    - Update YAML frontmatter or content
-    - Write back to file
+   - Show current value
+   - Ask for new value
+   - Update YAML frontmatter or content
+   - Write back to file
 6. **Report success** with summary of changes
 
 **Example:**
-
 ```
 User: /skill edit custom-logger
 Assistant: Current skill 'custom-logger':
@@ -207,13 +198,12 @@ New triggers (comma-separated): log, logger, logging, trace
 Search skills by content, triggers, name, or description.
 
 **Behavior:**
-
 1. **Scan all skills** in both scopes
 2. **Match query** (case-insensitive) against:
-    - Skill name
-    - Description
-    - Triggers
-    - Full markdown content
+   - Skill name
+   - Description
+   - Triggers
+   - Full markdown content
 3. **Display matches** with context:
 
 ```
@@ -235,7 +225,6 @@ Found 3 skills matching "typescript error":
 **Ranking:** Prioritize matches in name/triggers over content matches
 
 **Example:**
-
 ```
 User: /skill search api endpoint
 Assistant: Found 2 skills matching "api endpoint":
@@ -256,7 +245,6 @@ Assistant: Found 2 skills matching "api endpoint":
 Show detailed information about a skill.
 
 **Behavior:**
-
 1. **Find skill** by name (search both scopes)
 2. **Parse YAML frontmatter** and content
 3. **Display complete details:**
@@ -278,7 +266,6 @@ File Path: /home/user/.codex/skills/custom-logger/SKILL.md
 **If not found:** Report error with suggestion to use `/skill search`
 
 **Example:**
-
 ```
 User: /skill info custom-logger
 Assistant: Skill: custom-logger
@@ -302,14 +289,13 @@ Enhanced logging with structured JSON output...
 Sync skills between user and project scopes.
 
 **Behavior:**
-
 1. **Scan both scopes:**
-    - User skills: `~/.codex/skills/`
-    - Project skills: `.codex/skills/`
+   - User skills: `~/.codex/skills/`
+   - Project skills: `.codex/skills/`
 2. **Compare and categorize:**
-    - User-only skills (not in project)
-    - Project-only skills (not in user)
-    - Common skills (in both)
+   - User-only skills (not in project)
+   - Project-only skills (not in user)
+   - Common skills (in both)
 3. **Display sync opportunities:**
 
 ```
@@ -340,15 +326,14 @@ Options:
 ```
 
 4. **Handle user choice:**
-    - Option 1: Select skill(s) to copy to project
-    - Option 2: Select skill(s) to copy to user
-    - Option 3: Show side-by-side diff for common skills
-    - Option 4: Exit
+   - Option 1: Select skill(s) to copy to project
+   - Option 2: Select skill(s) to copy to user
+   - Option 3: Show side-by-side diff for common skills
+   - Option 4: Exit
 
 **Safety:** Never overwrite without confirmation
 
 **Example:**
-
 ```
 User: /skill sync
 Assistant: Found 5 user-only skills and 2 project-only skills.
@@ -460,7 +445,6 @@ After scanning, use the AskUserQuestion tool to offer these options:
 **Question:** "What would you like to do with your local skills?"
 
 **Options:**
-
 1. **Add new skill** - Start the skill creation wizard (invoke `/skill add`)
 2. **List all skills with details** - Show comprehensive skill inventory (invoke `/skill list`)
 3. **Scan conversation for patterns** - Analyze current conversation for skill-worthy patterns
@@ -470,7 +454,6 @@ After scanning, use the AskUserQuestion tool to offer these options:
 **Option 3: Scan Conversation for Patterns**
 
 Analyze the current conversation context to identify potential skill-worthy patterns. Look for:
-
 - Recent debugging sessions with non-obvious solutions
 - Tricky bugs that required investigation
 - Codebase-specific workarounds discovered
@@ -481,12 +464,10 @@ Report findings and ask if user wants to extract any as skills (invoke `/learner
 **Option 4: Import Skill**
 
 Ask user to provide either:
-
 - **URL**: Download skill from a URL (e.g., GitHub gist)
 - **Paste content**: Paste skill markdown content directly
 
 Then ask for scope:
-
 - **User-level** (~/.codex/skills/) - Available across all projects
 - **Project-level** (.codex/skills/) - Only for this project
 
@@ -515,38 +496,31 @@ id: error-[unique-id]
 name: [Error Name]
 description: Solution for [specific error in specific context]
 source: conversation
-triggers: ['error message fragment', 'file path', 'symptom']
+triggers: ["error message fragment", "file path", "symptom"]
 quality: high
 ---
 
 # [Error Name]
 
 ## The Insight
-
 What is the underlying cause of this error? What principle did you discover?
 
 ## Why This Matters
-
 What goes wrong if you don't know this? What symptom led here?
 
 ## Recognition Pattern
-
 How do you know when this applies? What are the signs?
-
 - Error message: "[exact error]"
 - File: [specific file path]
 - Context: [when does this occur]
 
 ## The Approach
-
 Step-by-step solution:
-
 1. [Specific action with file/line reference]
 2. [Specific action with file/line reference]
 3. [Verification step]
 
 ## Example
-
 \`\`\`typescript
 // Before (broken)
 [problematic code]
@@ -564,36 +538,30 @@ id: workflow-[unique-id]
 name: [Workflow Name]
 description: Process for [specific task in this codebase]
 source: conversation
-triggers: ['task description', 'file pattern', 'goal keyword']
+triggers: ["task description", "file pattern", "goal keyword"]
 quality: high
 ---
 
 # [Workflow Name]
 
 ## The Insight
-
 What makes this workflow different from the obvious approach?
 
 ## Why This Matters
-
 What fails if you don't follow this process?
 
 ## Recognition Pattern
-
 When should you use this workflow?
-
 - Task type: [specific task]
 - Files involved: [specific patterns]
 - Indicators: [how to recognize]
 
 ## The Approach
-
 1. [Step with specific commands/files]
 2. [Step with specific commands/files]
 3. [Verification]
 
 ## Gotchas
-
 - [Common mistake and how to avoid it]
 - [Edge case and how to handle it]
 ```
@@ -606,43 +574,35 @@ id: pattern-[unique-id]
 name: [Pattern Name]
 description: Pattern for [specific use case in this codebase]
 source: conversation
-triggers: ['code pattern', 'file type', 'problem domain']
+triggers: ["code pattern", "file type", "problem domain"]
 quality: high
 ---
 
 # [Pattern Name]
 
 ## The Insight
-
 What's the key principle behind this pattern?
 
 ## Why This Matters
-
 What problems does this pattern solve in THIS codebase?
 
 ## Recognition Pattern
-
 When do you apply this pattern?
-
 - File types: [specific files]
 - Problem: [specific problem]
 - Context: [codebase-specific context]
 
 ## The Approach
-
 Decision-making heuristic, not just code:
-
 1. [Principle-based step]
 2. [Principle-based step]
 
 ## Example
-
 \`\`\`typescript
 [Illustrative example showing the principle]
 \`\`\`
 
 ## Anti-Pattern
-
 What NOT to do and why:
 \`\`\`typescript
 [Common mistake to avoid]
@@ -657,38 +617,31 @@ id: integration-[unique-id]
 name: [Integration Name]
 description: How [system A] integrates with [system B] in this codebase
 source: conversation
-triggers: ['system name', 'integration point', 'config file']
+triggers: ["system name", "integration point", "config file"]
 quality: high
 ---
 
 # [Integration Name]
 
 ## The Insight
-
 What's non-obvious about how these systems connect?
 
 ## Why This Matters
-
 What breaks if you don't understand this integration?
 
 ## Recognition Pattern
-
 When are you working with this integration?
-
 - Files: [specific integration files]
 - Config: [specific config locations]
 - Symptoms: [what indicates integration issues]
 
 ## The Approach
-
 How to work with this integration correctly:
-
 1. [Configuration step with file paths]
 2. [Setup step with specific details]
 3. [Verification step]
 
 ## Gotchas
-
 - [Integration-specific pitfall #1]
 - [Integration-specific pitfall #2]
 ```
@@ -698,7 +651,6 @@ How to work with this integration correctly:
 ## Error Handling
 
 **All commands must handle:**
-
 - File/directory doesn't exist
 - Permission errors
 - Invalid YAML frontmatter
@@ -706,7 +658,6 @@ How to work with this integration correctly:
 - Invalid skill names (spaces, special chars)
 
 **Error format:**
-
 ```
 ✗ Error: <clear message>
 → Suggestion: <helpful next step>
@@ -780,20 +731,20 @@ When invoked without arguments, run the full guided wizard.
 Good skills are:
 
 1. **Non-Googleable** - Can't easily find via search
-    - BAD: "How to read files in TypeScript"
-    - GOOD: "This codebase uses custom path resolution requiring fileURLToPath"
+   - BAD: "How to read files in TypeScript"
+   - GOOD: "This codebase uses custom path resolution requiring fileURLToPath"
 
 2. **Context-Specific** - References actual files/errors from THIS codebase
-    - BAD: "Use try/catch for error handling"
-    - GOOD: "The aiohttp proxy in server.py:42 crashes on ClientDisconnectedError"
+   - BAD: "Use try/catch for error handling"
+   - GOOD: "The aiohttp proxy in server.py:42 crashes on ClientDisconnectedError"
 
 3. **Actionable with Precision** - Tells exactly WHAT to do and WHERE
-    - BAD: "Handle edge cases"
-    - GOOD: "When seeing 'Cannot find module' in dist/, check tsconfig.json moduleResolution"
+   - BAD: "Handle edge cases"
+   - GOOD: "When seeing 'Cannot find module' in dist/, check tsconfig.json moduleResolution"
 
 4. **Hard-Won** - Required significant debugging effort
-    - BAD: Generic programming patterns
-    - GOOD: "Race condition in worker.ts - Promise.all at line 89 needs await"
+   - BAD: Generic programming patterns
+   - GOOD: "Race condition in worker.ts - Promise.all at line 89 needs await"
 
 ---
 

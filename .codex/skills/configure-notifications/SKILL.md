@@ -1,25 +1,25 @@
 ---
 name: configure-notifications
-description: '[OMX] Configure OMX notifications - unified entry point for all platforms'
+description: "[OMX] Configure OMX notifications - unified entry point for all platforms"
 triggers:
-    - 'configure notifications'
-    - 'setup notifications'
-    - 'notification settings'
-    - 'configure discord'
-    - 'configure telegram'
-    - 'configure slack'
-    - 'configure openclaw'
-    - 'setup discord'
-    - 'setup telegram'
-    - 'setup slack'
-    - 'setup openclaw'
-    - 'discord notifications'
-    - 'telegram notifications'
-    - 'slack notifications'
-    - 'openclaw notifications'
-    - 'discord webhook'
-    - 'telegram bot'
-    - 'slack webhook'
+  - "configure notifications"
+  - "setup notifications"
+  - "notification settings"
+  - "configure discord"
+  - "configure telegram"
+  - "configure slack"
+  - "configure openclaw"
+  - "setup discord"
+  - "setup telegram"
+  - "setup slack"
+  - "setup openclaw"
+  - "discord notifications"
+  - "telegram notifications"
+  - "slack notifications"
+  - "openclaw notifications"
+  - "discord webhook"
+  - "telegram bot"
+  - "slack webhook"
 ---
 
 # Configure OMX Notifications
@@ -64,7 +64,6 @@ Use AskUserQuestion:
 **Question:** "What would you like to configure?"
 
 **Options:**
-
 1. **Discord (native)** - webhook or bot
 2. **Telegram (native)** - bot token + chat id
 3. **Slack (native)** - incoming webhook
@@ -89,7 +88,6 @@ Do not write these as generic command/webhook aliases.
 ### 4a) `custom_webhook_command`
 
 Use AskUserQuestion to collect:
-
 - URL
 - Optional headers
 - Optional method (`POST` default, or `PUT`)
@@ -117,7 +115,6 @@ jq \
 ### 4b) `custom_cli_command`
 
 Use AskUserQuestion to collect:
-
 - Command template (supports `{{event}}`, `{{instruction}}`, `{{sessionId}}`, `{{projectPath}}`)
 - Optional event list
 - Optional instruction template
@@ -149,7 +146,6 @@ If the user explicitly asks to route hook notifications through **clawdbot agent
 `clawdbot agent` and delivers back to Discord.
 
 Notes:
-
 - Hook name mapping is intentional: notifications `session-stop` -> OpenClaw hook `stop`.
 - OMX shell-escapes template substitutions for command gateways (including `{{instruction}}`).
 - Keep `instruction` templates concise and avoid untrusted shell metacharacters.
@@ -239,32 +235,26 @@ rg '"error"|"failed"|"timeout"' /tmp/omx-openclaw-agent.jsonl | tail -20
 ### 4c) Compatibility + precedence contract
 
 OMX accepts both:
-
 - explicit `notifications.openclaw` schema (legacy/runtime shape)
 - generic aliases (`custom_webhook_command`, `custom_cli_command`)
 
 Deterministic precedence:
-
 1. `notifications.openclaw` **wins** when present and valid.
 2. Generic aliases are ignored in that case (with warning).
 
 ## Step 5: Cross-Cutting Settings
 
 ### Verbosity
-
 - minimal / session (recommended) / agent / verbose
 
 ### Idle cooldown
-
 - `notifications.idleCooldownSeconds`
 
 ### Profiles
-
 - `notifications.profiles`
 - `notifications.defaultProfile`
 
 ### Reply listener
-
 - `notifications.reply.enabled`
 - env gates: `OMX_REPLY_ENABLED=true`, and for Discord `OMX_REPLY_DISCORD_USER_IDS=...`
 - For Discord bot replies, an authorized operator can reply with exact-match `status` to a tracked OMX notification to receive a bounded read-only session summary. This is a reply-thread-scoped status probe, not a general remote control surface.
@@ -284,14 +274,12 @@ npm run build
 ```
 
 For OpenClaw-like HTTP integrations, verify both:
-
 - `/hooks/wake` smoke test
 - `/hooks/agent` delivery verification
 
 ## Final Summary Template
 
 Show:
-
 - Native platforms enabled
 - Generic aliases enabled (`custom_webhook_command`, `custom_cli_command`)
 - Whether explicit `notifications.openclaw` exists (and therefore overrides aliases)

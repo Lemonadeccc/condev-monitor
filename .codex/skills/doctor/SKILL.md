@@ -1,6 +1,6 @@
 ---
 name: doctor
-description: '[OMX] Diagnose and fix oh-my-codex installation issues'
+description: "[OMX] Diagnose and fix oh-my-codex installation issues"
 ---
 
 # Doctor Skill
@@ -14,7 +14,6 @@ OMX installs skills to `${CODEX_HOME:-~/.codex}/skills/` — this is the path cu
 `~/.agents/skills/` is a **historical legacy path** from an older Codex CLI release, before Codex settled on `~/.codex` as its home directory. Current Codex CLI and OMX no longer write there.
 
 **In a mixed OMX + plain Codex environment:**
-
 - **Use**: `${CODEX_HOME:-~/.codex}/skills/` (user scope) or `.codex/skills/` (project scope)
 - **Clean up if present**: `~/.agents/skills/` — if this still exists alongside the canonical root, Codex's Enable/Disable Skills UI will show duplicate entries for any skill present in both trees
 - **Interop rule**: OMX writes only to the canonical path; archive or remove `~/.agents/skills/` once you have confirmed `${CODEX_HOME:-~/.codex}/skills/` is your active root
@@ -49,7 +48,6 @@ echo "Latest npm: $LATEST"
 ```
 
 **Diagnosis**:
-
 - If no cache entry exists: INFO - plugin marketplace artifact not cached; this may be normal when OMX was installed only through npm/setup
 - Compare each printed `PLUGIN_VERSION` with `LATEST`; if it differs and is not `local`: WARN - outdated plugin cache
 - If one marketplace has multiple version directories: WARN - stale cache for that marketplace/plugin pair
@@ -60,13 +58,11 @@ echo "Latest npm: $LATEST"
 Check `~/.codex/config.toml` first (current Codex config), then check legacy `~/.codex/settings.json` only if it exists.
 
 Look for hook entries pointing to removed scripts like:
-
 - `bash $HOME/.codex/hooks/keyword-detector.sh`
 - `bash $HOME/.codex/hooks/persistent-mode.sh`
 - `bash $HOME/.codex/hooks/session-start.sh`
 
 **Diagnosis**:
-
 - If found: CRITICAL - legacy hooks causing duplicates
 
 ### Step 3: Check for Legacy Bash Hook Scripts
@@ -76,7 +72,6 @@ ls -la ~/.codex/hooks/*.sh 2>/dev/null
 ```
 
 **Diagnosis**:
-
 - If `keyword-detector.sh`, `persistent-mode.sh`, `session-start.sh`, or `stop-continuation.sh` exist: WARN - legacy scripts (can cause confusion)
 
 ### Step 4: Check AGENTS.md
@@ -90,7 +85,6 @@ grep -q "oh-my-codex Multi-Agent System" ~/.codex/AGENTS.md 2>/dev/null && echo 
 ```
 
 **Diagnosis**:
-
 - If missing: CRITICAL - AGENTS.md not configured
 - If missing OMX marker: WARN - outdated AGENTS.md
 
@@ -108,7 +102,6 @@ find "$PLUGIN_CACHE_ROOT" -path "*/oh-my-codex/*" -mindepth 3 -maxdepth 3 -type 
 ```
 
 **Diagnosis**:
-
 - If a single marketplace lists multiple versions: WARN - multiple cached versions for that marketplace/plugin pair (cleanup recommended)
 
 ### Step 6: Check for Legacy Curl-Installed Content
@@ -130,14 +123,12 @@ ls -la ~/.agents/skills/ 2>/dev/null
 ```
 
 **Diagnosis**:
-
 - If `~/.codex/agents/` exists with oh-my-codex-related files: WARN - legacy generated agents or hand-installed role files. The Codex plugin can package reusable workflows plus plugin-scoped companion metadata for optional MCP/apps; legacy setup installs native agents, while plugin setup archives stale legacy native-agent files and keeps config/hooks current.
 - If `~/.codex/commands/` exists with oh-my-codex-related files: WARN - legacy command files from older installs. Current OMX uses skills/workflows plus setup-managed native surfaces.
 - If `${CODEX_HOME:-~/.codex}/skills/` exists with OMX skills: OK - canonical current user skill root
 - If `~/.agents/skills/` exists: WARN - historical legacy skill root that can overlap with `${CODEX_HOME:-~/.codex}/skills/` and cause duplicate Enable/Disable Skills entries
 
 Look for files like:
-
 - `architect.md`, `researcher.md`, `explore.md`, `executor.md`, etc. in agents/
 - `ultrawork.md`, `deepsearch.md`, etc. in commands/
 - Any oh-my-codex-related `.md` files in skills/
@@ -185,11 +176,9 @@ If issues found, ask user: "Would you like me to fix these issues automatically?
 If yes, apply fixes:
 
 ### Fix: Legacy Hooks in legacy settings.json
-
 If `~/.codex/settings.json` exists, remove the legacy `"hooks"` section (keep other settings intact).
 
 ### Fix: Legacy Bash Scripts
-
 ```bash
 rm -f ~/.codex/hooks/keyword-detector.sh
 rm -f ~/.codex/hooks/persistent-mode.sh
@@ -198,7 +187,6 @@ rm -f ~/.codex/hooks/stop-continuation.sh
 ```
 
 ### Fix: Outdated Plugin
-
 ```bash
 # Global cache reset across all marketplaces for this plugin.
 # If you only want one marketplace, set MARKETPLACE_NAME and remove just that subtree instead.
@@ -208,7 +196,6 @@ echo "Plugin cache cleared across all marketplaces. Restart Codex CLI to fetch t
 ```
 
 ### Fix: Stale Cache (multiple versions)
-
 ```bash
 # Keep only the newest version inside the selected marketplace/plugin cache.
 # Set MARKETPLACE_NAME to the exact marketplace printed in Step 1.
@@ -221,9 +208,7 @@ fi
 ```
 
 ### Fix: Missing/Outdated AGENTS.md
-
 Fetch latest from GitHub and write to `~/.codex/AGENTS.md`:
-
 ```
 WebFetch(url: "https://raw.githubusercontent.com/Yeachan-Heo/oh-my-codex/main/docs/AGENTS.md", prompt: "Return the complete raw markdown content exactly as-is")
 ```
@@ -251,5 +236,4 @@ rm -rf ~/.agents/skills
 ## Post-Fix
 
 After applying fixes, inform user:
-
 > Fixes applied. **Restart Codex CLI** for changes to take effect.

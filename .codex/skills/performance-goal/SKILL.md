@@ -1,6 +1,6 @@
 ---
 name: performance-goal
-description: '[OMX] Run an evaluator-gated performance optimization workflow over Codex goal mode with durable OMX artifacts and safe goal handoffs.'
+description: "[OMX] Run an evaluator-gated performance optimization workflow over Codex goal mode with durable OMX artifacts and safe goal handoffs."
 ---
 
 # Performance Goal Workflow
@@ -51,11 +51,11 @@ omx performance-goal complete --slug startup-latency --evidence "final evaluator
 
 1. Run `omx performance-goal create` if no workflow exists.
 2. Run `omx performance-goal start` and follow the handoff:
-    - call `get_goal`;
-    - call `create_goal` only when no active goal exists and the objective is explicit;
-    - work only against the evaluator contract;
-    - after evaluator pass and completion audit, call `update_goal({status: "complete"})`, call `get_goal` again, and pass that snapshot to `omx performance-goal complete --codex-goal-json`;
-    - after `omx performance-goal complete` succeeds, run `/goal clear` in the Codex UI before starting another goal in this same thread/session; OMX prints this terminal cleanup step but does not invoke hidden clear routes;
+   - call `get_goal`;
+   - call `create_goal` only when no active goal exists and the objective is explicit;
+   - work only against the evaluator contract;
+   - after evaluator pass and completion audit, call `update_goal({status: "complete"})`, call `get_goal` again, and pass that snapshot to `omx performance-goal complete --codex-goal-json`;
+   - after `omx performance-goal complete` succeeds, run `/goal clear` in the Codex UI before starting another goal in this same thread/session; OMX prints this terminal cleanup step but does not invoke hidden clear routes;
 3. Optimize in small reversible patches.
 4. Run the evaluator and related regression tests.
 5. Record each pass/fail/blocker with `checkpoint`.

@@ -1,6 +1,6 @@
 ---
 name: autoresearch-goal
-description: '[OMX] Durable professor-critic research workflow over Codex goal mode without reviving deprecated omx autoresearch'
+description: "[OMX] Durable professor-critic research workflow over Codex goal mode without reviving deprecated omx autoresearch"
 ---
 
 # Autoresearch Goal
@@ -8,23 +8,19 @@ description: '[OMX] Durable professor-critic research workflow over Codex goal m
 Use this workflow when a research mission should be bound to Codex goal-mode focus while OMX remains the durable state owner. This is for research projects that need Codex goal-mode management plus professor/critic-style validation; it is not the default answer for ordinary pre-planning best-practice lookup.
 
 ## Boundary
-
 - Do **not** use or revive the deprecated `omx autoresearch` direct launch surface.
 - Do **not** claim shell commands mutate hidden Codex `/goal` state.
 - Do **not** edit upstream `../../codex` or add dependencies.
 - Use `get_goal`, `create_goal`, and `update_goal({status: "complete"})` only through the active Codex thread when those tools are available.
 
 ## Artifacts
-
 `omx autoresearch-goal` writes:
-
 - `.omx/goals/autoresearch/<slug>/mission.json`
 - `.omx/goals/autoresearch/<slug>/rubric.md`
 - `.omx/goals/autoresearch/<slug>/ledger.jsonl`
 - `.omx/goals/autoresearch/<slug>/completion.json`
 
 ## Flow
-
 1. Create the mission and professor-critic rubric:
    `omx autoresearch-goal create --topic "..." --rubric "..." --critic-command "..."`
 2. Emit the model-facing handoff:
@@ -38,7 +34,6 @@ Use this workflow when a research mission should be bound to Codex goal-mode foc
 7. After the completion command succeeds, run `/goal clear` in the Codex UI before starting another goal in this same thread/session. OMX prints this terminal cleanup step but does not invoke hidden clear routes.
 
 ## Completion gate
-
 A passing professor-critic artifact and a matching complete Codex `get_goal` snapshot are required. Assistant prose, partial tests, or a failed/blocked verdict are not sufficient.
 
 Lifecycle: `create_goal` starts the Codex thread goal, `update_goal({status: "complete"})` marks terminal success after the professor-critic and audit pass, and `/goal clear` removes the completed thread goal when another same-thread goal is needed. OMX shell commands and hooks reconcile snapshots and print the cleanup instruction; they must not mutate hidden Codex goal state.

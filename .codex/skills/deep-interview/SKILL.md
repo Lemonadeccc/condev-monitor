@@ -1,7 +1,7 @@
 ---
 name: deep-interview
-description: '[OMX] Socratic deep interview with mathematical ambiguity gating before execution'
-argument-hint: '[--quick|--standard|--deep] [--autoresearch] <idea or vague description>'
+description: "[OMX] Socratic deep interview with mathematical ambiguity gating before execution"
+argument-hint: "[--quick|--standard|--deep] [--autoresearch] <idea or vague description>"
 ---
 
 <Purpose>
@@ -9,27 +9,24 @@ Deep Interview is an intent-first Socratic clarification loop before planning or
 </Purpose>
 
 <Use_When>
-
 - The request is broad, ambiguous, or missing concrete acceptance criteria
 - The user says "deep interview", "interview me", "ask me everything", "don't assume", or "ouroboros"
 - The user wants to avoid misaligned implementation from underspecified requirements
 - You need a requirements artifact before handing off to `ralplan`, `autopilot`, `ralph`, or `team`
-  </Use_When>
+</Use_When>
 
 <Do_Not_Use_When>
-
 - The request already has concrete file/symbol targets and clear acceptance criteria
 - The user explicitly asks to skip planning/interview and execute immediately
 - The user asks for lightweight brainstorming only (use `plan` instead)
 - A complete PRD/plan already exists and execution should start
-  </Do_Not_Use_When>
+</Do_Not_Use_When>
 
 <Why_This_Exists>
 Execution quality is usually bottlenecked by intent clarity, not just missing implementation detail. A single expansion pass often misses why the user wants a change, where the scope should stop, which tradeoffs are unacceptable, and which decisions still require user approval. This workflow applies Socratic pressure + quantitative ambiguity scoring so orchestration modes begin with an explicit, testable, intent-aligned spec.
 </Why_This_Exists>
 
 <Depth_Profiles>
-
 - **Quick (`--quick`)**: fast pre-PRD pass; target threshold `<= 0.30`; max rounds 5
 - **Standard (`--standard`, default)**: full requirement interview; target threshold `<= 0.20`; max rounds 12
 - **Deep (`--deep`)**: high-rigor exploration; target threshold `<= 0.15`; max rounds 20
@@ -40,13 +37,11 @@ Profile `max rounds` is a hard cap, not a target. Do not continue only to reach 
 If no flag is provided, use **Standard**.
 
 <Mode_Flags>
-
 - **`--autoresearch`**: switch the interview into autoresearch-intake mode for `$autoresearch` handoff. In this mode, the interview should converge on a validator-ready research mission, write canonical artifacts under `.omx/specs/`, and preserve the explicit `refine further` vs `launch` boundary for downstream skill intake.
-  </Mode_Flags>
-  </Depth_Profiles>
+</Mode_Flags>
+</Depth_Profiles>
 
 <Execution_Policy>
-
 - Ask ONE question per round (never batch multiple interview rounds into one `questions[]` form)
 - Ask about intent and boundaries before implementation detail
 - Target the weakest clarity dimension each round after applying the stage-priority rules below
@@ -70,10 +65,10 @@ If no flag is provided, use **Standard**.
 - Route facts before judgment in the Ouroboros style: before presenting a user-facing interview round, classify whether the needed information is a discoverable fact, a fact needing confirmation, or a human decision. The interview is with the human for judgment, not for facts the agent can inspect.
 - When unresolved ambiguity depends on current external best practices, official/upstream guidance, standards, or version-aware behavior, use `$best-practice-research` as the bounded evidence wrapper before crystallizing requirements or handing off to planning/execution.
 - Use these transcript/spec labels only; never use them as `omx question` `source` values, and never replace the runtime `source: "deep-interview"` contract for user-facing deep-interview questions:
-    - `[from-code][auto-confirmed]` — exact, high-confidence codebase facts from manifests/configs or direct source evidence, with no prescription attached.
-    - `[from-code]` — codebase findings that are useful but inferred, pattern-based, or low/medium confidence and therefore need a confirmation-style user-facing round before being treated as settled.
-    - `[from-research]` — externally sourced facts such as API limits, compatibility, or public documentation; facts only, not decisions.
-    - `[from-user]` — goals, preferences, business logic, scope, non-goals, acceptance criteria, tradeoffs, and any decision-bearing interpretation.
+  - `[from-code][auto-confirmed]` — exact, high-confidence codebase facts from manifests/configs or direct source evidence, with no prescription attached.
+  - `[from-code]` — codebase findings that are useful but inferred, pattern-based, or low/medium confidence and therefore need a confirmation-style user-facing round before being treated as settled.
+  - `[from-research]` — externally sourced facts such as API limits, compatibility, or public documentation; facts only, not decisions.
+  - `[from-user]` — goals, preferences, business logic, scope, non-goals, acceptance criteria, tradeoffs, and any decision-bearing interpretation.
 - Treat `[from-code][auto-confirmed]` and other non-user fact discoveries as context/transcript updates, not interview rounds: do not call `omx question`, do not create a pending deep-interview question obligation, and do not increment the user-facing round number for facts the agent can safely establish.
 - Auto-confirm only descriptive facts. If a finding implies what the new feature should do, which pattern it should follow, which tradeoff to accept, or what should stay in/out of scope, route the entire decision-bearing question to the user as `[from-user]` even when code or research facts are available.
 - In attached-tmux Codex CLI, deep-interview uses `omx question` as the required OMX-owned structured questioning path for every interview round
@@ -88,7 +83,7 @@ If no flag is provided, use **Standard**.
 - Do not crystallize or hand off while `Non-goals` or `Decision Boundaries` remain unresolved, even if the weighted ambiguity threshold is met
 - Treat early exit as a safety valve, not the default success path
 - Persist mode state for resume safety with CLI-first state commands (`omx state write/read --input '<json>' --json`); use `state_write` / `state_read` only when explicit MCP compatibility is enabled
-  </Execution_Policy>
+</Execution_Policy>
 
 <Steps>
 
@@ -98,52 +93,52 @@ If no flag is provided, use **Standard**.
 2. Attempt to load the latest relevant context snapshot from `.omx/context/{slug}-*.md`.
 3. Check whether the provided initial context or loaded snapshot is too large for safe prompt use. If it is oversized, the first interview round must ask for a concise prompt-safe summary instead of scoring ambiguity or continuing to downstream handoff.
 4. If no snapshot exists, create a minimum context snapshot with:
-    - Task statement
-    - Desired outcome
-    - Stated solution (what the user asked for)
-    - Probable intent hypothesis (why they likely want it)
-    - Known facts/evidence
-    - Constraints
-    - Unknowns/open questions
-    - Decision-boundary unknowns
-    - Likely codebase touchpoints
-    - Relevant repo docs/rules/context inspected
-    - Terminology or doc/code conflicts found
-    - Prompt-safe initial-context summary status (`not_needed`, `needed`, or `recorded`)
+   - Task statement
+   - Desired outcome
+   - Stated solution (what the user asked for)
+   - Probable intent hypothesis (why they likely want it)
+   - Known facts/evidence
+   - Constraints
+   - Unknowns/open questions
+   - Decision-boundary unknowns
+   - Likely codebase touchpoints
+   - Relevant repo docs/rules/context inspected
+   - Terminology or doc/code conflicts found
+   - Prompt-safe initial-context summary status (`not_needed`, `needed`, or `recorded`)
 5. For brownfield tasks, inspect the applicable documentation/rule surface before the first user-facing round. Prefer exact, nearby sources over broad scans:
-    - governing `AGENTS.md` files and template/runtime instruction surfaces that apply to the touched paths
-    - README/getting-started docs and relevant docs under `docs/`, especially contracts, plans, ADR-like records, and workflow docs
-    - existing `.omx/context/` snapshots, `.omx/specs/`, and planning artifacts relevant to the slug
-    - project-local glossary/context files such as `CONTEXT.md`, `CONTEXT-MAP.md`, or context-specific docs when they exist
+   - governing `AGENTS.md` files and template/runtime instruction surfaces that apply to the touched paths
+   - README/getting-started docs and relevant docs under `docs/`, especially contracts, plans, ADR-like records, and workflow docs
+   - existing `.omx/context/` snapshots, `.omx/specs/`, and planning artifacts relevant to the slug
+   - project-local glossary/context files such as `CONTEXT.md`, `CONTEXT-MAP.md`, or context-specific docs when they exist
 6. Save snapshot to `.omx/context/{slug}-{timestamp}.md` (UTC `YYYYMMDDTHHMMSSZ`) and reference it in mode state.
 
 ## Phase 1: Initialize
 
 1. Parse `{{ARGUMENTS}}` and depth profile (`--quick|--standard|--deep`).
 2. Detect project context:
-    - Run `explore` to classify **brownfield** (existing codebase target) vs **greenfield**.
-    - For brownfield, collect relevant codebase context before questioning.
+   - Run `explore` to classify **brownfield** (existing codebase target) vs **greenfield**.
+   - For brownfield, collect relevant codebase context before questioning.
 3. Initialize state via `omx state write --input '{"mode":"deep-interview","active":true}' --json`:
 
 ```json
 {
-    "active": true,
-    "current_phase": "deep-interview",
-    "state": {
-        "interview_id": "<uuid>",
-        "profile": "quick|standard|deep",
-        "type": "greenfield|brownfield",
-        "initial_idea": "<user input>",
-        "rounds": [],
-        "current_ambiguity": 1.0,
-        "threshold": 0.3,
-        "max_rounds": 5,
-        "challenge_modes_used": [],
-        "codebase_context": null,
-        "current_stage": "intent-first",
-        "current_focus": "intent",
-        "context_snapshot_path": ".omx/context/<slug>-<timestamp>.md"
-    }
+  "active": true,
+  "current_phase": "deep-interview",
+  "state": {
+    "interview_id": "<uuid>",
+    "profile": "quick|standard|deep",
+    "type": "greenfield|brownfield",
+    "initial_idea": "<user input>",
+    "rounds": [],
+    "current_ambiguity": 1.0,
+    "threshold": 0.3,
+    "max_rounds": 5,
+    "challenge_modes_used": [],
+    "codebase_context": null,
+    "current_stage": "intent-first",
+    "current_focus": "intent",
+    "context_snapshot_path": ".omx/context/<slug>-<timestamp>.md"
+  }
 }
 ```
 
@@ -154,11 +149,9 @@ If no flag is provided, use **Standard**.
 Repeat until ambiguity `<= threshold`, the pressure pass is complete, the readiness gates are explicit, the user exits with warning, or max rounds are reached. This is a stop condition: below threshold, do not open a new ordinary interview branch.
 
 ### 2a) Generate next question
-
 If the initial context is oversized and no prompt-safe summary has been recorded yet, the next question must be only a summary request. Do not score ambiguity, do not run readiness gates, and do not hand off to `$ultragoal`, `$ralplan`, `$autopilot`, `$ralph`, or `$team` until that summary answer is captured.
 
 Use:
-
 - Original idea
 - Prior Q&A rounds
 - Current dimension scores
@@ -167,13 +160,11 @@ Use:
 - Activated challenge mode injection (Phase 3)
 
 Target the lowest-scoring dimension, but respect stage priority:
-
 - **Stage 1 — Intent-first:** Intent, Outcome, Scope, Non-goals, Decision Boundaries
 - **Stage 2 — Feasibility:** Constraints, Success Criteria
 - **Stage 3 — Brownfield grounding:** Context Clarity (brownfield only)
 
 Follow-up pressure ladder after each answer:
-
 1. Ask for a concrete example, counterexample, or evidence signal behind the latest claim
 2. Probe the hidden assumption, dependency, or belief that makes the claim true
 3. Force a boundary or tradeoff: what would you explicitly not do, defer, or reject?
@@ -186,7 +177,6 @@ Prefer staying on the same thread for multiple rounds when it has the highest le
 Maintain a **Breadth Ledger** across independent ambiguity tracks: scope, constraints, outputs, verification, brownfield integration, and any user-mentioned deliverable tracks. The ledger is a guard, not a mandatory rotation rule: stay deep on the current thread until it has been pressure-tested, then zoom out only when another material track remains unresolved and would change execution.
 
 Maintain a **Docs/Terminology Ledger** for brownfield interviews:
-
 - repo docs/rules/context sources inspected, with path references
 - canonical terms already used by the repo and terms to avoid or disambiguate
 - user terms that conflict with docs or current code behavior
@@ -194,7 +184,6 @@ Maintain a **Docs/Terminology Ledger** for brownfield interviews:
 - optional durable-doc follow-ups that are safe to propose but not auto-apply
 
 Detailed dimensions:
-
 - Intent Clarity — why the user wants this
 - Outcome Clarity — what end state they want
 - Scope Clarity — how far the change should go
@@ -205,7 +194,6 @@ Detailed dimensions:
 `Non-goals` and `Decision Boundaries` are mandatory readiness gates. Ask about them early and keep revisiting them until they are explicit.
 
 ### 2b) Ask the question
-
 Use the surface-appropriate structured questioning path for every interview round. In attached-tmux sessions, use OMX-owned structured questioning via `omx question` (this is the required structured-question equivalent and required `AskUserQuestion` equivalent for deep-interview). Outside tmux, use native structured input when available; otherwise ask exactly one concise plain-text question and wait for the answer. Present:
 
 ```
@@ -215,7 +203,6 @@ Round {n} | Target: {weakest_dimension} | Ambiguity: {score}%
 ```
 
 `omx question` payload guidance for interview rounds:
-
 - Deep-interview is Socratic: ask one focused round at a time. Do not use batch `questions[]` to combine multiple interview rounds, even though `omx question` supports batch forms for other workflows.
 - Use canonical `type` values instead of authoring raw `multi_select` flags by hand. `type: "single-answerable"` is the default for one-path decisions; `type: "multi-answerable"` is the canonical shape for bounded multi-select rounds. The runtime will keep `multi_select` aligned with `type`.
 - Use `single-answerable` when exactly one answer should drive the next branch, the options are mutually exclusive, or selecting more than one answer would blur the decision boundary. Typical cases: handoff lane selection, choosing the primary failure mode, or confirming which of several competing interpretations is correct.
@@ -229,28 +216,28 @@ Canonical bounded single-choice payload:
 
 ```json
 {
-    "question": "Which execution lane should own this once the interview is complete?",
-    "type": "single-answerable",
-    "options": [
-        {
-            "label": "Plan first",
-            "value": "ralplan",
-            "description": "Need architecture and test-shape review before execution"
-        },
-        {
-            "label": "Execute directly",
-            "value": "autopilot",
-            "description": "Requirements are already explicit enough for planning plus execution"
-        },
-        {
-            "label": "Refine further",
-            "value": "refine",
-            "description": "Clarification is still needed before any handoff"
-        }
-    ],
-    "allow_other": false,
-    "other_label": "Other",
-    "source": "deep-interview"
+  "question": "Which execution lane should own this once the interview is complete?",
+  "type": "single-answerable",
+  "options": [
+    {
+      "label": "Plan first",
+      "value": "ralplan",
+      "description": "Need architecture and test-shape review before execution"
+    },
+    {
+      "label": "Execute directly",
+      "value": "autopilot",
+      "description": "Requirements are already explicit enough for planning plus execution"
+    },
+    {
+      "label": "Refine further",
+      "value": "refine",
+      "description": "Clarification is still needed before any handoff"
+    }
+  ],
+  "allow_other": false,
+  "other_label": "Other",
+  "source": "deep-interview"
 }
 ```
 
@@ -258,28 +245,28 @@ Canonical bounded multi-select payload:
 
 ```json
 {
-    "question": "Which non-goals must stay out of scope for the first pass?",
-    "type": "multi-answerable",
-    "options": [
-        {
-            "label": "No UI redesign",
-            "value": "no-ui-redesign",
-            "description": "Keep layout and styling unchanged"
-        },
-        {
-            "label": "No new dependencies",
-            "value": "no-new-dependencies",
-            "description": "Work within the existing toolchain"
-        },
-        {
-            "label": "No API contract changes",
-            "value": "no-api-contract-changes",
-            "description": "Preserve external request and response shapes"
-        }
-    ],
-    "allow_other": false,
-    "other_label": "Other",
-    "source": "deep-interview"
+  "question": "Which non-goals must stay out of scope for the first pass?",
+  "type": "multi-answerable",
+  "options": [
+    {
+      "label": "No UI redesign",
+      "value": "no-ui-redesign",
+      "description": "Keep layout and styling unchanged"
+    },
+    {
+      "label": "No new dependencies",
+      "value": "no-new-dependencies",
+      "description": "Work within the existing toolchain"
+    },
+    {
+      "label": "No API contract changes",
+      "value": "no-api-contract-changes",
+      "description": "Preserve external request and response shapes"
+    }
+  ],
+  "allow_other": false,
+  "other_label": "Other",
+  "source": "deep-interview"
 }
 ```
 
@@ -287,28 +274,27 @@ Canonical answer-shape reminders:
 
 ```json
 {
-    "answer": {
-        "kind": "option",
-        "value": "ralplan",
-        "selected_labels": ["Plan first"],
-        "selected_values": ["ralplan"]
-    }
+  "answer": {
+    "kind": "option",
+    "value": "ralplan",
+    "selected_labels": ["Plan first"],
+    "selected_values": ["ralplan"]
+  }
 }
 ```
 
 ```json
 {
-    "answer": {
-        "kind": "multi",
-        "value": ["no-new-dependencies", "no-api-contract-changes"],
-        "selected_labels": ["No new dependencies", "No API contract changes"],
-        "selected_values": ["no-new-dependencies", "no-api-contract-changes"]
-    }
+  "answer": {
+    "kind": "multi",
+    "value": ["no-new-dependencies", "no-api-contract-changes"],
+    "selected_labels": ["No new dependencies", "No API contract changes"],
+    "selected_values": ["no-new-dependencies", "no-api-contract-changes"]
+  }
 }
 ```
 
 ### 2c) Score ambiguity
-
 Score each weighted dimension in `[0.0, 1.0]` with justification + gap.
 
 Greenfield: `ambiguity = 1 - (intent × 0.30 + outcome × 0.25 + scope × 0.20 + constraints × 0.15 + success × 0.10)`
@@ -316,7 +302,6 @@ Greenfield: `ambiguity = 1 - (intent × 0.30 + outcome × 0.25 + scope × 0.20 +
 Brownfield: `ambiguity = 1 - (intent × 0.25 + outcome × 0.20 + scope × 0.20 + constraints × 0.15 + success × 0.10 + context × 0.10)`
 
 Readiness gate:
-
 - `Non-goals` must be explicit
 - `Decision Boundaries` must be explicit
 - A pressure pass must be complete: at least one earlier answer has been revisited with an evidence, assumption, or tradeoff follow-up
@@ -326,15 +311,12 @@ Readiness gate:
 - If ambiguity is `<= 0.10`, another user-facing question is allowed only as that final closure question; otherwise crystallize immediately.
 
 ### 2d) Report progress
-
 Show weighted breakdown table, readiness-gate status (`Non-goals`, `Decision Boundaries`), and the next focus dimension.
 
 ### 2e) Persist state
-
 Append round result and updated scores via `omx state write --input '<json>' --json`; use `state_write` only when explicit MCP compatibility is enabled.
 
 ### 2f) Round controls
-
 - Do not offer early exit before the first explicit assumption probe and one persistent follow-up have happened
 - Apply a **Dialectic Rhythm Guard**: track consecutive non-user fact discoveries and confirmation-style answers (`[from-code][auto-confirmed]`, `[from-code]`, or `[from-research]`). After 3 consecutive non-user or confirmation answers, the next material user-facing round must solicit direct human judgment (`[from-user]`) unless the closure audit says the interview is ready to crystallize.
 - Round 4+: allow explicit early exit with risk warning
@@ -357,13 +339,12 @@ Track used modes in state to prevent repetition.
 When threshold is met (or user exits with warning / hard cap):
 
 1. Write interview transcript summary to:
-    - `.omx/interviews/{slug}-{timestamp}.md`  
-      (kept for ralph PRD compatibility)
+   - `.omx/interviews/{slug}-{timestamp}.md`
+     (kept for ralph PRD compatibility)
 2. Write execution-ready spec to:
-    - `.omx/specs/deep-interview-{slug}.md`
+   - `.omx/specs/deep-interview-{slug}.md`
 
 Spec should include:
-
 - Metadata (profile, rounds, final ambiguity, threshold, context type)
 - Context snapshot reference/path (for ralplan/team reuse)
 - Prompt-safe initial-context summary when oversized context was provided, plus references to any full source documents
@@ -394,15 +375,15 @@ When the clarified task is specifically about `$autoresearch`, or the skill is i
 - **Launch artifact bundle:** `.omx/specs/autoresearch-{slug}/mission.md`, `.omx/specs/autoresearch-{slug}/sandbox.md`, and `.omx/specs/autoresearch-{slug}/result.json`
 - **Launch artifact directory:** `.omx/specs/autoresearch-{slug}/`
 - **Required artifact sections:**
-    - `Mission Draft`
-    - `Evaluator Draft`
-    - `Launch Readiness`
-    - `Seed Inputs`
-    - `Confirmation Bridge`
+  - `Mission Draft`
+  - `Evaluator Draft`
+  - `Launch Readiness`
+  - `Seed Inputs`
+  - `Confirmation Bridge`
 - **Required launch artifacts under `.omx/specs/autoresearch-{slug}/`:**
-    - `mission.md`
-    - `sandbox.md`
-    - `result.json`
+  - `mission.md`
+  - `sandbox.md`
+  - `result.json`
 - **Launch-readiness rule:** mark the draft as **not launch-ready** while the evaluator command still contains placeholder markers such as `<...>`, `TODO`, `TBD`, `REPLACE_ME`, `CHANGEME`, or `your-command-here`
 - **Structured result contract:** `result.json` should point to the draft + mission/sandbox artifacts and carry the finalized `topic`, `evaluatorCommand`, `keepPolicy`, `slug`, `launchReady`, and `blockedReasons` fields so `$autoresearch` can consume it directly
 - **Confirmation bridge:** after artifact generation, offer at least `refine further` and `launch`; do not run direct CLI launch or detached/split tmux launch, and only hand off to `$autoresearch` after explicit confirmation
@@ -420,27 +401,26 @@ Canonical location under Autopilot state:
 
 ```json
 {
-    "handoff_artifacts": {
-        "deep_interview": {
-            "execution_contract_required": true,
-            "execution_contract": {
-                "version": 1,
-                "execution_stride": "task",
-                "source": "deep-interview",
-                "selected_by": "user",
-                "allow_task_shrink": true,
-                "completion_unit": "One focused task",
-                "stop_condition": "Stop after that task is implemented and verified",
-                "acceptance_coverage_scope": "task",
-                "shrink_policy": "allowed"
-            }
-        }
+  "handoff_artifacts": {
+    "deep_interview": {
+      "execution_contract_required": true,
+      "execution_contract": {
+        "version": 1,
+        "execution_stride": "task",
+        "source": "deep-interview",
+        "selected_by": "user",
+        "allow_task_shrink": true,
+        "completion_unit": "One focused task",
+        "stop_condition": "Stop after that task is implemented and verified",
+        "acceptance_coverage_scope": "task",
+        "shrink_policy": "allowed"
+      }
     }
+  }
 }
 ```
 
 Stride meanings:
-
 - `task`: conservative, small-step execution; `allow_task_shrink:true`, `acceptance_coverage_scope:"task"`, `shrink_policy:"allowed"`.
 - `deliverable`: finish the named deliverable before stopping; `allow_task_shrink:false`, `acceptance_coverage_scope:"deliverable"`, `shrink_policy:"ask_before_shrink"`.
 - `milestone`: finish the larger approved milestone unless blocked; `allow_task_shrink:false`, `acceptance_coverage_scope:"milestone"`, `shrink_policy:"deny_unless_blocked"`.
@@ -458,7 +438,6 @@ Include these product-facing suggestions when they fit the clarified spec, witho
 Recommend `$ultragoal` as the default durable goal-mode follow-up because it supersedes Ralph for goal tracking. Preserve `$team` for coordinated parallel implementation and keep `$ralph` only as an explicit fallback for persistent single-owner execution/verification when the user specifically selects it.
 
 ### 1. **`$ultragoal` (Default durable execution follow-up)**
-
 - **Input Artifact:** `.omx/specs/deep-interview-{slug}.md` (optionally accompanied by the transcript/context snapshot for traceability)
 - **Invocation:** `$ultragoal create-goals --brief-file <spec-path>` followed by `$ultragoal complete-goals` in the active execution lane
 - **Consumer Behavior:** Convert the clarified spec into durable goal-mode work. Preserve intent, non-goals, decision boundaries, acceptance criteria, docs/terminology grounding, scenario-pressure findings, and residual-risk warnings as binding story constraints.
@@ -468,7 +447,6 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - **Next Recommended Step:** Run the Ultragoal completion loop; launch `$team` only inside an active Ultragoal story when parallel lanes are warranted, and use `$ralph` only as an explicit fallback when the user asks for that legacy persistence mode
 
 ### 2. **`$ralplan` (Recommended when architecture/test-shape review is still needed)**
-
 - **Input Artifact:** `.omx/specs/deep-interview-{slug}.md` (optionally accompanied by the transcript/context snapshot for traceability)
 - **Invocation:** `$plan --consensus --direct <spec-path>`
 - **Consumer Behavior:** Treat the deep-interview spec as the requirements source of truth. Do not repeat the interview by default; refine architecture/feasibility around the clarified intent and boundaries instead.
@@ -478,7 +456,6 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - **Next Recommended Step:** Use the approved planning artifacts with `$ultragoal` as the default durable goal-mode follow-up (optionally with `$team` for parallel lanes); choose `$autoresearch-goal` for research validation or `$performance-goal` for measurable optimization, and use `$ralph` only as an explicit fallback when a narrow single-owner persistence loop is requested
 
 ### 3. **`$autopilot`**
-
 - **Input Artifact:** `.omx/specs/deep-interview-{slug}.md`
 - **Invocation:** `$autopilot <spec-path>`
 - **Consumer Behavior:** Use the deep-interview spec as the clarified execution brief. Preserve intent, non-goals, decision boundaries, and acceptance criteria as binding context for planning/execution.
@@ -488,7 +465,6 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - **Next Recommended Step:** Continue through autopilot's execution/QA/validation flow; if coordination-heavy execution emerges, prefer `$team` under a leader-owned `$ultragoal` ledger, using `$ralph` only as an explicit fallback when a narrow single-owner persistence loop is requested
 
 ### 4. **`$ralph` (Explicit fallback only)**
-
 - **Input Artifact:** `.omx/specs/deep-interview-{slug}.md`
 - **Invocation:** `$ralph <spec-path>`
 - **Consumer Behavior:** Use the spec's acceptance criteria and boundary constraints as the persistence target. Do not reopen requirements discovery unless the user explicitly asks to refine further.
@@ -498,7 +474,6 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - **Next Recommended Step:** If this explicit fallback is selected, continue Ralph's persistence loop; if work expands into coordination-heavy lanes, hand off to `$team` under `$ultragoal` checkpointing rather than promoting Ralph as the next default
 
 ### 5. **`$team`**
-
 - **Input Artifact:** `.omx/specs/deep-interview-{slug}.md`
 - **Invocation:** `$team <spec-path>`
 - **Consumer Behavior:** Treat the spec as shared execution context for coordinated parallel work. Preserve the clarified intent, non-goals, decision boundaries, and acceptance criteria as common lane constraints.
@@ -508,7 +483,6 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - **Next Recommended Step:** Follow the team verification path when the coordinated execution phase finishes; checkpoint completion through `$ultragoal` by default, escalating to a separate Ralph loop only when the user explicitly asks for that persistent verification/fix owner
 
 ### 6. **Refine further**
-
 - **Input Artifact:** Existing transcript, context snapshot, and current spec draft
 - **Invocation:** Continue the interview loop
 - **Consumer Behavior:** Re-enter questioning to resolve the highest-leverage remaining uncertainty
@@ -524,7 +498,6 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 </Steps>
 
 <Tool_Usage>
-
 - Use `explore` for codebase fact gathering
 - Use `omx question` as the OMX-native structured user-input tool for each interview round when an attached tmux renderer is available
 - From attached-tmux Bash/tool paths, call it as `OMX_QUESTION_RETURN_PANE=$TMUX_PANE omx question ...` unless an explicit `%pane` return target is already known
@@ -536,18 +509,16 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - Read applicable repo docs/rules/context during preflight; write durable docs, glossary, ADR, or memory updates only when the user explicitly opts in and the content is public-safe
 - Record whether the oversized-context summary gate is not needed, pending, or satisfied before any scoring or handoff step
 - Save transcript/spec artifacts under `.omx/interviews/` and `.omx/specs/`
-  </Tool_Usage>
+</Tool_Usage>
 
 <Escalation_And_Stop_Conditions>
-
 - User says stop/cancel/abort -> persist state and stop
 - Ambiguity stalls for 3 rounds (+/- 0.05) -> force Ontologist mode once
 - Max rounds reached -> proceed with explicit residual-risk warning
 - All dimensions >= 0.9 -> allow early crystallization even before max rounds
-  </Escalation_And_Stop_Conditions>
+</Escalation_And_Stop_Conditions>
 
 <Final_Checklist>
-
 - [ ] Preflight context snapshot exists under `.omx/context/{slug}-{timestamp}.md`
 - [ ] Oversized initial context, if present, has a prompt-safe summary recorded before ambiguity scoring or downstream handoff
 - [ ] Ambiguity score shown each round
@@ -565,7 +536,7 @@ Recommend `$ultragoal` as the default durable goal-mode follow-up because it sup
 - [ ] Durable docs/ADR/memory updates, if any, were explicitly opted into and public-safe
 - [ ] Handoff options provided (`$ultragoal`, `$ralplan`, `$autopilot`, `$ralph`, `$team`) plus context-sensitive goal-mode suggestions (`$autoresearch-goal`, `$performance-goal`) when applicable
 - [ ] No direct implementation performed in this mode
-      </Final_Checklist>
+</Final_Checklist>
 
 <Advanced>
 ## Suggested Config (optional)
@@ -605,4 +576,4 @@ deep-interview -> ralplan -> autopilot
 - Stage 1 (deep-interview): clarity gate
 - Stage 2 (ralplan): feasibility + architecture gate
 - Stage 3 (autopilot): execution + QA + validation gate
-  </Advanced>
+</Advanced>

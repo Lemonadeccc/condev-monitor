@@ -1,6 +1,6 @@
 ---
 name: pipeline
-description: '[OMX] Configurable pipeline orchestrator for sequencing stages'
+description: "[OMX] Configurable pipeline orchestrator for sequencing stages"
 ---
 
 # Pipeline Skill
@@ -22,11 +22,11 @@ deep-interview -> ralplan -> ultragoal (+ team if needed) -> code-review -> ultr
 
 Pipeline parameters are configurable per run:
 
-| Parameter            | Default    | Description                                                               |
-| -------------------- | ---------- | ------------------------------------------------------------------------- |
-| `maxRalphIterations` | 10         | Quality-gate retry ceiling; legacy option name retained for compatibility |
-| `workerCount`        | 2          | Number of Codex CLI team workers                                          |
-| `agentType`          | `executor` | Agent type for team workers                                               |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `maxRalphIterations` | 10 | Quality-gate retry ceiling; legacy option name retained for compatibility |
+| `workerCount` | 2 | Number of Codex CLI team workers |
+| `agentType` | `executor` | Agent type for team workers |
 
 ## Stage Interface
 
@@ -34,9 +34,9 @@ Every stage implements the `PipelineStage` interface:
 
 ```typescript
 interface PipelineStage {
-    readonly name: string
-    run(ctx: StageContext): Promise<StageResult>
-    canSkip?(ctx: StageContext): boolean
+  readonly name: string;
+  run(ctx: StageContext): Promise<StageResult>;
+  canSkip?(ctx: StageContext): boolean;
 }
 ```
 
@@ -65,20 +65,26 @@ The HUD renders pipeline phase automatically. Resume is supported from the last 
 
 ```typescript
 import {
-    runPipeline,
-    createAutopilotPipelineConfig,
-    createDeepInterviewStage,
-    createRalplanStage,
-    createUltragoalStage,
-    createCodeReviewStage,
-    createUltraqaStage,
-} from './pipeline/index.js'
+  runPipeline,
+  createAutopilotPipelineConfig,
+  createDeepInterviewStage,
+  createRalplanStage,
+  createUltragoalStage,
+  createCodeReviewStage,
+  createUltraqaStage,
+} from './pipeline/index.js';
 
 const config = createAutopilotPipelineConfig('build feature X', {
-    stages: [createDeepInterviewStage(), createRalplanStage(), createUltragoalStage(), createCodeReviewStage(), createUltraqaStage()],
-})
+  stages: [
+    createDeepInterviewStage(),
+    createRalplanStage(),
+    createUltragoalStage(),
+    createCodeReviewStage(),
+    createUltraqaStage(),
+  ],
+});
 
-const result = await runPipeline(config)
+const result = await runPipeline(config);
 ```
 
 ## Relationship to Other Modes

@@ -1,6 +1,6 @@
 ---
 name: ultragoal
-description: '[OMX] Create and execute durable repo-native multi-goal plans over Codex goal mode artifacts.'
+description: "[OMX] Create and execute durable repo-native multi-goal plans over Codex goal mode artifacts."
 ---
 
 # Ultragoal Workflow
@@ -16,6 +16,7 @@ Use when the user asks for `ultragoal`, `create-goals`, `complete-goals`, durabl
 - `.omx/ultragoal/ledger.jsonl` (checkpoint and structured steering audit events)
 
 Existing aggregate plans with the legacy enumerated objective are migrated to the stable pointer objective on read, persisted to `goals.json`, retained in `codexObjectiveAliases` for already-active hidden Codex goal reconciliation, and audited with an `aggregate_objective_migrated` ledger entry.
+
 
 ## State/HUD Phase Contract
 
@@ -42,10 +43,10 @@ omx state write --input '{"mode":"autopilot","active":true,"current_phase":"ultr
 ## Create goals
 
 1. Run one of:
-    - `omx ultragoal create-goals --brief "<brief>"`
-    - `omx ultragoal create-goals --brief-file <path>`
-    - `cat <brief> | omx ultragoal create-goals --from-stdin`
-    - `omx ultragoal create-goals --codex-goal-mode per-story --brief "<brief>"` only when one Codex goal context per story is explicitly preferred
+   - `omx ultragoal create-goals --brief "<brief>"`
+   - `omx ultragoal create-goals --brief-file <path>`
+   - `cat <brief> | omx ultragoal create-goals --from-stdin`
+   - `omx ultragoal create-goals --codex-goal-mode per-story --brief "<brief>"` only when one Codex goal context per story is explicitly preferred
 2. Inspect `.omx/ultragoal/goals.json` and refine if needed.
 
 ## Complete goals
@@ -63,8 +64,9 @@ Loop until `omx ultragoal status` reports all goals complete:
    `omx ultragoal checkpoint --goal-id <id> --status complete --evidence "<evidence>" --codex-goal-json <get_goal-json-or-path> [--quality-gate-json <quality-gate-json-or-path>]`
 9. If blocked or failed, checkpoint failure:
    `omx ultragoal checkpoint --goal-id <id> --status failed --evidence "<blocker/evidence>"`
-10. For legacy per-story completed-goal blockers, preserve the non-terminal blocker with:
-    `omx ultragoal checkpoint --goal-id <id> --status blocked --evidence "<completed legacy Codex goal blocks create_goal in this thread>" --codex-goal-json <get_goal-json-or-path>`
+10. For non-terminal blockers, use blocked checkpoints:
+   - legacy different completed goal: `omx ultragoal checkpoint --goal-id <id> --status blocked --evidence "<completed legacy Codex goal blocks create_goal in this thread>" --codex-goal-json <get_goal-json-or-path>`
+   - matching native Codex `blocked` status: `omx ultragoal checkpoint --goal-id <id> --status blocked --evidence "<blocker evidence>" --codex-goal-json <matching-blocked-get_goal-json-or-path>`
 11. Resume failed goals with `omx ultragoal complete-goals --retry-failed`.
 
 ## Dynamic steering
@@ -120,48 +122,50 @@ The final ultragoal story is not complete until the active agent has run the fin
 5. Run `$code-review` through the independent review path. Clean means `codeReview.recommendation: "APPROVE"`, `codeReview.architectStatus: "CLEAR"`, `codeReview.independentReview` contains distinct completed `code-reviewer` and `architect` subagent evidence, and `architectureInvariantGate.status: "passed"` proves every required invariant. `COMMENT`, `WATCH`, `REQUEST CHANGES`, `BLOCK`, missing subagent evidence, unavailable delegation, same-lane/self-review, and unproved architecture invariants are non-clean.
 6. If review or invariant proof is non-clean, do **not** call `update_goal`. Record durable blocker work instead:
 
-    ```sh
-    omx ultragoal record-review-blockers --goal-id <id> --title "Resolve final code-review blockers" --objective "<blocker-resolution objective>" --evidence "<review findings>" --codex-goal-json <active-get-goal-json-or-path>
-    ```
 
-    This marks the current story `review_blocked`, appends a pending blocker-resolution story, keeps the Codex goal active, and lets `omx ultragoal complete-goals` start the blocker next. In legacy per-story mode, the blocker may need an available Codex goal context because the old per-story Codex goal remains active/incomplete.
+   ```sh
+   omx ultragoal record-review-blockers --goal-id <id> --title "Resolve final code-review blockers" --objective "<blocker-resolution objective>" --evidence "<review findings>" --codex-goal-json <active-get-goal-json-or-path>
+   ```
+
+   This marks the current story `review_blocked`, appends a pending blocker-resolution story, keeps the Codex goal active, and lets `omx ultragoal complete-goals` start the blocker next. In legacy per-story mode, the blocker may need an available Codex goal context because the old per-story Codex goal remains active/incomplete.
 
 7. If review and invariant proof are clean, call `update_goal({status: "complete"})`, call `get_goal`, and checkpoint with a structured final gate:
 
-    ```sh
-    omx ultragoal checkpoint --goal-id <id> --status complete --evidence "<tests/files/review evidence>" --codex-goal-json <fresh-complete-get-goal-json-or-path> --quality-gate-json <quality-gate-json-or-path>
-    ```
+
+   ```sh
+   omx ultragoal checkpoint --goal-id <id> --status complete --evidence "<tests/files/review evidence>" --codex-goal-json <fresh-complete-get-goal-json-or-path> --quality-gate-json <quality-gate-json-or-path>
+   ```
 
 `--quality-gate-json` must include:
 
 ```json
 {
-    "aiSlopCleaner": { "status": "passed", "evidence": "cleaner report" },
-    "verification": { "status": "passed", "commands": ["npm test"], "evidence": "post-cleaner verification" },
-    "codeReview": {
-        "recommendation": "APPROVE",
-        "architectStatus": "CLEAR",
-        "evidence": "final review synthesis",
-        "independentReview": {
-            "codeReviewer": { "agentRole": "code-reviewer", "evidence": "code-reviewer subagent APPROVE evidence" },
-            "architect": { "agentRole": "architect", "evidence": "architect subagent CLEAR evidence" }
-        }
-    },
-    "architectureInvariantGate": {
-        "status": "passed",
-        "sourceArtifacts": [".omx/ultragoal/brief.md", ".omx/ultragoal/goals.json"],
-        "evidence": "final invariant audit proved all required architecture/domain invariants",
-        "invariants": [
-            {
-                "invariant": "Preserve the existing parser boundary.",
-                "source": ".omx/ultragoal/brief.md#architecture-invariants",
-                "status": "proved",
-                "implementationEvidence": "changed files preserve the parser boundary",
-                "testEvidence": "parser-boundary regression passed",
-                "reviewEvidence": "architect review confirmed the boundary is intact"
-            }
-        ]
+  "aiSlopCleaner": { "status": "passed", "evidence": "cleaner report" },
+  "verification": { "status": "passed", "commands": ["npm test"], "evidence": "post-cleaner verification" },
+  "codeReview": {
+    "recommendation": "APPROVE",
+    "architectStatus": "CLEAR",
+    "evidence": "final review synthesis",
+    "independentReview": {
+      "codeReviewer": { "agentRole": "code-reviewer", "evidence": "code-reviewer subagent APPROVE evidence" },
+      "architect": { "agentRole": "architect", "evidence": "architect subagent CLEAR evidence" }
     }
+  },
+  "architectureInvariantGate": {
+    "status": "passed",
+    "sourceArtifacts": [".omx/ultragoal/brief.md", ".omx/ultragoal/goals.json"],
+    "evidence": "final invariant audit proved all required architecture/domain invariants",
+    "invariants": [
+      {
+        "invariant": "Preserve the existing parser boundary.",
+        "source": ".omx/ultragoal/brief.md#architecture-invariants",
+        "status": "proved",
+        "implementationEvidence": "changed files preserve the parser boundary",
+        "testEvidence": "parser-boundary regression passed",
+        "reviewEvidence": "architect review confirmed the boundary is intact"
+      }
+    ]
+  }
 }
 ```
 
