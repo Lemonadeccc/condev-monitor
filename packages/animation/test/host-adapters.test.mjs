@@ -8,6 +8,7 @@ import {
     createGsapLifecycleCycleAnalyzer,
     createGsapLifecycleProbe,
     createGsapTickerObserver,
+    createLenisScrollObserver,
     createRendererHostProbe,
     createThreeRendererProbe,
     createVideoFrameProbe,
@@ -961,6 +962,176 @@ test('GSAP ticker observer pins teardown ownership and retries disposal after a 
     observer.dispose()
     assert.equal(observer.snapshot().cleanupFailed, false)
     assert.equal(firstListeners.size, 0)
+})
+
+test('Lenis observer retains only bounded closed scroll evidence from the public event API', () => {
+    const listeners = new Set()
+    let unsubscribeCount = 0
+    const lenis = {
+        on(event, listener) {
+            assert.equal(event, 'scroll')
+            listeners.add(listener)
+            return () => {
+                unsubscribeCount += 1
+                listeners.delete(listener)
+            }
+        },
+        raf() {
+            assert.fail('observer must not advance Lenis')
+        },
+        scrollTo() {
+            assert.fail('observer must not control Lenis scroll')
+        },
+    }
+    const emit = value => {
+        for (const listener of [...listeners]) listener(value)
+    }
+    const observer = createLenisScrollObserver({ lenis, capacity: 2 })
+
+    assert.equal(observer.start(), true)
+    assert.equal(observer.start(), false)
+    emit({ isScrolling: 'smooth', progress: 0.25, velocity: -2, lastVelocity: 3, direction: -1, time: 100 })
+    emit({ isScrolling: 'native', progress: 0.5, velocity: 4, lastVelocity: -2, direction: 1, time: 116 })
+    emit({ isScrolling: false, progress: 1, velocity: 0, lastVelocity: 4, direction: 0, time: 132 })
+    emit(null)
+    emit({ progress: 2 })
+    emit(
+        Object.defineProperty({}, 'velocity', {
+            get() {
+                throw new Error('released Lenis event')
+            },
+        })
+    )
+
+    assert.deepEqual(observer.snapshot(), {
+        status: 'observing',
+        running: true,
+        cleanupFailed: false,
+        capacity: 2,
+        acceptedEventCount: 3,
+        retainedEventCount: 2,
+        droppedEventCount: 1,
+        rejectedEventCount: 3,
+        truncated: true,
+        scrollStateTotalObservedCounts: { smooth: 1, native: 1, idle: 1 },
+        directionTotalObservedCounts: { negative: 1, zero: 1, positive: 1 },
+        progress: { count: 2, p50: 0.75, p75: 0.875, p95: 0.975, p99: 0.995, min: 0.5, max: 1, total: 1.5 },
+        velocity: { count: 2, p50: 2, p75: 3, p95: 3.8, p99: 3.96, min: 0, max: 4, total: 4 },
+        lastVelocity: { count: 2, p50: 1, p75: 2.5, p95: 3.7, p99: 3.94, min: -2, max: 4, total: 2 },
+        latestObservedLenisTimeMs: 132,
+    })
+
+    assert.equal(observer.stop(), true)
+    assert.equal(unsubscribeCount, 1)
+    emit({ progress: 0.75 })
+    assert.equal(observer.snapshot().acceptedEventCount, 3)
+    observer.reset()
+    assert.deepEqual(observer.snapshot(), {
+        status: 'idle',
+        running: false,
+        cleanupFailed: false,
+        capacity: 2,
+        acceptedEventCount: 0,
+        retainedEventCount: 0,
+        droppedEventCount: 0,
+        rejectedEventCount: 0,
+        truncated: false,
+        scrollStateTotalObservedCounts: { smooth: 0, native: 0, idle: 0 },
+        directionTotalObservedCounts: { negative: 0, zero: 0, positive: 0 },
+        progress: null,
+        velocity: null,
+        lastVelocity: null,
+        latestObservedLenisTimeMs: null,
+    })
+})
+
+test('Lenis observer uses public off fallback and exposes uncertain cleanup without retaining event objects', () => {
+    const legacyListeners = new Set()
+    const legacy = createLenisScrollObserver({
+        lenis: {
+            on(_event, listener) {
+                legacyListeners.add(listener)
+            },
+            off(_event, listener) {
+                legacyListeners.delete(listener)
+            },
+        },
+    })
+    assert.equal(legacy.start(), true)
+    assert.equal(legacy.stop(), true)
+    assert.equal(legacyListeners.size, 0)
+
+    const compensationListeners = new Set()
+    const compensation = createLenisScrollObserver({
+        lenis: {
+            on(_event, listener) {
+                compensationListeners.add(listener)
+                throw new Error('registered before failure')
+            },
+            off(_event, listener) {
+                compensationListeners.delete(listener)
+            },
+        },
+    })
+    assert.equal(compensation.start(), false)
+    assert.equal(compensation.snapshot().status, 'add-failed')
+    assert.equal(compensation.snapshot().cleanupFailed, false)
+    assert.equal(compensationListeners.size, 0)
+
+    let leakedListener
+    const uncertain = createLenisScrollObserver({
+        lenis: {
+            on(_event, listener) {
+                leakedListener = listener
+            },
+        },
+    })
+    assert.equal(uncertain.start(), false)
+    assert.equal(uncertain.snapshot().status, 'add-failed')
+    assert.equal(uncertain.snapshot().cleanupFailed, true)
+    leakedListener({ progress: 0.5 })
+    assert.equal(uncertain.snapshot().acceptedEventCount, 0)
+    assert.equal(uncertain.stop(), false)
+
+    let removeFails = true
+    const retryable = createLenisScrollObserver({
+        lenis: {
+            on() {
+                return () => {
+                    if (removeFails) throw new Error('temporary unsubscribe failure')
+                }
+            },
+        },
+    })
+    assert.equal(retryable.start(), true)
+    assert.equal(retryable.stop(), false)
+    assert.equal(retryable.snapshot().status, 'remove-failed')
+    assert.equal(retryable.snapshot().cleanupFailed, true)
+    removeFails = false
+    assert.equal(retryable.stop(), true)
+    assert.equal(retryable.snapshot().status, 'idle')
+    retryable.dispose()
+    assert.equal(retryable.snapshot().status, 'disposed')
+
+    let disposeRetryFails = true
+    const disposeThenStop = createLenisScrollObserver({
+        lenis: {
+            on() {
+                return () => {
+                    if (disposeRetryFails) throw new Error('temporary dispose failure')
+                }
+            },
+        },
+    })
+    assert.equal(disposeThenStop.start(), true)
+    disposeThenStop.dispose()
+    assert.equal(disposeThenStop.snapshot().status, 'disposed')
+    assert.equal(disposeThenStop.snapshot().cleanupFailed, true)
+    disposeRetryFails = false
+    assert.equal(disposeThenStop.stop(), true)
+    assert.equal(disposeThenStop.snapshot().status, 'disposed')
+    assert.equal(disposeThenStop.snapshot().cleanupFailed, false)
+    disposeThenStop.dispose()
 })
 
 class FakeVideo {
