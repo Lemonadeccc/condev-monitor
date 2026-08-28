@@ -420,6 +420,14 @@ This first integration is a local selected-target adapter. The current `animatio
 
 Version compatibility is coordinated across packages. The minimum compatible baseline is the first release whose `@condev-monitor/monitor-sdk-animation` inspection context includes and supplies `inspectionPurpose`, whose `@condev-monitor/monitor-sdk-browser` entry marks RUM target sidecars, and whose `@condev-monitor/monitor-sdk-animation-renderer` recorder performs this exact-local check. Upgrade the three packages together for Browser integration. If the revised renderer is paired with an older animation core, no purpose can be supplied and the transfer inspector safely returns `null`; existing one-argument adapters remain source-compatible, but they are not thereby proven local-only. The `inspect()` return type is now nullable, so direct low-level callers must handle `null`.
 
+## Real Chromium WebGL regression
+
+From the repository root, run `pnpm test:animation-renderer:browser` to build this package and exercise `createWebGlGpuTimer()` against a real local Chromium WebGL context. The explicit test reuses the Lab Runner's existing `chrome-launcher` and `playwright-core` development dependencies; neither dependency is added to this package or its runtime bundle. It serves only a loopback in-memory Canvas fixture, does not initialize the Browser SDK, reads no `.env`, and uploads nothing.
+
+When the browser exposes the disjoint timer-query extension, the test requires a real completed `measured` result within bounded Node, page, and rAF deadlines. It validates finite non-negative GPU time, consume-once evidence, balanced query cleanup, ownership release, and continued application-context use after disposal. An unavailable extension follows a separate honest `unsupported` branch and cannot become a measured zero. A Chromium installation with no WebGL context, or a context already lost before the test begins, is reported as skipped instead of healthy.
+
+This command is intentionally separate from the default unit-test gate because local Chrome/GPU capabilities vary. A passing headless result proves the public query contract on that environment; it is not evidence for compositor presentation, display scanout, mobile Safari, thermal behavior, or representative end-user GPU performance.
+
 ## WebGL integrity and ownership boundary
 
 `GPU_DISJOINT_EXT` is context-global and read-to-clear. A second timer, renderer profiler, browser helper, or duplicate package bundle can consume the flag before this timer sees it. For that reason `disjointQueryOwnership: 'exclusive'` is mandatory. It is a host attestation, not an automatically discoverable fact.
