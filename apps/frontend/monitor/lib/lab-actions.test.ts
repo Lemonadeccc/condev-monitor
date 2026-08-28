@@ -351,15 +351,16 @@ describe('resolveLabBudgetRule', () => {
     })
 
     it('expands the seven evidence-gated diagnostic rules only for budget v3', () => {
-        const contract: LabRunAnalysis['measurementContract'] = {
+        const contractFor = (budgetVersion: 1 | 2 | 3): LabRunAnalysis['measurementContract'] => ({
             contractVersion: 2,
             expectedHz: 60,
             targetFrameMs: 16.666667,
             source: 'explicit',
             confidence: 'explicit',
-            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 3 },
+            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion },
             metricCatalogVersion: 2,
-        }
+        })
+        const contract = contractFor(3)
         const cases = [
             ['loaf-count', 'main.loaf.count', 0, 'count', 0],
             ['interaction-processing-tail', 'interaction.processing.p95', 50, 'ms', 3],
@@ -403,5 +404,14 @@ describe('resolveLabBudgetRule', () => {
                 'insufficient-evidence'
             )
         }
+
+        for (const budgetVersion of [1, 2] as const) {
+            const earlierContract = contractFor(budgetVersion)
+            for (const [ruleId] of cases) {
+                assert.equal(resolveLabBudgetRule({ ...earlierContract.budgetRef, ruleId }, earlierContract), null)
+            }
+        }
+
+        assert.ok(resolveLabBudgetRule({ ...contract.budgetRef, ruleId: 'frame-tail' }, contract))
     })
 })
