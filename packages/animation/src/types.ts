@@ -348,6 +348,68 @@ export interface AnimationWebVitalsSummary {
     }
 }
 
+export type AnimationSoftNavigationCapabilityStatus = 'supported' | 'unsupported' | 'unknown'
+export type AnimationSoftNavigationCapabilityReason =
+    | 'not-browser-runtime'
+    | 'performance-observer-unavailable'
+    | 'soft-navigation-entry-unsupported'
+    | 'largest-interaction-contentful-paint-unsupported'
+    | 'observer-registration-failed'
+    | 'runtime-read-failed'
+
+export interface AnimationSoftNavigationWebVitalsCapability {
+    readonly status: AnimationSoftNavigationCapabilityStatus
+    readonly reason?: AnimationSoftNavigationCapabilityReason
+    readonly metrics: Readonly<Record<AnimationWebVitalName, AnimationSoftNavigationCapabilityStatus>>
+}
+
+interface AnimationSoftNavigationWebVitalBase<Name extends AnimationWebVitalName, Attribution> {
+    readonly name: Name
+    readonly value: number
+    readonly delta: number
+    readonly rating: AnimationWebVitalRating
+    readonly navigationType: 'soft-navigation'
+    readonly segmentId: number
+    readonly startedAt: number
+    readonly attribution: Readonly<Attribution>
+}
+
+export type AnimationSoftNavigationWebVitalMeasurement =
+    | AnimationSoftNavigationWebVitalBase<'CLS', { largestShiftTime?: number; largestShiftValue?: number }>
+    | AnimationSoftNavigationWebVitalBase<
+          'INP',
+          {
+              interactionTime?: number
+              nextPaintTime?: number
+              interactionType?: 'pointer' | 'keyboard'
+              inputDelay?: number
+              processingDuration?: number
+              presentationDelay?: number
+          }
+      >
+    | AnimationSoftNavigationWebVitalBase<'LCP', { paintTime?: number; size?: number }>
+
+export type AnimationSoftNavigationFinalizationReason = 'next-soft-navigation' | 'hidden' | 'pagehide'
+
+/** Local-only completed segment evidence. It is deliberately separate from AnimationSnapshot and every RUM contract. */
+export interface AnimationSoftNavigationFinalizedSegmentSnapshot {
+    readonly schemaVersion: 1
+    readonly segmentId: number
+    readonly startedAt: number
+    readonly finalizedAt: number
+    readonly elapsedMs: number
+    readonly reason: AnimationSoftNavigationFinalizationReason
+    readonly capability: Readonly<Record<AnimationWebVitalName, AnimationSoftNavigationCapabilityStatus>>
+    readonly observedUpdateCount: number
+    readonly droppedEntryCount: number
+    readonly rejectedUpdateCount: number
+    readonly latest: Readonly<{
+        CLS: Extract<AnimationSoftNavigationWebVitalMeasurement, { name: 'CLS' }> | null
+        INP: Extract<AnimationSoftNavigationWebVitalMeasurement, { name: 'INP' }> | null
+        LCP: Extract<AnimationSoftNavigationWebVitalMeasurement, { name: 'LCP' }> | null
+    }>
+}
+
 export type AnimationResourceCategory = 'script' | 'image' | 'media' | 'fetch-xhr' | 'link-css' | 'frame' | 'other'
 
 export interface AnimationResourceCategorySummary {
@@ -561,6 +623,10 @@ export interface AnimationRuntime {
     onReducedMotionChange(callback: (reduced: boolean) => void): () => void
     /** Optional process-wide document-lifetime Web Vitals stream. */
     subscribeWebVitals?(callback: (metric: AnimationWebVitalMeasurement) => void): () => void
+    /** Optional capability query for the independent native soft-navigation stream. */
+    getSoftNavigationWebVitalsCapability?(): AnimationSoftNavigationWebVitalsCapability
+    /** Optional local-only stream that emits exactly once for each completed soft-navigation segment. */
+    subscribeSoftNavigationFinalizedSegments?(callback: (segment: AnimationSoftNavigationFinalizedSegmentSnapshot) => void): () => void
     /** Synchronously delivers browser observer records queued before a report boundary. */
     drainPendingPerformanceEntries?(): void
     observePerformance(

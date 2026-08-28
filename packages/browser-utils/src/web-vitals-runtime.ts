@@ -341,6 +341,34 @@ export interface SubscribeSoftNavigationWebVitalsOptions {
     replayLatest?: boolean
 }
 
+export type SoftNavigationFinalizationReason = 'next-soft-navigation' | 'hidden' | 'pagehide'
+
+export interface SoftNavigationFinalizedSegmentSnapshot {
+    readonly schemaVersion: 1
+    readonly segmentId: number
+    readonly startedAt: number
+    readonly finalizedAt: number
+    readonly elapsedMs: number
+    readonly reason: SoftNavigationFinalizationReason
+    readonly capability: Readonly<Record<WebVitalName, SoftNavigationCapabilityStatus>>
+    readonly observedUpdateCount: number
+    readonly droppedEntryCount: number
+    readonly rejectedUpdateCount: number
+    readonly latest: Readonly<{
+        CLS: SoftNavigationCLSWebVitalSnapshot | null
+        INP: SoftNavigationINPWebVitalSnapshot | null
+        LCP: SoftNavigationLCPWebVitalSnapshot | null
+    }>
+}
+
+export interface SubscribeSoftNavigationFinalizedSegmentsOptions {
+    /** Replay the retained snapshots for at most the two most recent finalized segments. */
+    replayLatest?: boolean
+}
+
+export type SoftNavigationFinalizedSegmentSubscriber = (segment: SoftNavigationFinalizedSegmentSnapshot) => void
+export type LatestSoftNavigationFinalizedSegments = readonly SoftNavigationFinalizedSegmentSnapshot[]
+
 interface NativeInteractionContentfulPaint extends PerformanceEntry {
     readonly interactionId?: number
     readonly largestContentfulPaint?: LargestContentfulPaint
@@ -375,6 +403,7 @@ interface SoftNavigationSegmentState {
     readonly softNavigationEntry: NativePerformanceSoftNavigation
     readonly interactionCountAtStart?: number
     closed: boolean
+    finalizing: boolean
     cls: SoftNavigationMetricState
     lcp?: SoftNavigationMetricState
     inp?: SoftNavigationMetricState
@@ -389,6 +418,10 @@ interface SoftNavigationSegmentState {
     readonly previousValues: Record<WebVitalDelivery, Partial<Record<WebVitalName, number>>>
     readonly finalized: Set<WebVitalName>
     readonly failedFinalMetrics: Set<WebVitalName>
+    readonly metricCapabilities: Record<WebVitalName, SoftNavigationCapabilityStatus>
+    observedUpdateCount: number
+    droppedEntryCount: number
+    rejectedUpdateCount: number
 }
 
 interface SoftNavigationRuntimeRegistry {
@@ -399,10 +432,12 @@ interface SoftNavigationRuntimeRegistry {
     subscribers: Set<SoftNavigationRuntimeSubscriber>
     current?: SoftNavigationSegmentState
     pendingEntries: PerformanceEntry[]
-    pendingEntryOverflowed: boolean
+    pendingDroppedEntryCount: number
     processingScheduled: boolean
     suppressFinalizationForCurrentBatch: boolean
     latest: Record<WebVitalDelivery, Map<number, Map<WebVitalName, SoftNavigationWebVitalSnapshot>>>
+    finalizedSubscribers: Set<SoftNavigationFinalizedSegmentSubscriber>
+    latestFinalizedSegments: Map<number, SoftNavigationFinalizedSegmentSnapshot>
 }
 
 const SOFT_NAVIGATION_REGISTRY_KEY = Symbol.for('@condev-monitor/soft-navigation-web-vitals-runtime/v1')
@@ -410,6 +445,7 @@ const MAX_RETAINED_SOFT_NAVIGATION_SEGMENTS = 2
 const MAX_RETAINED_INP_INTERACTIONS = 10
 const MAX_PENDING_SOFT_NAVIGATION_ENTRIES = 2048
 const MAX_SOFT_NAVIGATION_SEGMENT_ID = 1_000_000
+const MAX_SOFT_NAVIGATION_COUNTER = Number.MAX_SAFE_INTEGER
 const SOFT_NAVIGATION_ENTRY_TYPE = 'soft-navigation'
 const INTERACTION_CONTENTFUL_PAINT_ENTRY_TYPE = 'interaction-contentful-paint'
 
@@ -418,10 +454,12 @@ function createSoftNavigationRegistry(): SoftNavigationRuntimeRegistry {
         started: false,
         nextSegmentId: 1,
         subscribers: new Set(),
+        finalizedSubscribers: new Set(),
         pendingEntries: [],
-        pendingEntryOverflowed: false,
+        pendingDroppedEntryCount: 0,
         processingScheduled: false,
         suppressFinalizationForCurrentBatch: false,
+        latestFinalizedSegments: new Map(),
         latest: {
             live: new Map(),
             final: new Map(),
@@ -505,6 +543,14 @@ function boundedTime(value: unknown): number | undefined {
     return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER ? value : undefined
 }
 
+function boundedDroppedEntryCount(value: unknown): number {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : 0
+}
+
+function addBoundedCount(current: number, amount: number): number {
+    return Math.min(current + amount, MAX_SOFT_NAVIGATION_COUNTER)
+}
+
 function readInteractionCount(): number | undefined {
     const value = (globalThis.performance as (Performance & { interactionCount?: number }) | undefined)?.interactionCount
     return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
@@ -538,6 +584,12 @@ function markSoftNavigationMetricsUnknown(names: readonly WebVitalName[]): void 
         },
         'runtime-read-failed'
     )
+    const current = registry.current
+    if (current && !current.closed) {
+        for (const name of names) {
+            if (current.metricCapabilities[name] === 'supported') current.metricCapabilities[name] = 'unknown'
+        }
+    }
 }
 
 function softNavigationRating(name: WebVitalName, value: number): WebVitalRating {
@@ -558,6 +610,25 @@ function callSoftNavigationSafely(callback: SoftNavigationWebVitalsSubscriber, m
         callback(metric)
     } catch {
         // Subscriber failures are isolated from every other consumer and stream.
+    }
+}
+
+function callFinalizedSegmentSafely(
+    callback: SoftNavigationFinalizedSegmentSubscriber,
+    segment: SoftNavigationFinalizedSegmentSnapshot
+): void {
+    try {
+        callback(segment)
+    } catch {
+        // Finalized-segment consumers cannot interfere with metric delivery or each other.
+    }
+}
+
+function softNavigationNow(fallback: number): number {
+    try {
+        return boundedTime(globalThis.performance?.now()) ?? fallback
+    } catch {
+        return fallback
     }
 }
 
@@ -600,38 +671,94 @@ function publishSoftNavigationMetric(segment: SoftNavigationSegmentState, name: 
     }
 }
 
-function finalizeSoftNavigationSegment(segment: SoftNavigationSegmentState | undefined): void {
-    if (!segment || segment.closed) return
+function finalizedMetric<Name extends WebVitalName>(
+    segment: SoftNavigationSegmentState,
+    name: Name
+): Extract<SoftNavigationWebVitalSnapshot, { name: Name }> | null {
+    if (segment.metricCapabilities[name] !== 'supported' || segment.failedFinalMetrics.has(name)) return null
+    const metric = getSoftNavigationRegistry().latest.live.get(segment.segmentId)?.get(name)
+    return (metric?.name === name ? metric : null) as Extract<SoftNavigationWebVitalSnapshot, { name: Name }> | null
+}
+
+function publishFinalizedSoftNavigationSegment(
+    segment: SoftNavigationSegmentState,
+    reason: SoftNavigationFinalizationReason,
+    finalizedAt: number
+): void {
+    const registry = getSoftNavigationRegistry()
+    const boundedFinalizedAt = Math.max(finalizedAt, segment.startTime)
+    const capability = Object.freeze({ ...segment.metricCapabilities })
+    const latest = Object.freeze({
+        CLS: finalizedMetric(segment, 'CLS'),
+        INP: finalizedMetric(segment, 'INP'),
+        LCP: finalizedMetric(segment, 'LCP'),
+    })
+    const snapshot: SoftNavigationFinalizedSegmentSnapshot = Object.freeze({
+        schemaVersion: 1,
+        segmentId: segment.segmentId,
+        startedAt: segment.startTime,
+        finalizedAt: boundedFinalizedAt,
+        elapsedMs: boundedFinalizedAt - segment.startTime,
+        reason,
+        capability,
+        observedUpdateCount: segment.observedUpdateCount,
+        droppedEntryCount: segment.droppedEntryCount,
+        rejectedUpdateCount: segment.rejectedUpdateCount,
+        latest,
+    })
+    registry.latestFinalizedSegments.set(segment.segmentId, snapshot)
+    trimOldest(registry.latestFinalizedSegments, MAX_RETAINED_SOFT_NAVIGATION_SEGMENTS)
+    for (const subscriber of [...registry.finalizedSubscribers]) callFinalizedSegmentSafely(subscriber, snapshot)
+}
+
+function finalizeSoftNavigationSegment(
+    segment: SoftNavigationSegmentState | undefined,
+    reason: SoftNavigationFinalizationReason,
+    finalizedAt?: number
+): void {
+    if (!segment || segment.closed || segment.finalizing) return
+    // Guard before any final refresh can synchronously publish a live metric.
+    segment.finalizing = true
     if (getSoftNavigationRegistry().suppressFinalizationForCurrentBatch) {
         for (const name of WEB_VITAL_NAMES) segment.failedFinalMetrics.add(name)
     }
-    if (!refreshSoftNavigationLCP(segment)) {
+    const lcpRefreshResult = segment.metricCapabilities.LCP === 'supported' ? refreshSoftNavigationLCP(segment) : 'not-supported'
+    if (lcpRefreshResult === 'read-failed' || lcpRefreshResult === 'entry-rejected') {
         segment.failedFinalMetrics.add('LCP')
+        if (lcpRefreshResult === 'read-failed') {
+            segment.rejectedUpdateCount = addBoundedCount(segment.rejectedUpdateCount, 1)
+        }
         markSoftNavigationMetricsUnknown(['LCP'])
     }
-    updateSoftNavigationINP(segment)
-    const capability = getSoftNavigationRegistry().capability
+    if (segment.metricCapabilities.INP === 'supported') updateSoftNavigationINP(segment)
+    // Close before invoking any subscriber so a reentrant lifecycle callback cannot finalize twice.
+    segment.closed = true
     for (const name of WEB_VITAL_NAMES) {
         if (segment.finalized.has(name)) continue
         if (segment.failedFinalMetrics.has(name)) continue
         const hasMetric =
-            (name === 'CLS' && capability?.metrics.CLS === 'supported') || (name === 'INP' ? Boolean(segment.inp) : Boolean(segment.lcp))
+            segment.metricCapabilities[name] === 'supported' &&
+            (name === 'CLS' || (name === 'INP' ? Boolean(segment.inp) : Boolean(segment.lcp)))
         if (!hasMetric) continue
-        publishSoftNavigationMetric(segment, name, 'final')
         segment.finalized.add(name)
+        publishSoftNavigationMetric(segment, name, 'final')
     }
-    segment.closed = true
+    publishFinalizedSoftNavigationSegment(segment, reason, finalizedAt ?? softNavigationNow(segment.startTime))
 }
 
 function startSoftNavigationSegment(entry: NativePerformanceSoftNavigation): void {
     const navigationId = boundedNavigationId(entry.navigationId)
     const interactionId = boundedInteractionId(entry.interactionId)
     const startTime = boundedTime(entry.startTime)
-    if (navigationId === undefined || interactionId === undefined || startTime === undefined) return
+    if (navigationId === undefined || interactionId === undefined || startTime === undefined) {
+        const current = getSoftNavigationRegistry().current
+        if (current && !current.closed) current.rejectedUpdateCount = addBoundedCount(current.rejectedUpdateCount, 1)
+        return
+    }
 
     const registry = getSoftNavigationRegistry()
     if (registry.current?.navigationId === navigationId) return
-    finalizeSoftNavigationSegment(registry.current)
+    finalizeSoftNavigationSegment(registry.current, 'next-soft-navigation', startTime)
 
     const segmentId = registry.nextSegmentId
     registry.nextSegmentId = segmentId >= MAX_SOFT_NAVIGATION_SEGMENT_ID ? 1 : segmentId + 1
@@ -644,33 +771,39 @@ function startSoftNavigationSegment(entry: NativePerformanceSoftNavigation): voi
         softNavigationEntry: entry,
         interactionCountAtStart: readInteractionCount(),
         closed: false,
+        finalizing: false,
         cls: { value: 0, attribution: Object.freeze({}) },
         clsSessionValue: 0,
         interactions: new Map(),
         previousValues: { live: {}, final: {} },
         finalized: new Set(),
         failedFinalMetrics: new Set(),
+        metricCapabilities: { ...(registry.capability?.metrics ?? { CLS: 'unknown', INP: 'unknown', LCP: 'unknown' }) },
+        observedUpdateCount: 0,
+        droppedEntryCount: 0,
+        rejectedUpdateCount: 0,
     }
     registry.current = segment
-    if (registry.capability?.metrics.CLS === 'supported') publishSoftNavigationMetric(segment, 'CLS', 'live')
-    refreshSoftNavigationLCP(segment)
+    if (segment.metricCapabilities.CLS === 'supported') publishSoftNavigationMetric(segment, 'CLS', 'live')
+    if (segment.metricCapabilities.LCP === 'supported') refreshSoftNavigationLCP(segment)
 }
 
 function processLayoutShift(entry: LayoutShift): void {
     const segment = getSoftNavigationRegistry().current
+    if (!segment || segment.closed || segment.metricCapabilities.CLS !== 'supported') return
     const startTime = boundedTime(entry.startTime)
     const value = finiteNumber(entry.value)
+    if (entry.hadRecentInput) return
     if (
-        !segment ||
-        segment.closed ||
         !entryMatchesSoftNavigation(entry, segment) ||
         startTime === undefined ||
         startTime < segment.startTime ||
         value === undefined ||
-        value < 0 ||
-        entry.hadRecentInput
-    )
+        value < 0
+    ) {
+        segment.rejectedUpdateCount = addBoundedCount(segment.rejectedUpdateCount, 1)
         return
+    }
 
     if (
         segment.clsSessionStartTime === undefined ||
@@ -699,6 +832,7 @@ function processLayoutShift(entry: LayoutShift): void {
             ...(segment.clsSessionLargestShiftValue === undefined ? {} : { largestShiftValue: segment.clsSessionLargestShiftValue }),
         }),
     }
+    segment.observedUpdateCount = addBoundedCount(segment.observedUpdateCount, 1)
     publishSoftNavigationMetric(segment, 'CLS', 'live')
 }
 
@@ -727,12 +861,11 @@ function inpAttribution(entry: PerformanceEventTiming): Readonly<Record<string, 
 
 function processEventTiming(entry: PerformanceEventTiming): void {
     const segment = getSoftNavigationRegistry().current
+    if (!segment || segment.closed || segment.metricCapabilities.INP !== 'supported') return
     const startTime = boundedTime(entry.startTime)
     const eventInteractionId = boundedInteractionId(entry.interactionId)
     const duration = finiteNumber(entry.duration)
     if (
-        !segment ||
-        segment.closed ||
         !entryMatchesSoftNavigation(entry, segment) ||
         startTime === undefined ||
         startTime < segment.startTime ||
@@ -740,8 +873,10 @@ function processEventTiming(entry: PerformanceEventTiming): void {
         eventInteractionId === 0 ||
         duration === undefined ||
         duration < 0
-    )
+    ) {
+        segment.rejectedUpdateCount = addBoundedCount(segment.rejectedUpdateCount, 1)
         return
+    }
 
     segment.minimumObservedInteractionId = Math.min(segment.minimumObservedInteractionId ?? eventInteractionId, eventInteractionId)
     segment.maximumObservedInteractionId = Math.max(segment.maximumObservedInteractionId ?? eventInteractionId, eventInteractionId)
@@ -780,37 +915,45 @@ function updateSoftNavigationINP(segment: SoftNavigationSegmentState): void {
     const nextINP = candidate ?? (interactionCount > 0 ? { value: 8, attribution: Object.freeze({}) } : undefined)
     if (!nextINP || segment.inp?.value === nextINP.value) return
     segment.inp = nextINP
+    segment.observedUpdateCount = addBoundedCount(segment.observedUpdateCount, 1)
     publishSoftNavigationMetric(segment, 'INP', 'live')
 }
 
-function processInteractionContentfulPaint(entry: NativeInteractionContentfulPaint, target?: SoftNavigationSegmentState): void {
+function processInteractionContentfulPaint(entry: NativeInteractionContentfulPaint, target?: SoftNavigationSegmentState): boolean {
     const segment = target ?? getSoftNavigationRegistry().current
+    if (!segment || segment.closed || segment.metricCapabilities.LCP !== 'supported') return false
     const interactionId = boundedInteractionId(entry.interactionId)
     const lcp = entry.largestContentfulPaint
     const paintTime = boundedTime(lcp?.startTime) ?? boundedTime(lcp?.renderTime) ?? boundedTime(lcp?.loadTime)
     const size = finiteNumber(lcp?.size)
-    if (!segment || segment.closed || interactionId === undefined || interactionId !== segment.interactionId || paintTime === undefined)
-        return
+    if (interactionId === undefined || interactionId !== segment.interactionId || paintTime === undefined) {
+        segment.rejectedUpdateCount = addBoundedCount(segment.rejectedUpdateCount, 1)
+        return false
+    }
 
     const value = Math.max(paintTime - segment.startTime, 0)
-    if (segment.lcp && value <= segment.lcp.value) return
+    if (segment.lcp && value <= segment.lcp.value) return true
     segment.lcp = {
         value,
         attribution: Object.freeze({ paintTime, ...(size === undefined || size < 0 ? {} : { size }) }),
     }
+    segment.observedUpdateCount = addBoundedCount(segment.observedUpdateCount, 1)
     publishSoftNavigationMetric(segment, 'LCP', 'live')
+    return true
 }
 
-function refreshSoftNavigationLCP(segment: SoftNavigationSegmentState): boolean {
-    if (segment.closed) return false
+type SoftNavigationLCPRefreshResult = 'success' | 'read-failed' | 'entry-rejected'
+
+function refreshSoftNavigationLCP(segment: SoftNavigationSegmentState): SoftNavigationLCPRefreshResult {
+    if (segment.closed) return 'read-failed'
     try {
         const getter = segment.softNavigationEntry.getLargestInteractionContentfulPaint
-        if (typeof getter !== 'function') return false
+        if (typeof getter !== 'function') return 'read-failed'
         const latest = getter.call(segment.softNavigationEntry)
-        if (latest) processInteractionContentfulPaint(latest, segment)
-        return true
+        if (!latest) return 'success'
+        return processInteractionContentfulPaint(latest, segment) ? 'success' : 'entry-rejected'
     } catch {
-        return false
+        return 'read-failed'
     }
 }
 
@@ -839,16 +982,17 @@ function appendPendingSoftNavigationEntries(entries: readonly PerformanceEntry[]
 
     let firstRetainedIndex = 0
     if (entries.length >= MAX_PENDING_SOFT_NAVIGATION_ENTRIES) {
-        if (registry.pendingEntries.length > 0 || entries.length > MAX_PENDING_SOFT_NAVIGATION_ENTRIES) {
-            registry.pendingEntryOverflowed = true
-        }
+        registry.pendingDroppedEntryCount = addBoundedCount(
+            registry.pendingDroppedEntryCount,
+            registry.pendingEntries.length + Math.max(entries.length - MAX_PENDING_SOFT_NAVIGATION_ENTRIES, 0)
+        )
         registry.pendingEntries.length = 0
         firstRetainedIndex = entries.length - MAX_PENDING_SOFT_NAVIGATION_ENTRIES
     } else {
         const overflow = registry.pendingEntries.length + entries.length - MAX_PENDING_SOFT_NAVIGATION_ENTRIES
         if (overflow > 0) {
             registry.pendingEntries.splice(0, overflow)
-            registry.pendingEntryOverflowed = true
+            registry.pendingDroppedEntryCount = addBoundedCount(registry.pendingDroppedEntryCount, overflow)
         }
     }
     for (let index = firstRetainedIndex; index < entries.length; index += 1) {
@@ -860,27 +1004,46 @@ function drainPendingSoftNavigationEntries(compromised = false): void {
     const registry = getSoftNavigationRegistry()
     registry.processingScheduled = false
     const entries = registry.pendingEntries.splice(0)
-    const compromisedBatch = compromised || registry.pendingEntryOverflowed
-    registry.pendingEntryOverflowed = false
+    const droppedEntryCount = registry.pendingDroppedEntryCount
+    const compromisedBatch = compromised || droppedEntryCount > 0
+    registry.pendingDroppedEntryCount = 0
+    const segmentBeforeProcessing = registry.current
     if (compromisedBatch) {
         registry.suppressFinalizationForCurrentBatch = true
-        if (registry.current && !registry.current.closed) {
-            for (const name of WEB_VITAL_NAMES) registry.current.failedFinalMetrics.add(name)
+        if (segmentBeforeProcessing && !segmentBeforeProcessing.closed) {
+            for (const name of WEB_VITAL_NAMES) segmentBeforeProcessing.failedFinalMetrics.add(name)
+            segmentBeforeProcessing.droppedEntryCount = addBoundedCount(segmentBeforeProcessing.droppedEntryCount, droppedEntryCount)
+            if (compromised) {
+                segmentBeforeProcessing.rejectedUpdateCount = addBoundedCount(segmentBeforeProcessing.rejectedUpdateCount, 1)
+            }
         }
         markSoftNavigationMetricsUnknown(WEB_VITAL_NAMES)
     }
     try {
         if (entries.length > 0) processSoftNavigationEntries(entries)
     } finally {
-        if (compromisedBatch && registry.current && !registry.current.closed) {
-            for (const name of WEB_VITAL_NAMES) registry.current.failedFinalMetrics.add(name)
+        const segmentAfterProcessing = registry.current
+        if (compromisedBatch && segmentAfterProcessing && !segmentAfterProcessing.closed) {
+            for (const name of WEB_VITAL_NAMES) segmentAfterProcessing.failedFinalMetrics.add(name)
+            for (const name of WEB_VITAL_NAMES) {
+                if (segmentAfterProcessing.metricCapabilities[name] === 'supported') {
+                    segmentAfterProcessing.metricCapabilities[name] = 'unknown'
+                }
+            }
+            if (segmentAfterProcessing !== segmentBeforeProcessing) {
+                segmentAfterProcessing.droppedEntryCount = addBoundedCount(segmentAfterProcessing.droppedEntryCount, droppedEntryCount)
+                if (compromised) {
+                    segmentAfterProcessing.rejectedUpdateCount = addBoundedCount(segmentAfterProcessing.rejectedUpdateCount, 1)
+                }
+            }
         }
         registry.suppressFinalizationForCurrentBatch = false
     }
 }
 
-function enqueueSoftNavigationEntries(entries: readonly PerformanceEntry[]): void {
+function enqueueSoftNavigationEntries(entries: readonly PerformanceEntry[], droppedEntriesCount?: unknown): void {
     const registry = getSoftNavigationRegistry()
+    registry.pendingDroppedEntryCount = addBoundedCount(registry.pendingDroppedEntryCount, boundedDroppedEntryCount(droppedEntriesCount))
     appendPendingSoftNavigationEntries(entries)
     if (registry.processingScheduled) return
     registry.processingScheduled = true
@@ -892,7 +1055,7 @@ function enqueueSoftNavigationEntries(entries: readonly PerformanceEntry[]): voi
     }
 }
 
-function flushAndFinalizeSoftNavigationSegment(): void {
+function flushAndFinalizeSoftNavigationSegment(reason: Extract<SoftNavigationFinalizationReason, 'hidden' | 'pagehide'>): void {
     const registry = getSoftNavigationRegistry()
     let compromised = false
     try {
@@ -901,7 +1064,7 @@ function flushAndFinalizeSoftNavigationSegment(): void {
         compromised = true
     }
     drainPendingSoftNavigationEntries(compromised)
-    finalizeSoftNavigationSegment(registry.current)
+    finalizeSoftNavigationSegment(registry.current, reason)
 }
 
 function startSoftNavigationRuntime(): void {
@@ -913,7 +1076,11 @@ function startSoftNavigationRuntime(): void {
     if (capability.status !== 'supported') return
 
     try {
-        const observer = new PerformanceObserver(list => enqueueSoftNavigationEntries(list.getEntries()))
+        const observer = new PerformanceObserver(((
+            list: PerformanceObserverEntryList,
+            _observer: PerformanceObserver,
+            options?: { droppedEntriesCount?: unknown }
+        ) => enqueueSoftNavigationEntries(list.getEntries(), options?.droppedEntriesCount)) as PerformanceObserverCallback)
         const supported = PerformanceObserver.supportedEntryTypes
         const types = [SOFT_NAVIGATION_ENTRY_TYPE, 'layout-shift', 'event', 'first-input', INTERACTION_CONTENTFUL_PAINT_ENTRY_TYPE]
         const observedTypes = new Set<string>()
@@ -953,9 +1120,9 @@ function startSoftNavigationRuntime(): void {
     }
 
     document.addEventListener?.('visibilitychange', () => {
-        if (document.visibilityState === 'hidden') flushAndFinalizeSoftNavigationSegment()
+        if (document.visibilityState === 'hidden') flushAndFinalizeSoftNavigationSegment('hidden')
     })
-    globalThis.addEventListener?.('pagehide', flushAndFinalizeSoftNavigationSegment)
+    globalThis.addEventListener?.('pagehide', () => flushAndFinalizeSoftNavigationSegment('pagehide'))
 }
 
 /**
@@ -982,6 +1149,32 @@ export function subscribeSoftNavigationWebVitals(
         active = false
         registry.subscribers.delete(subscriber)
     }
+}
+
+/** Subscribes once per completed soft-navigation segment, including segments with no observed INP or LCP. */
+export function subscribeSoftNavigationFinalizedSegments(
+    callback: SoftNavigationFinalizedSegmentSubscriber,
+    options: SubscribeSoftNavigationFinalizedSegmentsOptions = {}
+): WebVitalsRuntimeUnsubscribe {
+    if (!isBrowserRuntime()) return () => undefined
+
+    const registry = getSoftNavigationRegistry()
+    const replay = options.replayLatest ? getLatestSoftNavigationFinalizedSegments() : []
+    registry.finalizedSubscribers.add(callback)
+    startSoftNavigationRuntime()
+    for (const segment of replay) callFinalizedSegmentSafely(callback, segment)
+
+    let active = true
+    return () => {
+        if (!active) return
+        active = false
+        registry.finalizedSubscribers.delete(callback)
+    }
+}
+
+/** Returns the frozen snapshots for at most the two most recent completed segments without starting observation. */
+export function getLatestSoftNavigationFinalizedSegments(): LatestSoftNavigationFinalizedSegments {
+    return Object.freeze([...getSoftNavigationRegistry().latestFinalizedSegments.values()])
 }
 
 /** Returns frozen, privacy-redacted metrics for at most the two latest segments. */

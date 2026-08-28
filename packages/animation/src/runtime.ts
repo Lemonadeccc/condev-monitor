@@ -7,16 +7,78 @@ import {
     subscribePageLifecycle,
     subscribeResourceTimingBufferFull,
 } from '@condev-monitor/monitor-sdk-browser-utils/performance-runtime'
-import { subscribeWebVitals as subscribeSharedWebVitals } from '@condev-monitor/monitor-sdk-browser-utils/web-vitals-runtime'
+import type {
+    SoftNavigationFinalizedSegmentSnapshot,
+    SoftNavigationWebVitalsCapability,
+    SoftNavigationWebVitalSnapshot,
+} from '@condev-monitor/monitor-sdk-browser-utils/web-vitals-runtime'
+import {
+    getSoftNavigationWebVitalsCapability as getSharedSoftNavigationWebVitalsCapability,
+    subscribeSoftNavigationFinalizedSegments as subscribeSharedSoftNavigationFinalizedSegments,
+    subscribeWebVitals as subscribeSharedWebVitals,
+} from '@condev-monitor/monitor-sdk-browser-utils/web-vitals-runtime'
 
 import type {
     AnimationRuntime,
+    AnimationSoftNavigationFinalizedSegmentSnapshot,
+    AnimationSoftNavigationWebVitalMeasurement,
+    AnimationSoftNavigationWebVitalsCapability,
     CapabilityState,
     PerformanceObserverHandle,
     PerformanceSignalType,
     SanitizedPerformanceEntry,
     VisibilityState,
 } from './types'
+
+function mapSoftNavigationCapability(capability: SoftNavigationWebVitalsCapability): AnimationSoftNavigationWebVitalsCapability {
+    return Object.freeze({
+        status: capability.status,
+        ...(capability.reason ? { reason: capability.reason } : {}),
+        metrics: Object.freeze({ ...capability.metrics }),
+    })
+}
+
+function mapSoftNavigationMetric(metric: SoftNavigationWebVitalSnapshot): AnimationSoftNavigationWebVitalMeasurement {
+    const base = {
+        name: metric.name,
+        value: metric.value,
+        delta: metric.delta,
+        rating: metric.rating,
+        navigationType: metric.navigationType,
+        segmentId: metric.segmentId,
+        startedAt: metric.startedAt,
+        attribution: Object.freeze({ ...metric.attribution }),
+    }
+    return Object.freeze(base) as AnimationSoftNavigationWebVitalMeasurement
+}
+
+function mapOptionalSoftNavigationMetric<Name extends AnimationSoftNavigationWebVitalMeasurement['name']>(
+    metric: Extract<SoftNavigationWebVitalSnapshot, { name: Name }> | null
+): Extract<AnimationSoftNavigationWebVitalMeasurement, { name: Name }> | null {
+    return metric ? (mapSoftNavigationMetric(metric) as Extract<AnimationSoftNavigationWebVitalMeasurement, { name: Name }>) : null
+}
+
+function mapFinalizedSoftNavigationSegment(
+    segment: SoftNavigationFinalizedSegmentSnapshot
+): AnimationSoftNavigationFinalizedSegmentSnapshot {
+    return Object.freeze({
+        schemaVersion: 1,
+        segmentId: segment.segmentId,
+        startedAt: segment.startedAt,
+        finalizedAt: segment.finalizedAt,
+        elapsedMs: segment.elapsedMs,
+        reason: segment.reason,
+        capability: Object.freeze({ ...segment.capability }),
+        observedUpdateCount: segment.observedUpdateCount,
+        droppedEntryCount: segment.droppedEntryCount,
+        rejectedUpdateCount: segment.rejectedUpdateCount,
+        latest: Object.freeze({
+            CLS: mapOptionalSoftNavigationMetric(segment.latest.CLS),
+            INP: mapOptionalSoftNavigationMetric(segment.latest.INP),
+            LCP: mapOptionalSoftNavigationMetric(segment.latest.LCP),
+        }),
+    })
+}
 
 function visibilityState(documentValue: Document | undefined): VisibilityState {
     const value = documentValue?.visibilityState
@@ -129,6 +191,15 @@ export function createBrowserAnimationRuntime(): AnimationRuntime {
         subscribeWebVitals(callback): () => void {
             if (!browser) return () => undefined
             return subscribeSharedWebVitals(metric => callback(metric), { delivery: 'live', replayLatest: true })
+        },
+        getSoftNavigationWebVitalsCapability(): AnimationSoftNavigationWebVitalsCapability {
+            return mapSoftNavigationCapability(getSharedSoftNavigationWebVitalsCapability())
+        },
+        subscribeSoftNavigationFinalizedSegments(callback): () => void {
+            if (!browser) return () => undefined
+            return subscribeSharedSoftNavigationFinalizedSegments(segment => callback(mapFinalizedSoftNavigationSegment(segment)), {
+                replayLatest: true,
+            })
         },
         drainPendingPerformanceEntries(): void {
             drainPerformanceEntries()

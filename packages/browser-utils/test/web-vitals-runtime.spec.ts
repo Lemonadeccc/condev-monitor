@@ -10,10 +10,12 @@ import { getFinalReportCallback } from '../src/metrics/lib/finalReport'
 import type { CLSMetricWithAttribution, LCPMetricWithAttribution, ReportOpts } from '../src/metrics/types'
 import {
     type CLSWebVitalSnapshot,
+    getLatestSoftNavigationFinalizedSegments,
     getLatestSoftNavigationWebVitals,
     getLatestWebVital,
     getSoftNavigationWebVitalsCapability,
     type LCPWebVitalSnapshot,
+    subscribeSoftNavigationFinalizedSegments,
     subscribeSoftNavigationWebVitals,
     subscribeWebVitals,
 } from '../src/web-vitals-runtime'
@@ -227,12 +229,13 @@ class FakePerformanceObserver {
         return this.records.splice(0) as unknown as PerformanceEntryList
     }
 
-    emit(entries: readonly PerformanceEntry[], flush = true): void {
+    emit(entries: readonly PerformanceEntry[], flush = true, droppedEntriesCount?: number): void {
         this.callback(
             {
                 getEntries: () => [...entries],
             } as PerformanceObserverEntryList,
-            this as unknown as PerformanceObserver
+            this as unknown as PerformanceObserver,
+            { droppedEntriesCount } as unknown as PerformanceObserverCallbackOptions
         )
         if (flush) jest.runOnlyPendingTimers()
     }
@@ -393,9 +396,11 @@ describe('soft-navigation Web Vitals runtime', () => {
         })
         const healthyLive = jest.fn()
         const healthyFinal = jest.fn()
+        const finalized = jest.fn()
         subscribeSoftNavigationWebVitals(throwingLive)
         subscribeSoftNavigationWebVitals(healthyLive)
         subscribeSoftNavigationWebVitals(healthyFinal, { delivery: 'final' })
+        subscribeSoftNavigationFinalizedSegments(finalized)
 
         expect(getSoftNavigationWebVitalsCapability()).toMatchObject({ status: 'supported' })
         expect(FakePerformanceObserver.instances).toHaveLength(1)
@@ -457,6 +462,30 @@ describe('soft-navigation Web Vitals runtime', () => {
         ])
         expect(healthyFinal.mock.calls.map(call => call[0].name)).toEqual(['CLS', 'INP', 'LCP'])
         expect(healthyFinal.mock.calls.every(call => call[0].segmentId === 1)).toBe(true)
+        expect(finalized).toHaveBeenCalledTimes(1)
+        expect(finalized).toHaveBeenCalledWith(
+            expect.objectContaining({
+                schemaVersion: 1,
+                segmentId: 1,
+                startedAt: 100,
+                finalizedAt: 1000,
+                elapsedMs: 900,
+                reason: 'next-soft-navigation',
+                capability: { CLS: 'supported', INP: 'supported', LCP: 'supported' },
+                observedUpdateCount: 3,
+                droppedEntryCount: 0,
+                rejectedUpdateCount: 1,
+            })
+        )
+        const finalizedSegment = finalized.mock.calls[0]![0]
+        expect(finalizedSegment.latest).toMatchObject({
+            CLS: { name: 'CLS', value: 0.12 },
+            INP: { name: 'INP', value: 240 },
+            LCP: { name: 'LCP', value: 350 },
+        })
+        expect(Object.isFrozen(finalizedSegment)).toBe(true)
+        expect(Object.isFrozen(finalizedSegment.capability)).toBe(true)
+        expect(Object.isFrozen(finalizedSegment.latest)).toBe(true)
 
         const retained = getLatestSoftNavigationWebVitals()
         expect(retained.find(metric => metric.name === 'LCP' && metric.segmentId === 1)).toMatchObject({
@@ -476,9 +505,52 @@ describe('soft-navigation Web Vitals runtime', () => {
                 presentationDelay: 80,
             },
         })
-        expect(JSON.stringify([...retained, ...getLatestSoftNavigationWebVitals('final')])).not.toMatch(
-            /private|navigationId|interactionId|navigationURL|selector|textContent|target|element|sources|https:/iu
-        )
+        expect(
+            JSON.stringify([...retained, ...getLatestSoftNavigationWebVitals('final'), ...getLatestSoftNavigationFinalizedSegments()])
+        ).not.toMatch(/private|navigationId|interactionId|navigationURL|selector|textContent|target|element|sources|https:/iu)
+    })
+
+    it('finalizes a segment with explicit null missing metrics and replays it once', () => {
+        const finalized = jest.fn()
+        subscribeSoftNavigationFinalizedSegments(finalized)
+        const observer = FakePerformanceObserver.instances[0]!
+        observer.emit([
+            performanceEntry('soft-navigation', 100, 0, {
+                navigationId: 1,
+                interactionId: 10,
+                getLargestInteractionContentfulPaint: () => null,
+            }),
+            performanceEntry('soft-navigation', 600, 0, {
+                navigationId: 2,
+                interactionId: 20,
+                getLargestInteractionContentfulPaint: () => null,
+            }),
+        ])
+
+        expect(finalized).toHaveBeenCalledTimes(1)
+        expect(finalized.mock.calls[0]![0]).toEqual({
+            schemaVersion: 1,
+            segmentId: 1,
+            startedAt: 100,
+            finalizedAt: 600,
+            elapsedMs: 500,
+            reason: 'next-soft-navigation',
+            capability: { CLS: 'supported', INP: 'supported', LCP: 'supported' },
+            observedUpdateCount: 0,
+            droppedEntryCount: 0,
+            rejectedUpdateCount: 0,
+            latest: {
+                CLS: expect.objectContaining({ name: 'CLS', value: 0 }),
+                INP: null,
+                LCP: null,
+            },
+        })
+
+        const replay = jest.fn()
+        const unsubscribe = subscribeSoftNavigationFinalizedSegments(replay, { replayLatest: true })
+        expect(replay).toHaveBeenCalledTimes(1)
+        unsubscribe()
+        unsubscribe()
     })
 
     it('keeps the longest INP candidates and ranks them using the full interaction range', () => {
@@ -654,8 +726,10 @@ describe('soft-navigation Web Vitals runtime', () => {
 
     it('does not publish stale final evidence when the final LCP read fails', () => {
         const final = jest.fn()
+        const finalized = jest.fn()
         subscribeSoftNavigationWebVitals(jest.fn())
         subscribeSoftNavigationWebVitals(final, { delivery: 'final' })
+        subscribeSoftNavigationFinalizedSegments(finalized)
         const observer = FakePerformanceObserver.instances[0]!
         let failFinalRead = false
         const initialPaint = performanceEntry('interaction-contentful-paint', 100, 0, {
@@ -682,6 +756,122 @@ describe('soft-navigation Web Vitals runtime', () => {
             reason: 'runtime-read-failed',
             metrics: { CLS: 'supported', INP: 'supported', LCP: 'unknown' },
         })
+        expect(finalized).toHaveBeenCalledWith(
+            expect.objectContaining({
+                reason: 'hidden',
+                capability: { CLS: 'supported', INP: 'supported', LCP: 'unknown' },
+                rejectedUpdateCount: 1,
+                latest: expect.objectContaining({ LCP: null }),
+            })
+        )
+    })
+
+    it('finalizes exactly once when a final refresh live callback reenters pagehide', () => {
+        let latestPaint = null
+        const finalized = jest.fn()
+        const live = jest.fn(metric => {
+            if (metric.name !== 'LCP' || metric.value !== 500) return
+            for (const listener of globalListeners.get('pagehide') ?? []) listener(new Event('pagehide'))
+        })
+        subscribeSoftNavigationWebVitals(live)
+        subscribeSoftNavigationFinalizedSegments(finalized)
+        const observer = FakePerformanceObserver.instances[0]!
+        observer.emit([
+            performanceEntry('soft-navigation', 100, 0, {
+                navigationId: 1,
+                interactionId: 10,
+                getLargestInteractionContentfulPaint: () => latestPaint,
+            }),
+        ])
+        latestPaint = performanceEntry('interaction-contentful-paint', 600, 0, {
+            interactionId: 10,
+            largestContentfulPaint: { startTime: 600, renderTime: 600, size: 1024 },
+        })
+
+        Object.assign(fakeDocument, { visibilityState: 'hidden' })
+        for (const listener of documentListeners.get('visibilitychange') ?? []) listener(new Event('visibilitychange'))
+
+        expect(live).toHaveBeenCalledWith(expect.objectContaining({ name: 'LCP', value: 500 }))
+        expect(finalized).toHaveBeenCalledTimes(1)
+        expect(finalized).toHaveBeenCalledWith(expect.objectContaining({ reason: 'hidden', segmentId: 1 }))
+    })
+
+    it('gates later segment evidence after a metric capability becomes unknown', () => {
+        const final = jest.fn()
+        const finalized = jest.fn()
+        let failFirstFinalRead = false
+        const firstPaint = performanceEntry('interaction-contentful-paint', 400, 0, {
+            interactionId: 10,
+            largestContentfulPaint: { startTime: 400, renderTime: 400, size: 1024 },
+        })
+        const secondPaint = performanceEntry('interaction-contentful-paint', 900, 0, {
+            interactionId: 20,
+            largestContentfulPaint: { startTime: 900, renderTime: 900, size: 2048 },
+        })
+        subscribeSoftNavigationWebVitals(final, { delivery: 'final' })
+        subscribeSoftNavigationFinalizedSegments(finalized)
+        const observer = FakePerformanceObserver.instances[0]!
+        observer.emit([
+            performanceEntry('soft-navigation', 100, 0, {
+                navigationId: 1,
+                interactionId: 10,
+                getLargestInteractionContentfulPaint: () => {
+                    if (failFirstFinalRead) throw new Error('final read failed')
+                    return firstPaint
+                },
+            }),
+        ])
+        failFirstFinalRead = true
+        observer.emit([
+            performanceEntry('soft-navigation', 600, 0, {
+                navigationId: 2,
+                interactionId: 20,
+                getLargestInteractionContentfulPaint: () => secondPaint,
+            }),
+            performanceEntry('soft-navigation', 1_200, 0, {
+                navigationId: 3,
+                interactionId: 30,
+                getLargestInteractionContentfulPaint: () => null,
+            }),
+        ])
+
+        const secondSegment = finalized.mock.calls.map(call => call[0]).find(segment => segment.segmentId === 2)
+        expect(secondSegment).toMatchObject({
+            capability: { CLS: 'supported', INP: 'supported', LCP: 'unknown' },
+            latest: { LCP: null },
+        })
+        expect(final.mock.calls.map(call => call[0]).filter(metric => metric.segmentId === 2 && metric.name === 'LCP')).toEqual([])
+    })
+
+    it('counts one rejected update for an invalid final LCP getter result', () => {
+        let invalidFinalRead = false
+        const finalized = jest.fn()
+        subscribeSoftNavigationFinalizedSegments(finalized)
+        const observer = FakePerformanceObserver.instances[0]!
+        observer.emit([
+            performanceEntry('soft-navigation', 100, 0, {
+                navigationId: 1,
+                interactionId: 10,
+                getLargestInteractionContentfulPaint: () =>
+                    invalidFinalRead
+                        ? performanceEntry('interaction-contentful-paint', 500, 0, {
+                              interactionId: 999,
+                              largestContentfulPaint: { startTime: 500, renderTime: 500, size: 1024 },
+                          })
+                        : null,
+            }),
+        ])
+        invalidFinalRead = true
+        Object.assign(fakeDocument, { visibilityState: 'hidden' })
+        for (const listener of documentListeners.get('visibilitychange') ?? []) listener(new Event('visibilitychange'))
+
+        expect(finalized).toHaveBeenCalledWith(
+            expect.objectContaining({
+                capability: { CLS: 'supported', INP: 'supported', LCP: 'unknown' },
+                rejectedUpdateCount: 1,
+                latest: expect.objectContaining({ LCP: null }),
+            })
+        )
     })
 
     it('does not publish final metrics when takeRecords fails during hidden flush', () => {
@@ -729,7 +919,9 @@ describe('soft-navigation Web Vitals runtime', () => {
 
     it('suppresses every final touched by an overflowing observer batch', () => {
         const final = jest.fn()
+        const finalized = jest.fn()
         subscribeSoftNavigationWebVitals(final, { delivery: 'final' })
+        subscribeSoftNavigationFinalizedSegments(finalized)
         const observer = FakePerformanceObserver.instances[0]!
         observer.emit([
             performanceEntry('soft-navigation', 100, 0, {
@@ -767,12 +959,50 @@ describe('soft-navigation Web Vitals runtime', () => {
             reason: 'runtime-read-failed',
             metrics: { CLS: 'unknown', INP: 'unknown', LCP: 'unknown' },
         })
+        expect(finalized.mock.calls[0]![0]).toMatchObject({
+            segmentId: 1,
+            reason: 'next-soft-navigation',
+            capability: { CLS: 'unknown', INP: 'unknown', LCP: 'unknown' },
+            droppedEntryCount: 3,
+            latest: { CLS: null, INP: null, LCP: null },
+        })
+    })
+
+    it('surfaces browser-reported buffered entry loss on the affected segment', () => {
+        const finalized = jest.fn()
+        subscribeSoftNavigationFinalizedSegments(finalized)
+        const observer = FakePerformanceObserver.instances[0]!
+        observer.emit([
+            performanceEntry('soft-navigation', 100, 0, {
+                navigationId: 1,
+                interactionId: 10,
+                getLargestInteractionContentfulPaint: () => null,
+            }),
+        ])
+        observer.emit([], true, 4)
+        observer.emit([
+            performanceEntry('soft-navigation', 500, 0, {
+                navigationId: 2,
+                interactionId: 20,
+                getLargestInteractionContentfulPaint: () => null,
+            }),
+        ])
+
+        expect(finalized).toHaveBeenCalledWith(
+            expect.objectContaining({
+                segmentId: 1,
+                droppedEntryCount: 4,
+                capability: { CLS: 'unknown', INP: 'unknown', LCP: 'unknown' },
+                latest: { CLS: null, INP: null, LCP: null },
+            })
+        )
     })
 
     it('retains and replays only the two newest navigation segments', () => {
         subscribeSoftNavigationWebVitals(jest.fn())
+        subscribeSoftNavigationFinalizedSegments(jest.fn())
         const observer = FakePerformanceObserver.instances[0]!
-        for (const [index, navigationId] of [101, 202, 303].entries()) {
+        for (const [index, navigationId] of [101, 202, 303, 404].entries()) {
             observer.emit([
                 performanceEntry('soft-navigation', (index + 1) * 100, 0, {
                     navigationId,
@@ -782,15 +1012,38 @@ describe('soft-navigation Web Vitals runtime', () => {
             ])
         }
 
-        expect(getLatestSoftNavigationWebVitals().map(metric => metric.segmentId)).toEqual([2, 3])
-        expect(getLatestSoftNavigationWebVitals('final').map(metric => metric.segmentId)).toEqual([1, 2])
+        expect(getLatestSoftNavigationWebVitals().map(metric => metric.segmentId)).toEqual([3, 4])
+        expect(getLatestSoftNavigationWebVitals('final').map(metric => metric.segmentId)).toEqual([2, 3])
+        expect(getLatestSoftNavigationFinalizedSegments().map(segment => segment.segmentId)).toEqual([2, 3])
 
         const replayLive = jest.fn()
         const replayFinal = jest.fn()
         subscribeSoftNavigationWebVitals(replayLive, { replayLatest: true })
         subscribeSoftNavigationWebVitals(replayFinal, { delivery: 'final', replayLatest: true })
-        expect(replayLive.mock.calls.map(call => call[0].segmentId)).toEqual([2, 3])
-        expect(replayFinal.mock.calls.map(call => call[0].segmentId)).toEqual([1, 2])
+        expect(replayLive.mock.calls.map(call => call[0].segmentId)).toEqual([3, 4])
+        expect(replayFinal.mock.calls.map(call => call[0].segmentId)).toEqual([2, 3])
+    })
+
+    it('uses pagehide as the closing reason and finalizes the segment exactly once', () => {
+        const finalized = jest.fn(() => {
+            for (const listener of globalListeners.get('pagehide') ?? []) listener(new Event('pagehide'))
+        })
+        subscribeSoftNavigationFinalizedSegments(finalized)
+        const observer = FakePerformanceObserver.instances[0]!
+        observer.emit([
+            performanceEntry('soft-navigation', 100, 0, {
+                navigationId: 1,
+                interactionId: 10,
+                getLargestInteractionContentfulPaint: () => null,
+            }),
+        ])
+
+        for (const listener of globalListeners.get('pagehide') ?? []) listener(new Event('pagehide'))
+        Object.assign(fakeDocument, { visibilityState: 'hidden' })
+        for (const listener of documentListeners.get('visibilitychange') ?? []) listener(new Event('visibilitychange'))
+
+        expect(finalized).toHaveBeenCalledTimes(1)
+        expect(finalized).toHaveBeenCalledWith(expect.objectContaining({ segmentId: 1, reason: 'pagehide' }))
     })
 
     it('shares a single soft-navigation observer across module reloads', async () => {
