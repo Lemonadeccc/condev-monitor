@@ -353,6 +353,96 @@ describe('LabService runner grants and ownership', () => {
         expect(storage.writeTemporary).not.toHaveBeenCalled()
     })
 
+    it('keeps the complete Runner v4 claim, update, and artifact lifecycle compatible', async () => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const rawToken = `labg_${'e'.repeat(43)}`
+        const config = parseCreateLabRunInput({
+            appId: 'app-123',
+            scenarioKey: 'rolling.runner-v4',
+            config: {
+                measurementContract: {
+                    contractVersion: 2,
+                    expectedHz: 60,
+                    targetFrameMs: 16.666667,
+                    source: 'explicit',
+                    confidence: 'explicit',
+                    budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 3 },
+                    metricCatalogVersion: 3,
+                },
+            },
+        }).config
+        const run = runEntity({ config: JSON.stringify(config) })
+        const grant: LabRunnerGrantEntity = {
+            id: '22222222-2222-4222-8222-222222222222',
+            runId: run.id,
+            appId: run.appId,
+            tokenHash: createHash(rawToken),
+            expiresAt: new Date(Date.now() + 60_000),
+            consumedAt: null,
+            lastUsedAt: null,
+            revokedAt: null,
+            createdAt: new Date(),
+        }
+        const existingArtifact = reportArtifact(run)
+        runs.findOne.mockResolvedValue(run)
+        grants.findOne.mockResolvedValue(grant)
+        artifacts.findOne.mockResolvedValue(existingArtifact)
+        const repositories = new Map<unknown, unknown>([
+            [LabRunEntity, runs],
+            [LabArtifactEntity, artifacts],
+            [LabRunnerGrantEntity, grants],
+        ])
+        const manager = { getRepository: (entity: unknown) => repositories.get(entity) }
+        const dataSource = { transaction: jest.fn(async callback => callback(manager)) }
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            dataSource as never,
+            { assertOwned: jest.fn() } as never,
+            {} as never
+        )
+
+        await expect(service.negotiateRunnerContract(run.id, rawToken, 4)).resolves.toEqual({
+            runId: run.id,
+            runnerContractVersion: 4,
+        })
+        const claimed = await service.claimRun(run.id, rawToken, 4)
+        expect(claimed).toEqual(
+            expect.objectContaining({
+                runId: run.id,
+                runnerContractVersion: 4,
+                config: expect.objectContaining({ measurementContract: config.measurementContract }),
+            })
+        )
+        expect(claimed).not.toHaveProperty('requiredCapabilities')
+
+        await expect(service.updateRunFromRunner(run.id, rawToken, 4, { phase: 'processing', progress: 0.75 })).resolves.toEqual(
+            expect.objectContaining({ status: 'running', phase: 'processing', progress: 0.75 })
+        )
+        await expect(
+            service.uploadArtifact({
+                runId: run.id,
+                token: rawToken,
+                runnerContractVersion: 4,
+                input: Readable.from(Buffer.alloc(1_024)),
+                metadata: {
+                    kind: 'animation-report',
+                    mimeType: 'application/json',
+                    encoding: 'identity',
+                    expectedSha256: existingArtifact.sha256,
+                    idempotencyKeyHash: existingArtifact.idempotencyKeyHash,
+                    contentLength: 1_024,
+                    maxBytes: 2 * 1024 * 1024,
+                },
+            })
+        ).resolves.toEqual(expect.objectContaining({ id: existingArtifact.id, kind: 'animation-report' }))
+        expect(run).toEqual(expect.objectContaining({ status: 'running', phase: 'processing', progress: 0.75 }))
+        expect(grant.consumedAt).toBeInstanceOf(Date)
+    })
+
     it('fails closed when a claimed run has an incomplete or malformed persisted execution config', () => {
         const runs = repository<LabRunEntity>()
         const artifacts = repository<LabArtifactEntity>()
