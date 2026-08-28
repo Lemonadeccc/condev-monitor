@@ -77,7 +77,27 @@ These are diagnostic project defaults, not Web Platform standards or universal U
 
 `condev.animation.default@2` preserves the same five rules, thresholds, order, and metric references. Its only change is the Long Task evidence policy: a complete run-level `measured` observation with exactly `value: 0` and `samples: 0` is sufficient evidence that no Long Task was delivered. A positive count with a positive sample count still breaches the zero target. Partial, unsupported, unknown, not-observed, missing, overflowed, or inconsistent zero/count evidence remains insufficient; the runner never fabricates one sample for an empty observer stream. The bundled Runner examples opt in to @2 explicitly, while an omitted contract and all existing @1 scenarios/reports keep the @1 minimum of one observed task.
 
-Budget identity is part of `scenario.protocolHash`. Consequently, @1 and @2 runs are evidence-contract drift and are not directly comparable; comparisons require the same explicit budget version.
+`condev.animation.default@3` is a separate opt-in diagnostic profile. It preserves every @2 rule and adds seven evidence-gated investigation triggers:
+
+| Rule                                  | Diagnostic threshold | Minimum evidence                        |
+| ------------------------------------- | -------------------- | --------------------------------------- |
+| Long Animation Frames                 | `count <= 0`         | complete measured observer, including 0 |
+| Event processing p95                  | `<= 50 ms`           | 3 retained Event Timing entries         |
+| Event presentation p95                | `<= 100 ms`          | 3 retained Event Timing entries         |
+| Page-probe LCP latest                 | `<= 2,500 ms`        | 1 measured observation                  |
+| Page-probe CLS latest                 | `<= 0.1`             | 1 measured observation                  |
+| Lighthouse FCP latest                 | `<= 1,800 ms`        | 1 Lighthouse result                     |
+| Lighthouse Total Blocking Time latest | `<= 200 ms`          | 1 Lighthouse result                     |
+
+The LoAF rule uses the same complete zero-event relationship as the @2 Long Task rule: `value: 0` requires `samples: 0`, while a positive count requires a positive sample count. An unsupported, unknown, partial, missing, or inconsistent observer cannot pass the rule. The Event Timing rules retain the browser's 16 ms duration-threshold population and therefore do not describe every input. Their 50 ms and 100 ms targets are Condev investigation triggers, not Web standards.
+
+The 2.5 s LCP and 0.1 CLS values mirror published Web Vitals “good” boundaries, but one controlled Lab result is not the device-segmented field p75 required for a production Core Web Vitals assessment. The page-probe LCP does not invent SPA soft-navigation boundaries, and the Lab CLS window may end before later session shifts. Lighthouse FCP and TBT deliberately use the mobile green boundaries as conservative cross-form-factor investigation triggers, even when a scenario selects the desktop Lighthouse form factor; they do not reimplement Lighthouse score bands. The canonical metric records the executed form factor and isolated-process cache boundary. Authenticated, TLS-exception, Firefox, WebKit, disabled, failed, or missing Lighthouse evidence stays insufficient rather than becoming zero.
+
+The runner promotes each single isolated Trace or Lighthouse metric into canonical run scope while retaining its original evidence reference, aggregation method, and limitation codes. This makes the same closed metric visible to platform findings and comparisons without relabelling it as a repeated page-probe measurement. Duplicate diagnostic metric identities fail closed.
+
+Select @3 explicitly with `measurementContract.budgetRef.budgetVersion: 3`. The bundled examples remain on @2 so upgrading this package cannot silently add seven release gates to existing local or platform runs.
+
+Budget identity is part of `scenario.protocolHash`. Consequently, @1, @2, and @3 runs are evidence-contract drift and are not directly comparable; comparisons require the same explicit budget version.
 
 Semantic fields accept only bounded enums, numeric measurements, and caller-owned tokens. They never accept selectors, DOM text, element attributes, URLs, input values, arbitrary descriptions, or raw browser events.
 
