@@ -261,7 +261,9 @@ function parseMeasurementContract(value: unknown, label: string, errors: string[
     if (typeof value.confidence !== 'string' || !CONFIDENCES.has(value.confidence)) add(errors, `${label}:invalid-confidence`)
     if (value.source === 'explicit' && value.confidence !== 'explicit') add(errors, `${label}:explicit-source-needs-explicit-confidence`)
     validateBudgetRef(value.budgetRef, `${label}.budgetRef`, errors, false)
-    if (value.metricCatalogVersion !== 1 && value.metricCatalogVersion !== 2) add(errors, `${label}:invalid-metric-catalog-version`)
+    if (value.metricCatalogVersion !== 1 && value.metricCatalogVersion !== 2 && value.metricCatalogVersion !== 3) {
+        add(errors, `${label}:invalid-metric-catalog-version`)
+    }
     if (finite(value.expectedHz, 1, 1_000) && finite(value.targetFrameMs, 1, 1_000)) {
         const expectedTarget = 1_000 / value.expectedHz
         if (Math.abs(value.targetFrameMs - expectedTarget) > Math.max(0.05, expectedTarget * 0.01)) {
@@ -381,7 +383,7 @@ function validateMetric(value: unknown, index: number, metricCatalogVersion: Lab
         typeof value.evidenceLevel === 'string' &&
         EVIDENCE_LEVELS.has(value.evidenceLevel) &&
         ((value.evidenceLevel === 'unsupported-or-unknown' && value.status !== 'unsupported' && value.status !== 'unknown') ||
-            (metricCatalogVersion === 2 &&
+            (metricCatalogVersion >= 2 &&
                 (value.status === 'unsupported' || value.status === 'unknown') !== (value.evidenceLevel === 'unsupported-or-unknown')))
     ) {
         add(errors, `${label}:status-evidence-mismatch`)
@@ -415,6 +417,48 @@ function validateMetric(value: unknown, index: number, metricCatalogVersion: Lab
     }
     tokenArray(value.evidenceRefs, `${label}.evidenceRefs`, errors)
     tokenArray(value.limitations, `${label}.limitations`, errors, MAX_LIMITATIONS)
+    if (value.metricId === 'media.video-window-dropped-frame-rate') {
+        const scope = record(value.scope) ? value.scope : null
+        const limitations = Array.isArray(value.limitations)
+            ? value.limitations.filter((item): item is string => typeof item === 'string')
+            : []
+        const required = [
+            'video-playback-quality-window-counter-delta',
+            'video-playback-quality-total-includes-displayed-and-dropped',
+            'video-playback-quality-window-object-identity-only',
+            'video-playback-quality-not-decode-presentation-or-gpu-timing',
+        ]
+        if (scope?.level !== 'action') add(errors, `${label}:video-window-needs-action-scope`)
+        if (required.some(limitation => !limitations.includes(limitation))) {
+            add(errors, `${label}:video-window-missing-boundary-limitations`)
+        }
+        if (
+            (value.status === 'measured' || value.status === 'partial') &&
+            (!integer(value.samples, 1, 10_000_000) || value.value === null)
+        ) {
+            add(errors, `${label}:video-window-needs-positive-frame-delta`)
+        }
+        if (
+            scope?.attemptId !== undefined &&
+            value.status === 'partial' &&
+            !limitations.includes('video-playback-quality-window-partial-surface-coverage')
+        ) {
+            add(errors, `${label}:video-window-partial-needs-coverage-limitation`)
+        }
+        if (
+            value.status === 'not-observed' &&
+            !limitations.includes('video-playback-quality-window-no-video-elements') &&
+            !limitations.includes('video-playback-quality-window-zero-total-frame-delta')
+        ) {
+            add(errors, `${label}:video-window-not-observed-needs-population-limitation`)
+        }
+        if (value.status === 'unknown' && !limitations.includes('video-playback-quality-window-coverage-unavailable')) {
+            add(errors, `${label}:video-window-unknown-needs-coverage-limitation`)
+        }
+        if (value.status === 'unsupported' && !limitations.includes('video-playback-quality-api-unsupported')) {
+            add(errors, `${label}:video-window-unsupported-needs-api-limitation`)
+        }
+    }
 }
 
 function validateTechnologyEvidence(value: unknown, index: number, errors: string[]): void {
@@ -498,7 +542,10 @@ export function validateAnimationLabSemanticsV2(value: unknown): LabContractVali
     if (value.semanticsVersion !== ANIMATION_LAB_SEMANTICS_VERSION) add(errors, 'semantic-report:invalid-version')
     parseMeasurementContract(value.measurementContract, 'measurementContract', errors)
     const metricCatalogVersion: LabMetricCatalogVersion =
-        record(value.measurementContract) && value.measurementContract.metricCatalogVersion === 2 ? 2 : ANIMATION_LAB_METRIC_CATALOG_VERSION
+        record(value.measurementContract) &&
+        (value.measurementContract.metricCatalogVersion === 2 || value.measurementContract.metricCatalogVersion === 3)
+            ? value.measurementContract.metricCatalogVersion
+            : ANIMATION_LAB_METRIC_CATALOG_VERSION
 
     if (!Array.isArray(value.scenarioActions) || value.scenarioActions.length === 0 || value.scenarioActions.length > MAX_ACTIONS) {
         add(errors, 'scenarioActions:invalid-count')

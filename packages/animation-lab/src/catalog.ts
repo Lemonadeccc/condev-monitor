@@ -218,12 +218,33 @@ export const ANIMATION_LAB_METRIC_CATALOG_V2: readonly LabMetricCatalogEntryV1[]
     ...ANIMATION_LAB_METRIC_CATALOG_V2_ADDITIONS,
 ])
 
+const ANIMATION_LAB_METRIC_CATALOG_V3_ADDITIONS: readonly LabMetricCatalogEntryV1[] = Object.freeze([
+    metric(
+        'media.video-window-dropped-frame-rate',
+        'resourcesMedia',
+        'videoWindowDroppedFrameRate',
+        'ratio',
+        'ratio',
+        'media-frames',
+        'ratio',
+        'action'
+    ),
+])
+
+/** Additive catalog: v3 preserves v2 and adds action-window video counter deltas. */
+export const ANIMATION_LAB_METRIC_CATALOG_V3: readonly LabMetricCatalogEntryV1[] = Object.freeze([
+    ...ANIMATION_LAB_METRIC_CATALOG_V2,
+    ...ANIMATION_LAB_METRIC_CATALOG_V3_ADDITIONS,
+])
+
 const METRIC_BY_ID_V1 = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [entry.metricId, entry] as const))
 const METRIC_BY_ID_V2 = new Map(ANIMATION_LAB_METRIC_CATALOG_V2.map(entry => [entry.metricId, entry] as const))
+const METRIC_BY_ID_V3 = new Map(ANIMATION_LAB_METRIC_CATALOG_V3.map(entry => [entry.metricId, entry] as const))
 
 export function getAnimationLabMetricCatalog(version: LabMetricCatalogVersion): readonly LabMetricCatalogEntryV1[] {
     if (version === 1) return ANIMATION_LAB_METRIC_CATALOG_V1
     if (version === 2) return ANIMATION_LAB_METRIC_CATALOG_V2
+    if (version === 3) return ANIMATION_LAB_METRIC_CATALOG_V3
     throw new RangeError(`Unsupported animation lab metric catalog version: ${String(version)}`)
 }
 
@@ -233,6 +254,7 @@ export function getAnimationLabMetricCatalogEntry(
 ): LabMetricCatalogEntryV1 | undefined {
     if (version === 1) return METRIC_BY_ID_V1.get(metricId)
     if (version === 2) return METRIC_BY_ID_V2.get(metricId)
+    if (version === 3) return METRIC_BY_ID_V3.get(metricId)
     throw new RangeError(`Unsupported animation lab metric catalog version: ${String(version)}`)
 }
 
