@@ -24,7 +24,7 @@
             "budgetId": "condev.animation.default",
             "budgetVersion": 2
         },
-        "metricCatalogVersion": 2
+        "metricCatalogVersion": 3
     },
     "actions": [
         {

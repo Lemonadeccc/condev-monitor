@@ -50,6 +50,7 @@ const CAPABILITY_BACKED_METRIC_IDS_V2 = new Set([
     'interaction.loaf-first-ui-event-to-frame-end.p95',
     'pipeline.loaf-attributed-forced-style-layout.count',
     'pipeline.loaf-attributed-forced-style-layout.p95',
+    'media.video-window-dropped-frame-rate',
 ])
 
 type RecordValue = Record<string, unknown>
@@ -232,7 +233,7 @@ function metric(
     value: unknown,
     label: string,
     semanticsV2: boolean,
-    compactMetricCatalogVersion?: 1 | 2,
+    compactMetricCatalogVersion?: 1 | 2 | 3,
     compactAllowedMetricIds?: ReadonlySet<string>
 ): ParsedMetric {
     const raw = record(value, label)
@@ -241,7 +242,7 @@ function metric(
         ['scope', 'aggregation', 'budgetRefs', 'evidenceRefs', 'limitations'].some(key => Object.prototype.hasOwnProperty.call(raw, key))
     ) {
         if (compactAllowedMetricIds) throw new BadRequestException(`${label} must use the compact Lighthouse metric shape`)
-        return parseAnimationLabMetricV2(raw, label, compactMetricCatalogVersion ?? 2)
+        return parseAnimationLabMetricV2(raw, label, compactMetricCatalogVersion ?? 3)
     }
     exactKeys(
         raw,
@@ -320,6 +321,12 @@ function assertV2MetricCapabilities(
                 'limitations' in metric &&
                 Array.isArray(metric.limitations) &&
                 metric.limitations.includes('cross-document-sampling-partial')
+            const incompleteVideoWindowUnknown =
+                metric.metricId === 'media.video-window-dropped-frame-rate' &&
+                metric.status === 'unknown' &&
+                'limitations' in metric &&
+                Array.isArray(metric.limitations) &&
+                metric.limitations.includes('video-playback-quality-window-coverage-unavailable')
             if (capability === false && metric.status !== 'unsupported') {
                 throw new BadRequestException(`${label} ${capabilityLabel} capability conflicts with ${metric.metricId}`)
             }
@@ -329,7 +336,7 @@ function assertV2MetricCapabilities(
             if (
                 capability === true &&
                 (metric.status === 'unsupported' ||
-                    (metric.status === 'unknown' && !crossDocumentUnknown) ||
+                    (metric.status === 'unknown' && !crossDocumentUnknown && !incompleteVideoWindowUnknown) ||
                     (metric.stat === 'count' && metric.status === 'not-observed'))
             ) {
                 throw new BadRequestException(`${label} ${capabilityLabel} capability conflicts with ${metric.metricId}`)
@@ -398,6 +405,14 @@ function assertV2MetricCapabilities(
         loafForcedStyleAndLayoutDuration,
         'loafForcedStyleAndLayoutDuration'
     )
+
+    assertStatuses(
+        ['media.video-window-dropped-frame-rate'],
+        Object.prototype.hasOwnProperty.call(capabilitiesValue, 'videoPlaybackQuality')
+            ? capabilitiesValue.videoPlaybackQuality
+            : undefined,
+        'videoPlaybackQuality'
+    )
 }
 
 function expandedMetric(value: ParsedMetric): value is AnimationLabMetricV2Projection {
@@ -434,6 +449,7 @@ function aggregateCapabilityForMetric(
     if (metricId.startsWith('pipeline.loaf-attributed-forced-style-layout.')) {
         return capabilitiesValue.loafForcedStyleAndLayoutDuration
     }
+    if (metricId === 'media.video-window-dropped-frame-rate') return capabilitiesValue.videoPlaybackQuality
     return undefined
 }
 
@@ -689,9 +705,13 @@ function assertV2AggregateMetrics(
         if (capabilityValues.every(value => value === true)) {
             const crossDocumentUnknown =
                 metricValue.status === 'unknown' && metricValue.limitations.includes('cross-document-sampling-partial')
+            const incompleteVideoWindowUnknown =
+                metricValue.metricId === 'media.video-window-dropped-frame-rate' &&
+                metricValue.status === 'unknown' &&
+                metricValue.limitations.includes('video-playback-quality-window-coverage-unavailable')
             if (
                 metricValue.status === 'unsupported' ||
-                (metricValue.status === 'unknown' && !crossDocumentUnknown) ||
+                (metricValue.status === 'unknown' && !crossDocumentUnknown && !incompleteVideoWindowUnknown) ||
                 (metricValue.stat === 'count' && metricValue.status === 'not-observed')
             ) {
                 throw new BadRequestException(
@@ -713,7 +733,7 @@ function metrics(
     label: string,
     maximumLength = MAX_METRICS,
     semanticsV2 = false,
-    compactMetricCatalogVersion?: 1 | 2,
+    compactMetricCatalogVersion?: 1 | 2 | 3,
     compactAllowedMetricIds?: ReadonlySet<string>
 ): ParsedMetric[] {
     return boundedArray(value, label, maximumLength).map((item, index) =>
@@ -1022,7 +1042,7 @@ function scenario(value: unknown, semanticsV2: boolean) {
     }
 }
 
-function attempt(value: unknown, index: number, semanticsV2: boolean, metricCatalogVersion: 1 | 2) {
+function attempt(value: unknown, index: number, semanticsV2: boolean, metricCatalogVersion: 1 | 2 | 3) {
     const label = `animation-report.attempts[${index}]`
     const raw = record(value, label)
     exactKeys(
@@ -1114,7 +1134,11 @@ function lighthouseAudit(value: unknown, label: string) {
     }
 }
 
-function lighthouse(value: unknown, semanticsV2: boolean, metricCatalogVersion: 1 | 2): NonNullable<ParsedAnimationReport['lighthouse']> {
+function lighthouse(
+    value: unknown,
+    semanticsV2: boolean,
+    metricCatalogVersion: 1 | 2 | 3
+): NonNullable<ParsedAnimationReport['lighthouse']> {
     const raw = record(value, 'animation-report.lighthouse')
     exactKeys(
         raw,

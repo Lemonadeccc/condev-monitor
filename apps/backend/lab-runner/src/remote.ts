@@ -23,7 +23,7 @@ const WARMUP_DETAIL_OMITTED_LIMITATION = 'warmup-detail-omitted-from-report'
 const ATTEMPT_METRIC_PROJECTION_LIMITATION = 'attempt-metric-projection-truncated'
 const REPORT_BYTE_BUDGET_LIMITATION = 'report-upload-byte-budget-truncated-attempt-detail'
 const ACTION_SCOPED_COMPACT_SUMMARY_LIMITATION = 'action-scoped-metrics-retained-only-in-animation-report'
-export const LAB_RUNNER_CONTRACT_VERSION = 3 as const
+export const LAB_RUNNER_CONTRACT_VERSION = 4 as const
 
 export interface RemoteLabConnectionOptions {
     server: string
@@ -126,7 +126,7 @@ function claimedMeasurementContract(value: unknown): LabMeasurementContractV2 {
     if (typeof budgetRef.budgetId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/u.test(budgetRef.budgetId)) {
         throw new Error('Lab server returned an invalid platform measurement budget id')
     }
-    const metricCatalogVersion = claimedInteger(contract.metricCatalogVersion, 1, 2, 'measurementContract.metricCatalogVersion')
+    const metricCatalogVersion = claimedInteger(contract.metricCatalogVersion, 1, 3, 'measurementContract.metricCatalogVersion')
     const budgetVersion = claimedInteger(budgetRef.budgetVersion, 1, 3, 'measurementContract.budgetRef.budgetVersion')
     if (budgetRef.budgetId !== 'condev.animation.default') {
         throw new Error('Lab server returned an unknown platform measurement budget')
@@ -142,7 +142,7 @@ function claimedMeasurementContract(value: unknown): LabMeasurementContractV2 {
             budgetId: budgetRef.budgetId,
             budgetVersion,
         },
-        metricCatalogVersion: metricCatalogVersion as 1 | 2,
+        metricCatalogVersion: metricCatalogVersion as 1 | 2 | 3,
     }
     if (
         normalized.source === 'package-default' &&

@@ -8,7 +8,7 @@ import { type AnimationLabMetricV2Projection, parseAnimationLabMetricV2 } from '
 export const LAB_RUN_CONFIG_MAX_BYTES = 16 * 1024
 export const LAB_RUN_SUMMARY_MAX_BYTES = 64 * 1024
 export const LAB_RUN_ARTIFACT_TOTAL_MAX_BYTES = 128 * 1024 * 1024
-export const LAB_RUNNER_CONTRACT_VERSION = 3 as const
+export const LAB_RUNNER_CONTRACT_VERSION = 4 as const
 
 export const LAB_RUN_STATUSES = ['created', 'running', 'completed', 'failed', 'cancelled', 'expired'] as const
 export type LabRunStatus = (typeof LAB_RUN_STATUSES)[number]
@@ -63,7 +63,7 @@ export type LabRunMeasurementContract = {
     source: 'explicit' | 'package-default'
     confidence: 'explicit' | 'low'
     budgetRef: { catalogVersion: 1; budgetId: string; budgetVersion: number }
-    metricCatalogVersion: 1 | 2
+    metricCatalogVersion: 1 | 2 | 3
 }
 
 export const LAB_DEFAULT_MEASUREMENT_CONTRACT: Readonly<LabRunMeasurementContract> = Object.freeze({
@@ -83,7 +83,7 @@ export const LAB_GENERIC_MEASUREMENT_CONTRACT: Readonly<LabRunMeasurementContrac
     source: 'explicit',
     confidence: 'explicit',
     budgetRef: Object.freeze({ catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 2 }),
-    metricCatalogVersion: 2,
+    metricCatalogVersion: 3,
 })
 
 export function parseLabRunnerContractVersion(value: unknown): typeof LAB_RUNNER_CONTRACT_VERSION {
@@ -323,7 +323,7 @@ function parseLabRunMeasurementContract(raw: unknown): LabRunMeasurementContract
     if (budgetId !== 'condev.animation.default') {
         throw new BadRequestException('config.measurementContract references an unknown local budget')
     }
-    const metricCatalogVersion = integer(raw.metricCatalogVersion, 'config.measurementContract.metricCatalogVersion', 1, 2) as 1 | 2
+    const metricCatalogVersion = integer(raw.metricCatalogVersion, 'config.measurementContract.metricCatalogVersion', 1, 3) as 1 | 2 | 3
     const normalized: LabRunMeasurementContract = {
         contractVersion: 2,
         expectedHz,

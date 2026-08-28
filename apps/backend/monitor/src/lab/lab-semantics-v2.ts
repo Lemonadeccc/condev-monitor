@@ -251,7 +251,7 @@ type MetricStat = (typeof METRIC_STATS)[number]
 type MetricUnit = (typeof METRIC_UNITS)[number]
 type MetricStatus = (typeof METRIC_STATUSES)[number]
 type EvidenceLevel = (typeof EVIDENCE_LEVELS)[number]
-type MetricCatalogVersion = 1 | 2
+type MetricCatalogVersion = 1 | 2 | 3
 
 export type LabMetricScopeV2Projection = {
     level: MetricScopeLevel
@@ -511,7 +511,7 @@ function measurementContract(value: unknown): AnimationLabSemanticsV2['measureme
     const confidence = enumeration(raw.confidence, `${label}.confidence`, CONFIDENCES)
     if (source === 'explicit' && confidence !== 'explicit')
         throw new BadRequestException(`${label} explicit source requires explicit confidence`)
-    if (raw.metricCatalogVersion !== 1 && raw.metricCatalogVersion !== 2) {
+    if (raw.metricCatalogVersion !== 1 && raw.metricCatalogVersion !== 2 && raw.metricCatalogVersion !== 3) {
         throw new BadRequestException(`Invalid ${label}.metricCatalogVersion`)
     }
     return {
@@ -566,6 +566,7 @@ const METRIC_CATALOG = new Map<string, readonly [MetricFamily, string, MetricSta
     ['surface.backing-pixels.sum', ['renderer', 'backingStorePixels', 'sum', 'pixels']],
     ['media.video-elements.count', ['resourcesMedia', 'videoElementCount', 'count', 'count']],
     ['media.video-dropped-frame-rate', ['resourcesMedia', 'videoDroppedFrameRate', 'ratio', 'ratio']],
+    ['media.video-window-dropped-frame-rate', ['resourcesMedia', 'videoWindowDroppedFrameRate', 'ratio', 'ratio']],
     ['memory.js-heap.latest', ['memoryLifecycle', 'usedJsHeapBytes', 'latest', 'bytes']],
     ['probe.dropped-samples.count', ['monitorOverhead', 'droppedProbeSamples', 'count', 'count']],
     ['probe.report-build.latest', ['monitorOverhead', 'reportBuildSelfTimeMs', 'latest', 'ms']],
@@ -623,15 +624,20 @@ const METRIC_CATALOG_V2_ONLY = new Set([
     'pipeline.loaf-attributed-forced-style-layout.p95',
 ])
 
+const METRIC_CATALOG_V3_ONLY = new Set(['media.video-window-dropped-frame-rate'])
+
 export function assertAnimationLabMetricCatalogTupleV2(
     value: { metricId: string; family: string; name: string; stat: string; unit: string },
     label: string,
-    metricCatalogVersion: MetricCatalogVersion = 2
+    metricCatalogVersion: MetricCatalogVersion = 3
 ): void {
     const catalog = METRIC_CATALOG.get(value.metricId)
     if (!catalog) throw new BadRequestException(`${label} references an unknown metricId`)
     if (metricCatalogVersion === 1 && METRIC_CATALOG_V2_ONLY.has(value.metricId)) {
         throw new BadRequestException(`${label} requires metric catalog v2`)
+    }
+    if (metricCatalogVersion < 3 && METRIC_CATALOG_V3_ONLY.has(value.metricId)) {
+        throw new BadRequestException(`${label} requires metric catalog v3`)
     }
     if (value.family !== catalog[0] || value.name !== catalog[1] || value.stat !== catalog[2] || value.unit !== catalog[3]) {
         throw new BadRequestException(`${label} does not match the canonical metric catalog`)
@@ -641,7 +647,7 @@ export function assertAnimationLabMetricCatalogTupleV2(
 export function parseAnimationLabMetricV2(
     value: unknown,
     label: string,
-    metricCatalogVersion: MetricCatalogVersion = 2
+    metricCatalogVersion: MetricCatalogVersion = 3
 ): AnimationLabMetricV2Projection {
     const raw = record(value, label)
     exactKeys(
@@ -682,7 +688,7 @@ export function parseAnimationLabMetricV2(
     const unavailableEvidence = status === 'unsupported' || status === 'unknown'
     if (
         (!unavailableEvidence && evidenceLevel === 'unsupported-or-unknown') ||
-        (metricCatalogVersion === 2 && unavailableEvidence !== (evidenceLevel === 'unsupported-or-unknown'))
+        (metricCatalogVersion >= 2 && unavailableEvidence !== (evidenceLevel === 'unsupported-or-unknown'))
     ) {
         throw new BadRequestException(`${label} status conflicts with evidenceLevel`)
     }
@@ -704,21 +710,58 @@ export function parseAnimationLabMetricV2(
             throw new BadRequestException(`${label} budget rule does not apply to metricId`)
         }
     }
+    const samples = raw.samples === null ? null : integer(raw.samples, `${label}.samples`, 0, ANIMATION_LAB_METRIC_SAMPLES_MAX)
+    const evidenceRefs = tokenArray(raw.evidenceRefs, `${label}.evidenceRefs`)
+    const limitations = tokenArray(raw.limitations, `${label}.limitations`, MAX_LIMITATIONS)
+    if (metricId === 'media.video-window-dropped-frame-rate') {
+        const required = [
+            'video-playback-quality-window-counter-delta',
+            'video-playback-quality-total-includes-displayed-and-dropped',
+            'video-playback-quality-window-object-identity-only',
+            'video-playback-quality-not-decode-presentation-or-gpu-timing',
+        ]
+        if (scope.level !== 'action' || required.some(limitation => !limitations.includes(limitation))) {
+            throw new BadRequestException(`${label} has an invalid video window evidence contract`)
+        }
+        if ((status === 'measured' || status === 'partial') && (samples === null || samples <= 0)) {
+            throw new BadRequestException(`${label} video window measurement requires a positive frame delta`)
+        }
+        if (
+            scope.attemptId !== undefined &&
+            status === 'partial' &&
+            !limitations.includes('video-playback-quality-window-partial-surface-coverage')
+        ) {
+            throw new BadRequestException(`${label} partial video window evidence must disclose incomplete surface coverage`)
+        }
+        if (
+            status === 'not-observed' &&
+            !limitations.includes('video-playback-quality-window-no-video-elements') &&
+            !limitations.includes('video-playback-quality-window-zero-total-frame-delta')
+        ) {
+            throw new BadRequestException(`${label} not-observed video window evidence must disclose its empty population`)
+        }
+        if (status === 'unknown' && !limitations.includes('video-playback-quality-window-coverage-unavailable')) {
+            throw new BadRequestException(`${label} unknown video window evidence must disclose unavailable coverage`)
+        }
+        if (status === 'unsupported' && !limitations.includes('video-playback-quality-api-unsupported')) {
+            throw new BadRequestException(`${label} unsupported video window evidence must disclose API support`)
+        }
+    }
     return {
         family,
         name,
         stat,
         unit,
         value: valueNumber,
-        samples: raw.samples === null ? null : integer(raw.samples, `${label}.samples`, 0, ANIMATION_LAB_METRIC_SAMPLES_MAX),
+        samples,
         status,
         evidenceLevel,
         metricId,
         scope,
         aggregation,
         budgetRefs,
-        evidenceRefs: tokenArray(raw.evidenceRefs, `${label}.evidenceRefs`),
-        limitations: tokenArray(raw.limitations, `${label}.limitations`, MAX_LIMITATIONS),
+        evidenceRefs,
+        limitations,
     }
 }
 
