@@ -14,6 +14,7 @@ import {
     createAnimationTargetAdapterRegistry,
     createFrameworkCommitProbe,
     deterministicAnimationRumSample,
+    projectAnimationLocalEvidenceSnapshot,
     recommendAnimationImprovements,
     toAnimationRumSummary,
 } from '../build/esm/index.mjs'
@@ -3388,6 +3389,168 @@ test('dev overlay is a collapsed Shadow DOM dock, refreshes only while expanded,
     production.toggle()
     const ssr = createAnimationDevOverlay(collector, { production: false })
     assert.equal(ssr.mounted, false)
+    collector.destroy()
+})
+
+test('dev overlay renders bounded local semantic evidence separately, preserves its scroll, and never polls it while collapsed', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    collectFrames(runtime, [16, 17, 18])
+    const checkpoint = boundary => ({
+        boundary,
+        status: 'measured',
+        configuredSourceCount: 1,
+        measuredSourceCount: 1,
+        unobservedSourceCount: 0,
+        errorSourceCount: 0,
+        sourceStatus: {
+            'gsap-ticker': 'measured',
+            'lenis-scroll': 'not-configured',
+            'scroll-trigger': 'not-configured',
+        },
+    })
+    const localEvidence = projectAnimationLocalEvidenceSnapshot({
+        version: 1,
+        providers: [
+            {
+                kind: 'media',
+                snapshot: {
+                    droppedAttemptCount: 0,
+                    attempts: [
+                        {
+                            attemptId: 17,
+                            label: 'private media label',
+                            url: 'https://private.example/video.mp4',
+                            kind: 'video',
+                            outcome: 'completed',
+                            durationMs: 30,
+                            decodeReady: {
+                                stage: 'decode-ready',
+                                elapsedMs: 10,
+                                durationMs: 4,
+                                byteCount: 256,
+                                itemCount: 1,
+                            },
+                            uploadReady: {
+                                stage: 'upload-ready',
+                                elapsedMs: 20,
+                                durationMs: 3,
+                                byteCount: 256,
+                                itemCount: 1,
+                            },
+                            firstVisible: {
+                                stage: 'first-visible',
+                                elapsedMs: 25,
+                                durationMs: null,
+                                byteCount: null,
+                                itemCount: null,
+                            },
+                        },
+                    ],
+                },
+            },
+            {
+                kind: 'motion',
+                snapshot: {
+                    droppedInteractionCount: 0,
+                    interactions: [
+                        {
+                            id: 'private-motion-id',
+                            label: 'private motion label',
+                            kind: 'scroll',
+                            outcome: 'completed',
+                            durationMs: 40,
+                            before: checkpoint('before-interaction'),
+                            after: checkpoint('after-interaction'),
+                        },
+                    ],
+                },
+            },
+        ],
+    })
+    assert.ok(localEvidence)
+
+    const document = new FakeDocument()
+    let localEvidenceReads = 0
+    const source = {
+        state: 'running',
+        snapshot: () => collector.snapshot(),
+        localEvidenceSnapshot() {
+            localEvidenceReads += 1
+            return localEvidence
+        },
+    }
+    const overlay = createAnimationDevOverlay(source, { document, production: false })
+    const panel = document.body.children[0].shadowRoot.children[1].children[1]
+    const evidencePanel = findFakeNodes(panel, node => node.getAttribute('data-overlay-local-evidence') !== null)[0]
+    assert.ok(evidencePanel)
+    assert.equal(evidencePanel.hidden, true)
+    assert.equal(localEvidenceReads, 0)
+
+    overlay.setExpanded(true)
+    assert.equal(localEvidenceReads, 1)
+    assert.equal(evidencePanel.hidden, false)
+    assert.match(fakeNodeText(evidencePanel), /Local semantic evidence/)
+    assert.match(fakeNodeText(evidencePanel), /caller-attested/)
+    assert.match(fakeNodeText(evidencePanel), /explicit temporal correlations/)
+    assert.match(fakeNodeText(evidencePanel), /decode ready \+10 ms/)
+    assert.match(fakeNodeText(evidencePanel), /before measured 1\/1 → after measured 1\/1/)
+    assert.doesNotMatch(fakeNodeText(evidencePanel), /private|example|motion-id/)
+
+    evidencePanel.scrollTop = 91
+    evidencePanel.scrollLeft = 7
+    overlay.refresh()
+    assert.equal(localEvidenceReads, 2)
+    assert.equal(evidencePanel.scrollTop, 91)
+    assert.equal(evidencePanel.scrollLeft, 7)
+
+    const localeButton = findFakeNodes(panel, node => node.getAttribute('data-overlay-locale-toggle') !== null)[0]
+    localeButton.click()
+    assert.match(fakeNodeText(evidencePanel), /本地语义证据/)
+    assert.match(fakeNodeText(evidencePanel), /媒体阶段由调用方声明/)
+    assert.match(fakeNodeText(evidencePanel), /之前 measured 1\/1 → 之后 measured 1\/1/)
+    assert.equal(evidencePanel.scrollTop, 91)
+
+    overlay.setExpanded(false)
+    overlay.refresh()
+    assert.equal(localEvidenceReads, 2)
+    overlay.destroy()
+
+    const hostileDocument = new FakeDocument()
+    const hostileSource = {
+        state: 'running',
+        snapshot: () => collector.snapshot(),
+        get localEvidenceSnapshot() {
+            throw new Error('hostile local evidence getter')
+        },
+    }
+    const hostileOverlay = createAnimationDevOverlay(hostileSource, {
+        document: hostileDocument,
+        production: false,
+        initiallyOpen: true,
+    })
+    const hostilePanel = hostileDocument.body.children[0].shadowRoot.children[1].children[1]
+    const hiddenEvidence = findFakeNodes(hostilePanel, node => node.getAttribute('data-overlay-local-evidence') !== null)[0]
+    assert.equal(hiddenEvidence.hidden, false)
+    assert.match(fakeNodeText(hiddenEvidence), /Local semantic evidence/)
+    assert.match(fakeNodeText(hiddenEvidence), /provider returned invalid data/)
+    assert.doesNotMatch(fakeNodeText(hiddenEvidence), /hostile local evidence getter/)
+    assert.match(fakeNodeText(hostilePanel), /Live rAF cadence/)
+    hostileOverlay.destroy()
+
+    const emptyDocument = new FakeDocument()
+    const emptyOverlay = createAnimationDevOverlay(
+        {
+            state: 'running',
+            snapshot: () => collector.snapshot(),
+            localEvidenceSnapshot: () => projectAnimationLocalEvidenceSnapshot({ version: 1, providers: [] }),
+        },
+        { document: emptyDocument, production: false, initiallyOpen: true }
+    )
+    const emptyPanel = emptyDocument.body.children[0].shadowRoot.children[1].children[1]
+    const emptyEvidence = findFakeNodes(emptyPanel, node => node.getAttribute('data-overlay-local-evidence') !== null)[0]
+    assert.equal(emptyEvidence.hidden, true)
+    emptyOverlay.destroy()
     collector.destroy()
 })
 

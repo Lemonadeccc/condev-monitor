@@ -1,4 +1,4 @@
-import type { AnimationRuntime } from '@condev-monitor/monitor-sdk-animation'
+import type { AnimationOverlaySource, AnimationRuntime } from '@condev-monitor/monitor-sdk-animation'
 
 const mockTransportSend = jest.fn()
 const mockTransportFlush = jest.fn(async () => undefined)
@@ -716,6 +716,42 @@ describe('browser animation single-init entry', () => {
             activeAttemptCount: 0,
         })
         expect(beginInteraction).not.toHaveBeenCalled()
+    })
+
+    it('exposes semantic recorders only through the local devtools sidecar', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const source = (client.animation.devtools as unknown as { source: AnimationOverlaySource }).source
+
+        expect(source.localEvidenceSnapshot?.()).toMatchObject({ version: 1, providerCount: 0 })
+
+        const media = client.animation.createMediaSemanticStageRecorder()
+        const mediaAttempt = media.begin('video', 100)
+        mediaAttempt.decodeReady({ timestampMs: 110 })
+        mediaAttempt.end(120)
+
+        const motion = client.animation.createMotionSemanticCheckpointRecorder()
+        motion.begin('pointer', 'private-motion-label').end()
+
+        const localEvidence = source.localEvidenceSnapshot?.()
+        expect(localEvidence).toMatchObject({
+            version: 1,
+            providerCount: 2,
+            media: { providerCount: 1, retainedRecordCount: 1 },
+            motion: { providerCount: 1, retainedRecordCount: 1 },
+        })
+        expect(client.animation.snapshot()).not.toHaveProperty('localEvidence')
+        expect(JSON.stringify(localEvidence)).not.toContain('private-motion-label')
+
+        media.dispose()
+        expect(source.localEvidenceSnapshot?.()).toMatchObject({ providerCount: 1 })
+        motion.dispose()
+        expect(source.localEvidenceSnapshot?.()).toMatchObject({ providerCount: 0 })
+
+        client.animation.createMediaSemanticStageRecorder()
+        expect(source.localEvidenceSnapshot?.()).toMatchObject({ providerCount: 1 })
+        await client.destroy()
+        expect(source.localEvidenceSnapshot?.()).toMatchObject({ providerCount: 0 })
     })
 
     it('does not repeat observer removal after manual disposal or repeated client destruction', async () => {
