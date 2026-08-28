@@ -7,6 +7,7 @@ import {
     createFrameworkCommitProbe,
     createGsapLifecycleCycleAnalyzer,
     createGsapLifecycleProbe,
+    createGsapTickerObserver,
     createRendererHostProbe,
     createThreeRendererProbe,
     createVideoFrameProbe,
@@ -772,6 +773,194 @@ test('GSAP lifecycle cycle analyzer stays inconclusive when retained cleanup evi
     assert.equal(result.growthCandidate, null)
     assert.equal(result.animationGrowthCandidate, null)
     assert.equal(result.scrollTriggerGrowthCandidate, false)
+})
+
+test('GSAP ticker observer records bounded public cadence without controlling the ticker', () => {
+    const listeners = new Set()
+    const addCalls = []
+    const removeCalls = []
+    const ticker = {
+        add(...args) {
+            addCalls.push(args)
+            listeners.add(args[0])
+        },
+        remove(listener) {
+            removeCalls.push(listener)
+            listeners.delete(listener)
+        },
+        fps() {
+            assert.fail('observer must not read or change ticker fps')
+        },
+        lagSmoothing() {
+            assert.fail('observer must not read or change lag smoothing')
+        },
+    }
+    const emit = (time, deltaTime, frame) => {
+        for (const listener of [...listeners]) listener(time, deltaTime, frame)
+    }
+    const observer = createGsapTickerObserver({ ticker, capacity: 2, slowTickThresholdMs: 20 })
+
+    assert.equal(observer.running, false)
+    assert.equal(observer.start(), true)
+    assert.equal(observer.start(), false)
+    assert.equal(observer.running, true)
+    assert.equal(addCalls.length, 1)
+    assert.equal(addCalls[0].length, 1)
+
+    emit(0.016, 16, 1)
+    emit(0.04, 24, 2)
+    emit(0.072, 32, 3)
+    emit(0.08, Number.NaN, 4)
+    emit(0.09, -1, 5)
+
+    assert.deepEqual(observer.snapshot(), {
+        status: 'observing',
+        running: true,
+        cleanupFailed: false,
+        capacity: 2,
+        acceptedTickCount: 3,
+        retainedTickCount: 2,
+        droppedTickCount: 1,
+        rejectedTickCount: 2,
+        truncated: true,
+        slowTickThresholdMs: 20,
+        slowTickTotalObservedCount: 2,
+        deltaTimeMs: { count: 2, p50: 28, p75: 30, p95: 31.6, p99: 31.92, max: 32, total: 56 },
+    })
+
+    assert.equal(observer.stop(), true)
+    assert.equal(observer.running, false)
+    assert.equal(removeCalls[0], addCalls[0][0])
+    emit(0.2, 128, 6)
+    assert.equal(observer.snapshot().acceptedTickCount, 3)
+
+    observer.reset()
+    assert.deepEqual(observer.snapshot(), {
+        status: 'idle',
+        running: false,
+        cleanupFailed: false,
+        capacity: 2,
+        acceptedTickCount: 0,
+        retainedTickCount: 0,
+        droppedTickCount: 0,
+        rejectedTickCount: 0,
+        truncated: false,
+        slowTickThresholdMs: 20,
+        slowTickTotalObservedCount: 0,
+        deltaTimeMs: null,
+    })
+})
+
+test('GSAP ticker observer fails closed when attachment or cleanup is unavailable', () => {
+    const unsupported = createGsapTickerObserver({ ticker: {} })
+    assert.equal(unsupported.start(), false)
+    assert.equal(unsupported.snapshot().status, 'unsupported')
+    assert.equal(unsupported.stop(), true)
+    assert.equal(unsupported.snapshot().status, 'unsupported')
+
+    const addFailure = createGsapTickerObserver({
+        ticker: {
+            add() {
+                throw new Error('released ticker')
+            },
+            remove() {},
+        },
+    })
+    assert.doesNotThrow(() => addFailure.start())
+    assert.equal(addFailure.snapshot().status, 'add-failed')
+    assert.equal(addFailure.stop(), true)
+    assert.equal(addFailure.snapshot().status, 'add-failed')
+
+    const sideEffectListeners = new Set()
+    const sideEffectFailure = createGsapTickerObserver({
+        ticker: {
+            add(callback) {
+                sideEffectListeners.add(callback)
+                throw new Error('registered before host failure')
+            },
+            remove(callback) {
+                sideEffectListeners.delete(callback)
+            },
+        },
+    })
+    assert.equal(sideEffectFailure.start(), false)
+    assert.equal(sideEffectListeners.size, 0)
+    assert.equal(sideEffectFailure.snapshot().status, 'add-failed')
+    assert.equal(sideEffectFailure.snapshot().cleanupFailed, false)
+
+    let listener
+    let removeFails = true
+    const cleanupFailure = createGsapTickerObserver({
+        ticker: {
+            add(callback) {
+                listener = callback
+            },
+            remove(callback) {
+                assert.equal(callback, listener)
+                if (removeFails) throw new Error('ticker teardown raced with app cleanup')
+            },
+        },
+    })
+    assert.equal(cleanupFailure.start(), true)
+    listener(0.01, 10, 1)
+    assert.equal(cleanupFailure.stop(), false)
+    assert.equal(cleanupFailure.running, false)
+    assert.equal(cleanupFailure.snapshot().status, 'remove-failed')
+    assert.equal(cleanupFailure.snapshot().cleanupFailed, true)
+    listener(0.02, 10, 2)
+    assert.equal(cleanupFailure.snapshot().acceptedTickCount, 1)
+    assert.equal(cleanupFailure.start(), false)
+
+    removeFails = false
+    assert.equal(cleanupFailure.stop(), true)
+    assert.equal(cleanupFailure.snapshot().status, 'idle')
+    assert.equal(cleanupFailure.snapshot().cleanupFailed, false)
+    cleanupFailure.dispose()
+    assert.equal(cleanupFailure.start(), false)
+    assert.equal(cleanupFailure.snapshot().status, 'disposed')
+})
+
+test('GSAP ticker observer pins teardown ownership and retries disposal after a transient cleanup failure', () => {
+    const firstListeners = new Set()
+    const secondListeners = new Set()
+    let removeFails = false
+    const firstTicker = {
+        add(callback) {
+            firstListeners.add(callback)
+        },
+        remove(callback) {
+            if (removeFails) throw new Error('temporary teardown failure')
+            firstListeners.delete(callback)
+        },
+    }
+    const secondTicker = {
+        add(callback) {
+            secondListeners.add(callback)
+        },
+        remove(callback) {
+            secondListeners.delete(callback)
+        },
+    }
+    const options = { ticker: firstTicker }
+    const observer = createGsapTickerObserver(options)
+    assert.equal(observer.start(), true)
+    options.ticker = secondTicker
+    assert.equal(observer.stop(), true)
+    assert.equal(firstListeners.size, 0)
+    assert.equal(secondListeners.size, 0)
+
+    assert.equal(observer.start(), true)
+    removeFails = true
+    observer.dispose()
+    assert.equal(observer.running, false)
+    assert.equal(observer.snapshot().status, 'disposed')
+    assert.equal(observer.snapshot().cleanupFailed, true)
+    assert.equal(firstListeners.size, 1)
+
+    removeFails = false
+    observer.dispose()
+    assert.equal(observer.snapshot().cleanupFailed, false)
+    assert.equal(firstListeners.size, 0)
 })
 
 class FakeVideo {
