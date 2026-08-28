@@ -1689,6 +1689,13 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         appendHostEvidenceFact(
             facts,
             'work',
+            'framework-check-window-p95',
+            overlayText(locale, 'frameworkCheckWindowP95'),
+            formatOverlayMeasurement(framework?.checkWindowMs?.p95, 'ms', locale)
+        )
+        appendHostEvidenceFact(
+            facts,
+            'work',
             'total-work-samples',
             overlayText(locale, 'workTotalSamples'),
             formatKnownHostCount(work?.acceptedSampleCount, workAttempted)

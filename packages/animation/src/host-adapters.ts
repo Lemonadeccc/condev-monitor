@@ -12,10 +12,10 @@ import { isHostGpuTimingSourceCompatible } from './gpu-timing-compatibility'
 
 export type AnimationHostFramework = 'react' | 'preact' | 'vue' | 'angular' | 'svelte' | 'solid' | 'qwik' | 'lit' | 'vanilla' | 'other'
 
-export type AnimationFrameworkCommitPhase = 'mount' | 'update' | 'nested-update' | 'hydrate' | 'other'
+export type AnimationFrameworkCommitPhase = 'mount' | 'update' | 'check' | 'nested-update' | 'hydrate' | 'other'
 
 export interface AnimationFrameworkStatsSample {
-    source: 'manual' | 'react-profiler' | 'framework-lifecycle'
+    source: 'manual' | 'react-profiler' | 'framework-lifecycle' | 'framework-check'
     framework: AnimationHostFramework
     phase: AnimationFrameworkCommitPhase
     /** Render work only. React Profiler actualDuration is recorded here. */
@@ -26,6 +26,8 @@ export interface AnimationFrameworkStatsSample {
     baseRenderMs?: number
     /** Host lifecycle update window; it is not framework render or commit work. */
     updateWindowMs?: number
+    /** Host component check window; it does not prove a DOM update, paint, or GPU work. */
+    checkWindowMs?: number
     timestampMs: number
 }
 
@@ -134,9 +136,15 @@ export interface FrameworkUpdateWindowInput {
     timestampMs?: number
 }
 
+export interface FrameworkCheckWindowInput {
+    checkWindowMs: number
+    timestampMs?: number
+}
+
 export interface FrameworkCommitProbe {
     recordCommit(input: FrameworkCommitInput): boolean
     recordUpdateWindow(input: FrameworkUpdateWindowInput): boolean
+    recordCheckWindow(input: FrameworkCheckWindowInput): boolean
     /** Compatible with React Profiler's onRender callback without importing React. */
     onReactProfilerRender(
         id: string,
@@ -193,7 +201,7 @@ function safeEmit(emit: () => boolean | void): boolean {
 }
 
 function normalizeFrameworkPhase(phase: unknown): AnimationFrameworkCommitPhase {
-    if (phase === 'mount' || phase === 'update' || phase === 'nested-update' || phase === 'hydrate') return phase
+    if (phase === 'mount' || phase === 'update' || phase === 'check' || phase === 'nested-update' || phase === 'hydrate') return phase
     return 'other'
 }
 
@@ -241,6 +249,20 @@ export function createFrameworkCommitProbe(options: FrameworkCommitProbeOptions)
                     framework,
                     phase: 'update',
                     updateWindowMs,
+                    timestampMs: finiteTimestamp(input.timestampMs) ?? safeNow(now),
+                })
+            )
+        },
+        recordCheckWindow(input): boolean {
+            if (disposed) return false
+            const checkWindowMs = finiteNonNegative(input.checkWindowMs)
+            if (checkWindowMs === undefined) return false
+            return safeEmit(() =>
+                options.sink.recordFrameworkStats({
+                    source: 'framework-check',
+                    framework,
+                    phase: 'check',
+                    checkWindowMs,
                     timestampMs: finiteTimestamp(input.timestampMs) ?? safeNow(now),
                 })
             )

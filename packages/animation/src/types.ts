@@ -410,11 +410,12 @@ export interface AnimationHostEvidenceFamilySummary {
 
 export interface AnimationHostFrameworkSummary extends AnimationHostEvidenceFamilySummary {
     frameworks: readonly AnimationUiFramework[]
-    phases: Readonly<Record<'mount' | 'update' | 'nested-update' | 'hydrate' | 'other', number>>
+    phases: Readonly<Record<'mount' | 'update' | 'check' | 'nested-update' | 'hydrate' | 'other', number>>
     renderMs: DurationStatistics | null
     commitMs: DurationStatistics | null
     baseRenderMs: DurationStatistics | null
     updateWindowMs: DurationStatistics | null
+    checkWindowMs: DurationStatistics | null
 }
 
 export interface AnimationHostRendererSummary extends AnimationHostEvidenceFamilySummary {

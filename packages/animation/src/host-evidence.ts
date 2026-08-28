@@ -27,7 +27,7 @@ const FRAMEWORKS = new Set<AnimationUiFramework>([
     'lit',
     'other',
 ])
-const FRAMEWORK_PHASES = ['mount', 'update', 'nested-update', 'hydrate', 'other'] as const
+const FRAMEWORK_PHASES = ['mount', 'update', 'check', 'nested-update', 'hydrate', 'other'] as const
 const RENDERER_BACKENDS = ['canvas2d', 'webgl', 'webgl2', 'webgpu', 'unknown'] as const
 const RENDERER_SOURCES = ['three-renderer-info', 'renderer-host'] as const
 const GPU_STATUSES = ['measured', 'not-provided', 'invalid', 'disjoint', 'context-lost', 'error'] as const
@@ -209,7 +209,12 @@ export class AnimationHostEvidenceRecorder {
         if (!isRecord(sample) || !FRAMEWORKS.has(sample.framework) || !inSet(sample.phase, FRAMEWORK_PHASES)) {
             return this.framework.reject()
         }
-        if (sample.source !== 'manual' && sample.source !== 'react-profiler' && sample.source !== 'framework-lifecycle') {
+        if (
+            sample.source !== 'manual' &&
+            sample.source !== 'react-profiler' &&
+            sample.source !== 'framework-lifecycle' &&
+            sample.source !== 'framework-check'
+        ) {
             return this.framework.reject()
         }
         if (sample.source === 'react-profiler' && sample.framework !== 'react') return this.framework.reject()
@@ -217,19 +222,33 @@ export class AnimationHostEvidenceRecorder {
         const commitMs = optionalNumber(sample.commitMs)
         const baseRenderMs = optionalNumber(sample.baseRenderMs)
         const updateWindowMs = optionalNumber(sample.updateWindowMs)
-        if (!renderMs.valid || !commitMs.valid || !baseRenderMs.valid || !updateWindowMs.valid) return this.framework.reject()
+        const checkWindowMs = optionalNumber(sample.checkWindowMs)
+        if (!renderMs.valid || !commitMs.valid || !baseRenderMs.valid || !updateWindowMs.valid || !checkWindowMs.valid) {
+            return this.framework.reject()
+        }
         const lifecycleEvidence =
             sample.source === 'framework-lifecycle' &&
             sample.phase === 'update' &&
             updateWindowMs.value !== undefined &&
+            checkWindowMs.value === undefined &&
+            renderMs.value === undefined &&
+            commitMs.value === undefined &&
+            baseRenderMs.value === undefined
+        const checkEvidence =
+            sample.source === 'framework-check' &&
+            sample.phase === 'check' &&
+            checkWindowMs.value !== undefined &&
+            updateWindowMs.value === undefined &&
             renderMs.value === undefined &&
             commitMs.value === undefined &&
             baseRenderMs.value === undefined
         const commitEvidence =
             sample.source !== 'framework-lifecycle' &&
+            sample.source !== 'framework-check' &&
             updateWindowMs.value === undefined &&
+            checkWindowMs.value === undefined &&
             (renderMs.value !== undefined || commitMs.value !== undefined || baseRenderMs.value !== undefined)
-        const evidence = lifecycleEvidence || commitEvidence
+        const evidence = lifecycleEvidence || checkEvidence || commitEvidence
         if (!evidence) return this.framework.reject()
         return this.framework.accept(
             {
@@ -241,6 +260,7 @@ export class AnimationHostEvidenceRecorder {
                 ...(commitMs.value === undefined ? {} : { commitMs: commitMs.value }),
                 ...(baseRenderMs.value === undefined ? {} : { baseRenderMs: baseRenderMs.value }),
                 ...(updateWindowMs.value === undefined ? {} : { updateWindowMs: updateWindowMs.value }),
+                ...(checkWindowMs.value === undefined ? {} : { checkWindowMs: checkWindowMs.value }),
             },
             capturedAt,
             true
@@ -449,6 +469,9 @@ export class AnimationHostEvidenceRecorder {
                 ),
                 updateWindowMs: durationStatistics(
                     frameworkSamples.flatMap(sample => (sample.updateWindowMs === undefined ? [] : [sample.updateWindowMs]))
+                ),
+                checkWindowMs: durationStatistics(
+                    frameworkSamples.flatMap(sample => (sample.checkWindowMs === undefined ? [] : [sample.checkWindowMs]))
                 ),
             },
             renderer: {
