@@ -109,9 +109,14 @@ describe('LabService runner grants and ownership', () => {
         const grants = repository<LabRunnerGrantEntity>()
         const rawToken = `labg_${'a'.repeat(43)}`
         const run = runEntity()
-        run.config = JSON.stringify(
-            parseCreateLabRunInput({ appId: 'app-123', scenarioKey: 'pointer.follow.v1', config: { browser: 'webkit' } }).config
-        )
+        const currentConfig = parseCreateLabRunInput({
+            appId: 'app-123',
+            scenarioKey: 'pointer.follow.v1',
+            config: { browser: 'webkit' },
+        }).config
+        const legacyConfig: Record<string, unknown> = { ...currentConfig }
+        delete legacyConfig.measurementContract
+        run.config = JSON.stringify(legacyConfig)
         const grant: LabRunnerGrantEntity = {
             id: '22222222-2222-4222-8222-222222222222',
             runId: run.id,
@@ -154,7 +159,18 @@ describe('LabService runner grants and ownership', () => {
             expect.objectContaining({
                 runId: run.id,
                 targetUrl: run.targetOrigin,
-                config: expect.objectContaining({ browser: 'webkit' }),
+                config: expect.objectContaining({
+                    browser: 'webkit',
+                    measurementContract: {
+                        contractVersion: 2,
+                        expectedHz: 60,
+                        targetFrameMs: 16.666667,
+                        source: 'package-default',
+                        confidence: 'low',
+                        budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 1 },
+                        metricCatalogVersion: 1,
+                    },
+                }),
                 runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION,
             })
         )
@@ -165,41 +181,32 @@ describe('LabService runner grants and ownership', () => {
         expect(grant.consumedAt).toBe(consumedAt)
     })
 
-    it('fails closed when a claimed run has an incomplete persisted execution config', async () => {
+    it('fails closed when a claimed run has an incomplete or malformed persisted execution config', () => {
         const runs = repository<LabRunEntity>()
         const artifacts = repository<LabArtifactEntity>()
         const grants = repository<LabRunnerGrantEntity>()
-        const rawToken = `labg_${'z'.repeat(43)}`
-        const run = runEntity({ config: JSON.stringify({ browser: 'chromium' }) })
-        const grant: LabRunnerGrantEntity = {
-            id: '22222222-2222-4222-8222-222222222222',
-            runId: run.id,
-            appId: run.appId,
-            tokenHash: createHash(rawToken),
-            expiresAt: new Date(Date.now() + 60_000),
-            consumedAt: null,
-            lastUsedAt: null,
-            revokedAt: null,
-            createdAt: new Date(),
-        }
-        runs.findOne.mockResolvedValue(run)
-        grants.findOne.mockResolvedValue(grant)
-        const repositories = new Map<unknown, unknown>([
-            [LabRunEntity, runs],
-            [LabArtifactEntity, artifacts],
-            [LabRunnerGrantEntity, grants],
-        ])
-        const manager = { getRepository: (entity: unknown) => repositories.get(entity) }
         const service = new LabService(
             runs as never,
             artifacts as never,
             grants as never,
-            { transaction: jest.fn(async callback => callback(manager)) } as never,
+            {} as never,
             { assertOwned: jest.fn() } as never,
             {} as never
         )
+        const validConfig = parseCreateLabRunInput({ appId: 'app-123', scenarioKey: 'pointer.follow.v1' }).config
+        const malformedConfigs = [
+            { browser: 'chromium' },
+            { ...validConfig, privateSelector: '#account' },
+            { ...validConfig, measurementContract: null },
+            { ...validConfig, measurementContract: {} },
+            { ...validConfig, measurementContract: { contractVersion: 2 } },
+            { ...validConfig, measurementContract: { ...validConfig.measurementContract, privateEvidence: true } },
+        ]
 
-        await expect(service.claimRun(run.id, rawToken)).rejects.toThrow('invalid stored execution config')
+        for (const config of malformedConfigs) {
+            const run = runEntity({ config: JSON.stringify(config) })
+            expect(() => (service as any).serializeRunnerClaim(run)).toThrow('invalid stored execution config')
+        }
     })
 
     it('rejects an expired grant without claiming the run', async () => {
@@ -343,12 +350,21 @@ describe('LabService runner grants and ownership', () => {
             scenarioKey: 'pointer.follow.v1',
             config: { browser: 'webkit', measuredRuns: 4, durationMs: 15_000, trace: false, lighthouse: false },
         }).config
-        const run = runEntity({ config: JSON.stringify(config) })
+        const measurementContract = {
+            contractVersion: 2 as const,
+            expectedHz: 60,
+            targetFrameMs: 16.666667,
+            source: 'package-default' as const,
+            confidence: 'low' as const,
+            budgetRef: { catalogVersion: 1 as const, budgetId: 'condev.animation.default', budgetVersion: 1 },
+            metricCatalogVersion: 1 as const,
+        }
+        const run = runEntity({ config: JSON.stringify({ ...config, measurementContract }) })
         const service = new LabService(runs as never, artifacts as never, grants as never, {} as never, {} as never, {} as never)
-        const report = {
+        const report: any = {
             runId: run.id,
             compactSummary: {},
-            analysis: null,
+            analysis: { measurementContract },
             context: {
                 startedAt: '2026-08-25T00:00:00.000Z',
                 endedAt: '2026-08-25T00:01:00.000Z',
@@ -380,6 +396,30 @@ describe('LabService runner grants and ownership', () => {
         report.runId = run.id
         report.context.viewport.width += 1
         expect(() => (service as any).assertReportMatchesRunConfig(run, report)).toThrow(ConflictException)
+        report.context.viewport.width -= 1
+        report.analysis = null
+        expect(() => (service as any).assertReportMatchesRunConfig(run, report)).toThrow(ConflictException)
+
+        const mismatchedContracts = [
+            { ...measurementContract, contractVersion: 1 },
+            { ...measurementContract, expectedHz: 120, targetFrameMs: 8.333333 },
+            { ...measurementContract, source: 'explicit', confidence: 'explicit' },
+            { ...measurementContract, confidence: 'unknown' },
+            { ...measurementContract, metricCatalogVersion: 2 },
+            { ...measurementContract, budgetRef: { ...measurementContract.budgetRef, catalogVersion: 2 } },
+            { ...measurementContract, budgetRef: { ...measurementContract.budgetRef, budgetId: 'custom.uninstalled' } },
+            { ...measurementContract, budgetRef: { ...measurementContract.budgetRef, budgetVersion: 2 } },
+        ]
+        for (const mismatchedContract of mismatchedContracts) {
+            report.analysis = { measurementContract: mismatchedContract }
+            expect(() => (service as any).assertReportMatchesRunConfig(run, report)).toThrow(ConflictException)
+        }
+
+        const incompleteStoredConfig: Record<string, unknown> = { ...config }
+        delete incompleteStoredConfig.durationMs
+        run.config = JSON.stringify(incompleteStoredConfig)
+        report.analysis = { measurementContract }
+        expect(() => (service as any).assertReportMatchesRunConfig(run, report)).toThrow('invalid stored execution config')
     })
 
     it.each(['firefox', 'webkit'] as const)('accepts an attached %s report with an explicitly unsupported trace attempt', browser => {
@@ -396,7 +436,7 @@ describe('LabService runner grants and ownership', () => {
         const parsedReport = {
             runId: run.id,
             compactSummary: { limitations: [`cdp-trace-unavailable-browser-${browser}`] },
-            analysis: null,
+            analysis: { measurementContract: config.measurementContract },
             context: {
                 startedAt: '2026-08-25T00:00:00.000Z',
                 endedAt: '2026-08-25T00:01:00.000Z',
@@ -448,6 +488,11 @@ describe('LabService runner grants and ownership', () => {
         run.config = JSON.stringify({ ...enabled, trace: false })
         run.summary = JSON.stringify({ capabilities: { cdpTrace: true } })
         expect(() => (service as any).assertTraceIndexMatchesRunConfig(run)).toThrow(ConflictException)
+
+        const incompleteStoredConfig: Record<string, unknown> = { ...enabled }
+        delete incompleteStoredConfig.durationMs
+        run.config = JSON.stringify(incompleteStoredConfig)
+        expect(() => (service as any).assertTraceIndexMatchesRunConfig(run)).toThrow('no verifiable Trace execution evidence')
     })
 })
 

@@ -23,7 +23,71 @@ describe('animation lab contracts', () => {
                 appId: 'vanillaYl18g4',
                 name: 'lemon.pointer-follow.v1',
                 targetUrl: 'http://localhost:5173',
-                config: expect.objectContaining({ browser: 'chromium', warmupRuns: 1, measuredRuns: 3 }),
+                config: expect.objectContaining({
+                    browser: 'chromium',
+                    warmupRuns: 1,
+                    measuredRuns: 3,
+                    measurementContract: {
+                        contractVersion: 2,
+                        expectedHz: 60,
+                        targetFrameMs: 16.666667,
+                        source: 'package-default',
+                        confidence: 'low',
+                        budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 1 },
+                        metricCatalogVersion: 1,
+                    },
+                }),
+            })
+        )
+    })
+
+    it('normalizes an explicit platform-owned frame target and closed budget contract', () => {
+        expect(
+            parseCreateLabRunInput({
+                appId: 'app-123',
+                scenarioKey: 'pointer.follow.v2',
+                config: {
+                    measurementContract: {
+                        contractVersion: 2,
+                        expectedHz: 120,
+                        targetFrameMs: 8.333333,
+                        source: 'explicit',
+                        confidence: 'explicit',
+                        budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 2 },
+                        metricCatalogVersion: 2,
+                    },
+                },
+            }).config.measurementContract
+        ).toEqual({
+            contractVersion: 2,
+            expectedHz: 120,
+            targetFrameMs: 8.333333,
+            source: 'explicit',
+            confidence: 'explicit',
+            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 2 },
+            metricCatalogVersion: 2,
+        })
+
+        expect(
+            parseCreateLabRunInput({
+                appId: 'app-123',
+                scenarioKey: 'pointer.follow.v3',
+                config: {
+                    measurementContract: {
+                        contractVersion: 2,
+                        expectedHz: 60,
+                        targetFrameMs: 16.666667,
+                        source: 'explicit',
+                        confidence: 'explicit',
+                        budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 3 },
+                        metricCatalogVersion: 1,
+                    },
+                },
+            }).config.measurementContract
+        ).toEqual(
+            expect.objectContaining({
+                budgetRef: expect.objectContaining({ budgetVersion: 3 }),
+                metricCatalogVersion: 1,
             })
         )
     })
@@ -43,7 +107,18 @@ describe('animation lab contracts', () => {
                 name: '动画性能实验',
                 scenarioKey: 'platform.manual',
                 targetUrl: 'http://localhost:5173/demo?mode=hover#fixture',
-                config: expect.objectContaining({ browser: 'firefox' }),
+                config: expect.objectContaining({
+                    browser: 'firefox',
+                    measurementContract: {
+                        contractVersion: 2,
+                        expectedHz: 60,
+                        targetFrameMs: 16.666667,
+                        source: 'explicit',
+                        confidence: 'explicit',
+                        budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 2 },
+                        metricCatalogVersion: 2,
+                    },
+                }),
             })
         )
         expect(() =>
@@ -68,6 +143,49 @@ describe('animation lab contracts', () => {
         ).toThrow(BadRequestException)
     })
 
+    it('rejects forged, partial, extended, or unsupported measurement contracts', () => {
+        const valid = {
+            contractVersion: 2,
+            expectedHz: 120,
+            targetFrameMs: 8.333333,
+            source: 'explicit',
+            confidence: 'explicit',
+            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 2 },
+            metricCatalogVersion: 2,
+        }
+        const invalid = [
+            null,
+            {},
+            { contractVersion: 2 },
+            { ...valid, privateEvidence: true },
+            { ...valid, source: 'observed', confidence: 'high' },
+            { ...valid, source: 'inferred', confidence: 'medium' },
+            { ...valid, source: 'explicit', confidence: 'high' },
+            { ...valid, budgetRef: { ...valid.budgetRef, privateBudget: true } },
+            { ...valid, budgetRef: { ...valid.budgetRef, budgetId: 'custom.uninstalled' } },
+            { ...valid, budgetRef: { ...valid.budgetRef, budgetVersion: 4 } },
+            {
+                ...valid,
+                expectedHz: 120,
+                targetFrameMs: 8.333333,
+                source: 'package-default',
+                confidence: 'low',
+                budgetRef: { ...valid.budgetRef, budgetVersion: 1 },
+                metricCatalogVersion: 1,
+            },
+        ]
+
+        for (const measurementContract of invalid) {
+            expect(() =>
+                parseCreateLabRunInput({
+                    appId: 'app-123',
+                    scenarioKey: 'pointer.follow.v2',
+                    config: { measurementContract },
+                })
+            ).toThrow(BadRequestException)
+        }
+    })
+
     it('rejects unknown fields, URL credentials/query/path and under-sampled runs', () => {
         expect(() => parseCreateLabRunInput({ appId: 'app-123', scenarioKey: 'scenario', unexpected: true })).toThrow(BadRequestException)
         expect(() =>
@@ -87,7 +205,7 @@ describe('animation lab contracts', () => {
 
     it('requires the exact runner contract before a grant can be claimed', () => {
         expect(parseLabRunnerContractVersion(String(LAB_RUNNER_CONTRACT_VERSION))).toBe(LAB_RUNNER_CONTRACT_VERSION)
-        for (const version of [undefined, '1', '3']) {
+        for (const version of [undefined, '1', '2', '4']) {
             try {
                 parseLabRunnerContractVersion(version)
                 throw new Error('expected contract rejection')

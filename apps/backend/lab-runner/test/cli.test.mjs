@@ -14,6 +14,19 @@ import {
 
 const runId = '123e4567-e89b-12d3-a456-426614174000'
 
+function platformMeasurementContract(overrides = {}) {
+    const base = {
+        contractVersion: 2,
+        expectedHz: 60,
+        targetFrameMs: 16.666667,
+        source: 'package-default',
+        confidence: 'low',
+        budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 1 },
+        metricCatalogVersion: 1,
+    }
+    return { ...base, ...overrides, budgetRef: { ...base.budgetRef, ...overrides.budgetRef } }
+}
+
 test('parses the portable browser options and rejects ambiguous or mismatched executable aliases', () => {
     assert.deepEqual(
         parseArgs([
@@ -82,6 +95,15 @@ test('uses the closed platform execution config while preserving only local revi
         warmupRuns: 0,
         measuredRuns: 3,
         actions,
+        measurementContract: {
+            contractVersion: 2,
+            expectedHz: 120,
+            targetFrameMs: 8.333333,
+            source: 'explicit',
+            confidence: 'explicit',
+            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 2 },
+            metricCatalogVersion: 2,
+        },
         trace: { enabled: true, screenshots: true, maxDurationMs: 60_000 },
         lighthouse: { enabled: false, categories: ['performance'], formFactor: 'mobile' },
     }
@@ -99,6 +121,15 @@ test('uses the closed platform execution config while preserving only local revi
             durationMs: 20_000,
             trace: false,
             lighthouse: true,
+            measurementContract: {
+                contractVersion: 2,
+                expectedHz: 60,
+                targetFrameMs: 16.666667,
+                source: 'package-default',
+                confidence: 'low',
+                budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 1 },
+                metricCatalogVersion: 1,
+            },
         },
     }
 
@@ -114,6 +145,7 @@ test('uses the closed platform execution config while preserving only local revi
         warmupRuns: 2,
         measuredRuns: 5,
         durationMs: 20_000,
+        measurementContract: claim.config.measurementContract,
         trace: { enabled: false, screenshots: true, maxDurationMs: 60_000 },
         lighthouse: { enabled: true, categories: ['performance'], formFactor: 'mobile' },
     })
@@ -148,6 +180,7 @@ test('fails before navigation when the local reviewed trace cap cannot cover the
             durationMs: 20_000,
             trace: true,
             lighthouse: false,
+            measurementContract: platformMeasurementContract(),
         },
     }
 
@@ -183,6 +216,12 @@ test('ships the generic scenario with enough bounded Trace headroom for the defa
             durationMs: 30_000,
             trace: true,
             lighthouse: true,
+            measurementContract: platformMeasurementContract({
+                source: 'explicit',
+                confidence: 'explicit',
+                budgetRef: { budgetVersion: 2 },
+                metricCatalogVersion: 2,
+            }),
         },
     }
 
@@ -229,6 +268,7 @@ test('keeps the maximum platform observation duration executable with a bounded 
             durationMs: 120_000,
             trace: true,
             lighthouse: true,
+            measurementContract: platformMeasurementContract(),
         },
     }
 
@@ -265,6 +305,7 @@ test('fails before navigation for controlled conditions absent from the platform
             durationMs: 10_000,
             trace: false,
             lighthouse: false,
+            measurementContract: platformMeasurementContract(),
         },
     }
 
