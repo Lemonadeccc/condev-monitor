@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
     ANIMATION_LAB_METRIC_CATALOG_V1,
     ANIMATION_LAB_METRIC_CATALOG_V2,
+    ANIMATION_LAB_METRIC_CATALOG_V3,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V3,
@@ -377,7 +378,23 @@ test('keeps catalog v1 unchanged while catalog v2 adds closed scheduling and LoA
             ['renderingPipeline', 'longAnimationFrameAttributedForcedStyleAndLayoutMs', 'p95', 'ms'],
         ]
     )
-    assert.throws(() => getAnimationLabMetricCatalogEntry('frame.duration.p95', 3), RangeError)
+})
+
+test('keeps catalog v2 unchanged while catalog v3 adds windowed video playback quality', () => {
+    assert.deepEqual(ANIMATION_LAB_METRIC_CATALOG_V3.slice(0, ANIMATION_LAB_METRIC_CATALOG_V2.length), ANIMATION_LAB_METRIC_CATALOG_V2)
+    assert.equal(ANIMATION_LAB_METRIC_CATALOG_V3.length, ANIMATION_LAB_METRIC_CATALOG_V2.length + 1)
+    assert.equal(getAnimationLabMetricCatalogEntry('media.video-window-dropped-frame-rate', 2), undefined)
+    assert.deepEqual(getAnimationLabMetricCatalogEntry('media.video-window-dropped-frame-rate', 3), {
+        metricId: 'media.video-window-dropped-frame-rate',
+        family: 'resourcesMedia',
+        name: 'videoWindowDroppedFrameRate',
+        stat: 'ratio',
+        unit: 'ratio',
+        defaultScope: 'action',
+        defaultAggregation: { population: 'media-frames', method: 'ratio' },
+        defaultBudgetRuleIds: [],
+    })
+    assert.throws(() => getAnimationLabMetricCatalogEntry('frame.duration.p95', 4), RangeError)
 })
 
 test('accepts additive v2 metrics only when the measurement contract selects catalog v2', () => {
@@ -405,6 +422,49 @@ test('accepts additive v2 metrics only when the measurement contract selects cat
     assert.equal(validateAnimationLabSemanticsV2(input).ok, true)
 
     input.measurementContract.metricCatalogVersion = 1
+    const legacy = validateAnimationLabSemanticsV2(input)
+    assert.equal(legacy.ok, false)
+    assert.ok(legacy.errors.includes('metrics[0]:unknown-metric-id'))
+})
+
+test('accepts the windowed video metric only when the measurement contract selects catalog v3', () => {
+    const input = semantics()
+    input.measurementContract.metricCatalogVersion = 3
+    input.metrics = [
+        {
+            metricId: 'media.video-window-dropped-frame-rate',
+            family: 'resourcesMedia',
+            name: 'videoWindowDroppedFrameRate',
+            stat: 'ratio',
+            unit: 'ratio',
+            value: 0.03,
+            samples: 100,
+            status: 'measured',
+            evidenceLevel: 'controlled-lab-measurement',
+            scope: { level: 'action', attemptId: 'measured-01', actionId: 'hero-hover-01' },
+            aggregation: { population: 'media-frames', method: 'ratio' },
+            budgetRefs: [],
+            evidenceRefs: ['technology.browser.chromium'],
+            limitations: [
+                'video-playback-quality-window-counter-delta',
+                'video-playback-quality-total-includes-displayed-and-dropped',
+                'video-playback-quality-window-object-identity-only',
+                'video-playback-quality-not-decode-presentation-or-gpu-timing',
+            ],
+        },
+    ]
+    input.findings = []
+    assert.equal(validateAnimationLabSemanticsV2(input).ok, true)
+
+    const missingBoundary = structuredClone(input)
+    missingBoundary.metrics[0].limitations = []
+    assert.equal(validateAnimationLabSemanticsV2(missingBoundary).ok, false)
+
+    const wrongScope = structuredClone(input)
+    wrongScope.metrics[0].scope = { level: 'run' }
+    assert.equal(validateAnimationLabSemanticsV2(wrongScope).ok, false)
+
+    input.measurementContract.metricCatalogVersion = 2
     const legacy = validateAnimationLabSemanticsV2(input)
     assert.equal(legacy.ok, false)
     assert.ok(legacy.errors.includes('metrics[0]:unknown-metric-id'))
