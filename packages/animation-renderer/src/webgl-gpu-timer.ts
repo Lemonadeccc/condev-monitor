@@ -113,6 +113,7 @@ export interface WebGlGpuTimerSnapshot {
     evidenceBuffered: boolean
     beginAttemptCount: number
     startedQueryCount: number
+    cancelledQueryCount: number
     measuredQueryCount: number
     invalidQueryCount: number
     disjointEpochCount: number
@@ -142,6 +143,8 @@ export interface WebGlGpuTimer {
     beginFrame(): boolean
     /** Ends the query started by beginFrame and enqueues it for asynchronous polling. */
     endFrame(): boolean
+    /** Balances and deletes the active query without publishing incomplete-frame evidence. */
+    cancelFrame(): boolean
     /** Performs finite work on at most the oldest query; never waits for the GPU. */
     poll(): void
     /** Consume once so a single GPU result cannot be recorded on multiple frames. */
@@ -552,6 +555,7 @@ export function createWebGlGpuTimer(options: WebGlGpuTimerOptions): WebGlGpuTime
     let lastTargetClockAt: number | null = null
     let beginAttemptCount = 0
     let startedQueryCount = 0
+    let cancelledQueryCount = 0
     let measuredQueryCount = 0
     let invalidQueryCount = 0
     let disjointEpochCount = 0
@@ -1171,6 +1175,38 @@ export function createWebGlGpuTimer(options: WebGlGpuTimerOptions): WebGlGpuTime
                 return true
             })
         },
+        cancelFrame(): boolean {
+            return runBooleanTransaction(() => {
+                if (capability !== 'supported' || !api || !activeQuery) return false
+                const active = activeQuery
+                if (contextIsLost() !== false || capability !== 'supported' || !api || activeQuery !== active || disposeRequested) {
+                    return false
+                }
+                const currentApi = api
+                // Clear first so a partially successful/throwing endQuery is
+                // never retried by failure cleanup.
+                activeQuery = null
+                try {
+                    currentApi.endQuery()
+                } catch {
+                    const contextLost = recheckContextLossAfterRuntimeFailure()
+                    if (!contextLost && api === currentApi) safeDelete(active.query)
+                    if (!contextLost && !disposeRequested) fail()
+                    return false
+                }
+                if (api !== currentApi || disposeRequested || capability !== 'supported') return false
+                try {
+                    currentApi.deleteQuery(active.query)
+                } catch {
+                    if (disposeRequested) noteError()
+                    else fail()
+                    return false
+                }
+                if (disposeRequested || capability !== 'supported' || api !== currentApi) return false
+                cancelledQueryCount = increment(cancelledQueryCount)
+                return true
+            })
+        },
         poll(): void {
             runVoidTransaction(() => {
                 // Polling while the caller is inside the measured render boundary
@@ -1284,6 +1320,7 @@ export function createWebGlGpuTimer(options: WebGlGpuTimerOptions): WebGlGpuTime
                 evidenceBuffered: latestEvidence !== null,
                 beginAttemptCount,
                 startedQueryCount,
+                cancelledQueryCount,
                 measuredQueryCount,
                 invalidQueryCount,
                 disjointEpochCount,
