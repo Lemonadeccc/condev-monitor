@@ -28,6 +28,8 @@ test('package exports resolve for ESM, CommonJS, and declarations', async () => 
     const cjs = require(resolve(packageDirectory, 'build/cjs/index.js'))
     assert.equal(typeof esm.createWebGlGpuTimer, 'function')
     assert.equal(typeof cjs.createWebGlGpuTimer, 'function')
+    assert.equal(typeof esm.createThreeRendererAdapter, 'function')
+    assert.equal(typeof cjs.createThreeRendererAdapter, 'function')
     assert.equal(typeof esm.createWebGpuTimestampTimer, 'function')
     assert.equal(typeof cjs.createWebGpuTimestampTimer, 'function')
     assert.equal(typeof esm.createCanvas2dRecorder, 'function')
