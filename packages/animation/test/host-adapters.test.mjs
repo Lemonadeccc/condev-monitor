@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-// cspell:ignore rvfc
+// cspell:ignore rvfc uninspected
 
 import {
     createFrameworkCommitProbe,
@@ -10,6 +10,7 @@ import {
     createGsapTickerObserver,
     createLenisScrollObserver,
     createRendererHostProbe,
+    createScrollTriggerObserver,
     createThreeRendererProbe,
     createVideoFrameProbe,
     readGsapLifecycleSnapshot,
@@ -962,6 +963,281 @@ test('GSAP ticker observer pins teardown ownership and retries disposal after a 
     observer.dispose()
     assert.equal(observer.snapshot().cleanupFailed, false)
     assert.equal(firstListeners.size, 0)
+})
+
+test('ScrollTrigger observer captures bounded public state at manual and global checkpoints without controlling the host', () => {
+    const listeners = new Map()
+    const addCalls = []
+    const removeCalls = []
+    let now = 10
+    const triggers = [
+        {
+            progress: 0.25,
+            direction: 1,
+            isActive: true,
+            start: 100,
+            end: 500,
+            getVelocity: () => 1_200,
+            get vars() {
+                assert.fail('observer must not inspect ScrollTrigger vars')
+            },
+            refresh() {
+                assert.fail('observer must not refresh business ScrollTriggers')
+            },
+            update() {
+                assert.fail('observer must not update business ScrollTriggers')
+            },
+            kill() {
+                assert.fail('observer must not kill business ScrollTriggers')
+            },
+        },
+        {
+            progress: 1,
+            direction: -1,
+            isActive: false,
+            start: -50,
+            end: 50,
+            getVelocity: () => -400,
+        },
+        {
+            isActive: true,
+            direction: 0,
+            start: 20,
+            end: 10,
+            get progress() {
+                throw new Error('detached trigger progress')
+            },
+            getVelocity: () => Number.NaN,
+        },
+    ]
+    const scrollTrigger = {
+        getAll: () => triggers,
+        addEventListener(type, listener) {
+            addCalls.push([type, listener])
+            listeners.set(type, listener)
+        },
+        removeEventListener(type, listener) {
+            removeCalls.push([type, listener])
+            if (listeners.get(type) === listener) listeners.delete(type)
+        },
+        refresh() {
+            assert.fail('observer must not force a global refresh')
+        },
+        update() {
+            assert.fail('observer must not force a global update')
+        },
+        killAll() {
+            assert.fail('observer must not kill application triggers')
+        },
+    }
+    const observer = createScrollTriggerObserver({ scrollTrigger, capacity: 2, now: () => now })
+
+    assert.equal(observer.start(), true)
+    assert.equal(observer.start(), false)
+    assert.equal(addCalls.length, 6)
+    assert.equal(observer.capture().reason, 'manual')
+
+    now = 20
+    listeners.get('scrollStart')()
+    now = 30
+    triggers[0].progress = 0.5
+    triggers[0].isActive = false
+    listeners.get('refresh')()
+
+    assert.deepEqual(observer.snapshot(), {
+        status: 'observing',
+        running: true,
+        cleanupFailed: false,
+        capacity: 2,
+        maximumTriggersPerCapture: 512,
+        captureCount: 3,
+        retainedCaptureCount: 2,
+        droppedCaptureCount: 1,
+        rejectedCaptureCount: 0,
+        truncated: true,
+        globalEventTotalObservedCounts: {
+            scrollStart: 1,
+            scrollEnd: 0,
+            refreshInit: 0,
+            refresh: 1,
+            revert: 0,
+            matchMedia: 0,
+        },
+        captures: [
+            {
+                reason: 'scrollStart',
+                timestampMs: 20,
+                totalTriggerCount: 3,
+                inspectedTriggerCount: 3,
+                uninspectedTriggerCount: 0,
+                triggerListTruncated: false,
+                rejectedTriggerCount: 0,
+                rejectedFieldCount: 3,
+                activeStateSampleCount: 3,
+                activeTriggerCount: 2,
+                inactiveTriggerCount: 1,
+                directionSampleCount: 3,
+                directionCounts: { negative: 1, zero: 1, positive: 1 },
+                progress: { count: 2, p50: 0.625, p75: 0.813, p95: 0.962, p99: 0.992, min: 0.25, max: 1, total: 1.25 },
+                velocityPxPerSecond: { count: 2, p50: 400, p75: 800, p95: 1120, p99: 1184, min: -400, max: 1200, total: 800 },
+                spanPx: { count: 2, p50: 250, p75: 325, p95: 385, p99: 397, min: 100, max: 400, total: 500 },
+            },
+            {
+                reason: 'refresh',
+                timestampMs: 30,
+                totalTriggerCount: 3,
+                inspectedTriggerCount: 3,
+                uninspectedTriggerCount: 0,
+                triggerListTruncated: false,
+                rejectedTriggerCount: 0,
+                rejectedFieldCount: 3,
+                activeStateSampleCount: 3,
+                activeTriggerCount: 1,
+                inactiveTriggerCount: 2,
+                directionSampleCount: 3,
+                directionCounts: { negative: 1, zero: 1, positive: 1 },
+                progress: { count: 2, p50: 0.75, p75: 0.875, p95: 0.975, p99: 0.995, min: 0.5, max: 1, total: 1.5 },
+                velocityPxPerSecond: { count: 2, p50: 400, p75: 800, p95: 1120, p99: 1184, min: -400, max: 1200, total: 800 },
+                spanPx: { count: 2, p50: 250, p75: 325, p95: 385, p99: 397, min: 100, max: 400, total: 500 },
+            },
+        ],
+    })
+
+    assert.equal(observer.stop(), true)
+    assert.equal(removeCalls.length, 6)
+    assert.equal(listeners.size, 0)
+    observer.reset()
+    assert.equal(observer.snapshot().captureCount, 0)
+    assert.deepEqual(observer.snapshot().globalEventTotalObservedCounts, {
+        scrollStart: 0,
+        scrollEnd: 0,
+        refreshInit: 0,
+        refresh: 0,
+        revert: 0,
+        matchMedia: 0,
+    })
+})
+
+test('ScrollTrigger observer fails closed, compensates partial registration, and retries uncertain cleanup', () => {
+    const unsupported = createScrollTriggerObserver({ scrollTrigger: {} })
+    assert.equal(unsupported.start(), false)
+    assert.equal(unsupported.snapshot().status, 'unsupported')
+    assert.equal(unsupported.capture(), null)
+    assert.equal(unsupported.snapshot().rejectedCaptureCount, 1)
+
+    const attached = new Map()
+    const compensated = createScrollTriggerObserver({
+        scrollTrigger: {
+            getAll: () => [],
+            addEventListener(type, listener) {
+                attached.set(type, listener)
+                if (type === 'refreshInit') throw new Error('registered before host failure')
+            },
+            removeEventListener(type, listener) {
+                if (attached.get(type) === listener) attached.delete(type)
+            },
+        },
+    })
+    assert.equal(compensated.start(), false)
+    assert.equal(compensated.snapshot().status, 'add-failed')
+    assert.equal(compensated.snapshot().cleanupFailed, false)
+    assert.equal(attached.size, 0)
+
+    const retryListeners = new Map()
+    let removalFails = true
+    const retryable = createScrollTriggerObserver({
+        scrollTrigger: {
+            getAll: () => [{ progress: 0.5 }],
+            addEventListener(type, listener) {
+                retryListeners.set(type, listener)
+            },
+            removeEventListener(type, listener) {
+                if (type === 'scrollEnd' && removalFails) throw new Error('temporary removal failure')
+                if (retryListeners.get(type) === listener) retryListeners.delete(type)
+            },
+        },
+    })
+    assert.equal(retryable.start(), true)
+    retryListeners.get('scrollStart')()
+    assert.equal(retryable.stop(), false)
+    assert.equal(retryable.running, false)
+    assert.equal(retryable.snapshot().status, 'remove-failed')
+    assert.equal(retryable.snapshot().cleanupFailed, true)
+    const captureCount = retryable.snapshot().captureCount
+    retryListeners.get('scrollEnd')()
+    assert.equal(retryable.snapshot().captureCount, captureCount)
+    assert.equal(retryable.start(), false)
+
+    removalFails = false
+    assert.equal(retryable.stop(), true)
+    assert.equal(retryable.snapshot().status, 'idle')
+    assert.equal(retryable.snapshot().cleanupFailed, false)
+    assert.equal(retryListeners.size, 0)
+
+    assert.equal(retryable.start(), true)
+    removalFails = true
+    retryable.dispose()
+    assert.equal(retryable.snapshot().status, 'disposed')
+    assert.equal(retryable.snapshot().cleanupFailed, true)
+    removalFails = false
+    retryable.dispose()
+    assert.equal(retryable.snapshot().cleanupFailed, false)
+    assert.equal(retryListeners.size, 0)
+})
+
+test('ScrollTrigger observer bounds each capture, isolates hostile arrays, and protects retained statistics', () => {
+    let numericReads = 0
+    const large = new Array(10_000)
+    large[0] = { progress: 0.5, getVelocity: () => 100 }
+    Object.defineProperty(large, Symbol.iterator, {
+        get() {
+            assert.fail('observer must not use an untrusted trigger-array iterator')
+        },
+    })
+    const boundedList = new Proxy(large, {
+        get(target, property, receiver) {
+            if (typeof property === 'string' && /^\d+$/.test(property)) numericReads += 1
+            return Reflect.get(target, property, receiver)
+        },
+    })
+    let currentList = boundedList
+    const observer = createScrollTriggerObserver({
+        scrollTrigger: {
+            getAll: () => currentList,
+            addEventListener() {},
+            removeEventListener() {},
+        },
+        maximumTriggersPerCapture: 2,
+    })
+
+    const capture = observer.capture()
+    assert.equal(numericReads, 2)
+    assert.equal(capture.totalTriggerCount, 10_000)
+    assert.equal(capture.inspectedTriggerCount, 2)
+    assert.equal(capture.uninspectedTriggerCount, 9_998)
+    assert.equal(capture.triggerListTruncated, true)
+    assert.equal(capture.rejectedTriggerCount, 1)
+    assert.equal(capture.progress.p95, 0.5)
+    try {
+        capture.progress.p95 = 999
+    } catch {}
+    assert.equal(observer.snapshot().captures[0].progress.p95, 0.5)
+
+    const throwingElement = []
+    Object.defineProperty(throwingElement, '0', {
+        get() {
+            throw new Error('released trigger slot')
+        },
+    })
+    throwingElement.length = 1
+    currentList = throwingElement
+    assert.equal(observer.capture().rejectedTriggerCount, 1)
+
+    const revoked = Proxy.revocable([], {})
+    currentList = revoked.proxy
+    revoked.revoke()
+    assert.doesNotThrow(() => observer.capture())
+    assert.equal(observer.snapshot().rejectedCaptureCount, 1)
 })
 
 test('Lenis observer retains only bounded closed scroll evidence from the public event API', () => {
