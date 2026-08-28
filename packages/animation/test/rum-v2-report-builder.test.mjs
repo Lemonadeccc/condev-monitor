@@ -814,6 +814,36 @@ test('target builder requires an explicit semantic target key and keeps direct, 
     assert.equal(solidReport.capabilities['framework-adapter'], 'supported')
     assert.doesNotMatch(JSON.stringify(solidReport), /framework-owner|component|selector|private/)
 
+    const unownedTarget = targetSnapshot()
+    unownedTarget.inventory.uiFrameworks = []
+    unownedTarget.owners = []
+    const unownedReport = toAnimationRumV2TargetReport(
+        snapshot,
+        unownedTarget,
+        projectionOptions(runtime, {
+            eventId: 'event_target_unowned_12345678',
+            captureId: 'capture_target_unowned_12345678',
+            targetKey: 'unowned-dom-target',
+        })
+    )
+    assert.equal(unownedReport.context.runtime.framework, 'unknown')
+    assert.equal(unownedReport.capabilities['framework-adapter'], 'disabled')
+
+    const vanillaTarget = targetSnapshot()
+    vanillaTarget.inventory.uiFrameworks = ['vanilla']
+    vanillaTarget.owners = []
+    const vanillaReport = toAnimationRumV2TargetReport(
+        snapshot,
+        vanillaTarget,
+        projectionOptions(runtime, {
+            eventId: 'event_target_vanilla_12345678',
+            captureId: 'capture_target_vanilla_12345678',
+            targetKey: 'explicit-vanilla-target',
+        })
+    )
+    assert.equal(vanillaReport.context.runtime.framework, 'vanilla')
+    assert.equal(vanillaReport.capabilities['framework-adapter'], 'supported')
+
     const page = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
     const supportedIds = new Set([...page.metrics, ...report.metrics].map(item => item.metricId))
     assert.equal(supportedIds.size, 69)

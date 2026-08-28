@@ -2264,7 +2264,7 @@ test('element selection is a parallel native sidecar with bounded direct evidenc
     assert.equal(direct.geometry.resizeCount, 0)
     assert.equal(direct.geometry.cssResizeCount, 0)
     assert.equal(direct.geometry.backingResizeCount, 0)
-    assert.deepEqual(direct.inventory.uiFrameworks, ['vanilla', 'react'])
+    assert.deepEqual(direct.inventory.uiFrameworks, ['react'])
     assert.deepEqual(direct.inventory.renderers, ['canvas', 'webgl'])
     assert.deepEqual(direct.inventory.motionEngines, ['css', 'gsap'])
     assert.equal(direct.owners[0].label, 'HeroCanvas')
@@ -2639,6 +2639,7 @@ test('renderer adapter post-processing isolates throwing nested getters without 
             version: '1.0.0',
             canInspect: element => element === target,
             inspect: () => ({
+                owners: [{ relation: 'framework-owner', framework: 'solid', label: 'Owner-only Solid target' }],
                 renderer: {
                     family: 'other',
                     capability: { state: 'supported', observed: true, buffered: false },
@@ -2663,13 +2664,14 @@ test('renderer adapter post-processing isolates throwing nested getters without 
         ['valid-after-failures']
     )
     assert.equal(snapshot.renderers[0].metrics.drawCallsP95, 3)
-    assert.deepEqual(snapshot.inventory.uiFrameworks, ['vanilla', 'react', 'vue'])
+    assert.deepEqual(snapshot.inventory.uiFrameworks, ['react', 'vue', 'solid'])
     assert.deepEqual(snapshot.inventory.renderers, ['canvas', 'canvas2d', 'webgl', 'other'])
     assert.deepEqual(
         snapshot.owners.map(owner => [owner.adapterId, owner.framework, owner.label]),
         [
             ['throwing-metrics', 'react', 'Retained React owner'],
             ['throwing-evidence', 'vue', 'Retained Vue owner'],
+            ['valid-after-failures', 'solid', 'Owner-only Solid target'],
         ]
     )
 
@@ -2846,7 +2848,9 @@ test('Canvas geometry separates CSS and backing resizes without counting ResizeO
     assert.equal(observers.length, 1)
 
     observers[0].emit()
-    let geometry = selection.snapshot().geometry
+    const unownedSnapshot = selection.snapshot()
+    assert.deepEqual(unownedSnapshot.inventory.uiFrameworks, [])
+    let geometry = unownedSnapshot.geometry
     assert.equal(geometry.resizeCount, 0)
     assert.equal(geometry.cssResizeCount, 0)
     assert.equal(geometry.backingResizeCount, 0)
