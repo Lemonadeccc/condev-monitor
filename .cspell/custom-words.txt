@@ -106,3 +106,10 @@ crrenderermain
 mainthread
 tids
 unitless
+dsnchservice
+SQLSTATE
+ECONN
+regclass
+lookback
+metatype
+sublabel

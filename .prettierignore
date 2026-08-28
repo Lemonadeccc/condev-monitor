@@ -1,6 +1,11 @@
 /dist
 *.yaml
+/.codex
+/.omx
+/AGENTS.md
 examples/rag/frontend
+examples/rag/backend/app/service/core/deepdoc/README.md
+examples/rag/backend/app/service/core/deepdoc/README_zh.md
 examples/animation-fixtures/lemon-bureau
 examples/animation-fixtures/nico-palmer
 examples/animation-fixtures/salle-blanche

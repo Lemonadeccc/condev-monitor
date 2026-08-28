@@ -5,7 +5,6 @@ import { ConfigService } from '@nestjs/config'
 import { Consumer, EachBatchPayload, Kafka } from 'kafkajs'
 
 // cspell:ignore animationrum contractversion snapshotschemaversion
-
 import { resolveClickhouseDatabase } from '../../shared/clickhouse-utils'
 import { EventRow, KafkaEventEnvelope } from '../../shared/ingest-types'
 import { formatDateTimeForCH } from '../../utils/datetime'

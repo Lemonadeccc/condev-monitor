@@ -17,7 +17,10 @@ const boundedText = (value: string): string => value.slice(0, 1_000)
 const publicMessage = (value: unknown, fallback: string): string | string[] => {
     if (typeof value === 'string') return boundedText(value)
     if (Array.isArray(value)) {
-        const messages = value.filter((item): item is string => typeof item === 'string').slice(0, 20).map(boundedText)
+        const messages = value
+            .filter((item): item is string => typeof item === 'string')
+            .slice(0, 20)
+            .map(boundedText)
         if (messages.length > 0) return messages
     }
     return fallback
@@ -45,7 +48,8 @@ export class AllExceptionFilter implements ExceptionFilter {
         const httpStatus = Number.isInteger(candidateStatus) && candidateStatus >= 400 && candidateStatus <= 599 ? candidateStatus : 500
 
         const exceptionResponse = exception instanceof HttpException ? exception.getResponse() : null
-        const responseObject = exceptionResponse && typeof exceptionResponse === 'object' ? (exceptionResponse as Record<string, unknown>) : null
+        const responseObject =
+            exceptionResponse && typeof exceptionResponse === 'object' ? (exceptionResponse as Record<string, unknown>) : null
         const fallbackMessage = STATUS_CODES[httpStatus] ?? 'Request failed'
         const requestId = publicRequestId(request.id) ?? randomUUID()
         const timestamp = new Date().toISOString()
