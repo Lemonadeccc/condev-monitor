@@ -700,6 +700,33 @@ export class AnimatedCard {
 
 这里仍然只有一个 Browser client 和一次 `init()`。Svelte-aware 的 `/animation` 入口因为使用 Svelte 5 ESM runtime 而仅提供 ESM；不感知框架的 package root 仍保留 CommonJS 导出。runes 模式下，第一次 `$effect.pre` 只为 scope 预热；后续调用开始一个追踪依赖窗口，并在公开 `tick()` 确认 pending state changes 已应用后闭合。runes 模式没有公开的组件级统一 before/after update 生命周期，因此这个窗口不能证明当前组件或 target 确实修改了 DOM，也不会被标成 render、commit、paint 或 GPU 时间。需要触发观测的 state 或 derived value 都应作为参数传入。action 只把真实 Element 和匿名 owner 证据留在本地内存；显式授权的语义化 RUM v2 target 最多投影闭集 `svelte` framework 与 `framework-adapter` capability，不保留或上传依赖值、组件名、props、state、文字、selector、class、id 或 URL。本地有界 `getDiagnostics()` 计数会把 adapter 失败与空闲 scope 区分开，但不会上传这些诊断。
 
+### Solid 集成
+
+```tsx
+import { createEffect } from 'solid-js'
+import { condevAnimationTarget, init, useCondevAnimation } from '@condev-monitor/solid/animation'
+
+const monitor = init({
+    dsn: 'https://monitor.example.com/tracking/<appId>',
+    performance: true,
+    animation: { devtools: import.meta.env.DEV },
+})
+
+export function AnimatedCard() {
+    const condev = useCondevAnimation({ client: monitor })
+
+    createEffect(() =>
+        condev.measureReactiveWork(() => {
+            // 这里只放已有的同步 effect/computation 工作。
+        })
+    )
+
+    return <div use:condevAnimationTarget={condev} />
+}
+```
+
+这里仍然只有一个 Browser client 和一次 `init()`。`measureReactiveWork()` 只把调用方显式传入的同步 callback 记录为通用 host `script` self-time，并原样保留返回值或抛出的异常。支持范围内的 Solid（`>=1.9.10 <2`）没有公开的组件级 before/after commit 或 after-paint hook，effect 顺序也不是组件耗时边界，因此 Condev 不会把这个 self-time 冒充 Solid render、update、组件检查、commit、DOM、paint 或 GPU 工作。这个包不会自动新建 effect；只有当某段已有 callback 的自身耗时确实有意义时才包裹它。`condevAnimationTarget` directive 只把真实 Element 与匿名 owner 留在本地，并在元素 owner 销毁时立即注销，即使外层组件仍存活；显式授权的 RUM v2 target 最多投影闭集 `solid` framework 与 `framework-adapter` capability，不上传组件名、signal、props、state、文字、selector、class、id 或 URL。Solid 2 预发布版在公开生命周期合同重新验证前明确不支持。
+
 ### 浏览器 SDK 快速开始
 
 ```ts
@@ -895,6 +922,8 @@ POST /api/sourcemap/upload
 - `@condev-monitor/react`
 - `@condev-monitor/vue`
 - `@condev-monitor/angular`
+- `@condev-monitor/svelte`
+- `@condev-monitor/solid`
 - `@condev-monitor/nextjs`
 
 建议流程：
@@ -917,7 +946,9 @@ pnpm -r --filter "./packages/*" publish --access public --no-git-checks
 6. `@condev-monitor/react`
 7. `@condev-monitor/vue`
 8. `@condev-monitor/angular`
-9. `@condev-monitor/nextjs`
+9. `@condev-monitor/svelte`
+10. `@condev-monitor/solid`
+11. `@condev-monitor/nextjs`
 
 ### Python 包
 

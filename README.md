@@ -794,6 +794,33 @@ This is still one Browser client and one `init()` call. The public `ngDoCheck` t
 
 This remains one Browser client and one `init()` call. The Svelte-aware `/animation` entry is ESM-only because it uses Svelte 5's ESM runtime; the framework-neutral package root keeps its CommonJS export. In runes mode, the first `$effect.pre` call only primes the scope. Later calls start a tracked-dependency window and close it after public `tick()` reports that pending state changes were applied. Svelte has no public component-wide before/after update lifecycle in runes mode, so this does not prove that this component or target mutated the DOM and is never labelled render, commit, paint, or GPU time. Pass every state or derived value that should retrigger the effect as an argument. The action keeps the real Element and anonymous owner evidence in local memory. An explicitly authorized semantic RUM v2 target can project only the closed `svelte` framework value and `framework-adapter` capability; dependency values, component names, props, state, text, selectors, classes, IDs, and URLs are not retained or uploaded. Local bounded `getDiagnostics()` counters distinguish adapter failures from an idle scope without uploading them.
 
+### Solid Integration
+
+```tsx
+import { createEffect } from 'solid-js'
+import { condevAnimationTarget, init, useCondevAnimation } from '@condev-monitor/solid/animation'
+
+const monitor = init({
+    dsn: 'https://monitor.example.com/tracking/<appId>',
+    performance: true,
+    animation: { devtools: import.meta.env.DEV },
+})
+
+export function AnimatedCard() {
+    const condev = useCondevAnimation({ client: monitor })
+
+    createEffect(() =>
+        condev.measureReactiveWork(() => {
+            // Existing synchronous effect/computation work only.
+        })
+    )
+
+    return <div use:condevAnimationTarget={condev} />
+}
+```
+
+This is still one Browser client and one `init()` call. `measureReactiveWork()` records only the caller-supplied synchronous callback as generic host `script` work and preserves its result or thrown error. Supported Solid versions (`>=1.9.10 <2`) have no public component-wide before/after commit or after-paint hook, and effect ordering is not a component timing boundary, so Condev never relabels this self-time as Solid render, update, component check, commit, DOM, paint, or GPU work. The package installs no automatic effect; wrap existing work only when that exact callback cost is useful. The `condevAnimationTarget` directive keeps the real Element and anonymous owner local, and unregisters when the Element owner is disposed even if the outer component remains alive. An explicitly authorized RUM v2 target can project only the closed `solid` framework value and `framework-adapter` capability, never component names, signals, props, state, text, selectors, classes, IDs, or URLs. Solid 2 prereleases are intentionally unsupported until their public lifecycle contract is verified.
+
 ### Browser SDK Quick Start
 
 ```ts
@@ -989,6 +1016,8 @@ The publishable packages live under `packages/`:
 - `@condev-monitor/react`
 - `@condev-monitor/vue`
 - `@condev-monitor/angular`
+- `@condev-monitor/svelte`
+- `@condev-monitor/solid`
 - `@condev-monitor/nextjs`
 
 Suggested workflow:
@@ -1011,7 +1040,9 @@ If you need to publish one-by-one, use dependency order:
 6. `@condev-monitor/react`
 7. `@condev-monitor/vue`
 8. `@condev-monitor/angular`
-9. `@condev-monitor/nextjs`
+9. `@condev-monitor/svelte`
+10. `@condev-monitor/solid`
+11. `@condev-monitor/nextjs`
 
 ### Python Package
 
