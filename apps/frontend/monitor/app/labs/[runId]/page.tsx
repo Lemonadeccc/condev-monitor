@@ -128,7 +128,7 @@ export default function LabRunPage() {
                     <div className="flex flex-wrap items-center gap-2">
                         {run ? <LabStatusBadge status={run.status} /> : null}
                         {run ? (
-                            <Badge variant={analysis?.measurementContract.metricCatalogVersion === 2 ? 'default' : 'outline'}>
+                            <Badge variant={(analysis?.measurementContract.metricCatalogVersion ?? 1) >= 2 ? 'default' : 'outline'}>
                                 指标目录 / Metric catalog{' '}
                                 {analysis?.measurementContract ? `v${analysis.measurementContract.metricCatalogVersion}` : '未知 / Unknown'}
                             </Badge>

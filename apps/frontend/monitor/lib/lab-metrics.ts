@@ -13,6 +13,10 @@ const METRIC_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
         zhCN: '页面 rAF 回调节奏（帧间隔 p50 推算）',
         en: 'Observed page rAF callback cadence (from frame-interval p50)',
     },
+    'media.video-window-dropped-frame-rate': {
+        zhCN: '动作窗口视频丢帧率',
+        en: 'Action-window video dropped-frame rate',
+    },
     'pipeline.loaf-render-start-to-paint.count': {
         zhCN: 'LoAF 渲染开始 → Paint 有效样本数',
         en: 'LoAF render start → paint valid samples',
@@ -130,6 +134,54 @@ const LIMITATION_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
     'video-playback-quality-zero-total-frames': {
         zhCN: '页面包含可读取的 video 元素，但其 Playback Quality totalVideoFrames 总计仍为 0。',
         en: 'Readable video elements existed, but their Playback Quality totalVideoFrames sum was still zero.',
+    },
+    'video-playback-quality-window-counter-delta': {
+        zhCN: '该指标来自动作开始与结束边界之间的 Playback Quality 计数器差值。',
+        en: 'This metric is derived from Playback Quality counter deltas between the action begin and end boundaries.',
+    },
+    'video-playback-quality-window-object-identity-only': {
+        zhCN: '只按同一个内存中的 video 元素对象配对，不保留选择器、媒体地址或 DOM 身份。',
+        en: 'Pairs only the same in-memory video element; selectors, media URLs, and DOM identities are not retained.',
+    },
+    'video-playback-quality-not-decode-presentation-or-gpu-timing': {
+        zhCN: '该指标不是解码、呈现、GPU 上传或 GPU 完成时间。',
+        en: 'This metric is not decode, presentation, GPU-upload, or GPU-completion timing.',
+    },
+    'video-playback-quality-window-partial-surface-coverage': {
+        zhCN: '动作窗口有可靠的媒体帧增量，但未完整覆盖全部视频表面。',
+        en: 'The action window has a reliable media-frame delta but does not cover every video surface.',
+    },
+    'video-playback-quality-window-coverage-unavailable': {
+        zhCN: '动作开始与结束边界之间的视频表面覆盖不完整。',
+        en: 'Video-surface coverage is incomplete between the action begin and end boundaries.',
+    },
+    'video-playback-quality-window-element-added': {
+        zhCN: '动作期间新增了 video 元素；新增表面没有开始基线。',
+        en: 'A video element was added during the action and has no begin-boundary baseline.',
+    },
+    'video-playback-quality-window-element-removed': {
+        zhCN: '动作期间移除了 video 元素；移除表面没有结束边界。',
+        en: 'A video element was removed during the action and has no end boundary.',
+    },
+    'video-playback-quality-window-counter-discontinuity': {
+        zhCN: '至少一个视频计数器发生重置、倒退、非法关系或超出有界增量。',
+        en: 'At least one video counter reset, decreased, violated its relationship, or exceeded the bounded delta.',
+    },
+    'video-playback-quality-window-read-error': {
+        zhCN: '至少一个动作边界无法读取有效的视频播放质量计数器。',
+        en: 'At least one action boundary could not read valid video playback-quality counters.',
+    },
+    'video-playback-quality-window-no-video-elements': {
+        zhCN: '动作开始和结束边界都没有 video 元素。',
+        en: 'No video elements existed at either action boundary.',
+    },
+    'video-playback-quality-window-zero-total-frame-delta': {
+        zhCN: '视频表面覆盖完整，但动作窗口内 totalVideoFrames 没有增长。',
+        en: 'Video-surface coverage was complete, but totalVideoFrames did not increase during the action.',
+    },
+    'video-playback-quality-api-unsupported': {
+        zhCN: '当前浏览器不支持 getVideoPlaybackQuality()。',
+        en: 'The current browser does not support getVideoPlaybackQuality().',
     },
     'loaf-only-over-50ms': {
         zhCN: '仅覆盖超过 50 ms 的 LoAF，不代表全部帧。',
