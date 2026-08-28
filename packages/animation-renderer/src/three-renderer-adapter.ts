@@ -5,6 +5,8 @@ export interface ThreeRendererPublicLike<Scene = unknown, Camera = unknown, Resu
         /** Explicit false means render counters accumulate across frames. */
         autoReset?: boolean
         render?: {
+            /** Public Three render sequence used only to suppress duplicate external captures. */
+            frame?: number
             calls?: number
             triangles?: number
             lines?: number
@@ -64,6 +66,21 @@ export interface ThreeRendererAdapter<Scene = unknown, Camera = unknown, Result 
      * unchanged and excluded from monitoring.
      */
     render(scene: Scene, camera: Camera): Result
+    /**
+     * Captures a frame already rendered by an external owner such as R3F.
+     * It never calls renderer.render(). A positive public renderer.info.render.frame
+     * sequence is required to reject initial and duplicate observations.
+     */
+    captureFrame(): boolean
+    dispose(): void
+}
+
+export interface ThreeAfterRenderRegistryEntry {
+    captureFrame(): boolean
+}
+
+export interface ThreeAfterRenderRegistry {
+    register(entry: ThreeAfterRenderRegistryEntry): () => void
     dispose(): void
 }
 
@@ -109,6 +126,84 @@ function safeBoolean(operation: () => boolean): boolean {
         return operation() === true
     } catch {
         return false
+    }
+}
+
+function safeFrameSequence(renderer: ThreeRendererPublicLike): number | undefined {
+    try {
+        const value = renderer.info?.render?.frame
+        return Number.isSafeInteger(value) && (value as number) >= 0 ? (value as number) : undefined
+    } catch {
+        return undefined
+    }
+}
+
+/**
+ * Shares one host after-render subscription across any number of renderer roots.
+ * Each entry remains responsible for rejecting an unchanged renderer frame.
+ */
+export function createThreeAfterRenderRegistry(subscribeAfterRender: (callback: () => void) => () => void): ThreeAfterRenderRegistry {
+    if (typeof subscribeAfterRender !== 'function') {
+        throw new ThreeRendererAdapterOptionsError('subscribeAfterRender must be a function')
+    }
+
+    const entries = new Map<ThreeAfterRenderRegistryEntry, number>()
+    let unsubscribe: (() => void) | undefined
+    let disposed = false
+
+    const stopSubscription = (): void => {
+        const stop = unsubscribe
+        unsubscribe = undefined
+        if (stop) safeCall(stop)
+    }
+
+    const ensureSubscription = (): void => {
+        if (unsubscribe || entries.size === 0 || disposed) return
+        const stop = subscribeAfterRender(() => {
+            for (const entry of Array.from(entries.keys())) {
+                if (!entries.has(entry)) continue
+                safeCall(() => entry.captureFrame())
+            }
+        })
+        if (typeof stop !== 'function') {
+            throw new ThreeRendererAdapterOptionsError('subscribeAfterRender returned an invalid cleanup handle')
+        }
+        unsubscribe = stop
+    }
+
+    return {
+        register(entry: ThreeAfterRenderRegistryEntry): () => void {
+            if (disposed) throw new ThreeRendererAdapterOptionsError('after-render registry is disposed')
+            if (!isObject(entry) || typeof entry.captureFrame !== 'function') {
+                throw new ThreeRendererAdapterOptionsError('after-render entry must provide captureFrame()')
+            }
+            entries.set(entry, (entries.get(entry) ?? 0) + 1)
+            try {
+                ensureSubscription()
+            } catch (error) {
+                const count = entries.get(entry) ?? 0
+                if (count <= 1) entries.delete(entry)
+                else entries.set(entry, count - 1)
+                throw error
+            }
+
+            let unregistered = false
+            return (): void => {
+                if (unregistered) return
+                unregistered = true
+                const count = entries.get(entry)
+                if (count === undefined) return
+                if (count <= 1) entries.delete(entry)
+                else entries.set(entry, count - 1)
+                if (entries.size === 0) stopSubscription()
+            }
+        },
+        dispose(): void {
+            if (disposed) return
+            disposed = true
+            entries.clear()
+            stopSubscription()
+        },
     }
 }
 
@@ -190,6 +285,28 @@ export function createThreeRendererAdapter<Scene = unknown, Camera = unknown, Re
     }
 
     let disposed = false
+    let capturing = false
+    let lastCapturedFrame: number | undefined
+
+    const captureCompletedFrame = (pollTimer: boolean, requireFrameSequence: boolean): boolean => {
+        if (disposed || capturing || !probe) return false
+        capturing = true
+        try {
+            if (pollTimer && timer) safeCall(() => timer.poll())
+            const frame = safeFrameSequence(renderer)
+            if (requireFrameSequence && frame === undefined) return false
+            if (frame === 0 || (frame !== undefined && frame === lastCapturedFrame)) return false
+            if (disposed || !probe) return false
+            if (frame !== undefined) lastCapturedFrame = frame
+            return safeBoolean(() => {
+                probe?.capture()
+                return true
+            })
+        } finally {
+            capturing = false
+        }
+    }
+
     return {
         render(scene: Scene, camera: Camera): Result {
             if (disposed) return renderer.render(scene, camera)
@@ -213,8 +330,11 @@ export function createThreeRendererAdapter<Scene = unknown, Camera = unknown, Re
             }
 
             if (measuring && timer) safeCall(() => timer.endFrame())
-            safeCall(() => probe?.capture())
+            captureCompletedFrame(false, false)
             return result
+        },
+        captureFrame(): boolean {
+            return captureCompletedFrame(true, true)
         },
         dispose(): void {
             if (disposed) return

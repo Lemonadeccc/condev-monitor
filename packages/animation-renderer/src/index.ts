@@ -16,8 +16,10 @@ export type {
     Canvas2dTargetRendererInspection,
     Canvas2dUploadEvidence,
 } from './canvas2d-recorder'
-export { ThreeRendererAdapterOptionsError, createThreeRendererAdapter } from './three-renderer-adapter'
+export { ThreeRendererAdapterOptionsError, createThreeAfterRenderRegistry, createThreeRendererAdapter } from './three-renderer-adapter'
 export type {
+    ThreeAfterRenderRegistry,
+    ThreeAfterRenderRegistryEntry,
     ThreeAnimationMonitorPort,
     ThreeRendererAdapter,
     ThreeRendererAdapterOptions,
