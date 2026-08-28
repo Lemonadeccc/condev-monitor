@@ -2175,9 +2175,9 @@ export function toAnimationRumV2TargetReport(
     state.capabilities['video-frame-callback'] = 'disabled'
     state.capabilities['video-playback-quality'] = 'disabled'
     state.capabilities['media-adapter'] = 'disabled'
-    state.capabilities['framework-adapter'] = targetSnapshot.owners.some(owner => owner.relation === 'framework-owner')
-        ? 'supported'
-        : 'disabled'
+    const frameworkInventoryObserved = frameworkFromValues(targetSnapshot.inventory.uiFrameworks) !== 'unknown'
+    const frameworkOwnerObserved = targetSnapshot.owners.some(owner => owner.relation === 'framework-owner')
+    state.capabilities['framework-adapter'] = frameworkInventoryObserved || frameworkOwnerObserved ? 'supported' : 'disabled'
     state.capabilities['visibility-lifecycle'] = pageSnapshot.visibility.current === 'unknown' ? 'unknown' : 'supported'
     state.capabilities['reduced-motion-preference'] = typeof pageSnapshot.visibility.reducedMotion === 'boolean' ? 'supported' : 'unknown'
     state.adapterErrorCount = Math.min(MAX_COUNT, targetSnapshot.adapterErrors.length)

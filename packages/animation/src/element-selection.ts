@@ -920,7 +920,9 @@ export function createAnimationElementSelection(
             if (cleared) throw new Error('cannot snapshot a cleared element selection')
             recordResizeChanges(readElementResizeDimensions(element))
             const direct = inspectAnimations(element, mode === 'subtree', lifecycle)
-            const uiFrameworks = new Set<AnimationUiFramework>(['vanilla'])
+            // A DOM Element can be inspected without proving which UI runtime owns it.
+            // Keep framework attribution unknown until an explicit adapter supplies evidence.
+            const uiFrameworks = new Set<AnimationUiFramework>()
             const metaRuntimes = new Set<AnimationMetaRuntime>()
             const renderers = new Set<AnimationRendererFamily>([nativeRendererFor(element)])
             const motionEngines = new Set<AnimationMotionEngine>()
@@ -969,7 +971,11 @@ export function createAnimationElementSelection(
                     mergeClosedValues(motionEngines, inspection.inventory?.motionEngines, MOTION_ENGINES)
                     for (const owner of inspection.owners ?? []) {
                         const normalized = localOwner(owner, adapterId, adapterVersion)
-                        if (normalized && owners.length < MAX_TARGET_OWNERS) owners.push(normalized)
+                        if (!normalized) continue
+                        if (normalized.relation === 'framework-owner' && normalized.framework) {
+                            uiFrameworks.add(normalized.framework)
+                        }
+                        if (owners.length < MAX_TARGET_OWNERS) owners.push(normalized)
                     }
                     if (inspection.renderer && RENDERERS.has(inspection.renderer.family)) {
                         renderers.add(inspection.renderer.family)
