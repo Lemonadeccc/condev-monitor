@@ -266,6 +266,39 @@ test('Three adapter observes externally rendered frames without rendering or dup
     assert.deepEqual(events, ['create-probe', 'capture', 'capture', 'dispose-probe'])
 })
 
+test('Three adapter brackets externally owned frames without taking over rendering', () => {
+    const events = []
+    const port = createProbePort(events)
+    const timer = createTimer(events)
+    const renderer = {
+        info: { render: { frame: 0, calls: 0, triangles: 0 } },
+        render() {
+            events.push('unexpected-render')
+        },
+    }
+    const adapter = createThreeRendererAdapter({
+        animation: port.animation,
+        renderer,
+        backend: 'webgl2',
+        gpuTimer: { timer, ownership: 'adapter' },
+    })
+
+    assert.equal(adapter.completeExternalFrame(), false)
+    assert.equal(adapter.beginExternalFrame(), true)
+    renderer.info.render = { frame: 1, calls: 3, triangles: 12 }
+    assert.equal(adapter.completeExternalFrame(), true)
+    assert.equal(adapter.completeExternalFrame(), false)
+    assert.deepEqual(events, ['create-probe', 'poll', 'begin', 'end', 'capture', 'take-timing'])
+
+    assert.equal(adapter.beginExternalFrame(), true)
+    assert.equal(adapter.completeExternalFrame(), false)
+    assert.deepEqual(events.slice(-3), ['poll', 'begin', 'cancel'])
+    assert.equal(adapter.beginExternalFrame(), true)
+    assert.deepEqual(events.slice(-5), ['poll', 'begin', 'cancel', 'poll', 'begin'])
+    adapter.dispose()
+    assert.deepEqual(events.slice(-3), ['cancel', 'dispose-probe', 'dispose-timer'])
+})
+
 test('Three adapter keeps using the public frame sequence when autoReset disables counter resets', () => {
     const events = []
     const port = createProbePort(events)
