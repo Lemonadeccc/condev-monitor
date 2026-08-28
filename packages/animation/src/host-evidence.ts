@@ -209,13 +209,27 @@ export class AnimationHostEvidenceRecorder {
         if (!isRecord(sample) || !FRAMEWORKS.has(sample.framework) || !inSet(sample.phase, FRAMEWORK_PHASES)) {
             return this.framework.reject()
         }
-        if (sample.source !== 'manual' && sample.source !== 'react-profiler') return this.framework.reject()
+        if (sample.source !== 'manual' && sample.source !== 'react-profiler' && sample.source !== 'framework-lifecycle') {
+            return this.framework.reject()
+        }
         if (sample.source === 'react-profiler' && sample.framework !== 'react') return this.framework.reject()
         const renderMs = optionalNumber(sample.renderMs)
         const commitMs = optionalNumber(sample.commitMs)
         const baseRenderMs = optionalNumber(sample.baseRenderMs)
-        if (!renderMs.valid || !commitMs.valid || !baseRenderMs.valid) return this.framework.reject()
-        const evidence = renderMs.value !== undefined || commitMs.value !== undefined || baseRenderMs.value !== undefined
+        const updateWindowMs = optionalNumber(sample.updateWindowMs)
+        if (!renderMs.valid || !commitMs.valid || !baseRenderMs.valid || !updateWindowMs.valid) return this.framework.reject()
+        const lifecycleEvidence =
+            sample.source === 'framework-lifecycle' &&
+            sample.phase === 'update' &&
+            updateWindowMs.value !== undefined &&
+            renderMs.value === undefined &&
+            commitMs.value === undefined &&
+            baseRenderMs.value === undefined
+        const commitEvidence =
+            sample.source !== 'framework-lifecycle' &&
+            updateWindowMs.value === undefined &&
+            (renderMs.value !== undefined || commitMs.value !== undefined || baseRenderMs.value !== undefined)
+        const evidence = lifecycleEvidence || commitEvidence
         if (!evidence) return this.framework.reject()
         return this.framework.accept(
             {
@@ -226,6 +240,7 @@ export class AnimationHostEvidenceRecorder {
                 ...(renderMs.value === undefined ? {} : { renderMs: renderMs.value }),
                 ...(commitMs.value === undefined ? {} : { commitMs: commitMs.value }),
                 ...(baseRenderMs.value === undefined ? {} : { baseRenderMs: baseRenderMs.value }),
+                ...(updateWindowMs.value === undefined ? {} : { updateWindowMs: updateWindowMs.value }),
             },
             capturedAt,
             true
@@ -431,6 +446,9 @@ export class AnimationHostEvidenceRecorder {
                 commitMs: durationStatistics(frameworkSamples.flatMap(sample => (sample.commitMs === undefined ? [] : [sample.commitMs]))),
                 baseRenderMs: durationStatistics(
                     frameworkSamples.flatMap(sample => (sample.baseRenderMs === undefined ? [] : [sample.baseRenderMs]))
+                ),
+                updateWindowMs: durationStatistics(
+                    frameworkSamples.flatMap(sample => (sample.updateWindowMs === undefined ? [] : [sample.updateWindowMs]))
                 ),
             },
             renderer: {

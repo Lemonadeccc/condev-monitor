@@ -414,6 +414,7 @@ export interface AnimationHostFrameworkSummary extends AnimationHostEvidenceFami
     renderMs: DurationStatistics | null
     commitMs: DurationStatistics | null
     baseRenderMs: DurationStatistics | null
+    updateWindowMs: DurationStatistics | null
 }
 
 export interface AnimationHostRendererSummary extends AnimationHostEvidenceFamilySummary {

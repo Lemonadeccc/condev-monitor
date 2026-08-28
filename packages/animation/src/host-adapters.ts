@@ -15,7 +15,7 @@ export type AnimationHostFramework = 'react' | 'preact' | 'vue' | 'angular' | 's
 export type AnimationFrameworkCommitPhase = 'mount' | 'update' | 'nested-update' | 'hydrate' | 'other'
 
 export interface AnimationFrameworkStatsSample {
-    source: 'manual' | 'react-profiler'
+    source: 'manual' | 'react-profiler' | 'framework-lifecycle'
     framework: AnimationHostFramework
     phase: AnimationFrameworkCommitPhase
     /** Render work only. React Profiler actualDuration is recorded here. */
@@ -24,6 +24,8 @@ export interface AnimationFrameworkStatsSample {
     commitMs?: number
     /** React Profiler baseDuration; it is not a commit duration. */
     baseRenderMs?: number
+    /** Host lifecycle update window; it is not framework render or commit work. */
+    updateWindowMs?: number
     timestampMs: number
 }
 
@@ -127,8 +129,14 @@ export interface FrameworkCommitInput {
     timestampMs?: number
 }
 
+export interface FrameworkUpdateWindowInput {
+    updateWindowMs: number
+    timestampMs?: number
+}
+
 export interface FrameworkCommitProbe {
     recordCommit(input: FrameworkCommitInput): boolean
+    recordUpdateWindow(input: FrameworkUpdateWindowInput): boolean
     /** Compatible with React Profiler's onRender callback without importing React. */
     onReactProfilerRender(
         id: string,
@@ -222,6 +230,20 @@ export function createFrameworkCommitProbe(options: FrameworkCommitProbeOptions)
     return {
         recordCommit(input): boolean {
             return record(input, 'manual')
+        },
+        recordUpdateWindow(input): boolean {
+            if (disposed) return false
+            const updateWindowMs = finiteNonNegative(input.updateWindowMs)
+            if (updateWindowMs === undefined) return false
+            return safeEmit(() =>
+                options.sink.recordFrameworkStats({
+                    source: 'framework-lifecycle',
+                    framework,
+                    phase: 'update',
+                    updateWindowMs,
+                    timestampMs: finiteTimestamp(input.timestampMs) ?? safeNow(now),
+                })
+            )
         },
         onReactProfilerRender(_id, phase, actualDuration, baseDuration, _startTime, commitTime): void {
             if (framework !== 'react') return
