@@ -2,7 +2,7 @@ import { Body, Controller, Get, Param, Patch, Post, Put, Request, UnauthorizedEx
 import type { Request as ExpressRequest } from 'express'
 
 import {
-    LAB_RUNNER_CONTRACT_VERSION,
+    type LabRunnerContractVersion,
     parseArtifactUploadMetadata,
     parseLabRunnerContractVersion,
     parseRunnerGrantToken,
@@ -16,28 +16,33 @@ export class LabRunnerController {
 
     @Get('/runs/:runId/contract')
     async negotiateContract(@Param('runId') runId: string, @Request() req: ExpressRequest) {
-        this.runnerContract(req)
-        const data = await this.labService.negotiateRunnerContract(runId, this.runnerToken(req))
+        const runnerContractVersion = this.runnerContract(req)
+        const data = await this.labService.negotiateRunnerContract(runId, this.runnerToken(req), runnerContractVersion)
         return { success: true, data }
     }
 
     @Post('/runs/:runId/claim')
     async claimRun(@Param('runId') runId: string, @Request() req: ExpressRequest) {
-        this.runnerContract(req)
-        const data = await this.labService.claimRun(runId, this.runnerToken(req))
+        const runnerContractVersion = this.runnerContract(req)
+        const data = await this.labService.claimRun(runId, this.runnerToken(req), runnerContractVersion)
         return { success: true, data }
     }
 
     @Patch('/runs/:runId')
     async updateRun(@Param('runId') runId: string, @Body() body: unknown, @Request() req: ExpressRequest) {
-        this.runnerContract(req)
-        const data = await this.labService.updateRunFromRunner(runId, this.runnerToken(req), parseUpdateLabRunInput(body))
+        const runnerContractVersion = this.runnerContract(req)
+        const data = await this.labService.updateRunFromRunner(
+            runId,
+            this.runnerToken(req),
+            runnerContractVersion,
+            parseUpdateLabRunInput(body)
+        )
         return { success: true, data }
     }
 
     @Put('/runs/:runId/artifacts/:kind')
     async uploadArtifact(@Param('runId') runId: string, @Param('kind') kind: string, @Request() req: ExpressRequest) {
-        this.runnerContract(req)
+        const runnerContractVersion = this.runnerContract(req)
         const metadata = parseArtifactUploadMetadata({
             kind,
             transportContentType: req.headers['content-type'],
@@ -50,6 +55,7 @@ export class LabRunnerController {
         const data = await this.labService.uploadArtifact({
             runId,
             token: this.runnerToken(req),
+            runnerContractVersion,
             input: req,
             metadata,
         })
@@ -68,7 +74,7 @@ export class LabRunnerController {
         }
     }
 
-    private runnerContract(req: ExpressRequest): typeof LAB_RUNNER_CONTRACT_VERSION {
+    private runnerContract(req: ExpressRequest): LabRunnerContractVersion {
         return parseLabRunnerContractVersion(req.headers['x-lab-runner-contract'])
     }
 }

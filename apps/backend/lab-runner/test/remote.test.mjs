@@ -39,8 +39,20 @@ function claimedConfig(overrides = {}) {
     }
 }
 
+function requiredCapabilities(measurementContract = claimedConfig().measurementContract) {
+    return {
+        metricCatalogVersion: measurementContract.metricCatalogVersion,
+        budgetRef: { ...measurementContract.budgetRef },
+    }
+}
+
 function contractData(overrides = {}) {
-    return { runId, runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION, ...overrides }
+    return {
+        runId,
+        runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION,
+        requiredCapabilities: requiredCapabilities(),
+        ...overrides,
+    }
 }
 
 function verboseToken(prefix, index) {
@@ -389,16 +401,20 @@ test('accepts and preserves the closed platform measurement contract', async t =
         targetFrameMs: 8.333333,
         source: 'explicit',
         confidence: 'explicit',
-        budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 3 },
-        metricCatalogVersion: 1,
+        budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 4 },
+        metricCatalogVersion: 4,
     }
     globalThis.fetch = async url =>
         new Response(
             JSON.stringify({
                 success: true,
                 data: String(url).endsWith('/contract')
-                    ? contractData()
-                    : { ...contractData(), targetUrl: 'http://localhost:5173/', config: claimedConfig({ measurementContract }) },
+                    ? contractData({ requiredCapabilities: requiredCapabilities(measurementContract) })
+                    : {
+                          ...contractData({ requiredCapabilities: requiredCapabilities(measurementContract) }),
+                          targetUrl: 'http://localhost:5173/',
+                          config: claimedConfig({ measurementContract }),
+                      },
             }),
             { status: 200, headers: { 'Content-Type': 'application/json' } }
         )
@@ -459,7 +475,7 @@ test('fails closed when a platform claim omits, extends, or corrupts execution a
             config: claimedConfig({
                 measurementContract: {
                     ...validMeasurementContract,
-                    budgetRef: { ...validMeasurementContract.budgetRef, budgetVersion: 4 },
+                    budgetRef: { ...validMeasurementContract.budgetRef, budgetVersion: 5 },
                 },
             }),
         },
@@ -503,6 +519,17 @@ test('fails before claim when Monitor contract negotiation is missing, old, or f
         assert.ok(requests[0].url.endsWith('/contract'))
     }
 
+    let missingCapabilitiesRequests = 0
+    globalThis.fetch = async () => {
+        missingCapabilitiesRequests += 1
+        return new Response(JSON.stringify({ success: true, data: { runId, runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })
+    }
+    await assert.rejects(client.claim(), /required capabilities/u)
+    assert.equal(missingCapabilitiesRequests, 1)
+
     let requests = 0
     globalThis.fetch = async () => {
         requests += 1
@@ -513,6 +540,51 @@ test('fails before claim when Monitor contract negotiation is missing, old, or f
     }
     await assert.rejects(client.claim(), /negotiation endpoint is unavailable.*upgrade Monitor and the local Runner together/iu)
     assert.equal(requests, 1)
+})
+
+test('fails before navigation when negotiation, claim, or config capabilities drift', async t => {
+    const originalFetch = globalThis.fetch
+    t.after(() => {
+        globalThis.fetch = originalFetch
+    })
+    const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
+    const v4MeasurementContract = {
+        ...claimedConfig().measurementContract,
+        source: 'explicit',
+        confidence: 'explicit',
+        budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 4 },
+        metricCatalogVersion: 4,
+    }
+
+    globalThis.fetch = async url => {
+        const data = String(url).endsWith('/contract')
+            ? contractData()
+            : {
+                  ...contractData({ requiredCapabilities: requiredCapabilities(v4MeasurementContract) }),
+                  targetUrl: 'http://localhost:5173/',
+                  config: claimedConfig({ measurementContract: v4MeasurementContract }),
+              }
+        return new Response(JSON.stringify({ success: true, data }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })
+    }
+    await assert.rejects(client.claim(), /capabilities drifted after negotiation/u)
+
+    globalThis.fetch = async url => {
+        const data = String(url).endsWith('/contract')
+            ? contractData()
+            : {
+                  ...contractData(),
+                  targetUrl: 'http://localhost:5173/',
+                  config: claimedConfig({ measurementContract: v4MeasurementContract }),
+              }
+        return new Response(JSON.stringify({ success: true, data }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })
+    }
+    await assert.rejects(client.claim(), /config does not match negotiated required capabilities/u)
 })
 
 test('fails before navigation when the claim response drifts after successful contract negotiation', async t => {

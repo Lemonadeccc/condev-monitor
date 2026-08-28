@@ -23,7 +23,7 @@ const WARMUP_DETAIL_OMITTED_LIMITATION = 'warmup-detail-omitted-from-report'
 const ATTEMPT_METRIC_PROJECTION_LIMITATION = 'attempt-metric-projection-truncated'
 const REPORT_BYTE_BUDGET_LIMITATION = 'report-upload-byte-budget-truncated-attempt-detail'
 const ACTION_SCOPED_COMPACT_SUMMARY_LIMITATION = 'action-scoped-metrics-retained-only-in-animation-report'
-export const LAB_RUNNER_CONTRACT_VERSION = 4 as const
+export const LAB_RUNNER_CONTRACT_VERSION = 5 as const
 
 export interface RemoteLabConnectionOptions {
     server: string
@@ -126,8 +126,8 @@ function claimedMeasurementContract(value: unknown): LabMeasurementContractV2 {
     if (typeof budgetRef.budgetId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/u.test(budgetRef.budgetId)) {
         throw new Error('Lab server returned an invalid platform measurement budget id')
     }
-    const metricCatalogVersion = claimedInteger(contract.metricCatalogVersion, 1, 3, 'measurementContract.metricCatalogVersion')
-    const budgetVersion = claimedInteger(budgetRef.budgetVersion, 1, 3, 'measurementContract.budgetRef.budgetVersion')
+    const metricCatalogVersion = claimedInteger(contract.metricCatalogVersion, 1, 4, 'measurementContract.metricCatalogVersion')
+    const budgetVersion = claimedInteger(budgetRef.budgetVersion, 1, 4, 'measurementContract.budgetRef.budgetVersion')
     if (budgetRef.budgetId !== 'condev.animation.default') {
         throw new Error('Lab server returned an unknown platform measurement budget')
     }
@@ -142,7 +142,7 @@ function claimedMeasurementContract(value: unknown): LabMeasurementContractV2 {
             budgetId: budgetRef.budgetId,
             budgetVersion,
         },
-        metricCatalogVersion: metricCatalogVersion as 1 | 2 | 3,
+        metricCatalogVersion: metricCatalogVersion as 1 | 2 | 3 | 4,
     }
     if (
         normalized.source === 'package-default' &&
@@ -155,6 +155,39 @@ function claimedMeasurementContract(value: unknown): LabMeasurementContractV2 {
         throw new Error('Lab server returned a non-canonical platform package default')
     }
     return normalized
+}
+
+type RemoteRequiredCapabilities = Pick<LabMeasurementContractV2, 'metricCatalogVersion' | 'budgetRef'>
+
+function claimedRequiredCapabilities(value: unknown): RemoteRequiredCapabilities {
+    const capabilities = claimedRecord(value, 'required capabilities')
+    claimedExactKeys(capabilities, ['metricCatalogVersion', 'budgetRef'], 'required capabilities')
+    const budgetRef = claimedRecord(capabilities.budgetRef, 'required capabilities budget')
+    claimedExactKeys(budgetRef, ['catalogVersion', 'budgetId', 'budgetVersion'], 'required capabilities budget')
+    if (budgetRef.catalogVersion !== 1 || budgetRef.budgetId !== 'condev.animation.default') {
+        throw new Error('Lab server returned an invalid platform required budget')
+    }
+    return {
+        metricCatalogVersion: claimedInteger(capabilities.metricCatalogVersion, 1, 4, 'requiredCapabilities.metricCatalogVersion') as
+            | 1
+            | 2
+            | 3
+            | 4,
+        budgetRef: {
+            catalogVersion: 1,
+            budgetId: budgetRef.budgetId,
+            budgetVersion: claimedInteger(budgetRef.budgetVersion, 1, 4, 'requiredCapabilities.budgetRef.budgetVersion'),
+        },
+    }
+}
+
+function sameRequiredCapabilities(left: RemoteRequiredCapabilities, right: RemoteRequiredCapabilities): boolean {
+    return (
+        left.metricCatalogVersion === right.metricCatalogVersion &&
+        left.budgetRef.catalogVersion === right.budgetRef.catalogVersion &&
+        left.budgetRef.budgetId === right.budgetRef.budgetId &&
+        left.budgetRef.budgetVersion === right.budgetRef.budgetVersion
+    )
 }
 
 function claimedConfig(value: unknown): RemoteClaimedLabRunConfig {
@@ -524,7 +557,7 @@ export class RemoteLabClient {
     }
 
     async claim(): Promise<RemoteClaimedLabRun> {
-        let contract: { runId?: unknown; runnerContractVersion?: unknown }
+        let contract: { runId?: unknown; runnerContractVersion?: unknown; requiredCapabilities?: unknown }
         try {
             contract = await this.jsonRequest(`runs/${this.runId}/contract`, {
                 method: 'GET',
@@ -538,23 +571,35 @@ export class RemoteLabClient {
             }
             throw error
         }
-        this.assertContract(contract, 'negotiation')
+        const negotiatedCapabilities = this.assertContract(contract, 'negotiation')
         const run = await this.jsonRequest<{
             runId?: unknown
             targetUrl?: unknown
             config?: unknown
             runnerContractVersion?: unknown
+            requiredCapabilities?: unknown
         }>(`runs/${this.runId}/claim`, {
             method: 'POST',
             headers: this.contractHeader(),
         })
-        this.assertContract(run, 'claim')
+        const claimedCapabilities = this.assertContract(run, 'claim')
+        if (!sameRequiredCapabilities(negotiatedCapabilities, claimedCapabilities)) {
+            throw new Error('Lab Runner claim capabilities drifted after negotiation')
+        }
         if (run.runId !== this.runId) throw new Error('Lab server returned a mismatched platform run id')
         if (typeof run.targetUrl !== 'string' || !run.targetUrl) throw new Error('Lab server returned an invalid platform target URL')
+        const config = claimedConfig(run.config)
+        const configCapabilities: RemoteRequiredCapabilities = {
+            metricCatalogVersion: config.measurementContract.metricCatalogVersion,
+            budgetRef: config.measurementContract.budgetRef,
+        }
+        if (!sameRequiredCapabilities(claimedCapabilities, configCapabilities)) {
+            throw new Error('Lab server claim config does not match negotiated required capabilities')
+        }
         return {
             runId: this.runId,
             targetUrl: run.targetUrl,
-            config: claimedConfig(run.config),
+            config,
             runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION,
         }
     }
@@ -602,12 +647,16 @@ export class RemoteLabClient {
         return { 'X-Lab-Runner-Contract': String(LAB_RUNNER_CONTRACT_VERSION) }
     }
 
-    private assertContract(value: { runId?: unknown; runnerContractVersion?: unknown }, phase: string): void {
+    private assertContract(
+        value: { runId?: unknown; runnerContractVersion?: unknown; requiredCapabilities?: unknown },
+        phase: string
+    ): RemoteRequiredCapabilities {
         if (value.runId !== this.runId || value.runnerContractVersion !== LAB_RUNNER_CONTRACT_VERSION) {
             throw new Error(
                 `Lab Runner contract ${LAB_RUNNER_CONTRACT_VERSION} ${phase} failed; upgrade Monitor and the local Runner together`
             )
         }
+        return claimedRequiredCapabilities(value.requiredCapabilities)
     }
 
     private async upload(kind: 'animation-report' | 'trace-index', mimeType: 'application/json', body: Buffer): Promise<void> {

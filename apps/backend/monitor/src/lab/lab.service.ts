@@ -20,13 +20,15 @@ import { LabArtifactEntity } from './entity/lab-artifact.entity'
 import { LabRunEntity } from './entity/lab-run.entity'
 import { LabRunnerGrantEntity } from './entity/lab-runner-grant.entity'
 import {
+    assertLabRunnerSupportsMeasurementContract,
     type CompareLabRunsInput,
     createHash,
     type CreateLabRunInput,
     LAB_RUN_ARTIFACT_TOTAL_MAX_BYTES,
     LAB_RUN_SUMMARY_MAX_BYTES,
-    LAB_RUNNER_CONTRACT_VERSION,
     type LabArtifactUploadMetadata,
+    type LabRunnerContractVersion,
+    labRunnerRequiredCapabilities,
     type LabRunSummary,
     parseLabRunConfig,
     parseLabRunSummary,
@@ -292,11 +294,12 @@ export class LabService {
         })
     }
 
-    async claimRun(runId: string, token: string) {
+    async claimRun(runId: string, token: string, runnerContractVersion: LabRunnerContractVersion) {
         return this.dataSource.transaction(async manager => {
             const { run, grant } = await this.authenticateRunner(manager, runId, token, { requireClaimed: false, allowTerminal: true })
+            const config = this.compatibleRunnerConfig(run, runnerContractVersion)
             if (isTerminalLabStatus(run.status)) {
-                if (grant.consumedAt) return this.serializeRunnerClaim(run)
+                if (grant.consumedAt) return this.serializeRunnerClaim(run, runnerContractVersion, config)
                 throw new ConflictException(`Lab run is already ${run.status}`)
             }
             claimLabRunState(run)
@@ -305,33 +308,55 @@ export class LabService {
             grant.lastUsedAt = now
             await manager.getRepository(LabRunnerGrantEntity).save(grant)
             await manager.getRepository(LabRunEntity).save(run)
-            return this.serializeRunnerClaim(run)
+            return this.serializeRunnerClaim(run, runnerContractVersion, config)
         })
     }
 
-    async negotiateRunnerContract(runId: string, token: string) {
+    async negotiateRunnerContract(runId: string, token: string, runnerContractVersion: LabRunnerContractVersion) {
         return this.dataSource.transaction(async manager => {
-            const { run } = await this.authenticateRunner(manager, runId, token, { requireClaimed: false, allowTerminal: true })
-            return { runId: run.id, runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION }
+            const { run, grant } = await this.authenticateRunner(manager, runId, token, { requireClaimed: false, allowTerminal: true })
+            const config = this.compatibleRunnerConfig(run, runnerContractVersion)
+            grant.lastUsedAt = new Date()
+            await manager.getRepository(LabRunnerGrantEntity).save(grant)
+            return {
+                runId: run.id,
+                runnerContractVersion,
+                ...(runnerContractVersion === 5 ? { requiredCapabilities: labRunnerRequiredCapabilities(config.measurementContract) } : {}),
+            }
         })
     }
 
-    async updateRunFromRunner(runId: string, token: string, input: UpdateLabRunInput) {
+    async updateRunFromRunner(runId: string, token: string, runnerContractVersion: LabRunnerContractVersion, input: UpdateLabRunInput) {
         return this.dataSource.transaction(async manager => {
-            const { run } = await this.authenticateRunner(manager, runId, token, { requireClaimed: true, allowTerminal: true })
+            const { run, grant } = await this.authenticateRunner(manager, runId, token, { requireClaimed: true, allowTerminal: true })
+            this.compatibleRunnerConfig(run, runnerContractVersion)
             if (input.status === 'failed' && !input.errorCode && !run.errorCode) {
                 throw new BadRequestException('A failed lab run requires errorCode')
             }
             updateLabRunState(run, input)
             if (run.status === 'completed') run.errorCode = null
+            grant.lastUsedAt = new Date()
+            await manager.getRepository(LabRunnerGrantEntity).save(grant)
             await manager.getRepository(LabRunEntity).save(run)
             return this.serializeRun(run)
         })
     }
 
-    async uploadArtifact(params: { runId: string; token: string; input: Readable; metadata: LabArtifactUploadMetadata }) {
+    async uploadArtifact(params: {
+        runId: string
+        token: string
+        runnerContractVersion: LabRunnerContractVersion
+        input: Readable
+        metadata: LabArtifactUploadMetadata
+    }) {
         await this.dataSource.transaction(async manager => {
-            await this.authenticateRunner(manager, params.runId, params.token, { requireClaimed: true, allowTerminal: false })
+            const { run, grant } = await this.authenticateRunner(manager, params.runId, params.token, {
+                requireClaimed: true,
+                allowTerminal: false,
+            })
+            this.compatibleRunnerConfig(run, params.runnerContractVersion)
+            grant.lastUsedAt = new Date()
+            await manager.getRepository(LabRunnerGrantEntity).save(grant)
         })
         const existing = await this.artifactRepository.findOne({
             where: { runId: params.runId, idempotencyKeyHash: params.metadata.idempotencyKeyHash },
@@ -371,10 +396,13 @@ export class LabService {
                 parseTraceIndexArtifact(json)
             }
             return await this.dataSource.transaction(async manager => {
-                const { run } = await this.authenticateRunner(manager, params.runId, params.token, {
+                const { run, grant } = await this.authenticateRunner(manager, params.runId, params.token, {
                     requireClaimed: true,
                     allowTerminal: false,
                 })
+                this.compatibleRunnerConfig(run, params.runnerContractVersion)
+                grant.lastUsedAt = new Date()
+                await manager.getRepository(LabRunnerGrantEntity).save(grant)
                 const artifactRepository = manager.getRepository(LabArtifactEntity)
                 const duplicate = await artifactRepository.findOne({
                     where: { runId: run.id, idempotencyKeyHash: params.metadata.idempotencyKeyHash },
@@ -476,8 +504,6 @@ export class LabService {
         if (options.requireClaimed && !grant.consumedAt) throw new ConflictException('Runner must claim the grant before using it')
         if (run.appId !== grant.appId) throw new UnauthorizedException('Invalid runner grant')
         if (!options.allowTerminal && isTerminalLabStatus(run.status)) throw new ConflictException(`Lab run is already ${run.status}`)
-        grant.lastUsedAt = now
-        await manager.getRepository(LabRunnerGrantEntity).save(grant)
         return { run, grant }
     }
 
@@ -595,20 +621,30 @@ export class LabService {
         }
     }
 
-    private serializeRunnerClaim(run: LabRunEntity) {
+    private compatibleRunnerConfig(run: LabRunEntity, runnerContractVersion: LabRunnerContractVersion) {
         let config: ReturnType<typeof parseLabRunConfig>
         try {
             config = parseStoredLabRunConfig(run.config)
         } catch {
             throw new ConflictException('Lab run has an invalid stored execution config')
         }
+        assertLabRunnerSupportsMeasurementContract(runnerContractVersion, config.measurementContract)
+        return config
+    }
+
+    private serializeRunnerClaim(
+        run: LabRunEntity,
+        runnerContractVersion: LabRunnerContractVersion,
+        config = this.compatibleRunnerConfig(run, runnerContractVersion)
+    ) {
         if (!run.targetOrigin) throw new ConflictException('Lab run has no target URL')
         return {
             ...this.serializeRun(run),
             runId: run.id,
             targetUrl: run.targetOrigin,
             config,
-            runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION,
+            runnerContractVersion,
+            ...(runnerContractVersion === 5 ? { requiredCapabilities: labRunnerRequiredCapabilities(config.measurementContract) } : {}),
         }
     }
 

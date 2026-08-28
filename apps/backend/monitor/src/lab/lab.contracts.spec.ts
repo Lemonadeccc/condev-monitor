@@ -1,8 +1,10 @@
 import { BadRequestException, HttpException } from '@nestjs/common'
 
 import {
+    assertLabRunnerSupportsMeasurementContract,
     createHash,
     LAB_RUNNER_CONTRACT_VERSION,
+    LAB_RUNNER_CONTRACT_VERSIONS,
     parseArtifactUploadMetadata,
     parseCreateLabRunInput,
     parseLabRunnerContractVersion,
@@ -163,7 +165,7 @@ describe('animation lab contracts', () => {
             { ...valid, source: 'explicit', confidence: 'high' },
             { ...valid, budgetRef: { ...valid.budgetRef, privateBudget: true } },
             { ...valid, budgetRef: { ...valid.budgetRef, budgetId: 'custom.uninstalled' } },
-            { ...valid, budgetRef: { ...valid.budgetRef, budgetVersion: 4 } },
+            { ...valid, budgetRef: { ...valid.budgetRef, budgetVersion: 5 } },
             {
                 ...valid,
                 expectedHz: 120,
@@ -206,6 +208,33 @@ describe('animation lab contracts', () => {
         expect(parsed.config.measurementContract.metricCatalogVersion).toBe(3)
     })
 
+    it('accepts the explicit catalog v4 renderer contract and gates it to Runner v5', () => {
+        const measurementContract = parseCreateLabRunInput({
+            appId: 'app-123',
+            scenarioKey: 'renderer.evidence.v4',
+            config: {
+                measurementContract: {
+                    contractVersion: 2,
+                    expectedHz: 60,
+                    targetFrameMs: 16.666667,
+                    source: 'explicit',
+                    confidence: 'explicit',
+                    budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 4 },
+                    metricCatalogVersion: 4,
+                },
+            },
+        }).config.measurementContract
+
+        expect(measurementContract).toEqual(
+            expect.objectContaining({
+                budgetRef: expect.objectContaining({ budgetVersion: 4 }),
+                metricCatalogVersion: 4,
+            })
+        )
+        expect(() => assertLabRunnerSupportsMeasurementContract(4, measurementContract)).toThrow(HttpException)
+        expect(() => assertLabRunnerSupportsMeasurementContract(5, measurementContract)).not.toThrow()
+    })
+
     it('rejects unknown fields, URL credentials/query/path and under-sampled runs', () => {
         expect(() => parseCreateLabRunInput({ appId: 'app-123', scenarioKey: 'scenario', unexpected: true })).toThrow(BadRequestException)
         expect(() =>
@@ -223,16 +252,18 @@ describe('animation lab contracts', () => {
         ).toThrow('requires at least one warmup run')
     })
 
-    it('requires the exact runner contract before a grant can be claimed', () => {
-        expect(parseLabRunnerContractVersion(String(LAB_RUNNER_CONTRACT_VERSION))).toBe(LAB_RUNNER_CONTRACT_VERSION)
-        for (const version of [undefined, '1', '2', String(LAB_RUNNER_CONTRACT_VERSION + 1)]) {
+    it('accepts the rolling Runner contracts and rejects unsupported versions before claim', () => {
+        for (const version of LAB_RUNNER_CONTRACT_VERSIONS) {
+            expect(parseLabRunnerContractVersion(String(version))).toBe(version)
+        }
+        for (const version of [undefined, '1', '2', '3', String(LAB_RUNNER_CONTRACT_VERSION + 1)]) {
             try {
                 parseLabRunnerContractVersion(version)
                 throw new Error('expected contract rejection')
             } catch (error) {
                 expect(error).toBeInstanceOf(HttpException)
                 expect((error as HttpException).getStatus()).toBe(426)
-                expect((error as Error).message).toMatch(/upgrade Monitor and the local Runner together/u)
+                expect((error as Error).message).toMatch(/contract 4 or 5 is required/u)
             }
         }
     })

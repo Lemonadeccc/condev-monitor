@@ -16,7 +16,7 @@ function request(contract: string | undefined) {
 }
 
 describe('LabRunnerController contract negotiation', () => {
-    it.each([undefined, '1', '2', String(LAB_RUNNER_CONTRACT_VERSION + 1)])(
+    it.each([undefined, '1', '2', '3', String(LAB_RUNNER_CONTRACT_VERSION + 1)])(
         'rejects runner contract %s before claiming or changing run state',
         async contract => {
             const labService = {
@@ -37,29 +37,32 @@ describe('LabRunnerController contract negotiation', () => {
         }
     )
 
-    it('negotiates and claims only after the exact bidirectional contract is declared', async () => {
-        const negotiated = { runId, runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION }
-        const claimed = { ...negotiated, targetUrl: 'http://localhost:5173/', config: {} }
-        const labService = {
-            negotiateRunnerContract: jest.fn().mockResolvedValue(negotiated),
-            claimRun: jest.fn().mockResolvedValue(claimed),
-            updateRunFromRunner: jest.fn().mockResolvedValue({ runId, status: 'running' }),
-        }
-        const controller = new LabRunnerController(labService as never)
-        const req = request(String(LAB_RUNNER_CONTRACT_VERSION))
+    it.each([4, LAB_RUNNER_CONTRACT_VERSION] as const)(
+        'passes Runner contract %s through every control-plane operation',
+        async runnerContractVersion => {
+            const negotiated = { runId, runnerContractVersion }
+            const claimed = { ...negotiated, targetUrl: 'http://localhost:5173/', config: {} }
+            const labService = {
+                negotiateRunnerContract: jest.fn().mockResolvedValue(negotiated),
+                claimRun: jest.fn().mockResolvedValue(claimed),
+                updateRunFromRunner: jest.fn().mockResolvedValue({ runId, status: 'running' }),
+            }
+            const controller = new LabRunnerController(labService as never)
+            const req = request(String(runnerContractVersion))
 
-        await expect(controller.negotiateContract(runId, req)).resolves.toEqual({ success: true, data: negotiated })
-        await expect(controller.claimRun(runId, req)).resolves.toEqual({ success: true, data: claimed })
-        await expect(controller.updateRun(runId, { status: 'running', phase: 'measuring', progress: 30 }, req)).resolves.toEqual({
-            success: true,
-            data: { runId, status: 'running' },
-        })
-        expect(labService.negotiateRunnerContract).toHaveBeenCalledWith(runId, token)
-        expect(labService.claimRun).toHaveBeenCalledWith(runId, token)
-        expect(labService.updateRunFromRunner).toHaveBeenCalledWith(runId, token, {
-            status: 'running',
-            phase: 'measuring',
-            progress: 30,
-        })
-    })
+            await expect(controller.negotiateContract(runId, req)).resolves.toEqual({ success: true, data: negotiated })
+            await expect(controller.claimRun(runId, req)).resolves.toEqual({ success: true, data: claimed })
+            await expect(controller.updateRun(runId, { status: 'running', phase: 'measuring', progress: 30 }, req)).resolves.toEqual({
+                success: true,
+                data: { runId, status: 'running' },
+            })
+            expect(labService.negotiateRunnerContract).toHaveBeenCalledWith(runId, token, runnerContractVersion)
+            expect(labService.claimRun).toHaveBeenCalledWith(runId, token, runnerContractVersion)
+            expect(labService.updateRunFromRunner).toHaveBeenCalledWith(runId, token, runnerContractVersion, {
+                status: 'running',
+                phase: 'measuring',
+                progress: 30,
+            })
+        }
+    )
 })

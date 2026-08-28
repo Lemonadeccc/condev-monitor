@@ -1,4 +1,6 @@
 // cspell:ignore labg
+import { Readable } from 'node:stream'
+
 import { BadRequestException, ConflictException, NotFoundException, UnauthorizedException } from '@nestjs/common'
 
 import { LabArtifactEntity } from './entity/lab-artifact.entity'
@@ -146,14 +148,25 @@ describe('LabService runner grants and ownership', () => {
             {} as never
         )
 
-        const negotiated = await service.negotiateRunnerContract(run.id, rawToken)
-        expect(negotiated).toEqual({ runId: run.id, runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION })
+        await expect(service.negotiateRunnerContract(run.id, rawToken, 4)).resolves.toEqual({
+            runId: run.id,
+            runnerContractVersion: 4,
+        })
+        const negotiated = await service.negotiateRunnerContract(run.id, rawToken, LAB_RUNNER_CONTRACT_VERSION)
+        expect(negotiated).toEqual({
+            runId: run.id,
+            runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION,
+            requiredCapabilities: {
+                metricCatalogVersion: 1,
+                budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 1 },
+            },
+        })
         expect(grant.consumedAt).toBeNull()
         expect(run.status).toBe('created')
 
-        const first = await service.claimRun(run.id, rawToken)
+        const first = await service.claimRun(run.id, rawToken, LAB_RUNNER_CONTRACT_VERSION)
         const consumedAt = grant.consumedAt
-        const second = await service.claimRun(run.id, rawToken)
+        const second = await service.claimRun(run.id, rawToken, LAB_RUNNER_CONTRACT_VERSION)
 
         expect(first).toEqual(
             expect.objectContaining({
@@ -172,6 +185,10 @@ describe('LabService runner grants and ownership', () => {
                     },
                 }),
                 runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION,
+                requiredCapabilities: {
+                    metricCatalogVersion: 1,
+                    budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 1 },
+                },
             })
         )
         expect(second).toEqual(
@@ -179,6 +196,161 @@ describe('LabService runner grants and ownership', () => {
         )
         expect(consumedAt).toBeInstanceOf(Date)
         expect(grant.consumedAt).toBe(consumedAt)
+    })
+
+    it('rejects Runner v4 before consuming a catalog v4 grant and allows Runner v5', async () => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const rawToken = `labg_${'c'.repeat(43)}`
+        const config = parseCreateLabRunInput({
+            appId: 'app-123',
+            scenarioKey: 'renderer.evidence.v4',
+            config: {
+                measurementContract: {
+                    contractVersion: 2,
+                    expectedHz: 60,
+                    targetFrameMs: 16.666667,
+                    source: 'explicit',
+                    confidence: 'explicit',
+                    budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 4 },
+                    metricCatalogVersion: 4,
+                },
+            },
+        }).config
+        const run = runEntity({ config: JSON.stringify(config) })
+        const grant: LabRunnerGrantEntity = {
+            id: '22222222-2222-4222-8222-222222222222',
+            runId: run.id,
+            appId: run.appId,
+            tokenHash: createHash(rawToken),
+            expiresAt: new Date(Date.now() + 60_000),
+            consumedAt: null,
+            lastUsedAt: null,
+            revokedAt: null,
+            createdAt: new Date(),
+        }
+        runs.findOne.mockResolvedValue(run)
+        grants.findOne.mockResolvedValue(grant)
+        const repositories = new Map<unknown, unknown>([
+            [LabRunEntity, runs],
+            [LabArtifactEntity, artifacts],
+            [LabRunnerGrantEntity, grants],
+        ])
+        const manager = { getRepository: (entity: unknown) => repositories.get(entity) }
+        const dataSource = { transaction: jest.fn(async callback => callback(manager)) }
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            dataSource as never,
+            { assertOwned: jest.fn() } as never,
+            {} as never
+        )
+
+        for (const operation of [() => service.negotiateRunnerContract(run.id, rawToken, 4), () => service.claimRun(run.id, rawToken, 4)]) {
+            await expect(operation()).rejects.toMatchObject({ status: 426 })
+            expect(run.status).toBe('created')
+            expect(grant.consumedAt).toBeNull()
+            expect(grant.lastUsedAt).toBeNull()
+        }
+
+        await expect(service.negotiateRunnerContract(run.id, rawToken, 5)).resolves.toEqual({
+            runId: run.id,
+            runnerContractVersion: 5,
+            requiredCapabilities: {
+                metricCatalogVersion: 4,
+                budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 4 },
+            },
+        })
+        await expect(service.claimRun(run.id, rawToken, 5)).resolves.toEqual(
+            expect.objectContaining({
+                runnerContractVersion: 5,
+                requiredCapabilities: expect.objectContaining({ metricCatalogVersion: 4 }),
+            })
+        )
+        expect(run.status).toBe('running')
+        expect(grant.consumedAt).toBeInstanceOf(Date)
+    })
+
+    it('rejects Runner v4 updates and artifact uploads for catalog v4 before mutation or storage', async () => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const rawToken = `labg_${'d'.repeat(43)}`
+        const config = parseCreateLabRunInput({
+            appId: 'app-123',
+            scenarioKey: 'renderer.evidence.v4',
+            config: {
+                measurementContract: {
+                    contractVersion: 2,
+                    expectedHz: 60,
+                    targetFrameMs: 16.666667,
+                    source: 'explicit',
+                    confidence: 'explicit',
+                    budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 4 },
+                    metricCatalogVersion: 4,
+                },
+            },
+        }).config
+        const run = runEntity({ status: 'running', phase: 'measuring', progress: 0.5, config: JSON.stringify(config) })
+        const consumedAt = new Date('2026-08-25T00:00:30.000Z')
+        const grant: LabRunnerGrantEntity = {
+            id: '22222222-2222-4222-8222-222222222222',
+            runId: run.id,
+            appId: run.appId,
+            tokenHash: createHash(rawToken),
+            expiresAt: new Date(Date.now() + 60_000),
+            consumedAt,
+            lastUsedAt: consumedAt,
+            revokedAt: null,
+            createdAt: new Date(),
+        }
+        runs.findOne.mockResolvedValue(run)
+        grants.findOne.mockResolvedValue(grant)
+        const repositories = new Map<unknown, unknown>([
+            [LabRunEntity, runs],
+            [LabArtifactEntity, artifacts],
+            [LabRunnerGrantEntity, grants],
+        ])
+        const manager = { getRepository: (entity: unknown) => repositories.get(entity) }
+        const dataSource = { transaction: jest.fn(async callback => callback(manager)) }
+        const storage = { writeTemporary: jest.fn() }
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            dataSource as never,
+            { assertOwned: jest.fn() } as never,
+            storage as never
+        )
+
+        await expect(service.updateRunFromRunner(run.id, rawToken, 4, { phase: 'processing', progress: 0.75 })).rejects.toMatchObject({
+            status: 426,
+        })
+        await expect(
+            service.uploadArtifact({
+                runId: run.id,
+                token: rawToken,
+                runnerContractVersion: 4,
+                input: Readable.from('{}'),
+                metadata: {
+                    kind: 'animation-report',
+                    mimeType: 'application/json',
+                    encoding: 'identity',
+                    expectedSha256: 'a'.repeat(64),
+                    idempotencyKeyHash: 'b'.repeat(64),
+                    contentLength: 2,
+                    maxBytes: 2 * 1024 * 1024,
+                },
+            })
+        ).rejects.toMatchObject({ status: 426 })
+
+        expect(run).toEqual(expect.objectContaining({ status: 'running', phase: 'measuring', progress: 0.5 }))
+        expect(grant).toEqual(expect.objectContaining({ consumedAt, lastUsedAt: consumedAt }))
+        expect(runs.save).not.toHaveBeenCalled()
+        expect(grants.save).not.toHaveBeenCalled()
+        expect(storage.writeTemporary).not.toHaveBeenCalled()
     })
 
     it('fails closed when a claimed run has an incomplete or malformed persisted execution config', () => {
@@ -244,7 +416,7 @@ describe('LabService runner grants and ownership', () => {
             {} as never
         )
 
-        await expect(service.claimRun(run.id, rawToken)).rejects.toBeInstanceOf(UnauthorizedException)
+        await expect(service.claimRun(run.id, rawToken, LAB_RUNNER_CONTRACT_VERSION)).rejects.toBeInstanceOf(UnauthorizedException)
         expect(run.status).toBe('created')
         expect(grant.consumedAt).toBeNull()
     })

@@ -8,7 +8,9 @@ import { type AnimationLabMetricV2Projection, parseAnimationLabMetricV2 } from '
 export const LAB_RUN_CONFIG_MAX_BYTES = 16 * 1024
 export const LAB_RUN_SUMMARY_MAX_BYTES = 64 * 1024
 export const LAB_RUN_ARTIFACT_TOTAL_MAX_BYTES = 128 * 1024 * 1024
-export const LAB_RUNNER_CONTRACT_VERSION = 4 as const
+export const LAB_RUNNER_CONTRACT_VERSION = 5 as const
+export const LAB_RUNNER_CONTRACT_VERSIONS = [4, LAB_RUNNER_CONTRACT_VERSION] as const
+export type LabRunnerContractVersion = (typeof LAB_RUNNER_CONTRACT_VERSIONS)[number]
 
 export const LAB_RUN_STATUSES = ['created', 'running', 'completed', 'failed', 'cancelled', 'expired'] as const
 export type LabRunStatus = (typeof LAB_RUN_STATUSES)[number]
@@ -63,8 +65,10 @@ export type LabRunMeasurementContract = {
     source: 'explicit' | 'package-default'
     confidence: 'explicit' | 'low'
     budgetRef: { catalogVersion: 1; budgetId: string; budgetVersion: number }
-    metricCatalogVersion: 1 | 2 | 3
+    metricCatalogVersion: 1 | 2 | 3 | 4
 }
+
+export type LabRunnerRequiredCapabilities = Pick<LabRunMeasurementContract, 'metricCatalogVersion' | 'budgetRef'>
 
 export const LAB_DEFAULT_MEASUREMENT_CONTRACT: Readonly<LabRunMeasurementContract> = Object.freeze({
     contractVersion: 2,
@@ -86,13 +90,34 @@ export const LAB_GENERIC_MEASUREMENT_CONTRACT: Readonly<LabRunMeasurementContrac
     metricCatalogVersion: 3,
 })
 
-export function parseLabRunnerContractVersion(value: unknown): typeof LAB_RUNNER_CONTRACT_VERSION {
+export function parseLabRunnerContractVersion(value: unknown): LabRunnerContractVersion {
     const raw = Array.isArray(value) ? value[0] : value
-    if (raw === String(LAB_RUNNER_CONTRACT_VERSION)) return LAB_RUNNER_CONTRACT_VERSION
+    const parsed = LAB_RUNNER_CONTRACT_VERSIONS.find(version => raw === String(version))
+    if (parsed !== undefined) return parsed
     throw new HttpException(
-        `Animation Lab Runner contract ${LAB_RUNNER_CONTRACT_VERSION} is required; upgrade Monitor and the local Runner together`,
+        `Animation Lab Runner contract ${LAB_RUNNER_CONTRACT_VERSIONS.join(' or ')} is required; upgrade Monitor and the local Runner together`,
         426
     )
+}
+
+export function labRunnerRequiredCapabilities(contract: LabRunMeasurementContract): LabRunnerRequiredCapabilities {
+    return {
+        metricCatalogVersion: contract.metricCatalogVersion,
+        budgetRef: { ...contract.budgetRef },
+    }
+}
+
+export function assertLabRunnerSupportsMeasurementContract(
+    runnerContractVersion: LabRunnerContractVersion,
+    measurementContract: LabRunMeasurementContract
+): void {
+    const maximumVersion = runnerContractVersion === 4 ? 3 : 4
+    if (measurementContract.metricCatalogVersion > maximumVersion || measurementContract.budgetRef.budgetVersion > maximumVersion) {
+        throw new HttpException(
+            `Animation Lab Runner contract ${runnerContractVersion} cannot execute metric catalog ${measurementContract.metricCatalogVersion} and budget ${measurementContract.budgetRef.budgetVersion}`,
+            426
+        )
+    }
 }
 
 export type CreateLabRunInput = {
@@ -319,11 +344,11 @@ function parseLabRunMeasurementContract(raw: unknown): LabRunMeasurementContract
         throw new BadRequestException('Invalid config.measurementContract.budgetRef.catalogVersion')
     }
     const budgetId = requiredString(raw.budgetRef.budgetId, 'config.measurementContract.budgetRef.budgetId', 120, SAFE_KEY)
-    const budgetVersion = integer(raw.budgetRef.budgetVersion, 'config.measurementContract.budgetRef.budgetVersion', 1, 3)
+    const budgetVersion = integer(raw.budgetRef.budgetVersion, 'config.measurementContract.budgetRef.budgetVersion', 1, 4)
     if (budgetId !== 'condev.animation.default') {
         throw new BadRequestException('config.measurementContract references an unknown local budget')
     }
-    const metricCatalogVersion = integer(raw.metricCatalogVersion, 'config.measurementContract.metricCatalogVersion', 1, 3) as 1 | 2 | 3
+    const metricCatalogVersion = integer(raw.metricCatalogVersion, 'config.measurementContract.metricCatalogVersion', 1, 4) as 1 | 2 | 3 | 4
     const normalized: LabRunMeasurementContract = {
         contractVersion: 2,
         expectedHz,
