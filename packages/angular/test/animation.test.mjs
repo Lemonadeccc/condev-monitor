@@ -3,12 +3,17 @@ import { createRequire } from 'node:module'
 import test from 'node:test'
 
 import { init as browserAnimationInit } from '@condev-monitor/monitor-sdk-browser/animation'
-import { createCondevAngularAnimationScope, init, registerCondevAngularPostRender } from '@condev-monitor/angular/animation'
+import {
+    bindCondevAngularAnimationTarget,
+    createCondevAngularAnimationScope,
+    init,
+    registerCondevAngularPostRender,
+} from '@condev-monitor/angular/animation'
 import * as angularRoot from '@condev-monitor/angular'
 
 const require = createRequire(import.meta.url)
 
-function createClientHarness({ throwOnCreate = false, throwOnRecord = false, throwOnRegister = false } = {}) {
+function createClientHarness({ throwOnCreate = false, throwOnRecord = false, throwOnRegister = false, throwOnUnregister = false } = {}) {
     const samples = []
     const registrations = []
     let disposeCalls = 0
@@ -43,11 +48,18 @@ function createClientHarness({ throwOnCreate = false, throwOnRecord = false, thr
                 },
                 registerTarget(element, inspect) {
                     if (throwOnRegister) throw new Error('target registry unavailable')
+                    for (const current of registrations) {
+                        if (current.element === element && current.active) current.unregister()
+                    }
                     const registration = { element, inspect, active: true }
                     registrations.push(registration)
-                    return () => {
+                    const unregister = () => {
+                        if (throwOnUnregister) throw new Error('target registry cleanup failed')
                         registration.active = false
                     }
+                    Object.defineProperty(unregister, 'active', { get: () => registration.active })
+                    registration.unregister = unregister
+                    return unregister
                 },
             },
         },
@@ -60,9 +72,109 @@ test('the Angular animation entry reuses the Browser animation init in ESM and C
     const commonJsBrowserAnimation = require('@condev-monitor/monitor-sdk-browser/animation')
     assert.equal(commonJs.init, commonJsBrowserAnimation.init)
     assert.equal(typeof commonJs.createCondevAngularAnimationScope, 'function')
+    assert.equal(typeof commonJs.bindCondevAngularAnimationTarget, 'function')
     assert.equal(typeof commonJs.registerCondevAngularPostRender, 'function')
     assert.equal('createCondevAngularAnimationScope' in angularRoot, false)
+    assert.equal('bindCondevAngularAnimationTarget' in angularRoot, false)
     assert.equal('createCondevAngularAnimationScope' in require('@condev-monitor/angular'), false)
+    assert.equal('bindCondevAngularAnimationTarget' in require('@condev-monitor/angular'), false)
+})
+
+test('the decorator-free Angular target binding keeps anonymous ownership and disposes idempotently', () => {
+    const harness = createClientHarness()
+    const target = { node: 'private-angular-element' }
+
+    const unbind = bindCondevAngularAnimationTarget(harness.client, target)
+
+    assert.equal(unbind.status, 'attached')
+    assert.equal(harness.registrations.length, 1)
+    assert.equal(harness.registrations[0].element, target)
+    assert.deepEqual(harness.registrations[0].inspect(), {
+        inventory: { uiFrameworks: ['angular'] },
+        owners: [{ relation: 'framework-owner', framework: 'angular' }],
+    })
+    assert.deepEqual(Object.keys(harness.registrations[0].inspect()).sort(), ['inventory', 'owners'])
+
+    assert.doesNotThrow(() => unbind())
+    assert.equal(unbind.status, 'disposed')
+    assert.doesNotThrow(() => unbind())
+    assert.equal(harness.registrations[0].active, false)
+})
+
+test('the decorator-free Angular target binding fails closed around registry setup and cleanup', () => {
+    const unavailable = createClientHarness({ throwOnRegister: true })
+    const failedBinding = bindCondevAngularAnimationTarget(unavailable.client, { node: 1 })
+
+    assert.equal(failedBinding.status, 'unavailable')
+    assert.equal(unavailable.registrations.length, 0)
+    assert.doesNotThrow(() => failedBinding())
+
+    const cleanupFailure = createClientHarness({ throwOnUnregister: true })
+    const unbind = bindCondevAngularAnimationTarget(cleanupFailure.client, { node: 2 })
+    assert.doesNotThrow(() => unbind())
+    assert.equal(unbind.status, 'cleanup-failed')
+    assert.doesNotThrow(() => unbind())
+    assert.equal(cleanupFailure.registrations[0].active, true)
+})
+
+test('the target helper and lifecycle scope share same-element ownership without eviction', () => {
+    const target = { node: 'shared-angular-element' }
+    const scopeFirst = createClientHarness()
+    const scope = createCondevAngularAnimationScope({ client: scopeFirst.client, getTarget: () => target })
+    scope.postRendered()
+
+    const sharedHelper = bindCondevAngularAnimationTarget(scopeFirst.client, target)
+    assert.equal(sharedHelper.status, 'attached')
+    assert.equal(scopeFirst.registrations.length, 1)
+    assert.equal(scopeFirst.registrations[0].active, true)
+
+    scope.destroy()
+    assert.equal(scopeFirst.registrations[0].active, true)
+    sharedHelper()
+    assert.equal(scopeFirst.registrations[0].active, false)
+
+    const helperFirst = createClientHarness()
+    const helper = bindCondevAngularAnimationTarget(helperFirst.client, target)
+    const waitingScope = createCondevAngularAnimationScope({ client: helperFirst.client, getTarget: () => target })
+    waitingScope.postRendered()
+
+    assert.equal(helper.status, 'attached')
+    assert.equal(helperFirst.registrations.length, 1)
+
+    helper()
+    waitingScope.postRendered()
+    assert.equal(helperFirst.registrations.length, 1)
+    assert.equal(helperFirst.registrations[0].active, true)
+    waitingScope.destroy()
+    assert.equal(helperFirst.registrations[0].active, false)
+})
+
+test('Angular bindings expose and recover from replacement by another target provider', () => {
+    const target = { node: 'replaceable-angular-element' }
+    const helperHarness = createClientHarness()
+    const first = bindCondevAngularAnimationTarget(helperHarness.client, target)
+    const external = helperHarness.client.animation.registerTarget(target, () => ({ owners: [] }))
+
+    assert.equal(first.status, 'replaced')
+    assert.equal(external.active, true)
+
+    const recovered = bindCondevAngularAnimationTarget(helperHarness.client, target)
+    assert.equal(recovered.status, 'attached')
+    assert.equal(external.active, false)
+    recovered()
+    first()
+
+    const scopeHarness = createClientHarness()
+    const scope = createCondevAngularAnimationScope({ client: scopeHarness.client, getTarget: () => target })
+    scope.postRendered()
+    const scopeExternal = scopeHarness.client.animation.registerTarget(target, () => ({ owners: [] }))
+    assert.equal(scopeExternal.active, true)
+
+    scope.postRendered()
+    assert.equal(scopeExternal.active, false)
+    assert.equal(scopeHarness.registrations.length, 3)
+    assert.equal(scopeHarness.registrations[2].active, true)
+    scope.destroy()
 })
 
 test('the Angular scope records only an observed component check window', () => {
