@@ -17,7 +17,7 @@ export interface LabBrowserProbeConfig {
     targetFrameMs?: number
     slowFrameFactor?: number
     /** Additive metric payload contract. Omitted callers retain the exact v1 shape. */
-    metricCatalogVersion?: 1 | 2
+    metricCatalogVersion?: 1 | 2 | 3
     /** Additive page-probe wire evidence. Omitted callers retain the exact legacy shape. */
     observerDropContractVersion?: 1
     actions?: readonly LabBrowserProbeActionConfig[]
@@ -26,7 +26,7 @@ export interface LabBrowserProbeConfig {
 export function installLabBrowserProbe(globalKey: string, config: LabBrowserProbeConfig = {}): void {
     const windowValue = window as unknown as Window & Record<string, unknown>
     const startedAt = performance.now()
-    const metricCatalogVersion = config.metricCatalogVersion === 2 ? 2 : 1
+    const metricCatalogVersion = config.metricCatalogVersion === 3 ? 3 : config.metricCatalogVersion === 2 ? 2 : 1
     const observerDropContractVersion = config.observerDropContractVersion === 1 ? 1 : null
     const maximumSamples = 20_000
     const maximumMetricSamples = 10_000_000
@@ -95,6 +95,15 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         string,
         { actionId: string; order: number; label: string; kind: string; startedAtMs: number; endedAtMs: number | null; outcome: string }
     >()
+    type VideoPlaybackCounter = { total: number; dropped: number; sourceIdentity: string } | null
+    type VideoPlaybackSnapshot = Map<HTMLVideoElement, VideoPlaybackCounter>
+    type ActiveVideoWindow = {
+        actionId: string
+        begin: VideoPlaybackSnapshot
+        discontinuities: Set<HTMLVideoElement>
+        cleanups: Array<() => void>
+    }
+    let activeVideoWindow: ActiveVideoWindow | null = null
     const commandCapability = typeof config.capability === 'string' ? config.capability : ''
     let nextCommandSequence = 0
     let activeActionId: string | null = null
@@ -270,7 +279,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             let firstUIEventToFrameEnd: number | null = null
             let forcedStyleAndLayoutCandidate = false
             let attributedForcedStyleAndLayout: number | null = null
-            if (metricCatalogVersion === 2) {
+            if (metricCatalogVersion >= 2) {
                 const firstUIEventTimestampExposed = 'firstUIEventTimestamp' in value
                 if (firstUIEventTimestampExposed) loafDiagnosticCapabilities.loafFirstUIEventTimestamp = true
                 else if (loafDiagnosticCapabilities.loafFirstUIEventTimestamp !== true) {
@@ -511,7 +520,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         return true
     }
     if (
-        metricCatalogVersion === 2 &&
+        metricCatalogVersion >= 2 &&
         typeof window.addEventListener === 'function' &&
         typeof window.removeEventListener === 'function' &&
         typeof window.requestAnimationFrame === 'function'
@@ -685,7 +694,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             samples,
             status: resolvedStatus,
             evidenceLevel:
-                metricCatalogVersion === 2 && (resolvedStatus === 'unsupported' || resolvedStatus === 'unknown')
+                metricCatalogVersion >= 2 && (resolvedStatus === 'unsupported' || resolvedStatus === 'unknown')
                     ? 'unsupported-or-unknown'
                     : 'controlled-lab-measurement',
         }
@@ -808,7 +817,146 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
     const overlaps = (startTime: number, duration: number, windowStart: number, windowEnd: number): boolean =>
         startTime < windowEnd && startTime + duration > windowStart
 
-    const actionMetrics = (actionId: string, windowStart: number, windowEnd: number, targetFrameMs: number, slowFrameFactor: number) => {
+    const captureVideoPlaybackSnapshot = (): VideoPlaybackSnapshot => {
+        const snapshot: VideoPlaybackSnapshot = new Map()
+        if (!capabilities.videoPlaybackQuality) return snapshot
+        for (const video of Array.from(document.querySelectorAll('video'))) {
+            try {
+                const quality = video.getVideoPlaybackQuality()
+                const total = quality.totalVideoFrames
+                const dropped = quality.droppedVideoFrames
+                snapshot.set(
+                    video,
+                    Number.isSafeInteger(total) && total >= 0 && Number.isSafeInteger(dropped) && dropped >= 0 && dropped <= total
+                        ? { total, dropped, sourceIdentity: video.currentSrc }
+                        : null
+                )
+            } catch {
+                snapshot.set(video, null)
+            }
+        }
+        return snapshot
+    }
+
+    const videoWindowMeasurement = (
+        begin: VideoPlaybackSnapshot,
+        end: VideoPlaybackSnapshot,
+        sourceDiscontinuities: ReadonlySet<HTMLVideoElement>
+    ) => {
+        if (!capabilities.videoPlaybackQuality) {
+            return {
+                evidence: {
+                    beginSurfaces: 0,
+                    endSurfaces: 0,
+                    matchedSurfaces: 0,
+                    eligibleSurfaces: 0,
+                    readErrorSurfaces: 0,
+                    discontinuitySurfaces: 0,
+                    totalFrameDelta: 0,
+                    droppedFrameDelta: 0,
+                },
+                metric: metric('resourcesMedia', 'videoWindowDroppedFrameRate', 'ratio', 'ratio', null, null, 'unsupported'),
+            }
+        }
+
+        let matchedSurfaces = 0
+        let eligibleSurfaces = 0
+        let readErrorSurfaces = 0
+        let discontinuitySurfaces = 0
+        let totalFrameDelta = 0
+        let droppedFrameDelta = 0
+        for (const [video, beginCounter] of begin) {
+            if (!end.has(video)) continue
+            matchedSurfaces += 1
+            const endCounter = end.get(video) ?? null
+            if (beginCounter === null || endCounter === null) {
+                readErrorSurfaces += 1
+                continue
+            }
+            if (sourceDiscontinuities.has(video) || beginCounter.sourceIdentity !== endCounter.sourceIdentity) {
+                discontinuitySurfaces += 1
+                continue
+            }
+            const totalDelta = endCounter.total - beginCounter.total
+            const droppedDelta = endCounter.dropped - beginCounter.dropped
+            if (
+                totalDelta < 0 ||
+                droppedDelta < 0 ||
+                droppedDelta > totalDelta ||
+                totalDelta > maximumMetricSamples - totalFrameDelta ||
+                droppedDelta > maximumMetricSamples - droppedFrameDelta
+            ) {
+                discontinuitySurfaces += 1
+                continue
+            }
+            eligibleSurfaces += 1
+            totalFrameDelta += totalDelta
+            droppedFrameDelta += droppedDelta
+        }
+        const addedSurfaces = end.size - matchedSurfaces
+        const removedSurfaces = begin.size - matchedSurfaces
+        const incomplete = addedSurfaces > 0 || removedSurfaces > 0 || readErrorSurfaces > 0 || discontinuitySurfaces > 0
+        const status = totalFrameDelta > 0 ? (incomplete ? 'partial' : 'measured') : incomplete ? 'unknown' : 'not-observed'
+        const evidence = {
+            beginSurfaces: begin.size,
+            endSurfaces: end.size,
+            matchedSurfaces,
+            eligibleSurfaces,
+            readErrorSurfaces,
+            discontinuitySurfaces,
+            totalFrameDelta,
+            droppedFrameDelta,
+        }
+        return {
+            evidence,
+            metric: metric(
+                'resourcesMedia',
+                'videoWindowDroppedFrameRate',
+                'ratio',
+                'ratio',
+                totalFrameDelta > 0 ? droppedFrameDelta / totalFrameDelta : null,
+                totalFrameDelta > 0 ? totalFrameDelta : incomplete ? null : 0,
+                status
+            ),
+        }
+    }
+
+    const beginVideoWindow = (actionId: string): ActiveVideoWindow => {
+        const begin = captureVideoPlaybackSnapshot()
+        const discontinuities = new Set<HTMLVideoElement>()
+        const cleanups: Array<() => void> = []
+        for (const video of begin.keys()) {
+            const markDiscontinuous = () => discontinuities.add(video)
+            for (const eventName of ['loadstart', 'emptied'] as const) {
+                video.addEventListener(eventName, markDiscontinuous)
+                cleanups.push(() => video.removeEventListener(eventName, markDiscontinuous))
+            }
+        }
+        return { actionId, begin, discontinuities, cleanups }
+    }
+
+    const finishVideoWindow = (actionId: string) => {
+        const active = activeVideoWindow
+        const begin = active?.actionId === actionId ? active.begin : new Map<HTMLVideoElement, VideoPlaybackCounter>()
+        const discontinuities = active?.actionId === actionId ? active.discontinuities : new Set<HTMLVideoElement>()
+        try {
+            return videoWindowMeasurement(begin, captureVideoPlaybackSnapshot(), discontinuities)
+        } finally {
+            for (const cleanup of active?.cleanups ?? []) cleanup()
+            activeVideoWindow = null
+        }
+    }
+
+    const actionVideoMeasurements = new Map<string, ReturnType<typeof videoWindowMeasurement>>()
+
+    const actionMetrics = (
+        actionId: string,
+        windowStart: number,
+        windowEnd: number,
+        targetFrameMs: number,
+        slowFrameFactor: number,
+        videoWindow: ReturnType<typeof videoWindowMeasurement> | null
+    ) => {
         const frameValues = frames
             .filter(frame => overlaps(frame.startTime, frame.duration, windowStart, windowEnd))
             .map(frame => frame.duration)
@@ -937,7 +1085,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                 capabilities.eventTiming ? undefined : 'unsupported'
             ),
         ]
-        if (metricCatalogVersion === 2) {
+        if (metricCatalogVersion >= 2) {
             metrics.push(
                 ...loafPaintMetrics(
                     renderStartToPaintStats?.count ?? 0,
@@ -960,6 +1108,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                 )
             )
         }
+        if (videoWindow) metrics.push(videoWindow.metric)
         return metrics
     }
 
@@ -980,6 +1129,9 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                 endedAtMs: null,
                 outcome: 'running',
             })
+            if (metricCatalogVersion === 3) {
+                activeVideoWindow = beginVideoWindow(actionId)
+            }
             activeActionId = actionId
             nextCommandSequence += 1
             return true
@@ -993,6 +1145,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             if (!authorize(capability, sequence) || stopped || activeActionId !== actionId) return false
             const current = actionWindows.get(actionId)
             if (!current || current.endedAtMs !== null) return false
+            if (metricCatalogVersion === 3) actionVideoMeasurements.set(actionId, finishVideoWindow(actionId))
             current.endedAtMs = Math.max(current.startedAtMs, performance.now() - startedAt)
             current.outcome = outcome
             activeActionId = null
@@ -1417,7 +1570,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                 ),
                 metric('monitorOverhead', 'droppedProbeSamples', 'count', 'count', droppedSamples, 1, 'measured'),
             ]
-            if (metricCatalogVersion === 2) {
+            if (metricCatalogVersion >= 2) {
                 metrics.push(
                     ...loafPaintMetrics(
                         streamTotals.longAnimationFrames.renderStartToPaintCount,
@@ -1450,11 +1603,21 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     const endedAtMs = window.endedAtMs ?? nowMs
                     const absoluteStart = startedAt + window.startedAtMs
                     const absoluteEnd = startedAt + endedAtMs
+                    const videoWindow =
+                        metricCatalogVersion === 3
+                            ? (actionVideoMeasurements.get(window.actionId) ??
+                              videoWindowMeasurement(
+                                  new Map<HTMLVideoElement, VideoPlaybackCounter>(),
+                                  new Map<HTMLVideoElement, VideoPlaybackCounter>(),
+                                  new Set<HTMLVideoElement>()
+                              ))
+                            : null
                     return {
                         ...window,
                         endedAtMs,
                         outcome: window.outcome === 'running' ? 'cancelled' : window.outcome,
-                        metrics: actionMetrics(window.actionId, absoluteStart, absoluteEnd, targetFrameMs, slowFrameFactor),
+                        metrics: actionMetrics(window.actionId, absoluteStart, absoluteEnd, targetFrameMs, slowFrameFactor, videoWindow),
+                        ...(videoWindow ? { videoWindowEvidence: videoWindow.evidence } : {}),
                     }
                 })
             const limitations = [
@@ -1469,12 +1632,12 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                 actionResults,
                 capabilities: {
                     ...capabilities,
-                    ...(metricCatalogVersion === 2
+                    ...(metricCatalogVersion >= 2
                         ? { ...loafPaintCapabilities, ...loafDiagnosticCapabilities, inputFrameScheduling: inputFrameSchedulingCapability }
                         : {}),
                 },
                 sampleDrops:
-                    metricCatalogVersion === 2
+                    metricCatalogVersion >= 2
                         ? sampleDrops
                         : {
                               frames: sampleDrops.frames,

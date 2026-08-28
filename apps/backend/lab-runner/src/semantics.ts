@@ -1,5 +1,5 @@
 import {
-    ANIMATION_LAB_METRIC_CATALOG_V2,
+    ANIMATION_LAB_METRIC_CATALOG_V3,
     ANIMATION_LAB_METRIC_CATALOG_VERSION,
     ANIMATION_LAB_SEMANTICS_VERSION,
     type AnimationLabMetric,
@@ -46,7 +46,7 @@ function median(values: readonly number[]): number {
 }
 
 function catalogEntry(metric: AnimationLabMetric) {
-    return ANIMATION_LAB_METRIC_CATALOG_V2.find(
+    return ANIMATION_LAB_METRIC_CATALOG_V3.find(
         entry =>
             (metric.metricId ? entry.metricId === metric.metricId : true) &&
             entry.family === metric.family &&
@@ -129,7 +129,7 @@ export function measurementContractForReport(scenario: AnimationLabScenario): La
 export function probeFrameContract(scenario: AnimationLabScenario): {
     expectedRefreshHz: number
     targetFrameMs: number
-    metricCatalogVersion: 1 | 2
+    metricCatalogVersion: 1 | 2 | 3
 } {
     const contract = scenario.measurementContract
     return contract
@@ -395,7 +395,7 @@ function canonicalMetricProjection(
     scenarioActions: readonly LabReportScenarioActionV2[]
 ): { metrics: AnimationLabMetricV2[]; omittedActionIds: ReadonlySet<string>; truncated: boolean } {
     const actionOrder = new Map(scenarioActions.map(action => [action.actionId, action.order]))
-    const catalogOrder = new Map(ANIMATION_LAB_METRIC_CATALOG_V2.map((entry, index) => [entry.metricId, index]))
+    const catalogOrder = new Map(ANIMATION_LAB_METRIC_CATALOG_V3.map((entry, index) => [entry.metricId, index]))
     const candidates = metrics
         .filter((metric): metric is AnimationLabMetricV2 => Boolean(metric.metricId && metric.scope))
         .map((metric, originalOrder) => ({ metric, originalOrder }))

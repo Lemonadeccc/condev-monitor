@@ -1,6 +1,7 @@
 import {
     ANIMATION_LAB_METRIC_CATALOG_V1,
     ANIMATION_LAB_METRIC_CATALOG_V2,
+    ANIMATION_LAB_METRIC_CATALOG_V3,
     type AnimationLabMetric,
     type LabActionKind,
     type LabMetricCatalogEntryV1,
@@ -40,6 +41,7 @@ const CAPABILITY_KEYS_V2 = new Set([
     'loafFirstUIEventTimestamp',
     'loafForcedStyleAndLayoutDuration',
 ])
+const CAPABILITY_KEYS_V3 = CAPABILITY_KEYS_V2
 const PAGE_PROBE_LIMITATIONS = [
     'renderer-gpu-timing-requires-explicit-evidence',
     'continuous-input-observation-is-sampled',
@@ -269,7 +271,7 @@ const CAPABILITY_METRIC_IDS: Readonly<Record<string, readonly string[]>> = {
     lcp: ['vital.lcp.latest'],
     documentAnimations: ['animation.running.count', 'animation.infinite.count'],
     reducedMotion: ['accessibility.reduced-motion-active.count'],
-    videoPlaybackQuality: ['media.video-dropped-frame-rate'],
+    videoPlaybackQuality: ['media.video-dropped-frame-rate', 'media.video-window-dropped-frame-rate'],
     memory: ['memory.js-heap.latest'],
     canvasContextObservation: ['surface.canvas2d.count', 'surface.webgl.count', 'surface.webgpu.count'],
     loafPaintTime: ['pipeline.loaf-render-start-to-paint.count', 'pipeline.loaf-render-start-to-paint.p95'],
@@ -374,6 +376,8 @@ export const PAGE_PROBE_ROOT_METRIC_IDS_V2 = [
     'pipeline.loaf-attributed-forced-style-layout.p95',
 ] as const
 
+export const PAGE_PROBE_ROOT_METRIC_IDS_V3 = PAGE_PROBE_ROOT_METRIC_IDS_V2
+
 export const PAGE_PROBE_ACTION_METRIC_IDS = [
     'frame.duration.p50',
     'frame.duration.p95',
@@ -404,8 +408,11 @@ export const PAGE_PROBE_ACTION_METRIC_IDS_V2 = [
     'pipeline.loaf-attributed-forced-style-layout.p95',
 ] as const
 
+export const PAGE_PROBE_ACTION_METRIC_IDS_V3 = [...PAGE_PROBE_ACTION_METRIC_IDS_V2, 'media.video-window-dropped-frame-rate'] as const
+
 export const PAGE_PROBE_CAPABILITY_KEYS = [...CAPABILITY_KEYS_V1] as const
 export const PAGE_PROBE_CAPABILITY_KEYS_V2 = [...CAPABILITY_KEYS_V2] as const
+export const PAGE_PROBE_CAPABILITY_KEYS_V3 = [...CAPABILITY_KEYS_V3] as const
 
 type RecordValue = Record<string, unknown>
 type ProbeMetricStatus = 'measured' | 'partial' | 'not-observed' | 'unsupported' | 'unknown'
@@ -480,6 +487,7 @@ function metricKey(family: string, name: string, stat: string, unit: string): st
 
 const METRIC_CATALOG_BY_ID_V1 = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [entry.metricId, entry] as const))
 const METRIC_CATALOG_BY_ID_V2 = new Map(ANIMATION_LAB_METRIC_CATALOG_V2.map(entry => [entry.metricId, entry] as const))
+const METRIC_CATALOG_BY_ID_V3 = new Map(ANIMATION_LAB_METRIC_CATALOG_V3.map(entry => [entry.metricId, entry] as const))
 
 function producerMetricCatalog(metricIds: readonly string[], metricCatalog: ReadonlyMap<string, LabMetricCatalogEntryV1>) {
     const catalog = new Map(
@@ -497,6 +505,8 @@ const ROOT_PAGE_PROBE_METRICS_V1 = producerMetricCatalog(PAGE_PROBE_ROOT_METRIC_
 const ACTION_PAGE_PROBE_METRICS_V1 = producerMetricCatalog(PAGE_PROBE_ACTION_METRIC_IDS, METRIC_CATALOG_BY_ID_V1)
 const ROOT_PAGE_PROBE_METRICS_V2 = producerMetricCatalog(PAGE_PROBE_ROOT_METRIC_IDS_V2, METRIC_CATALOG_BY_ID_V2)
 const ACTION_PAGE_PROBE_METRICS_V2 = producerMetricCatalog(PAGE_PROBE_ACTION_METRIC_IDS_V2, METRIC_CATALOG_BY_ID_V2)
+const ROOT_PAGE_PROBE_METRICS_V3 = producerMetricCatalog(PAGE_PROBE_ROOT_METRIC_IDS_V3, METRIC_CATALOG_BY_ID_V3)
+const ACTION_PAGE_PROBE_METRICS_V3 = producerMetricCatalog(PAGE_PROBE_ACTION_METRIC_IDS_V3, METRIC_CATALOG_BY_ID_V3)
 
 function metricMaximum(unit: AnimationLabMetric['unit']): number {
     switch (unit) {
@@ -538,6 +548,14 @@ function metricLimitations(metricId: string): string[] {
         return [
             'video-playback-quality-cumulative-snapshot-not-measurement-window-delta',
             'video-playback-quality-total-includes-displayed-and-dropped',
+        ]
+    }
+    if (metricId === 'media.video-window-dropped-frame-rate') {
+        return [
+            'video-playback-quality-window-counter-delta',
+            'video-playback-quality-total-includes-displayed-and-dropped',
+            'video-playback-quality-window-object-identity-only',
+            'video-playback-quality-not-decode-presentation-or-gpu-timing',
         ]
     }
     if (metricId === 'interaction.count') {
@@ -596,10 +614,16 @@ function decodeMetrics(
         retainedTuples.add(tuple)
         if (typeof raw.status !== 'string' || !METRIC_STATUSES.has(raw.status)) fail(`${metricLabel} status`)
         const status = raw.status as ProbeMetricStatus
-        if (status === 'partial' && catalog.metricId !== 'media.video-dropped-frame-rate') fail(`${metricLabel} status`)
-        if (status === 'unknown' && metricCatalogVersion !== 2) fail(`${metricLabel} status`)
+        if (
+            status === 'partial' &&
+            catalog.metricId !== 'media.video-dropped-frame-rate' &&
+            catalog.metricId !== 'media.video-window-dropped-frame-rate'
+        ) {
+            fail(`${metricLabel} status`)
+        }
+        if (status === 'unknown' && metricCatalogVersion < 2) fail(`${metricLabel} status`)
         const expectedProducerEvidenceLevel =
-            metricCatalogVersion === 2 && (status === 'unsupported' || status === 'unknown')
+            metricCatalogVersion >= 2 && (status === 'unsupported' || status === 'unknown')
                 ? 'unsupported-or-unknown'
                 : 'controlled-lab-measurement'
         if (raw.evidenceLevel !== expectedProducerEvidenceLevel) fail(`${metricLabel} evidence level`)
@@ -628,12 +652,12 @@ function decodeMetrics(
 
 function decodeCapabilities(value: unknown, metricCatalogVersion: LabMetricCatalogVersion): Record<string, boolean | null> {
     const raw = record(value, 'capabilities')
-    const capabilityKeys = metricCatalogVersion === 2 ? CAPABILITY_KEYS_V2 : CAPABILITY_KEYS_V1
+    const capabilityKeys = metricCatalogVersion >= 2 ? CAPABILITY_KEYS_V2 : CAPABILITY_KEYS_V1
     if (Object.keys(raw).length !== capabilityKeys.size) fail('capabilities count')
     const output: Record<string, boolean | null> = {}
     for (const [key, item] of Object.entries(raw)) {
         const nullable =
-            metricCatalogVersion === 2 &&
+            metricCatalogVersion >= 2 &&
             (key === 'loafPaintTime' ||
                 key === 'loafPresentationTime' ||
                 key === 'loafFirstUIEventTimestamp' ||
@@ -641,7 +665,7 @@ function decodeCapabilities(value: unknown, metricCatalogVersion: LabMetricCatal
         if (!capabilityKeys.has(key) || (typeof item !== 'boolean' && !(nullable && item === null))) fail('capabilities')
         output[key] = item
     }
-    if (metricCatalogVersion === 2) {
+    if (metricCatalogVersion >= 2) {
         const loafFieldCapabilities = [
             output.loafPaintTime,
             output.loafPresentationTime,
@@ -660,7 +684,7 @@ function decodeCapabilities(value: unknown, metricCatalogVersion: LabMetricCatal
 
 function decodeSampleDrops(value: unknown, metricCatalogVersion: LabMetricCatalogVersion): PageProbeSampleDrops {
     const raw = record(value, 'sampleDrops')
-    const keys = metricCatalogVersion === 2 ? SAMPLE_DROP_KEYS_V2 : SAMPLE_DROP_KEYS_V1
+    const keys = metricCatalogVersion >= 2 ? SAMPLE_DROP_KEYS_V2 : SAMPLE_DROP_KEYS_V1
     exactKeys(raw, keys, 'sampleDrops')
     if (Object.keys(raw).length !== keys.length) fail('sampleDrops count')
     const decoded = Object.fromEntries(
@@ -941,7 +965,12 @@ function assertCapabilityMetricCoherence(
             const status = statuses.get(metricId)
             if (status === undefined) continue
             if (supported === false && status !== 'unsupported') fail(`${label} capability coherence`)
-            if (supported === true && (status === 'unsupported' || status === 'unknown')) fail(`${label} capability coherence`)
+            if (
+                supported === true &&
+                (status === 'unsupported' || (status === 'unknown' && metricId !== 'media.video-window-dropped-frame-rate'))
+            ) {
+                fail(`${label} capability coherence`)
+            }
             if (supported === null && status !== 'unknown') fail(`${label} capability coherence`)
         }
     }
@@ -981,12 +1010,114 @@ function decodeExpectedActions(value: readonly ExpectedPageProbeAction[]): Expec
     })
 }
 
+interface VideoWindowEvidence {
+    beginSurfaces: number
+    endSurfaces: number
+    matchedSurfaces: number
+    eligibleSurfaces: number
+    readErrorSurfaces: number
+    discontinuitySurfaces: number
+    totalFrameDelta: number
+    droppedFrameDelta: number
+}
+
+function decodeVideoWindowEvidence(value: unknown, label: string): VideoWindowEvidence {
+    const raw = record(value, label)
+    const keys = [
+        'beginSurfaces',
+        'endSurfaces',
+        'matchedSurfaces',
+        'eligibleSurfaces',
+        'readErrorSurfaces',
+        'discontinuitySurfaces',
+        'totalFrameDelta',
+        'droppedFrameDelta',
+    ] as const
+    exactKeys(raw, keys, label)
+    if (Object.keys(raw).length !== keys.length) fail(`${label} count`)
+    const evidence = Object.fromEntries(
+        keys.map(key => [key, integer(raw[key], `${label}.${key}`, 0, MAX_SAMPLES)])
+    ) as unknown as VideoWindowEvidence
+    if (
+        evidence.matchedSurfaces > evidence.beginSurfaces ||
+        evidence.matchedSurfaces > evidence.endSurfaces ||
+        evidence.eligibleSurfaces + evidence.readErrorSurfaces + evidence.discontinuitySurfaces !== evidence.matchedSurfaces ||
+        evidence.droppedFrameDelta > evidence.totalFrameDelta ||
+        (evidence.totalFrameDelta > 0 && evidence.eligibleSurfaces === 0)
+    ) {
+        fail(`${label} coherence`)
+    }
+    return evidence
+}
+
+function enforceVideoWindowContract(
+    metrics: readonly AnimationLabMetric[],
+    catalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
+    capability: boolean | null,
+    evidence: VideoWindowEvidence
+): AnimationLabMetric[] {
+    const index = metrics.findIndex(metric => {
+        const entry = catalog.get(metricKey(metric.family, metric.name, metric.stat, metric.unit))
+        return entry?.metricId === 'media.video-window-dropped-frame-rate'
+    })
+    if (index < 0) fail('video window metric completeness')
+    const metric = metrics[index]!
+    const evidenceIsEmpty = Object.values(evidence).every(value => value === 0)
+    if (capability !== true) {
+        if (
+            capability !== false ||
+            !evidenceIsEmpty ||
+            metric.status !== 'unsupported' ||
+            metric.value !== null ||
+            metric.samples !== null
+        ) {
+            fail('video window unsupported contract')
+        }
+        const output = [...metrics]
+        output[index] = addMetricLimitation(metric, 'video-playback-quality-api-unsupported', false)
+        return output
+    }
+
+    const addedSurfaces = evidence.endSurfaces - evidence.matchedSurfaces
+    const removedSurfaces = evidence.beginSurfaces - evidence.matchedSurfaces
+    const incomplete = addedSurfaces > 0 || removedSurfaces > 0 || evidence.readErrorSurfaces > 0 || evidence.discontinuitySurfaces > 0
+    const expectedStatus = evidence.totalFrameDelta > 0 ? (incomplete ? 'partial' : 'measured') : incomplete ? 'unknown' : 'not-observed'
+    const expectedValue =
+        evidence.totalFrameDelta > 0 ? Math.round((evidence.droppedFrameDelta / evidence.totalFrameDelta) * 1_000_000) / 1_000_000 : null
+    const expectedSamples = evidence.totalFrameDelta > 0 ? evidence.totalFrameDelta : incomplete ? null : 0
+    if (metric.status !== expectedStatus || metric.value !== expectedValue || metric.samples !== expectedSamples) {
+        fail('video window metric contract')
+    }
+
+    const limitations = [
+        ...(incomplete ? ['video-playback-quality-window-coverage-unavailable'] : []),
+        ...(metric.status === 'partial' ? ['video-playback-quality-window-partial-surface-coverage'] : []),
+        ...(addedSurfaces > 0 ? ['video-playback-quality-window-element-added'] : []),
+        ...(removedSurfaces > 0 ? ['video-playback-quality-window-element-removed'] : []),
+        ...(evidence.readErrorSurfaces > 0 ? ['video-playback-quality-window-read-error'] : []),
+        ...(evidence.discontinuitySurfaces > 0 ? ['video-playback-quality-window-counter-discontinuity'] : []),
+        ...(metric.status === 'not-observed' && evidence.beginSurfaces === 0 && evidence.endSurfaces === 0
+            ? ['video-playback-quality-window-no-video-elements']
+            : []),
+        ...(metric.status === 'not-observed' && (evidence.beginSurfaces > 0 || evidence.endSurfaces > 0)
+            ? ['video-playback-quality-window-zero-total-frame-delta']
+            : []),
+    ]
+    const output = [...metrics]
+    output[index] = {
+        ...metric,
+        limitations: [...new Set([...(metric.limitations ?? []), ...limitations])],
+    }
+    return output
+}
+
 function decodeActionResults(
     value: unknown,
     expectedActions: readonly ExpectedPageProbeAction[],
     durationMs: number,
     metricCatalogVersion: LabMetricCatalogVersion,
-    actionMetricCatalog: ReadonlyMap<string, LabMetricCatalogEntryV1>
+    actionMetricCatalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
+    videoPlaybackQualityCapability: boolean | null
 ): DecodedPageProbeActionResult[] {
     const source = boundedArray(value, 'actionResults', MAX_ACTIONS)
     if (source.length !== expectedActions.length) fail('actionResults count')
@@ -995,7 +1126,21 @@ function decodeActionResults(
     for (let index = 0; index < source.length; index += 1) {
         const label = `actionResults[${index}]`
         const raw = record(source[index], label)
-        exactKeys(raw, ['actionId', 'order', 'label', 'kind', 'startedAtMs', 'endedAtMs', 'outcome', 'metrics'], label)
+        exactKeys(
+            raw,
+            [
+                'actionId',
+                'order',
+                'label',
+                'kind',
+                'startedAtMs',
+                'endedAtMs',
+                'outcome',
+                'metrics',
+                ...(metricCatalogVersion === 3 ? ['videoWindowEvidence'] : []),
+            ],
+            label
+        )
         const actionId = token(raw.actionId, `${label} actionId`)
         const expected = expectedById.get(actionId)
         if (!expected || decodedById.has(actionId)) fail(`${label} identity`)
@@ -1007,6 +1152,16 @@ function decodeActionResults(
         const endedAtMs = finite(raw.endedAtMs, `${label} end`, startedAtMs, MAX_DURATION_MS)
         if (endedAtMs > durationMs) fail(`${label} clock bounds`)
         if (typeof raw.outcome !== 'string' || !ACTION_OUTCOMES.has(raw.outcome)) fail(`${label} outcome`)
+        const decodedMetrics = decodeMetrics(raw.metrics, `${label}.metrics`, actionMetricCatalog, metricCatalogVersion, MAX_ACTION_METRICS)
+        const metrics =
+            metricCatalogVersion === 3
+                ? enforceVideoWindowContract(
+                      decodedMetrics,
+                      actionMetricCatalog,
+                      videoPlaybackQualityCapability,
+                      decodeVideoWindowEvidence(raw.videoWindowEvidence, `${label}.videoWindowEvidence`)
+                  )
+                : decodedMetrics
         decodedById.set(actionId, {
             actionId: expected.actionId,
             order: expected.order,
@@ -1014,7 +1169,7 @@ function decodeActionResults(
             startedAtMs,
             endedAtMs,
             outcome: raw.outcome as ProbeActionOutcome,
-            metrics: decodeMetrics(raw.metrics, `${label}.metrics`, actionMetricCatalog, metricCatalogVersion, MAX_ACTION_METRICS),
+            metrics,
         })
     }
     return expectedActions.map(action => decodedById.get(action.actionId) ?? fail('actionResults one-to-one mapping'))
@@ -1026,7 +1181,7 @@ function decodePageProbeResultWire(
     metricCatalogVersion: LabMetricCatalogVersion,
     observerDropContractVersion: PageProbeObserverDropContractVersion
 ): DecodedPageProbeResultWithObserverDrops {
-    if (metricCatalogVersion !== 1 && metricCatalogVersion !== 2) fail('metric catalog version')
+    if (metricCatalogVersion !== 1 && metricCatalogVersion !== 2 && metricCatalogVersion !== 3) fail('metric catalog version')
     if (observerDropContractVersion !== 0 && observerDropContractVersion !== 1) fail('observer drop contract version')
     const raw = record(rawValue, 'root')
     exactKeys(
@@ -1046,8 +1201,18 @@ function decodePageProbeResultWire(
     )
     const durationMs = finite(raw.durationMs, 'duration', 0, MAX_DURATION_MS)
     const expectedActions = decodeExpectedActions(expectedActionsValue)
-    const rootMetricCatalog = metricCatalogVersion === 2 ? ROOT_PAGE_PROBE_METRICS_V2 : ROOT_PAGE_PROBE_METRICS_V1
-    const actionMetricCatalog = metricCatalogVersion === 2 ? ACTION_PAGE_PROBE_METRICS_V2 : ACTION_PAGE_PROBE_METRICS_V1
+    const rootMetricCatalog =
+        metricCatalogVersion === 3
+            ? ROOT_PAGE_PROBE_METRICS_V3
+            : metricCatalogVersion === 2
+              ? ROOT_PAGE_PROBE_METRICS_V2
+              : ROOT_PAGE_PROBE_METRICS_V1
+    const actionMetricCatalog =
+        metricCatalogVersion === 3
+            ? ACTION_PAGE_PROBE_METRICS_V3
+            : metricCatalogVersion === 2
+              ? ACTION_PAGE_PROBE_METRICS_V2
+              : ACTION_PAGE_PROBE_METRICS_V1
     const rawMetrics = decodeMetrics(raw.metrics, 'metrics', rootMetricCatalog, metricCatalogVersion)
     const capabilities = decodeCapabilities(raw.capabilities, metricCatalogVersion)
     const sampleDrops = decodeSampleDrops(raw.sampleDrops, metricCatalogVersion)
@@ -1068,7 +1233,7 @@ function decodePageProbeResultWire(
     const ignoredLimitations = boundedArray(raw.limitations, 'limitations', MAX_LIMITATION_INPUTS)
     if (ignoredLimitations.some(item => typeof item !== 'string' || item.length > 200)) fail('limitations')
     const droppedSamples = rawMetrics.find(metric => metric.family === 'monitorOverhead' && metric.name === 'droppedProbeSamples')?.value
-    const activeSampleDropKeys = metricCatalogVersion === 2 ? SAMPLE_DROP_KEYS_V2 : SAMPLE_DROP_KEYS_V1
+    const activeSampleDropKeys = metricCatalogVersion >= 2 ? SAMPLE_DROP_KEYS_V2 : SAMPLE_DROP_KEYS_V1
     if (droppedSamples !== activeSampleDropKeys.reduce((total, key) => total + sampleDrops[key], 0)) {
         fail('sampleDrops total coherence')
     }
@@ -1106,7 +1271,7 @@ function decodePageProbeResultWire(
     if (videoPlaybackQualityCapability === undefined) fail('video playback capability')
     const videoMetrics = enforceVideoPlaybackQualityContract(rawMetrics, rootMetricCatalog, videoPlaybackQualityCapability)
     const rootPairs =
-        metricCatalogVersion === 2
+        metricCatalogVersion >= 2
             ? enforcePhasePairContracts(videoMetrics, rootMetricCatalog, sampleDrops)
             : { metrics: videoMetrics, incompletePairs: new Set<PhasePairMetricId>() }
     const metrics = downgradeObserverDroppedMetrics(
@@ -1120,10 +1285,11 @@ function decodePageProbeResultWire(
         expectedActions,
         durationMs,
         metricCatalogVersion,
-        actionMetricCatalog
+        actionMetricCatalog,
+        videoPlaybackQualityCapability
     ).map(action => {
         const actionPairs =
-            metricCatalogVersion === 2
+            metricCatalogVersion >= 2
                 ? enforcePhasePairContracts(action.metrics, actionMetricCatalog, sampleDrops, rootPairs.incompletePairs)
                 : { metrics: action.metrics }
         return {
