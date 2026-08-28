@@ -4,6 +4,7 @@ import {
     type AnimationLabReport,
     type LabAttemptSummary,
     type LabLighthouseSummary,
+    type LabMeasurementContractV2,
     type LabTimelineChunk,
     safeDisplayText,
     safeToken as safeLabToken,
@@ -22,7 +23,7 @@ const WARMUP_DETAIL_OMITTED_LIMITATION = 'warmup-detail-omitted-from-report'
 const ATTEMPT_METRIC_PROJECTION_LIMITATION = 'attempt-metric-projection-truncated'
 const REPORT_BYTE_BUDGET_LIMITATION = 'report-upload-byte-budget-truncated-attempt-detail'
 const ACTION_SCOPED_COMPACT_SUMMARY_LIMITATION = 'action-scoped-metrics-retained-only-in-animation-report'
-export const LAB_RUNNER_CONTRACT_VERSION = 2 as const
+export const LAB_RUNNER_CONTRACT_VERSION = 3 as const
 
 export interface RemoteLabConnectionOptions {
     server: string
@@ -62,6 +63,7 @@ export interface RemoteClaimedLabRunConfig {
     durationMs: number
     trace: boolean
     lighthouse: boolean
+    measurementContract: LabMeasurementContractV2
 }
 
 function claimedRecord(value: unknown, label: string): Record<string, unknown> {
@@ -95,6 +97,66 @@ function claimedBoolean(value: unknown, label: string): boolean {
     return value
 }
 
+function claimedMeasurementContract(value: unknown): LabMeasurementContractV2 {
+    const contract = claimedRecord(value, 'config measurement contract')
+    claimedExactKeys(
+        contract,
+        ['contractVersion', 'expectedHz', 'targetFrameMs', 'source', 'confidence', 'budgetRef', 'metricCatalogVersion'],
+        'config measurement contract'
+    )
+    if (contract.contractVersion !== 2) throw new Error('Lab server returned an invalid platform config measurement contract version')
+    const expectedHz = claimedFinite(contract.expectedHz, 1, 1_000, 'measurementContract.expectedHz')
+    const targetFrameMs = claimedFinite(contract.targetFrameMs, 1, 1_000, 'measurementContract.targetFrameMs')
+    const expectedTarget = 1_000 / expectedHz
+    if (Math.abs(targetFrameMs - expectedTarget) > Math.max(0.05, expectedTarget * 0.01)) {
+        throw new Error('Lab server returned an inconsistent platform frame target')
+    }
+    if (!['explicit', 'package-default'].includes(String(contract.source))) {
+        throw new Error('Lab server returned an invalid platform measurement source')
+    }
+    if (!['explicit', 'high', 'medium', 'low', 'unknown'].includes(String(contract.confidence))) {
+        throw new Error('Lab server returned an invalid platform measurement confidence')
+    }
+    if (contract.source === 'explicit' && contract.confidence !== 'explicit') {
+        throw new Error('Lab server returned an inconsistent explicit platform measurement contract')
+    }
+    const budgetRef = claimedRecord(contract.budgetRef, 'config measurement budget')
+    claimedExactKeys(budgetRef, ['catalogVersion', 'budgetId', 'budgetVersion'], 'config measurement budget')
+    if (budgetRef.catalogVersion !== 1) throw new Error('Lab server returned an invalid platform measurement budget catalog')
+    if (typeof budgetRef.budgetId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/u.test(budgetRef.budgetId)) {
+        throw new Error('Lab server returned an invalid platform measurement budget id')
+    }
+    const metricCatalogVersion = claimedInteger(contract.metricCatalogVersion, 1, 2, 'measurementContract.metricCatalogVersion')
+    const budgetVersion = claimedInteger(budgetRef.budgetVersion, 1, 3, 'measurementContract.budgetRef.budgetVersion')
+    if (budgetRef.budgetId !== 'condev.animation.default') {
+        throw new Error('Lab server returned an unknown platform measurement budget')
+    }
+    const normalized: LabMeasurementContractV2 = {
+        contractVersion: 2,
+        expectedHz,
+        targetFrameMs: Math.round(expectedTarget * 1_000_000) / 1_000_000,
+        source: contract.source as LabMeasurementContractV2['source'],
+        confidence: contract.confidence as LabMeasurementContractV2['confidence'],
+        budgetRef: {
+            catalogVersion: 1,
+            budgetId: budgetRef.budgetId,
+            budgetVersion,
+        },
+        metricCatalogVersion: metricCatalogVersion as 1 | 2,
+    }
+    if (
+        normalized.source === 'package-default' &&
+        (normalized.expectedHz !== 60 ||
+            normalized.targetFrameMs !== 16.666667 ||
+            normalized.confidence !== 'low' ||
+            normalized.budgetRef.budgetVersion !== 1 ||
+            normalized.metricCatalogVersion !== 1)
+    ) {
+        throw new Error('Lab server returned a non-canonical platform package default')
+    }
+    return normalized
+}
+
 function claimedConfig(value: unknown): RemoteClaimedLabRunConfig {
     const config = claimedRecord(value, 'config')
     claimedExactKeys(
@@ -110,6 +172,7 @@ function claimedConfig(value: unknown): RemoteClaimedLabRunConfig {
             'durationMs',
             'trace',
             'lighthouse',
+            'measurementContract',
         ],
         'config'
     )
@@ -138,6 +201,7 @@ function claimedConfig(value: unknown): RemoteClaimedLabRunConfig {
         durationMs: claimedInteger(config.durationMs, 5_000, 120_000, 'durationMs'),
         trace: claimedBoolean(config.trace, 'trace'),
         lighthouse: claimedBoolean(config.lighthouse, 'lighthouse'),
+        measurementContract: claimedMeasurementContract(config.measurementContract),
     }
 }
 
@@ -522,14 +586,18 @@ export class RemoteLabClient {
                 ...init,
                 redirect: 'error',
                 signal: controller.signal,
-                headers: { Accept: 'application/json', 'X-Lab-Runner-Token': this.token, ...init.headers },
+                headers: {
+                    Accept: 'application/json',
+                    'X-Lab-Runner-Token': this.token,
+                    'X-Lab-Runner-Contract': String(LAB_RUNNER_CONTRACT_VERSION),
+                    ...init.headers,
+                },
             })
             return await responseJson<T>(response)
         } finally {
             clearTimeout(timeout)
         }
     }
-
     private contractHeader(): Record<string, string> {
         return { 'X-Lab-Runner-Contract': String(LAB_RUNNER_CONTRACT_VERSION) }
     }
@@ -562,6 +630,7 @@ export class RemoteLabClient {
                     'X-Artifact-Sha256': digest,
                     'Idempotency-Key': idempotencyKey,
                     'X-Lab-Runner-Token': this.token,
+                    'X-Lab-Runner-Contract': String(LAB_RUNNER_CONTRACT_VERSION),
                 },
                 body: requestBody,
             })

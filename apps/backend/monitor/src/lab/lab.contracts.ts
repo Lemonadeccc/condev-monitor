@@ -8,7 +8,7 @@ import { type AnimationLabMetricV2Projection, parseAnimationLabMetricV2 } from '
 export const LAB_RUN_CONFIG_MAX_BYTES = 16 * 1024
 export const LAB_RUN_SUMMARY_MAX_BYTES = 64 * 1024
 export const LAB_RUN_ARTIFACT_TOTAL_MAX_BYTES = 128 * 1024 * 1024
-export const LAB_RUNNER_CONTRACT_VERSION = 2 as const
+export const LAB_RUNNER_CONTRACT_VERSION = 3 as const
 
 export const LAB_RUN_STATUSES = ['created', 'running', 'completed', 'failed', 'cancelled', 'expired'] as const
 export type LabRunStatus = (typeof LAB_RUN_STATUSES)[number]
@@ -53,7 +53,38 @@ export type LabRunConfig = {
     durationMs: number
     trace: boolean
     lighthouse: boolean
+    measurementContract: LabRunMeasurementContract
 }
+
+export type LabRunMeasurementContract = {
+    contractVersion: 2
+    expectedHz: number
+    targetFrameMs: number
+    source: 'explicit' | 'package-default'
+    confidence: 'explicit' | 'low'
+    budgetRef: { catalogVersion: 1; budgetId: string; budgetVersion: number }
+    metricCatalogVersion: 1 | 2
+}
+
+export const LAB_DEFAULT_MEASUREMENT_CONTRACT: Readonly<LabRunMeasurementContract> = Object.freeze({
+    contractVersion: 2,
+    expectedHz: 60,
+    targetFrameMs: 16.666667,
+    source: 'package-default',
+    confidence: 'low',
+    budgetRef: Object.freeze({ catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 1 }),
+    metricCatalogVersion: 1,
+})
+
+export const LAB_GENERIC_MEASUREMENT_CONTRACT: Readonly<LabRunMeasurementContract> = Object.freeze({
+    contractVersion: 2,
+    expectedHz: 60,
+    targetFrameMs: 16.666667,
+    source: 'explicit',
+    confidence: 'explicit',
+    budgetRef: Object.freeze({ catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 2 }),
+    metricCatalogVersion: 2,
+})
 
 export function parseLabRunnerContractVersion(value: unknown): typeof LAB_RUNNER_CONTRACT_VERSION {
     const raw = Array.isArray(value) ? value[0] : value
@@ -257,6 +288,68 @@ function normalizeTargetUrl(value: unknown): string {
     return parsed.href
 }
 
+function parseLabRunMeasurementContract(raw: unknown): LabRunMeasurementContract {
+    if (raw === undefined) {
+        return {
+            ...LAB_DEFAULT_MEASUREMENT_CONTRACT,
+            budgetRef: { ...LAB_DEFAULT_MEASUREMENT_CONTRACT.budgetRef },
+        }
+    }
+    if (!isRecord(raw)) throw new BadRequestException('config.measurementContract must be an object')
+    exactKeys(
+        raw,
+        ['contractVersion', 'expectedHz', 'targetFrameMs', 'source', 'confidence', 'budgetRef', 'metricCatalogVersion'],
+        'config.measurementContract'
+    )
+    if (raw.contractVersion !== 2) throw new BadRequestException('Invalid config.measurementContract.contractVersion')
+    const expectedHz = finiteNumber(raw.expectedHz, 'config.measurementContract.expectedHz', 1, 1_000)
+    const targetFrameMs = finiteNumber(raw.targetFrameMs, 'config.measurementContract.targetFrameMs', 1, 1_000)
+    const expectedTarget = 1_000 / expectedHz
+    if (Math.abs(targetFrameMs - expectedTarget) > Math.max(0.05, expectedTarget * 0.01)) {
+        throw new BadRequestException('config.measurementContract has an inconsistent frame target')
+    }
+    const source = enumValue(raw.source, 'config.measurementContract.source', ['explicit', 'package-default'] as const)
+    const confidence = enumValue(raw.confidence, 'config.measurementContract.confidence', ['explicit', 'low'] as const)
+    if (source === 'explicit' && confidence !== 'explicit') {
+        throw new BadRequestException('config.measurementContract explicit source requires explicit confidence')
+    }
+    if (!isRecord(raw.budgetRef)) throw new BadRequestException('config.measurementContract.budgetRef must be an object')
+    exactKeys(raw.budgetRef, ['catalogVersion', 'budgetId', 'budgetVersion'], 'config.measurementContract.budgetRef')
+    if (raw.budgetRef.catalogVersion !== 1) {
+        throw new BadRequestException('Invalid config.measurementContract.budgetRef.catalogVersion')
+    }
+    const budgetId = requiredString(raw.budgetRef.budgetId, 'config.measurementContract.budgetRef.budgetId', 120, SAFE_KEY)
+    const budgetVersion = integer(raw.budgetRef.budgetVersion, 'config.measurementContract.budgetRef.budgetVersion', 1, 3)
+    if (budgetId !== 'condev.animation.default') {
+        throw new BadRequestException('config.measurementContract references an unknown local budget')
+    }
+    const metricCatalogVersion = integer(raw.metricCatalogVersion, 'config.measurementContract.metricCatalogVersion', 1, 2) as 1 | 2
+    const normalized: LabRunMeasurementContract = {
+        contractVersion: 2,
+        expectedHz,
+        targetFrameMs: Math.round(expectedTarget * 1_000_000) / 1_000_000,
+        source,
+        confidence,
+        budgetRef: {
+            catalogVersion: 1,
+            budgetId,
+            budgetVersion,
+        },
+        metricCatalogVersion,
+    }
+    if (
+        source === 'package-default' &&
+        (normalized.expectedHz !== LAB_DEFAULT_MEASUREMENT_CONTRACT.expectedHz ||
+            normalized.targetFrameMs !== LAB_DEFAULT_MEASUREMENT_CONTRACT.targetFrameMs ||
+            normalized.confidence !== LAB_DEFAULT_MEASUREMENT_CONTRACT.confidence ||
+            normalized.budgetRef.budgetVersion !== LAB_DEFAULT_MEASUREMENT_CONTRACT.budgetRef.budgetVersion ||
+            normalized.metricCatalogVersion !== LAB_DEFAULT_MEASUREMENT_CONTRACT.metricCatalogVersion)
+    ) {
+        throw new BadRequestException('config.measurementContract package default must use the canonical default contract')
+    }
+    return normalized
+}
+
 export function parseLabRunConfig(raw: unknown): LabRunConfig {
     if (raw === undefined) raw = {}
     if (!isRecord(raw)) throw new BadRequestException('config must be an object')
@@ -273,6 +366,7 @@ export function parseLabRunConfig(raw: unknown): LabRunConfig {
             'durationMs',
             'trace',
             'lighthouse',
+            'measurementContract',
         ],
         'config'
     )
@@ -293,6 +387,7 @@ export function parseLabRunConfig(raw: unknown): LabRunConfig {
         durationMs: integer(raw.durationMs, 'config.durationMs', 5_000, 120_000, 30_000),
         trace: booleanValue(raw.trace, 'config.trace', true),
         lighthouse: booleanValue(raw.lighthouse, 'config.lighthouse', true),
+        measurementContract: parseLabRunMeasurementContract(raw.measurementContract),
     }
     if (config.cacheState === 'warm' && config.warmupRuns < 1) {
         throw new BadRequestException('config.cacheState warm requires at least one warmup run')
@@ -316,7 +411,7 @@ export function parseCreateLabRunInput(raw: unknown): CreateLabRunInput {
             targetUrl: normalizeTargetUrl(raw.targetUrl),
             release: '',
             buildId: '',
-            config: parseLabRunConfig({ browser: raw.browser }),
+            config: parseLabRunConfig({ browser: raw.browser, measurementContract: LAB_GENERIC_MEASUREMENT_CONTRACT }),
         }
     }
     exactKeys(raw, ['appId', 'name', 'scenarioKey', 'targetOrigin', 'release', 'buildId', 'config'], 'request body')

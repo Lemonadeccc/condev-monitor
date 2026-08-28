@@ -30,12 +30,14 @@ export class LabRunnerController {
 
     @Patch('/runs/:runId')
     async updateRun(@Param('runId') runId: string, @Body() body: unknown, @Request() req: ExpressRequest) {
+        this.runnerContract(req)
         const data = await this.labService.updateRunFromRunner(runId, this.runnerToken(req), parseUpdateLabRunInput(body))
         return { success: true, data }
     }
 
     @Put('/runs/:runId/artifacts/:kind')
     async uploadArtifact(@Param('runId') runId: string, @Param('kind') kind: string, @Request() req: ExpressRequest) {
+        this.runnerContract(req)
         const metadata = parseArtifactUploadMetadata({
             kind,
             transportContentType: req.headers['content-type'],

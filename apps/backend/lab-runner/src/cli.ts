@@ -146,6 +146,10 @@ export function applyClaimedRunAuthority(
         warmupRuns: claim.config.warmupRuns,
         measuredRuns: claim.config.measuredRuns,
         durationMs: claim.config.durationMs,
+        measurementContract: {
+            ...claim.config.measurementContract,
+            budgetRef: { ...claim.config.measurementContract.budgetRef },
+        },
         trace: {
             ...scenario.trace,
             enabled: claim.config.trace,

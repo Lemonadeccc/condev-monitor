@@ -57,6 +57,49 @@ const ARTIFACT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000
 const MAX_ARTIFACTS_PER_RUN = 256
 const SAFE_APP_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{1,79}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const REQUIRED_STORED_LAB_RUN_CONFIG_KEYS = [
+    'browser',
+    'viewport',
+    'deviceScaleFactor',
+    'reducedMotion',
+    'cacheState',
+    'warmupRuns',
+    'measuredRuns',
+    'durationMs',
+    'trace',
+    'lighthouse',
+] as const
+const STORED_LAB_RUN_CONFIG_KEYS = [...REQUIRED_STORED_LAB_RUN_CONFIG_KEYS, 'measurementContract'] as const
+
+function parseStoredLabRunConfig(serialized: string): ReturnType<typeof parseLabRunConfig> {
+    const storedConfig = JSON.parse(serialized) as unknown
+    if (!storedConfig || typeof storedConfig !== 'object' || Array.isArray(storedConfig)) throw new Error('invalid stored config')
+    const keys = Object.keys(storedConfig)
+    if (
+        REQUIRED_STORED_LAB_RUN_CONFIG_KEYS.some(key => !(key in storedConfig)) ||
+        keys.some(key => !STORED_LAB_RUN_CONFIG_KEYS.includes(key as (typeof STORED_LAB_RUN_CONFIG_KEYS)[number]))
+    ) {
+        throw new Error('invalid stored config')
+    }
+    return parseLabRunConfig(storedConfig)
+}
+
+function sameMeasurementContract(
+    left: ReturnType<typeof parseLabRunConfig>['measurementContract'],
+    right: NonNullable<ParsedAnimationReport['analysis']>['measurementContract']
+): boolean {
+    return (
+        left.contractVersion === right.contractVersion &&
+        left.expectedHz === right.expectedHz &&
+        left.targetFrameMs === right.targetFrameMs &&
+        left.source === right.source &&
+        left.confidence === right.confidence &&
+        left.metricCatalogVersion === right.metricCatalogVersion &&
+        left.budgetRef.catalogVersion === right.budgetRef.catalogVersion &&
+        left.budgetRef.budgetId === right.budgetRef.budgetId &&
+        left.budgetRef.budgetVersion === right.budgetRef.budgetVersion
+    )
+}
 
 type SerializedArtifact = {
     id: string
@@ -553,36 +596,9 @@ export class LabService {
     }
 
     private serializeRunnerClaim(run: LabRunEntity) {
-        let storedConfig: unknown
+        let config: ReturnType<typeof parseLabRunConfig>
         try {
-            storedConfig = JSON.parse(run.config) as unknown
-        } catch {
-            throw new ConflictException('Lab run has an invalid stored execution config')
-        }
-        const expectedConfigKeys = [
-            'browser',
-            'viewport',
-            'deviceScaleFactor',
-            'reducedMotion',
-            'cacheState',
-            'warmupRuns',
-            'measuredRuns',
-            'durationMs',
-            'trace',
-            'lighthouse',
-        ]
-        if (
-            !storedConfig ||
-            typeof storedConfig !== 'object' ||
-            Array.isArray(storedConfig) ||
-            Object.keys(storedConfig).length !== expectedConfigKeys.length ||
-            Object.keys(storedConfig).some(key => !expectedConfigKeys.includes(key))
-        ) {
-            throw new ConflictException('Lab run has an invalid stored execution config')
-        }
-        let config
-        try {
-            config = parseLabRunConfig(storedConfig)
+            config = parseStoredLabRunConfig(run.config)
         } catch {
             throw new ConflictException('Lab run has an invalid stored execution config')
         }
@@ -599,12 +615,15 @@ export class LabService {
     private assertReportMatchesRunConfig(run: LabRunEntity, report: ParsedAnimationReport): void {
         let config: ReturnType<typeof parseLabRunConfig>
         try {
-            config = parseLabRunConfig(JSON.parse(run.config) as unknown)
+            config = parseStoredLabRunConfig(run.config)
         } catch {
             throw new ConflictException('Lab run has an invalid stored execution config')
         }
         const execution = report.context.execution
         if (!execution) throw new ConflictException('Animation report does not declare its executed platform config')
+        if (!report.analysis || !sameMeasurementContract(config.measurementContract, report.analysis.measurementContract)) {
+            throw new ConflictException('Animation report measurement contract does not match the claimed platform run')
+        }
         const matches =
             report.runId === run.id &&
             report.context.browserName === config.browser &&
@@ -629,7 +648,7 @@ export class LabService {
         let config: ReturnType<typeof parseLabRunConfig>
         let summary: LabRunSummary
         try {
-            config = parseLabRunConfig(JSON.parse(run.config) as unknown)
+            config = parseStoredLabRunConfig(run.config)
             summary = parseLabRunSummary(JSON.parse(run.summary) as unknown)
         } catch {
             throw new ConflictException('Lab run has no verifiable Trace execution evidence')
