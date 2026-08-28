@@ -734,7 +734,20 @@ function SceneCanvas() {
 }
 ```
 
-The optional `/animation/r3f` entry is isolated from the ordinary React entries, so applications that do not use R3F do not load it. The observer uses R3F's public after-render callback and Three's public `renderer.info` counters. It does not create a second render loop, call `render()`, `invalidate()`, `advance()`, or `setFrameloop()`, and it does not dispose the caller-owned renderer. Multiple Canvas roots share one after-render subscription and suppress callbacks for roots whose positive public frame sequence did not change. `frameloop="demand"` and `frameloop="never"` therefore produce samples only when R3F actually renders. This observer reports page-level public renderer counters; it does not prove GPU presentation time, identify a mesh/component, or add Canvas-internal hit testing. When `renderer.info.autoReset` is `false`, per-frame draw counters are omitted because they are cumulative, while Three's independently incremented frame sequence still provides deduplication. Use the optional local-only `onSetupError` callback when adapter initialization failures must appear in application diagnostics; neither the error nor its cause is retained or uploaded by Condev.
+The optional `/animation/r3f` entry is isolated from the ordinary React entries, so applications that do not use R3F do not load it. The default observer uses R3F's public after-render callback and Three's public `renderer.info` counters. It does not create a second render loop, call `render()`, `invalidate()`, `advance()`, or `setFrameloop()`, and it does not dispose the caller-owned renderer. Multiple Canvas roots share one after-render subscription and suppress callbacks for roots whose positive public frame sequence did not change. `frameloop="demand"` and `frameloop="never"` therefore produce samples only when R3F actually renders. When `renderer.info.autoReset` is `false`, per-frame draw counters are omitted because they are cumulative, while Three's independently incremented frame sequence still provides deduplication.
+
+Sparse WebGL GPU timing is an explicit opt-in because timer queries require exclusive ownership of the context's disjoint-query state. Enable it only when the application, renderer plugins, and other profilers do not own those queries:
+
+```tsx
+const condevGpuTiming = {
+    disjointQueryOwnership: 'exclusive' as const,
+    sampleEvery: 60,
+}
+
+<CondevR3FObserver client={monitor} backend="webgl2" gpuTiming={condevGpuTiming} />
+```
+
+The GPU mode adds one public root-scoped, earliest-priority `useFrame()` callback only inside each opted-in Canvas and shares one public `addAfterEffect()` completion subscription across monitored roots. It starts no loop and polls asynchronously without `gl.finish()`. Another Canvas cannot consume an inactive demand root's sparse sampling attempts, and a frame whose public Three sequence did not advance is cancelled rather than published. It reports only completed, non-disjoint, non-context-lost timer results. The interval covers WebGL commands submitted after Condev's root callback through R3F's global after-render phase; it cannot include work submitted by a global `addEffect()` callback or an equal-priority root callback that ran earlier. It does not prove browser-compositor presentation, identify a mesh/component or post-processing pass, or add Canvas-internal hit testing. Omit `gpuTiming` when exclusive ownership cannot be attested, and mount at most one GPU-enabled observer for a renderer. Use the optional local-only `onSetupError` callback when timer, adapter, or subscription setup failures must appear in application diagnostics; neither the error nor its cause is retained or uploaded by Condev.
 
 ### Vue Integration
 
