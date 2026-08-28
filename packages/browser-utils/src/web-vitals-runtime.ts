@@ -278,3 +278,716 @@ export function getLatestWebVitals(delivery: WebVitalDelivery = 'live'): LatestW
         }, {})
     )
 }
+
+export type SoftNavigationCapabilityStatus = 'supported' | 'unsupported' | 'unknown'
+export type SoftNavigationCapabilityReason =
+    | 'not-browser-runtime'
+    | 'performance-observer-unavailable'
+    | 'soft-navigation-entry-unsupported'
+    | 'largest-interaction-contentful-paint-unsupported'
+    | 'observer-registration-failed'
+    | 'runtime-read-failed'
+
+export interface SoftNavigationWebVitalsCapability {
+    readonly status: SoftNavigationCapabilityStatus
+    readonly reason?: SoftNavigationCapabilityReason
+    readonly metrics: Readonly<Record<WebVitalName, SoftNavigationCapabilityStatus>>
+}
+
+export interface SoftNavigationCLSAttribution {
+    readonly largestShiftTime?: number
+    readonly largestShiftValue?: number
+}
+
+export interface SoftNavigationINPAttribution {
+    readonly interactionTime?: number
+    readonly nextPaintTime?: number
+    readonly interactionType?: 'pointer' | 'keyboard'
+    readonly inputDelay?: number
+    readonly processingDuration?: number
+    readonly presentationDelay?: number
+}
+
+export interface SoftNavigationLCPAttribution {
+    readonly paintTime?: number
+    readonly size?: number
+}
+
+interface SoftNavigationWebVitalSnapshotBase<Name extends WebVitalName, Attribution> {
+    readonly name: Name
+    readonly value: number
+    readonly delta: number
+    readonly rating: WebVitalRating
+    readonly navigationType: 'soft-navigation'
+    readonly segmentId: number
+    readonly startedAt: number
+    readonly attribution: Readonly<Attribution>
+}
+
+export type SoftNavigationCLSWebVitalSnapshot = SoftNavigationWebVitalSnapshotBase<'CLS', SoftNavigationCLSAttribution>
+export type SoftNavigationINPWebVitalSnapshot = SoftNavigationWebVitalSnapshotBase<'INP', SoftNavigationINPAttribution>
+export type SoftNavigationLCPWebVitalSnapshot = SoftNavigationWebVitalSnapshotBase<'LCP', SoftNavigationLCPAttribution>
+export type SoftNavigationWebVitalSnapshot =
+    | SoftNavigationCLSWebVitalSnapshot
+    | SoftNavigationINPWebVitalSnapshot
+    | SoftNavigationLCPWebVitalSnapshot
+export type SoftNavigationWebVitalsSubscriber = (metric: SoftNavigationWebVitalSnapshot) => void
+export type LatestSoftNavigationWebVitals = readonly SoftNavigationWebVitalSnapshot[]
+
+export interface SubscribeSoftNavigationWebVitalsOptions {
+    /** Live changes are the default; final is emitted when a segment closes. */
+    delivery?: WebVitalDelivery
+    /** Replay the retained metrics for at most the two most recent navigation segments. */
+    replayLatest?: boolean
+}
+
+interface NativeInteractionContentfulPaint extends PerformanceEntry {
+    readonly interactionId?: number
+    readonly largestContentfulPaint?: LargestContentfulPaint
+}
+
+interface NativePerformanceSoftNavigation extends PerformanceEntry {
+    readonly navigationId?: number
+    readonly interactionId?: number
+    readonly getLargestInteractionContentfulPaint?: () => NativeInteractionContentfulPaint | null
+}
+
+type SoftNavigationRuntimeSubscriber = {
+    callback: SoftNavigationWebVitalsSubscriber
+    delivery: WebVitalDelivery
+}
+
+type SoftNavigationMetricState = {
+    value: number
+    attribution: Readonly<Record<string, number | string>>
+}
+
+type INPInteraction = {
+    value: number
+    attribution: Readonly<Record<string, number | string>>
+}
+
+interface SoftNavigationSegmentState {
+    readonly segmentId: number
+    readonly navigationId: number
+    readonly interactionId: number
+    readonly startTime: number
+    readonly softNavigationEntry: NativePerformanceSoftNavigation
+    readonly interactionCountAtStart?: number
+    closed: boolean
+    cls: SoftNavigationMetricState
+    lcp?: SoftNavigationMetricState
+    inp?: SoftNavigationMetricState
+    clsSessionValue: number
+    clsSessionStartTime?: number
+    clsSessionLastTime?: number
+    clsSessionLargestShiftTime?: number
+    clsSessionLargestShiftValue?: number
+    readonly interactions: Map<number, INPInteraction>
+    minimumObservedInteractionId?: number
+    maximumObservedInteractionId?: number
+    readonly previousValues: Record<WebVitalDelivery, Partial<Record<WebVitalName, number>>>
+    readonly finalized: Set<WebVitalName>
+    readonly failedFinalMetrics: Set<WebVitalName>
+}
+
+interface SoftNavigationRuntimeRegistry {
+    started: boolean
+    nextSegmentId: number
+    capability?: SoftNavigationWebVitalsCapability
+    observer?: PerformanceObserver
+    subscribers: Set<SoftNavigationRuntimeSubscriber>
+    current?: SoftNavigationSegmentState
+    pendingEntries: PerformanceEntry[]
+    pendingEntryOverflowed: boolean
+    processingScheduled: boolean
+    suppressFinalizationForCurrentBatch: boolean
+    latest: Record<WebVitalDelivery, Map<number, Map<WebVitalName, SoftNavigationWebVitalSnapshot>>>
+}
+
+const SOFT_NAVIGATION_REGISTRY_KEY = Symbol.for('@condev-monitor/soft-navigation-web-vitals-runtime/v1')
+const MAX_RETAINED_SOFT_NAVIGATION_SEGMENTS = 2
+const MAX_RETAINED_INP_INTERACTIONS = 10
+const MAX_PENDING_SOFT_NAVIGATION_ENTRIES = 2048
+const MAX_SOFT_NAVIGATION_SEGMENT_ID = 1_000_000
+const SOFT_NAVIGATION_ENTRY_TYPE = 'soft-navigation'
+const INTERACTION_CONTENTFUL_PAINT_ENTRY_TYPE = 'interaction-contentful-paint'
+
+function createSoftNavigationRegistry(): SoftNavigationRuntimeRegistry {
+    return {
+        started: false,
+        nextSegmentId: 1,
+        subscribers: new Set(),
+        pendingEntries: [],
+        pendingEntryOverflowed: false,
+        processingScheduled: false,
+        suppressFinalizationForCurrentBatch: false,
+        latest: {
+            live: new Map(),
+            final: new Map(),
+        },
+    }
+}
+
+function getSoftNavigationRegistry(): SoftNavigationRuntimeRegistry {
+    const root = globalThis as typeof globalThis & {
+        [SOFT_NAVIGATION_REGISTRY_KEY]?: SoftNavigationRuntimeRegistry
+    }
+    root[SOFT_NAVIGATION_REGISTRY_KEY] ??= createSoftNavigationRegistry()
+    return root[SOFT_NAVIGATION_REGISTRY_KEY]
+}
+
+function freezeCapability(
+    status: SoftNavigationCapabilityStatus,
+    metrics: Record<WebVitalName, SoftNavigationCapabilityStatus>,
+    reason?: SoftNavigationCapabilityReason
+): SoftNavigationWebVitalsCapability {
+    return Object.freeze({ status, ...(reason ? { reason } : {}), metrics: Object.freeze(metrics) })
+}
+
+function detectSoftNavigationCapability(): SoftNavigationWebVitalsCapability {
+    if (!isBrowserRuntime()) {
+        return freezeCapability('unknown', { CLS: 'unknown', INP: 'unknown', LCP: 'unknown' }, 'not-browser-runtime')
+    }
+
+    const Observer = globalThis.PerformanceObserver
+    if (typeof Observer !== 'function' || !Array.isArray(Observer.supportedEntryTypes)) {
+        return freezeCapability(
+            'unsupported',
+            { CLS: 'unsupported', INP: 'unsupported', LCP: 'unsupported' },
+            'performance-observer-unavailable'
+        )
+    }
+
+    if (!Observer.supportedEntryTypes.includes(SOFT_NAVIGATION_ENTRY_TYPE)) {
+        return freezeCapability(
+            'unsupported',
+            { CLS: 'unsupported', INP: 'unsupported', LCP: 'unsupported' },
+            'soft-navigation-entry-unsupported'
+        )
+    }
+
+    const SoftNavigationConstructor = (
+        globalThis as typeof globalThis & {
+            PerformanceSoftNavigation?: { prototype?: NativePerformanceSoftNavigation }
+        }
+    ).PerformanceSoftNavigation
+    if (typeof SoftNavigationConstructor?.prototype?.getLargestInteractionContentfulPaint !== 'function') {
+        return freezeCapability(
+            'unsupported',
+            { CLS: 'unsupported', INP: 'unsupported', LCP: 'unsupported' },
+            'largest-interaction-contentful-paint-unsupported'
+        )
+    }
+
+    const supported = Observer.supportedEntryTypes
+    return freezeCapability('supported', {
+        CLS: supported.includes('layout-shift') ? 'supported' : 'unsupported',
+        INP: supported.includes('event') && supportsEventTimingInteractionId() ? 'supported' : 'unsupported',
+        LCP: 'supported',
+    })
+}
+
+/** Reports support without starting any observer. */
+export function getSoftNavigationWebVitalsCapability(): SoftNavigationWebVitalsCapability {
+    return getSoftNavigationRegistry().capability ?? detectSoftNavigationCapability()
+}
+
+function boundedNavigationId(value: unknown): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined
+}
+
+function boundedInteractionId(value: unknown): number | undefined {
+    return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : undefined
+}
+
+function boundedTime(value: unknown): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER ? value : undefined
+}
+
+function readInteractionCount(): number | undefined {
+    const value = (globalThis.performance as (Performance & { interactionCount?: number }) | undefined)?.interactionCount
+    return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
+}
+
+function entryMatchesSoftNavigation(entry: PerformanceEntry, segment: SoftNavigationSegmentState): boolean {
+    const navigationId = boundedNavigationId((entry as PerformanceEntry & { navigationId?: number }).navigationId)
+    return navigationId === undefined || navigationId === segment.navigationId
+}
+
+function supportsEventTimingInteractionId(): boolean {
+    const EventTimingConstructor = (
+        globalThis as typeof globalThis & {
+            PerformanceEventTiming?: { prototype?: PerformanceEventTiming }
+        }
+    ).PerformanceEventTiming
+    return typeof EventTimingConstructor === 'function' && 'interactionId' in EventTimingConstructor.prototype
+}
+
+function markSoftNavigationMetricsUnknown(names: readonly WebVitalName[]): void {
+    const registry = getSoftNavigationRegistry()
+    const capability = registry.capability
+    if (!capability || capability.status !== 'supported') return
+    const affected = new Set(names)
+    registry.capability = freezeCapability(
+        'supported',
+        {
+            CLS: affected.has('CLS') && capability.metrics.CLS === 'supported' ? 'unknown' : capability.metrics.CLS,
+            INP: affected.has('INP') && capability.metrics.INP === 'supported' ? 'unknown' : capability.metrics.INP,
+            LCP: affected.has('LCP') && capability.metrics.LCP === 'supported' ? 'unknown' : capability.metrics.LCP,
+        },
+        'runtime-read-failed'
+    )
+}
+
+function softNavigationRating(name: WebVitalName, value: number): WebVitalRating {
+    const thresholds = name === 'CLS' ? [0.1, 0.25] : name === 'INP' ? [200, 500] : [2500, 4000]
+    return value <= thresholds[0]! ? 'good' : value <= thresholds[1]! ? 'needs-improvement' : 'poor'
+}
+
+function trimOldest<K, V>(map: Map<K, V>, maximum: number): void {
+    while (map.size > maximum) {
+        const oldest = map.keys().next().value as K | undefined
+        if (oldest === undefined) return
+        map.delete(oldest)
+    }
+}
+
+function callSoftNavigationSafely(callback: SoftNavigationWebVitalsSubscriber, metric: SoftNavigationWebVitalSnapshot): void {
+    try {
+        callback(metric)
+    } catch {
+        // Subscriber failures are isolated from every other consumer and stream.
+    }
+}
+
+function createSoftNavigationSnapshot(
+    segment: SoftNavigationSegmentState,
+    name: WebVitalName,
+    delivery: WebVitalDelivery
+): SoftNavigationWebVitalSnapshot | undefined {
+    const metric = name === 'CLS' ? segment.cls : name === 'INP' ? segment.inp : segment.lcp
+    if (!metric) return undefined
+    const previous = segment.previousValues[delivery][name]
+    const delta = previous === undefined ? metric.value : metric.value - previous
+    segment.previousValues[delivery][name] = metric.value
+    const base = {
+        name,
+        value: metric.value,
+        delta,
+        rating: softNavigationRating(name, metric.value),
+        navigationType: 'soft-navigation' as const,
+        segmentId: segment.segmentId,
+        startedAt: segment.startTime,
+        attribution: metric.attribution,
+    }
+    return Object.freeze(base) as SoftNavigationWebVitalSnapshot
+}
+
+function publishSoftNavigationMetric(segment: SoftNavigationSegmentState, name: WebVitalName, delivery: WebVitalDelivery): void {
+    const snapshot = createSoftNavigationSnapshot(segment, name, delivery)
+    if (!snapshot) return
+    const registry = getSoftNavigationRegistry()
+    let navigationMetrics = registry.latest[delivery].get(segment.segmentId)
+    if (!navigationMetrics) {
+        navigationMetrics = new Map()
+        registry.latest[delivery].set(segment.segmentId, navigationMetrics)
+        trimOldest(registry.latest[delivery], MAX_RETAINED_SOFT_NAVIGATION_SEGMENTS)
+    }
+    navigationMetrics.set(name, snapshot)
+    for (const subscriber of [...registry.subscribers]) {
+        if (subscriber.delivery === delivery) callSoftNavigationSafely(subscriber.callback, snapshot)
+    }
+}
+
+function finalizeSoftNavigationSegment(segment: SoftNavigationSegmentState | undefined): void {
+    if (!segment || segment.closed) return
+    if (getSoftNavigationRegistry().suppressFinalizationForCurrentBatch) {
+        for (const name of WEB_VITAL_NAMES) segment.failedFinalMetrics.add(name)
+    }
+    if (!refreshSoftNavigationLCP(segment)) {
+        segment.failedFinalMetrics.add('LCP')
+        markSoftNavigationMetricsUnknown(['LCP'])
+    }
+    updateSoftNavigationINP(segment)
+    const capability = getSoftNavigationRegistry().capability
+    for (const name of WEB_VITAL_NAMES) {
+        if (segment.finalized.has(name)) continue
+        if (segment.failedFinalMetrics.has(name)) continue
+        const hasMetric =
+            (name === 'CLS' && capability?.metrics.CLS === 'supported') || (name === 'INP' ? Boolean(segment.inp) : Boolean(segment.lcp))
+        if (!hasMetric) continue
+        publishSoftNavigationMetric(segment, name, 'final')
+        segment.finalized.add(name)
+    }
+    segment.closed = true
+}
+
+function startSoftNavigationSegment(entry: NativePerformanceSoftNavigation): void {
+    const navigationId = boundedNavigationId(entry.navigationId)
+    const interactionId = boundedInteractionId(entry.interactionId)
+    const startTime = boundedTime(entry.startTime)
+    if (navigationId === undefined || interactionId === undefined || startTime === undefined) return
+
+    const registry = getSoftNavigationRegistry()
+    if (registry.current?.navigationId === navigationId) return
+    finalizeSoftNavigationSegment(registry.current)
+
+    const segmentId = registry.nextSegmentId
+    registry.nextSegmentId = segmentId >= MAX_SOFT_NAVIGATION_SEGMENT_ID ? 1 : segmentId + 1
+
+    const segment: SoftNavigationSegmentState = {
+        segmentId,
+        navigationId,
+        interactionId,
+        startTime,
+        softNavigationEntry: entry,
+        interactionCountAtStart: readInteractionCount(),
+        closed: false,
+        cls: { value: 0, attribution: Object.freeze({}) },
+        clsSessionValue: 0,
+        interactions: new Map(),
+        previousValues: { live: {}, final: {} },
+        finalized: new Set(),
+        failedFinalMetrics: new Set(),
+    }
+    registry.current = segment
+    if (registry.capability?.metrics.CLS === 'supported') publishSoftNavigationMetric(segment, 'CLS', 'live')
+    refreshSoftNavigationLCP(segment)
+}
+
+function processLayoutShift(entry: LayoutShift): void {
+    const segment = getSoftNavigationRegistry().current
+    const startTime = boundedTime(entry.startTime)
+    const value = finiteNumber(entry.value)
+    if (
+        !segment ||
+        segment.closed ||
+        !entryMatchesSoftNavigation(entry, segment) ||
+        startTime === undefined ||
+        startTime < segment.startTime ||
+        value === undefined ||
+        value < 0 ||
+        entry.hadRecentInput
+    )
+        return
+
+    if (
+        segment.clsSessionStartTime === undefined ||
+        segment.clsSessionLastTime === undefined ||
+        startTime - segment.clsSessionLastTime >= 1000 ||
+        startTime - segment.clsSessionStartTime >= 5000
+    ) {
+        segment.clsSessionValue = value
+        segment.clsSessionStartTime = startTime
+        segment.clsSessionLargestShiftTime = startTime
+        segment.clsSessionLargestShiftValue = value
+    } else {
+        segment.clsSessionValue += value
+        if (value > (segment.clsSessionLargestShiftValue ?? Number.NEGATIVE_INFINITY)) {
+            segment.clsSessionLargestShiftTime = startTime
+            segment.clsSessionLargestShiftValue = value
+        }
+    }
+    segment.clsSessionLastTime = startTime
+
+    if (segment.clsSessionValue <= segment.cls.value) return
+    segment.cls = {
+        value: segment.clsSessionValue,
+        attribution: Object.freeze({
+            ...(segment.clsSessionLargestShiftTime === undefined ? {} : { largestShiftTime: segment.clsSessionLargestShiftTime }),
+            ...(segment.clsSessionLargestShiftValue === undefined ? {} : { largestShiftValue: segment.clsSessionLargestShiftValue }),
+        }),
+    }
+    publishSoftNavigationMetric(segment, 'CLS', 'live')
+}
+
+function interactionType(entry: PerformanceEventTiming): 'pointer' | 'keyboard' {
+    return /^(?:key|input|composition)/u.test(entry.name) ? 'keyboard' : 'pointer'
+}
+
+function inpAttribution(entry: PerformanceEventTiming): Readonly<Record<string, number | string>> {
+    const startTime = boundedTime(entry.startTime)
+    const duration = finiteNumber(entry.duration)
+    const processingStart = finiteNumber((entry as PerformanceEventTiming & { processingStart?: number }).processingStart)
+    const processingEnd = finiteNumber((entry as PerformanceEventTiming & { processingEnd?: number }).processingEnd)
+    return Object.freeze({
+        ...(startTime === undefined ? {} : { interactionTime: startTime }),
+        ...(startTime === undefined || duration === undefined ? {} : { nextPaintTime: startTime + duration }),
+        interactionType: interactionType(entry),
+        ...(startTime === undefined || processingStart === undefined ? {} : { inputDelay: Math.max(processingStart - startTime, 0) }),
+        ...(processingStart === undefined || processingEnd === undefined
+            ? {}
+            : { processingDuration: Math.max(processingEnd - processingStart, 0) }),
+        ...(startTime === undefined || duration === undefined || processingEnd === undefined
+            ? {}
+            : { presentationDelay: Math.max(startTime + duration - processingEnd, 0) }),
+    })
+}
+
+function processEventTiming(entry: PerformanceEventTiming): void {
+    const segment = getSoftNavigationRegistry().current
+    const startTime = boundedTime(entry.startTime)
+    const eventInteractionId = boundedInteractionId(entry.interactionId)
+    const duration = finiteNumber(entry.duration)
+    if (
+        !segment ||
+        segment.closed ||
+        !entryMatchesSoftNavigation(entry, segment) ||
+        startTime === undefined ||
+        startTime < segment.startTime ||
+        eventInteractionId === undefined ||
+        eventInteractionId === 0 ||
+        duration === undefined ||
+        duration < 0
+    )
+        return
+
+    segment.minimumObservedInteractionId = Math.min(segment.minimumObservedInteractionId ?? eventInteractionId, eventInteractionId)
+    segment.maximumObservedInteractionId = Math.max(segment.maximumObservedInteractionId ?? eventInteractionId, eventInteractionId)
+
+    const existing = segment.interactions.get(eventInteractionId)
+    const leastSlowCandidate = [...segment.interactions.values()].sort((left, right) => right.value - left.value).at(-1)
+    if (
+        existing
+            ? duration > existing.value
+            : segment.interactions.size < MAX_RETAINED_INP_INTERACTIONS || duration > (leastSlowCandidate?.value ?? 0)
+    ) {
+        segment.interactions.set(eventInteractionId, { value: duration, attribution: inpAttribution(entry) })
+    }
+    const sortedInteractions = [...segment.interactions.entries()].sort((left, right) => right[1].value - left[1].value)
+    for (const [interactionId] of sortedInteractions.slice(MAX_RETAINED_INP_INTERACTIONS)) {
+        segment.interactions.delete(interactionId)
+    }
+    updateSoftNavigationINP(segment)
+}
+
+function getSoftNavigationInteractionCount(segment: SoftNavigationSegmentState): number {
+    const currentInteractionCount = readInteractionCount()
+    if (segment.interactionCountAtStart !== undefined && currentInteractionCount !== undefined) {
+        return Math.max(currentInteractionCount - segment.interactionCountAtStart, 0)
+    }
+    if (segment.minimumObservedInteractionId === undefined || segment.maximumObservedInteractionId === undefined) return 0
+    return Math.max(Math.floor((segment.maximumObservedInteractionId - segment.minimumObservedInteractionId) / 7) + 1, 1)
+}
+
+function updateSoftNavigationINP(segment: SoftNavigationSegmentState): void {
+    if (segment.closed) return
+    const interactions = [...segment.interactions.values()].sort((left, right) => right.value - left.value)
+    const interactionCount = getSoftNavigationInteractionCount(segment)
+    const candidateIndex = Math.min(interactions.length - 1, Math.floor(interactionCount / 50))
+    const candidate = interactions[candidateIndex]
+    const nextINP = candidate ?? (interactionCount > 0 ? { value: 8, attribution: Object.freeze({}) } : undefined)
+    if (!nextINP || segment.inp?.value === nextINP.value) return
+    segment.inp = nextINP
+    publishSoftNavigationMetric(segment, 'INP', 'live')
+}
+
+function processInteractionContentfulPaint(entry: NativeInteractionContentfulPaint, target?: SoftNavigationSegmentState): void {
+    const segment = target ?? getSoftNavigationRegistry().current
+    const interactionId = boundedInteractionId(entry.interactionId)
+    const lcp = entry.largestContentfulPaint
+    const paintTime = boundedTime(lcp?.startTime) ?? boundedTime(lcp?.renderTime) ?? boundedTime(lcp?.loadTime)
+    const size = finiteNumber(lcp?.size)
+    if (!segment || segment.closed || interactionId === undefined || interactionId !== segment.interactionId || paintTime === undefined)
+        return
+
+    const value = Math.max(paintTime - segment.startTime, 0)
+    if (segment.lcp && value <= segment.lcp.value) return
+    segment.lcp = {
+        value,
+        attribution: Object.freeze({ paintTime, ...(size === undefined || size < 0 ? {} : { size }) }),
+    }
+    publishSoftNavigationMetric(segment, 'LCP', 'live')
+}
+
+function refreshSoftNavigationLCP(segment: SoftNavigationSegmentState): boolean {
+    if (segment.closed) return false
+    try {
+        const getter = segment.softNavigationEntry.getLargestInteractionContentfulPaint
+        if (typeof getter !== 'function') return false
+        const latest = getter.call(segment.softNavigationEntry)
+        if (latest) processInteractionContentfulPaint(latest, segment)
+        return true
+    } catch {
+        return false
+    }
+}
+
+function processSoftNavigationEntries(entries: readonly PerformanceEntry[]): void {
+    const ordered = [...entries].sort((left, right) => {
+        const difference = left.startTime - right.startTime
+        if (difference !== 0) return difference
+        return left.entryType === SOFT_NAVIGATION_ENTRY_TYPE ? -1 : right.entryType === SOFT_NAVIGATION_ENTRY_TYPE ? 1 : 0
+    })
+    for (const entry of ordered) {
+        if (entry.entryType === SOFT_NAVIGATION_ENTRY_TYPE) {
+            startSoftNavigationSegment(entry as NativePerformanceSoftNavigation)
+        } else if (entry.entryType === 'layout-shift') {
+            processLayoutShift(entry as LayoutShift)
+        } else if (entry.entryType === 'event' || entry.entryType === 'first-input') {
+            processEventTiming(entry as PerformanceEventTiming)
+        } else if (entry.entryType === INTERACTION_CONTENTFUL_PAINT_ENTRY_TYPE) {
+            processInteractionContentfulPaint(entry as NativeInteractionContentfulPaint)
+        }
+    }
+}
+
+function appendPendingSoftNavigationEntries(entries: readonly PerformanceEntry[]): void {
+    const registry = getSoftNavigationRegistry()
+    if (entries.length === 0) return
+
+    let firstRetainedIndex = 0
+    if (entries.length >= MAX_PENDING_SOFT_NAVIGATION_ENTRIES) {
+        if (registry.pendingEntries.length > 0 || entries.length > MAX_PENDING_SOFT_NAVIGATION_ENTRIES) {
+            registry.pendingEntryOverflowed = true
+        }
+        registry.pendingEntries.length = 0
+        firstRetainedIndex = entries.length - MAX_PENDING_SOFT_NAVIGATION_ENTRIES
+    } else {
+        const overflow = registry.pendingEntries.length + entries.length - MAX_PENDING_SOFT_NAVIGATION_ENTRIES
+        if (overflow > 0) {
+            registry.pendingEntries.splice(0, overflow)
+            registry.pendingEntryOverflowed = true
+        }
+    }
+    for (let index = firstRetainedIndex; index < entries.length; index += 1) {
+        registry.pendingEntries.push(entries[index]!)
+    }
+}
+
+function drainPendingSoftNavigationEntries(compromised = false): void {
+    const registry = getSoftNavigationRegistry()
+    registry.processingScheduled = false
+    const entries = registry.pendingEntries.splice(0)
+    const compromisedBatch = compromised || registry.pendingEntryOverflowed
+    registry.pendingEntryOverflowed = false
+    if (compromisedBatch) {
+        registry.suppressFinalizationForCurrentBatch = true
+        if (registry.current && !registry.current.closed) {
+            for (const name of WEB_VITAL_NAMES) registry.current.failedFinalMetrics.add(name)
+        }
+        markSoftNavigationMetricsUnknown(WEB_VITAL_NAMES)
+    }
+    try {
+        if (entries.length > 0) processSoftNavigationEntries(entries)
+    } finally {
+        if (compromisedBatch && registry.current && !registry.current.closed) {
+            for (const name of WEB_VITAL_NAMES) registry.current.failedFinalMetrics.add(name)
+        }
+        registry.suppressFinalizationForCurrentBatch = false
+    }
+}
+
+function enqueueSoftNavigationEntries(entries: readonly PerformanceEntry[]): void {
+    const registry = getSoftNavigationRegistry()
+    appendPendingSoftNavigationEntries(entries)
+    if (registry.processingScheduled) return
+    registry.processingScheduled = true
+    const run = () => drainPendingSoftNavigationEntries()
+    if (typeof globalThis.requestIdleCallback === 'function') {
+        globalThis.requestIdleCallback(run, { timeout: 1000 })
+    } else {
+        globalThis.setTimeout(run, 0)
+    }
+}
+
+function flushAndFinalizeSoftNavigationSegment(): void {
+    const registry = getSoftNavigationRegistry()
+    let compromised = false
+    try {
+        appendPendingSoftNavigationEntries(registry.observer?.takeRecords() ?? [])
+    } catch {
+        compromised = true
+    }
+    drainPendingSoftNavigationEntries(compromised)
+    finalizeSoftNavigationSegment(registry.current)
+}
+
+function startSoftNavigationRuntime(): void {
+    const registry = getSoftNavigationRegistry()
+    if (registry.started || !isBrowserRuntime()) return
+    registry.started = true
+    const capability = detectSoftNavigationCapability()
+    registry.capability = capability
+    if (capability.status !== 'supported') return
+
+    try {
+        const observer = new PerformanceObserver(list => enqueueSoftNavigationEntries(list.getEntries()))
+        const supported = PerformanceObserver.supportedEntryTypes
+        const types = [SOFT_NAVIGATION_ENTRY_TYPE, 'layout-shift', 'event', 'first-input', INTERACTION_CONTENTFUL_PAINT_ENTRY_TYPE]
+        const observedTypes = new Set<string>()
+        let softNavigationObserved = false
+        for (const type of types) {
+            if (!supported.includes(type)) continue
+            try {
+                observer.observe({ type, buffered: true, ...(type === 'event' ? { durationThreshold: 16 } : {}) })
+                observedTypes.add(type)
+                if (type === SOFT_NAVIGATION_ENTRY_TYPE) softNavigationObserved = true
+            } catch {
+                // An optional metric entry type must not disable the soft-navigation boundary stream.
+            }
+        }
+        if (!softNavigationObserved) {
+            observer.disconnect()
+            registry.capability = freezeCapability(
+                'unsupported',
+                { CLS: 'unsupported', INP: 'unsupported', LCP: 'unsupported' },
+                'observer-registration-failed'
+            )
+            return
+        }
+        registry.observer = observer
+        registry.capability = freezeCapability('supported', {
+            CLS: observedTypes.has('layout-shift') ? 'supported' : 'unsupported',
+            INP: observedTypes.has('event') && supportsEventTimingInteractionId() ? 'supported' : 'unsupported',
+            LCP: 'supported',
+        })
+    } catch {
+        registry.capability = freezeCapability(
+            'unsupported',
+            { CLS: 'unsupported', INP: 'unsupported', LCP: 'unsupported' },
+            'observer-registration-failed'
+        )
+        return
+    }
+
+    document.addEventListener?.('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') flushAndFinalizeSoftNavigationSegment()
+    })
+    globalThis.addEventListener?.('pagehide', flushAndFinalizeSoftNavigationSegment)
+}
+
+/**
+ * Subscribes to Chromium's experimental soft-navigation segments without
+ * changing the document-lifetime Web Vitals stream.
+ */
+export function subscribeSoftNavigationWebVitals(
+    callback: SoftNavigationWebVitalsSubscriber,
+    options: SubscribeSoftNavigationWebVitalsOptions = {}
+): WebVitalsRuntimeUnsubscribe {
+    if (!isBrowserRuntime()) return () => undefined
+
+    const registry = getSoftNavigationRegistry()
+    const delivery = options.delivery ?? 'live'
+    const replay = options.replayLatest ? getLatestSoftNavigationWebVitals(delivery) : []
+    const subscriber = { callback, delivery }
+    registry.subscribers.add(subscriber)
+    startSoftNavigationRuntime()
+    for (const metric of replay) callSoftNavigationSafely(callback, metric)
+
+    let active = true
+    return () => {
+        if (!active) return
+        active = false
+        registry.subscribers.delete(subscriber)
+    }
+}
+
+/** Returns frozen, privacy-redacted metrics for at most the two latest segments. */
+export function getLatestSoftNavigationWebVitals(delivery: WebVitalDelivery = 'live'): LatestSoftNavigationWebVitals {
+    const latest = getSoftNavigationRegistry().latest[delivery]
+    return Object.freeze(
+        [...latest.values()].flatMap(metrics => WEB_VITAL_NAMES.flatMap(name => (metrics.get(name) ? [metrics.get(name)!] : [])))
+    )
+}
