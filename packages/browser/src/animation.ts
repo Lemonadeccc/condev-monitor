@@ -196,6 +196,12 @@ export interface BrowserAnimationRumTargetHandle {
     unregister(): void
 }
 
+export interface AnimationTargetRegistrationHandle {
+    (): void
+    /** False after explicit cleanup, replacement by another provider, or client destruction. */
+    readonly active: boolean
+}
+
 export interface AnimationClientHandle {
     readonly integration: AnimationIntegration
     readonly collector: AnimationCollector
@@ -223,7 +229,7 @@ export interface AnimationClientHandle {
     registerTarget(
         element: Element,
         inspect: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null
-    ): () => void
+    ): AnimationTargetRegistrationHandle
     unregisterTarget(element: Element): void
 }
 
@@ -870,8 +876,8 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     readonly devtools: DeferredAnimationDevtools
     private readonly targetRegistry = createAnimationTargetAdapterRegistry(TARGET_ADAPTER_ID, TARGET_ADAPTER_VERSION)
     private readonly probes = new Set<{ dispose(): void }>()
-    private readonly registrations = new Set<() => void>()
-    private readonly registrationByElement = new Map<Element, () => void>()
+    private readonly registrations = new Set<AnimationTargetRegistrationHandle>()
+    private readonly registrationByElement = new Map<Element, AnimationTargetRegistrationHandle>()
     private automaticInputWindows: AutomaticInputWindows | null = null
     private automaticPageEvidence: BrowserAnimationPageEvidenceController | null = null
     private finalPageEvidence: BrowserAnimationPageEvidenceSnapshot | null = null
@@ -1028,18 +1034,19 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     registerTarget(
         element: Element,
         inspect: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null
-    ): () => void {
+    ): AnimationTargetRegistrationHandle {
         if (this.disposed) throw new Error('Cannot register an animation target after the client was destroyed')
         this.registrationByElement.get(element)?.()
         const unregister = this.targetRegistry.register(element, inspect)
         let active = true
-        const ownedUnregister = (): void => {
+        const ownedUnregister = (() => {
             if (!active) return
             active = false
             this.registrations.delete(ownedUnregister)
             if (this.registrationByElement.get(element) === ownedUnregister) this.registrationByElement.delete(element)
             unregister()
-        }
+        }) as AnimationTargetRegistrationHandle
+        Object.defineProperty(ownedUnregister, 'active', { get: () => active })
         this.registrations.add(ownedUnregister)
         this.registrationByElement.set(element, ownedUnregister)
         return ownedUnregister
