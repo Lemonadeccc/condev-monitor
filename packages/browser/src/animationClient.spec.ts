@@ -565,6 +565,112 @@ describe('browser animation single-init entry', () => {
         await client.destroy()
     })
 
+    it('creates local motion observers through the Browser handle and owns their teardown', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+
+        let tickerListener: ((timeSeconds: number, deltaTimeMs: number, frame: number) => void) | undefined
+        const tickerRemove = jest.fn()
+        const ticker = client.animation.createGsapTickerObserver({
+            ticker: {
+                add(listener) {
+                    tickerListener = listener
+                },
+                remove(listener) {
+                    tickerRemove(listener)
+                },
+            },
+        })
+        expect(ticker.start()).toBe(true)
+        tickerListener?.(0.016, 16, 1)
+        expect(ticker.snapshot().acceptedTickCount).toBe(1)
+
+        let lenisListener: ((event: { progress?: number; velocity?: number }) => void) | undefined
+        const lenisCleanup = jest.fn()
+        const lenis = client.animation.createLenisScrollObserver({
+            lenis: {
+                on(_event, listener) {
+                    lenisListener = listener
+                    return lenisCleanup
+                },
+            },
+        })
+        expect(lenis.start()).toBe(true)
+        lenisListener?.({ progress: 0.5, velocity: 2 })
+        expect(lenis.snapshot().acceptedEventCount).toBe(1)
+
+        const scrollTriggerListeners = new Map<string, () => void>()
+        const scrollTriggerRemove = jest.fn((event: string) => scrollTriggerListeners.delete(event))
+        const scrollTrigger = client.animation.createScrollTriggerObserver({
+            scrollTrigger: {
+                getAll: () => [{ progress: 0.25, direction: 1, isActive: true, start: 0, end: 400, getVelocity: () => 120 }],
+                addEventListener(event, listener) {
+                    scrollTriggerListeners.set(event, listener)
+                },
+                removeEventListener: scrollTriggerRemove,
+            },
+        })
+        expect(scrollTrigger.start()).toBe(true)
+        scrollTriggerListeners.get('scrollStart')?.()
+        expect(scrollTrigger.snapshot()).toMatchObject({ captureCount: 1, retainedCaptureCount: 1 })
+
+        await client.destroy()
+
+        expect(tickerRemove).toHaveBeenCalledTimes(1)
+        expect(lenisCleanup).toHaveBeenCalledTimes(1)
+        expect(scrollTriggerRemove).toHaveBeenCalledTimes(6)
+        expect(ticker.snapshot()).toMatchObject({ status: 'disposed', cleanupFailed: false })
+        expect(lenis.snapshot()).toMatchObject({ status: 'disposed', cleanupFailed: false })
+        expect(scrollTrigger.snapshot()).toMatchObject({ status: 'disposed', cleanupFailed: false })
+    })
+
+    it('keeps failed Browser-owned observer cleanup retryable after client destroy', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        let removeFails = true
+        const remove = jest.fn(() => {
+            if (removeFails) throw new Error('temporary cleanup failure')
+        })
+        const observer = client.animation.createGsapTickerObserver({
+            ticker: {
+                add() {},
+                remove,
+            },
+        })
+        expect(observer.start()).toBe(true)
+
+        await client.destroy()
+        expect(observer.snapshot()).toMatchObject({ status: 'disposed', cleanupFailed: true })
+        expect(remove).toHaveBeenCalledTimes(1)
+
+        removeFails = false
+        observer.dispose()
+        expect(observer.snapshot()).toMatchObject({ status: 'disposed', cleanupFailed: false })
+        expect(remove).toHaveBeenCalledTimes(2)
+    })
+
+    it('does not repeat observer removal after manual disposal or repeated client destruction', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const remove = jest.fn()
+        const observer = client.animation.createGsapTickerObserver({
+            ticker: {
+                add() {},
+                remove,
+            },
+        })
+        expect(observer.start()).toBe(true)
+
+        observer.dispose()
+        expect(observer.snapshot()).toMatchObject({ status: 'disposed', cleanupFailed: false })
+        expect(remove).toHaveBeenCalledTimes(1)
+
+        await client.destroy()
+        await client.destroy()
+        observer.dispose()
+        expect(remove).toHaveBeenCalledTimes(1)
+    })
+
     it('fails clearly when the ordinary Browser client was initialized first', async () => {
         const restoreGlobals = installBrowserGlobals()
         const { init: initBrowser } = require('./index') as typeof import('./index')
@@ -634,6 +740,13 @@ describe('browser animation single-init entry', () => {
         expect(renderer.capture()).toBeNull()
         expect(() => client.animation.createVideoProbe(video)).toThrow('after the client was destroyed')
         expect(() => client.animation.createRendererProbe({ read: () => ({ drawCalls: 1 }) })).toThrow('after the client was destroyed')
+        expect(() => client.animation.createGsapTickerObserver({ ticker: { add() {}, remove() {} } })).toThrow(
+            'after the client was destroyed'
+        )
+        expect(() => client.animation.createLenisScrollObserver({ lenis: { on() {} } })).toThrow('after the client was destroyed')
+        expect(() => client.animation.createScrollTriggerObserver({ scrollTrigger: { getAll: () => [] } })).toThrow(
+            'after the client was destroyed'
+        )
         expect(() => client.animation.registerTarget({} as Element, () => null)).toThrow('after the client was destroyed')
     })
 
