@@ -16,23 +16,26 @@ function request(contract: string | undefined) {
 }
 
 describe('LabRunnerController contract negotiation', () => {
-    it.each([undefined, '1', '2', '4'])('rejects runner contract %s before claiming or changing run state', async contract => {
-        const labService = {
-            claimRun: jest.fn(),
-            negotiateRunnerContract: jest.fn(),
-            updateRunFromRunner: jest.fn(),
-            uploadArtifact: jest.fn(),
-        }
-        const controller = new LabRunnerController(labService as never)
+    it.each([undefined, '1', '2', String(LAB_RUNNER_CONTRACT_VERSION + 1)])(
+        'rejects runner contract %s before claiming or changing run state',
+        async contract => {
+            const labService = {
+                claimRun: jest.fn(),
+                negotiateRunnerContract: jest.fn(),
+                updateRunFromRunner: jest.fn(),
+                uploadArtifact: jest.fn(),
+            }
+            const controller = new LabRunnerController(labService as never)
 
-        await expect(controller.claimRun(runId, request(contract))).rejects.toBeInstanceOf(HttpException)
-        await expect(controller.updateRun(runId, {}, request(contract))).rejects.toBeInstanceOf(HttpException)
-        await expect(controller.uploadArtifact(runId, 'animation-report', request(contract))).rejects.toBeInstanceOf(HttpException)
-        expect(labService.claimRun).not.toHaveBeenCalled()
-        expect(labService.negotiateRunnerContract).not.toHaveBeenCalled()
-        expect(labService.updateRunFromRunner).not.toHaveBeenCalled()
-        expect(labService.uploadArtifact).not.toHaveBeenCalled()
-    })
+            await expect(controller.claimRun(runId, request(contract))).rejects.toBeInstanceOf(HttpException)
+            await expect(controller.updateRun(runId, {}, request(contract))).rejects.toBeInstanceOf(HttpException)
+            await expect(controller.uploadArtifact(runId, 'animation-report', request(contract))).rejects.toBeInstanceOf(HttpException)
+            expect(labService.claimRun).not.toHaveBeenCalled()
+            expect(labService.negotiateRunnerContract).not.toHaveBeenCalled()
+            expect(labService.updateRunFromRunner).not.toHaveBeenCalled()
+            expect(labService.uploadArtifact).not.toHaveBeenCalled()
+        }
+    )
 
     it('negotiates and claims only after the exact bidirectional contract is declared', async () => {
         const negotiated = { runId, runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION }

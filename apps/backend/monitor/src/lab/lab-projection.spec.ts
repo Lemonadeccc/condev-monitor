@@ -135,6 +135,28 @@ function loafPaintMetric(overrides: Record<string, unknown> = {}) {
     })
 }
 
+function videoWindowMetric(overrides: Record<string, unknown> = {}) {
+    return expandedMetric({
+        family: 'resourcesMedia',
+        name: 'videoWindowDroppedFrameRate',
+        stat: 'ratio',
+        unit: 'ratio',
+        value: 0.03,
+        samples: 100,
+        metricId: 'media.video-window-dropped-frame-rate',
+        scope: { level: 'action', actionId: 'hero-hover-01' },
+        aggregation: { population: 'attempts', method: 'median-of-attempts' },
+        budgetRefs: [],
+        limitations: [
+            'video-playback-quality-window-counter-delta',
+            'video-playback-quality-total-includes-displayed-and-dropped',
+            'video-playback-quality-window-object-identity-only',
+            'video-playback-quality-not-decode-presentation-or-gpu-timing',
+        ],
+        ...overrides,
+    })
+}
+
 const ADDITIONAL_CATALOG_V2_METRICS = [
     {
         metricId: 'main.input-capture-to-next-raf-callback.count',
@@ -1323,6 +1345,105 @@ describe('lab platform artifact projections', () => {
         forgedV1.aggregateMetrics = [loafPaintMetric()]
         forgedV1.findings = []
         expect(() => parseAnimationReportArtifact(forgedV1)).toThrow('requires metric catalog v2')
+    })
+
+    it('accepts catalog v3 action-window video deltas while keeping catalog v2 closed', () => {
+        const report = animationReportV2()
+        report.measurementContract.metricCatalogVersion = 3
+        Object.assign(report.attempts[0]!.capabilities, { videoPlaybackQuality: true })
+        report.attempts[0]!.metrics = [
+            videoWindowMetric({
+                scope: { level: 'action', attemptId: 'attempt_1', actionId: 'hero-hover-01' },
+                aggregation: { population: 'media-frames', method: 'ratio' },
+                limitations: [
+                    'video-playback-quality-window-counter-delta',
+                    'video-playback-quality-total-includes-displayed-and-dropped',
+                    'video-playback-quality-window-object-identity-only',
+                    'video-playback-quality-not-decode-presentation-or-gpu-timing',
+                ],
+            }),
+        ]
+        report.aggregateMetrics = [videoWindowMetric()]
+        report.findings = []
+
+        const parsed = parseAnimationReportArtifact(report)
+        expect(parsed.analysis?.measurementContract.metricCatalogVersion).toBe(3)
+        expect(parsed.analysis?.metrics).toEqual([
+            expect.objectContaining({
+                metricId: 'media.video-window-dropped-frame-rate',
+                name: 'videoWindowDroppedFrameRate',
+                scope: { level: 'action', actionId: 'hero-hover-01' },
+            }),
+        ])
+        expect(parsed.compactSummary.limitations).toContain(LAB_COMPACT_SUMMARY_SCOPED_METRICS_OMITTED)
+
+        const forgedV2 = animationReportV2()
+        forgedV2.measurementContract.metricCatalogVersion = 2
+        forgedV2.attempts[0]!.metrics = [
+            videoWindowMetric({
+                scope: { level: 'action', attemptId: 'attempt_1', actionId: 'hero-hover-01' },
+                aggregation: { population: 'media-frames', method: 'ratio' },
+            }),
+        ]
+        forgedV2.aggregateMetrics = [videoWindowMetric()]
+        forgedV2.findings = []
+        expect(() => parseAnimationReportArtifact(forgedV2)).toThrow('requires metric catalog v3')
+    })
+
+    it('binds catalog v3 video-window evidence to every measured attempt capability', () => {
+        const report = animationReportV2()
+        report.measurementContract.metricCatalogVersion = 3
+        report.attempts[0]!.metrics = [
+            videoWindowMetric({
+                scope: { level: 'action', attemptId: 'attempt_1', actionId: 'hero-hover-01' },
+                aggregation: { population: 'media-frames', method: 'ratio' },
+            }),
+        ]
+        report.aggregateMetrics = [videoWindowMetric()]
+        report.findings = []
+
+        expect(() => parseAnimationReportArtifact(report)).toThrow('missing videoPlaybackQuality capability')
+
+        Object.assign(report.attempts[0]!.capabilities, { videoPlaybackQuality: false })
+        expect(() => parseAnimationReportArtifact(report)).toThrow('videoPlaybackQuality capability conflicts')
+
+        Object.assign(report.attempts[0]!.capabilities, { videoPlaybackQuality: true })
+        expect(() => parseAnimationReportArtifact(report)).not.toThrow()
+
+        const incomplete = animationReportV2()
+        incomplete.measurementContract.metricCatalogVersion = 3
+        Object.assign(incomplete.attempts[0]!.capabilities, { videoPlaybackQuality: true })
+        incomplete.attempts[0]!.metrics = [
+            videoWindowMetric({
+                scope: { level: 'action', attemptId: 'attempt_1', actionId: 'hero-hover-01' },
+                aggregation: { population: 'media-frames', method: 'ratio' },
+            }),
+        ]
+        const secondAttempt = {
+            ...incomplete.attempts[0]!,
+            attemptId: 'attempt_2',
+            index: 2,
+            capabilities: { ...incomplete.attempts[0]!.capabilities },
+            metrics: [],
+            actionWindows: [...incomplete.attempts[0]!.actionWindows],
+        }
+        delete (secondAttempt.capabilities as Record<string, unknown>).videoPlaybackQuality
+        incomplete.attempts.push(secondAttempt)
+        incomplete.aggregateMetrics = [
+            videoWindowMetric({
+                status: 'partial',
+                limitations: [
+                    'video-playback-quality-window-counter-delta',
+                    'video-playback-quality-total-includes-displayed-and-dropped',
+                    'video-playback-quality-window-object-identity-only',
+                    'video-playback-quality-not-decode-presentation-or-gpu-timing',
+                    'eligible-attempts-1',
+                    'total-attempts-2',
+                ],
+            }),
+        ]
+        incomplete.findings = []
+        expect(() => parseAnimationReportArtifact(incomplete)).toThrow('missing capability evidence')
     })
 
     it('parses the input-frame and LoAF attribution metric families in catalog v2 without synthesizing unavailable values', () => {

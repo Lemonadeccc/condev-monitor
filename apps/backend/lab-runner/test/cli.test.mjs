@@ -200,7 +200,7 @@ test('ships the generic scenario with enough bounded Trace headroom for the defa
             key: 'Escape',
         }
     )
-    assert.equal(scenario.measurementContract.metricCatalogVersion, 2)
+    assert.equal(scenario.measurementContract.metricCatalogVersion, 3)
     assert.equal(scenario.measurementContract.budgetRef.budgetVersion, 2)
     const claim = {
         runId,

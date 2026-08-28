@@ -486,7 +486,7 @@ test('fails before claim when Monitor contract negotiation is missing, old, or f
     })
     const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
 
-    for (const runnerContractVersion of [undefined, 1, 2, 4]) {
+    for (const runnerContractVersion of [undefined, 1, 2, LAB_RUNNER_CONTRACT_VERSION + 1]) {
         const requests = []
         globalThis.fetch = async (url, init = {}) => {
             requests.push({ url: String(url), init })
@@ -495,7 +495,10 @@ test('fails before claim when Monitor contract negotiation is missing, old, or f
                 headers: { 'Content-Type': 'application/json' },
             })
         }
-        await assert.rejects(client.claim(), /contract 3 negotiation failed.*upgrade Monitor and the local Runner together/iu)
+        await assert.rejects(
+            client.claim(),
+            new RegExp(`contract ${LAB_RUNNER_CONTRACT_VERSION} negotiation failed.*upgrade Monitor and the local Runner together`, 'iu')
+        )
         assert.equal(requests.length, 1)
         assert.ok(requests[0].url.endsWith('/contract'))
     }
@@ -519,7 +522,11 @@ test('fails before navigation when the claim response drifts after successful co
         requests += 1
         const data = String(url).endsWith('/contract')
             ? contractData()
-            : { ...contractData({ runnerContractVersion: 4 }), targetUrl: 'http://localhost:5173/', config: claimedConfig() }
+            : {
+                  ...contractData({ runnerContractVersion: LAB_RUNNER_CONTRACT_VERSION + 1 }),
+                  targetUrl: 'http://localhost:5173/',
+                  config: claimedConfig(),
+              }
         return new Response(JSON.stringify({ success: true, data }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -530,7 +537,10 @@ test('fails before navigation when the claim response drifts after successful co
     })
 
     const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
-    await assert.rejects(client.claim(), /contract 3 claim failed.*upgrade Monitor and the local Runner together/iu)
+    await assert.rejects(
+        client.claim(),
+        new RegExp(`contract ${LAB_RUNNER_CONTRACT_VERSION} claim failed.*upgrade Monitor and the local Runner together`, 'iu')
+    )
     assert.equal(requests, 2)
 })
 

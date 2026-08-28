@@ -116,7 +116,7 @@ describe('animation lab contracts', () => {
                         source: 'explicit',
                         confidence: 'explicit',
                         budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 2 },
-                        metricCatalogVersion: 2,
+                        metricCatalogVersion: 3,
                     },
                 }),
             })
@@ -186,6 +186,26 @@ describe('animation lab contracts', () => {
         }
     })
 
+    it('accepts the explicit catalog v3 action-window video contract', () => {
+        const parsed = parseCreateLabRunInput({
+            appId: 'app-123',
+            scenarioKey: 'video.window.v3',
+            config: {
+                measurementContract: {
+                    contractVersion: 2,
+                    expectedHz: 60,
+                    targetFrameMs: 16.666667,
+                    source: 'explicit',
+                    confidence: 'explicit',
+                    budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 3 },
+                    metricCatalogVersion: 3,
+                },
+            },
+        })
+
+        expect(parsed.config.measurementContract.metricCatalogVersion).toBe(3)
+    })
+
     it('rejects unknown fields, URL credentials/query/path and under-sampled runs', () => {
         expect(() => parseCreateLabRunInput({ appId: 'app-123', scenarioKey: 'scenario', unexpected: true })).toThrow(BadRequestException)
         expect(() =>
@@ -205,7 +225,7 @@ describe('animation lab contracts', () => {
 
     it('requires the exact runner contract before a grant can be claimed', () => {
         expect(parseLabRunnerContractVersion(String(LAB_RUNNER_CONTRACT_VERSION))).toBe(LAB_RUNNER_CONTRACT_VERSION)
-        for (const version of [undefined, '1', '2', '4']) {
+        for (const version of [undefined, '1', '2', String(LAB_RUNNER_CONTRACT_VERSION + 1)]) {
             try {
                 parseLabRunnerContractVersion(version)
                 throw new Error('expected contract rejection')
