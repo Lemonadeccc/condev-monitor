@@ -1,4 +1,8 @@
-import type { AnimationOverlaySource, AnimationRuntime } from '@condev-monitor/monitor-sdk-animation'
+import type {
+    AnimationOverlaySource,
+    AnimationRuntime,
+    AnimationSoftNavigationFinalizedSegmentSnapshot,
+} from '@condev-monitor/monitor-sdk-animation'
 
 const mockTransportSend = jest.fn()
 const mockTransportFlush = jest.fn(async () => undefined)
@@ -23,6 +27,26 @@ const mockRumV2DeliveryConstructor = jest.fn().mockImplementation(() => {
     mockRumV2DeliveryInstances.push(instance)
     return instance
 })
+const mockRumV3DeliveryInstances: Array<{
+    start: jest.Mock
+    suspend: jest.Mock
+    resume: jest.Mock
+    persist: jest.Mock
+    flush: jest.Mock
+    stop: jest.Mock
+}> = []
+const mockRumV3DeliveryConstructor = jest.fn().mockImplementation(() => {
+    const instance = {
+        start: jest.fn(),
+        suspend: jest.fn(async () => undefined),
+        resume: jest.fn(async () => undefined),
+        persist: jest.fn(async () => ({ reports: [] })),
+        flush: jest.fn(async () => ({ attempted: 0, confirmed: 0, terminal: 0, retried: 0 })),
+        stop: jest.fn(async () => undefined),
+    }
+    mockRumV3DeliveryInstances.push(instance)
+    return instance
+})
 
 jest.mock('./transport', () => ({
     BrowserTransport: jest.fn().mockImplementation(() => ({
@@ -35,6 +59,11 @@ jest.mock('./transport', () => ({
 jest.mock('./animation-rum-v2-delivery', () => ({
     ...jest.requireActual('./animation-rum-v2-delivery'),
     AnimationRumV2DeliveryCoordinator: mockRumV2DeliveryConstructor,
+}))
+
+jest.mock('./animation-rum-v3-delivery', () => ({
+    ...jest.requireActual('./animation-rum-v3-delivery'),
+    AnimationRumV3DeliveryCoordinator: mockRumV3DeliveryConstructor,
 }))
 
 jest.mock('./tracing/errorsIntegration', () => ({
@@ -214,6 +243,8 @@ describe('browser animation single-init entry', () => {
         mockTransportDestroy.mockClear()
         mockRumV2DeliveryConstructor.mockClear()
         mockRumV2DeliveryInstances.length = 0
+        mockRumV3DeliveryConstructor.mockClear()
+        mockRumV3DeliveryInstances.length = 0
         delete (globalThis as typeof globalThis & Record<PropertyKey, unknown>)[ACTIVE_CLIENT_KEY]
         delete (globalThis as typeof globalThis & Record<PropertyKey, unknown>)[LAB_RENDERER_BRIDGE_KEY]
     })
@@ -323,6 +354,8 @@ describe('browser animation single-init entry', () => {
         const delivery = mockRumV2DeliveryInstances[0]!
 
         expect(client.animation.sampled).toBe(true)
+        expect(client.animation.pageSampled).toBe(true)
+        expect(client.animation.softNavigationSampled).toBe(false)
         expect(delivery.start).toHaveBeenCalledTimes(1)
         await client.flush()
         expect(delivery.persist).not.toHaveBeenCalled()
@@ -340,6 +373,154 @@ describe('browser animation single-init entry', () => {
         await client.destroy()
         expect(delivery.stop).toHaveBeenCalledTimes(1)
         expect(mockTransportDestroy).toHaveBeenCalledTimes(1)
+        restoreGlobals()
+    })
+
+    it('adds isolated soft-navigation RUM v3 without replacing the existing v2 page lane', async () => {
+        const restoreGlobals = installBrowserGlobals()
+        let softNavigationSubscriber: ((segment: AnimationSoftNavigationFinalizedSegmentSnapshot) => void) | undefined
+        const runtimeValue: AnimationRuntime = {
+            ...runtime(),
+            subscribeSoftNavigationFinalizedSegments(callback) {
+                softNavigationSubscriber = callback
+                return () => {
+                    if (softNavigationSubscriber === callback) softNavigationSubscriber = undefined
+                }
+            },
+        }
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({
+            dsn: 'https://example.test/dsn-api/tracking/app',
+            performance: false,
+            whiteScreen: false,
+            animation: {
+                runtime: runtimeValue,
+                autoInputWindows: false,
+                autoPageEvidence: false,
+                rum: { contractVersion: 2, sampleRate: 1, softNavigation: true },
+                context: { routeKey: 'fixture.product', environment: 'test', runtimeFamily: 'react' },
+            },
+        })
+        const v2Delivery = mockRumV2DeliveryInstances[0]!
+        const v3Delivery = mockRumV3DeliveryInstances[0]!
+
+        expect(client.animation.sampled).toBe(true)
+        expect(client.animation.pageSampled).toBe(true)
+        expect(client.animation.softNavigationSampled).toBe(true)
+        expect(v2Delivery.start).toHaveBeenCalledTimes(1)
+        expect(v3Delivery.start).toHaveBeenCalledTimes(1)
+        softNavigationSubscriber?.({
+            schemaVersion: 1,
+            segmentId: 9,
+            startedAt: 100,
+            finalizedAt: 1_100,
+            elapsedMs: 1_000,
+            reason: 'next-soft-navigation',
+            capability: { CLS: 'supported', INP: 'unsupported', LCP: 'unsupported' },
+            observedUpdateCount: 1,
+            droppedEntryCount: 0,
+            rejectedUpdateCount: 0,
+            latest: {
+                CLS: {
+                    name: 'CLS',
+                    value: 0.02,
+                    delta: 0.02,
+                    rating: 'good',
+                    navigationType: 'soft-navigation',
+                    segmentId: 9,
+                    startedAt: 100,
+                    attribution: {},
+                },
+                INP: null,
+                LCP: null,
+            },
+        })
+        await client.flush()
+
+        expect(v3Delivery.persist).toHaveBeenCalledTimes(1)
+        const report = v3Delivery.persist.mock.calls[0]![0][0] as {
+            contractVersion: number
+            captureKind: string
+            context: { routeKey: string; runtime: { framework: string; renderer: string; backend: string } }
+        }
+        expect(report).toMatchObject({
+            contractVersion: 3,
+            captureKind: 'soft-navigation',
+            context: {
+                routeKey: 'fixture.product',
+                runtime: { framework: 'react', renderer: 'unknown', backend: 'unknown' },
+            },
+        })
+        expect(v2Delivery.persist).not.toHaveBeenCalled()
+        expect(mockTransportSend).not.toHaveBeenCalled()
+
+        await client.destroy()
+        expect(v2Delivery.persist).toHaveBeenCalledTimes(1)
+        expect(v2Delivery.stop).toHaveBeenCalledTimes(1)
+        expect(v3Delivery.stop).toHaveBeenCalledTimes(1)
+        expect(softNavigationSubscriber).toBeUndefined()
+        restoreGlobals()
+    })
+
+    it('preserves both v2 and v3 failures when an explicit client flush fails in both lanes', async () => {
+        const restoreGlobals = installBrowserGlobals()
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({
+            dsn: 'https://example.test/dsn-api/tracking/app',
+            performance: false,
+            whiteScreen: false,
+            animation: {
+                runtime: runtime(),
+                autoInputWindows: false,
+                autoPageEvidence: false,
+                rum: { contractVersion: 2, sampleRate: 1, softNavigation: true },
+                context: { routeKey: 'fixture.aggregate-flush' },
+            },
+        })
+        const v2Failure = new Error('v2 flush failed')
+        const v3Failure = new Error('v3 flush failed')
+        mockRumV2DeliveryInstances[0]!.flush.mockRejectedValueOnce(v2Failure)
+        mockRumV3DeliveryInstances[0]!.flush.mockRejectedValueOnce(v3Failure)
+
+        const failure = await client.flush().catch(error => error as unknown)
+        expect(failure).toBeInstanceOf(AggregateError)
+        expect((failure as AggregateError).errors).toEqual([v2Failure, v3Failure])
+
+        await expect(client.destroy()).resolves.toBeUndefined()
+        restoreGlobals()
+    })
+
+    it('preserves every v2/v3 finalization failure while still stopping both durable lanes', async () => {
+        const restoreGlobals = installBrowserGlobals()
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({
+            dsn: 'https://example.test/dsn-api/tracking/app',
+            performance: false,
+            whiteScreen: false,
+            animation: {
+                runtime: runtime(),
+                autoInputWindows: false,
+                autoPageEvidence: false,
+                rum: { contractVersion: 2, sampleRate: 1, softNavigation: true },
+                context: { routeKey: 'fixture.aggregate-destroy' },
+            },
+        })
+        const v2FlushFailure = new Error('v2 final flush failed')
+        const v3FlushFailure = new Error('v3 final flush failed')
+        const v3StopFailure = new Error('v3 stop failed')
+        const v2Delivery = mockRumV2DeliveryInstances[0]!
+        const v3Delivery = mockRumV3DeliveryInstances[0]!
+        v2Delivery.flush.mockRejectedValueOnce(v2FlushFailure)
+        v3Delivery.flush.mockRejectedValueOnce(v3FlushFailure)
+        v3Delivery.stop.mockRejectedValueOnce(v3StopFailure)
+
+        const failure = await client.destroy().catch(error => error as unknown)
+        expect(failure).toBeInstanceOf(AggregateError)
+        expect((failure as AggregateError).errors).toEqual([v2FlushFailure, v3FlushFailure, v3StopFailure])
+        expect(v2Delivery.stop).toHaveBeenCalledTimes(1)
+        expect(v3Delivery.stop).toHaveBeenCalledTimes(1)
+
+        await expect(client.destroy()).resolves.toBeUndefined()
         restoreGlobals()
     })
 
@@ -410,6 +591,8 @@ describe('browser animation single-init entry', () => {
             animation: { runtime: runtime(), rum: { contractVersion: 2, sampleRate: 0 } },
         })
         expect(disabled.animation.sampled).toBe(false)
+        expect(disabled.animation.pageSampled).toBe(false)
+        expect(disabled.animation.softNavigationSampled).toBe(false)
         disabled.animation.stop()
         await disabled.flush()
         expect(mockRumV2DeliveryConstructor).not.toHaveBeenCalled()
@@ -427,6 +610,8 @@ describe('browser animation single-init entry', () => {
 
         expect(client.localOnly).toBe(true)
         expect(client.animation.sampled).toBe(false)
+        expect(client.animation.pageSampled).toBe(false)
+        expect(client.animation.softNavigationSampled).toBe(false)
         expect(mockRumV2DeliveryConstructor).not.toHaveBeenCalled()
         expect(mockTransportSend).not.toHaveBeenCalled()
         await client.destroy()

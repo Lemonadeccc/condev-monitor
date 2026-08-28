@@ -73,6 +73,11 @@ import {
     type BrowserAnimationRumV2Controller,
 } from './animation-rum-v2'
 import {
+    createBrowserAnimationRumV3SoftNavigationController,
+    validateBrowserAnimationRumV3SoftNavigationConfiguration,
+    type BrowserAnimationRumV3SoftNavigationController,
+} from './animation-rum-v3'
+import {
     createAutomaticAnimationPageEvidence,
     disabledAnimationPageEvidenceSnapshot,
     type BrowserAnimationAutoPageEvidenceOptions,
@@ -132,6 +137,8 @@ export interface BrowserAnimationRumOptions extends Omit<AnimationRumOptions, 'e
     sampleRate: number
     /** Omit (or pass `1`) for legacy transport; pass `2` for durable page/target RUM v2. */
     contractVersion?: 1 | 2
+    /** Also upload finalized native soft-navigation CLS/INP/LCP through the isolated RUM v3 lane. */
+    softNavigation?: boolean
 }
 
 export interface BrowserAnimationDevtoolsOptions extends Omit<AnimationOverlayOptions, 'production'> {}
@@ -228,6 +235,10 @@ export interface AnimationClientHandle {
     readonly integration: AnimationIntegration
     readonly collector: AnimationCollector
     readonly sampled: boolean
+    /** Page-level v1/v2 production sampling decision. */
+    readonly pageSampled: boolean
+    /** Independent native soft-navigation RUM v3 production sampling decision. */
+    readonly softNavigationSampled: boolean
     readonly started: boolean
     readonly devtools: AnimationDevtoolsController
     start(): boolean
@@ -318,7 +329,11 @@ function resolveRumOptions(rum: BrowserAnimationFeatureOptions['rum'], dsn: stri
     if (!dsn) throw new TypeError('animation.rum requires a DSN; omit rum to keep the animation monitor local-only')
     const contractVersion = rum.contractVersion ?? 1
     if (contractVersion !== 1 && contractVersion !== 2) throw new TypeError('animation.rum.contractVersion must be 1 or 2')
-    const { contractVersion: _contractVersion, ...resolved } = rum
+    const { contractVersion: _contractVersion, softNavigation, ...resolved } = rum
+    if (softNavigation !== undefined && typeof softNavigation !== 'boolean') {
+        throw new TypeError('animation.rum.softNavigation must be a boolean')
+    }
+    if (softNavigation) validateBrowserAnimationRumV3SoftNavigationConfiguration(dsn, resolved, routeKey)
     if (contractVersion === 2) {
         validateBrowserAnimationRumV2Configuration(dsn, resolved, routeKey)
         return { enabled: false, sampleRate: 0 }
@@ -905,6 +920,12 @@ function resolveDevtoolsOptions(value: BrowserAnimationFeatureOptions['devtools'
     return { enabled: true, options: value }
 }
 
+function throwAnimationLifecycleFailures(message: string, failures: readonly unknown[]): void {
+    if (failures.length === 0) return
+    if (failures.length === 1) throw failures[0]
+    throw new AggregateError(failures, message)
+}
+
 class AnimationClientHandleImpl implements AnimationClientHandle {
     readonly collector: AnimationCollector
     readonly devtools: DeferredAnimationDevtools
@@ -918,6 +939,7 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     private automaticPageEvidence: BrowserAnimationPageEvidenceController | null = null
     private finalPageEvidence: BrowserAnimationPageEvidenceSnapshot | null = null
     private rumV2: BrowserAnimationRumV2Controller | null = null
+    private rumV3SoftNavigation: BrowserAnimationRumV3SoftNavigationController | null = null
     private recordingRendererStats = false
     private disposed = false
 
@@ -942,7 +964,15 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     }
 
     get sampled(): boolean {
+        return this.pageSampled
+    }
+
+    get pageSampled(): boolean {
         return this.rumV2?.sampled ?? this.integration.sampled
+    }
+
+    get softNavigationSampled(): boolean {
+        return this.rumV3SoftNavigation?.sampled ?? false
     }
 
     get started(): boolean {
@@ -1118,6 +1148,13 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         this.rumV2 = controller
     }
 
+    attachRumV3SoftNavigation(controller: BrowserAnimationRumV3SoftNavigationController): void {
+        if (this.rumV3SoftNavigation && this.rumV3SoftNavigation !== controller) {
+            throw new Error('Animation RUM v3 soft navigation is already attached')
+        }
+        this.rumV3SoftNavigation = controller
+    }
+
     registerTarget(
         element: Element,
         inspect: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null
@@ -1239,6 +1276,8 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         this.devtools.destroy()
         this.rumV2?.dispose()
         this.rumV2 = null
+        this.rumV3SoftNavigation?.dispose()
+        this.rumV3SoftNavigation = null
         for (const unregister of [...this.registrations]) unregister()
         this.registrationByElement.clear()
         for (const probe of [...this.probes].reverse()) {
@@ -1265,6 +1304,7 @@ class AnimationFeatureLifecycle implements MonitorIntegration {
     readonly name = 'animation-feature-lifecycle'
     private handle: AnimationClientHandleImpl | null = null
     private rumV2: BrowserAnimationRumV2Controller | null = null
+    private rumV3SoftNavigation: BrowserAnimationRumV3SoftNavigationController | null = null
     private destroyed = false
 
     constructor(private readonly onDestroyed: () => void) {}
@@ -1277,12 +1317,27 @@ class AnimationFeatureLifecycle implements MonitorIntegration {
         this.rumV2 = controller
     }
 
+    attachRumV3SoftNavigation(controller: BrowserAnimationRumV3SoftNavigationController): void {
+        this.rumV3SoftNavigation = controller
+    }
+
     setup(): void {
         // Cleanup is owned by destroy(); setup intentionally has no side effects.
     }
 
-    flush(): Promise<void> | void {
-        return this.rumV2?.flush()
+    async flush(): Promise<void> {
+        const failures: unknown[] = []
+        try {
+            await this.rumV2?.flush()
+        } catch (error) {
+            failures.push(error)
+        }
+        try {
+            await this.rumV3SoftNavigation?.flush()
+        } catch (error) {
+            failures.push(error)
+        }
+        throwAnimationLifecycleFailures('Multiple animation RUM lanes failed to flush', failures)
     }
 
     destroy(): void {
@@ -1293,6 +1348,8 @@ class AnimationFeatureLifecycle implements MonitorIntegration {
         } finally {
             this.rumV2?.dispose()
             this.rumV2 = null
+            this.rumV3SoftNavigation?.dispose()
+            this.rumV3SoftNavigation = null
             this.onDestroyed()
         }
     }
@@ -1438,6 +1495,7 @@ export function init(options: BrowserAnimationInitOptions = {}): AnimationBrowse
 
     let browserClient: BrowserMonitorClient | undefined
     let rumV2Controller: BrowserAnimationRumV2Controller | null = null
+    let rumV3SoftNavigationController: BrowserAnimationRumV3SoftNavigationController | null = null
     try {
         browserClient = initBrowser({
             ...options,
@@ -1453,13 +1511,14 @@ export function init(options: BrowserAnimationInitOptions = {}): AnimationBrowse
         resolvedClient = client
         animation.startOwnedFeatures()
         const rumOptions = animationOptions.rum
+        const resolvedContext = resolveAnimationOptions(animationOptions, options, dsn, sharedRuntime).context
         if (rumOptions && (rumOptions.contractVersion ?? 1) === 2) {
-            const { contractVersion: _contractVersion, ...rumV2Options } = rumOptions
+            const { contractVersion: _contractVersion, softNavigation: _softNavigation, ...rumV2Options } = rumOptions
             const rumV2 = createBrowserAnimationRumV2Controller({
                 dsn,
                 rum: rumV2Options,
                 runtime: sharedRuntime,
-                context: resolveAnimationOptions(animationOptions, options, dsn, sharedRuntime).context,
+                context: resolvedContext,
                 getPageSnapshot: () => animation.snapshotForRumBoundary(),
                 selectElement: (element, targetOptions) => animation.selectElementForRum(element, targetOptions),
                 beginInteraction: (kind, label) => animation.beginInteraction(kind, label),
@@ -1467,10 +1526,49 @@ export function init(options: BrowserAnimationInitOptions = {}): AnimationBrowse
             rumV2Controller = rumV2
             animation.attachRumV2(rumV2)
             lifecycle.attachRumV2(rumV2)
+        }
+        if (rumOptions && rumOptions.softNavigation) {
+            const { contractVersion: _contractVersion, softNavigation: _softNavigation, ...rumV3Options } = rumOptions
+            const routeKey = resolvedContext?.routeKey
+            if (!routeKey) throw new Error('Validated soft-navigation RUM route key is unavailable')
+            const rumV3SoftNavigation = createBrowserAnimationRumV3SoftNavigationController({
+                dsn,
+                rum: rumV3Options,
+                runtime: sharedRuntime,
+                context: {
+                    ...resolvedContext,
+                    routeKey,
+                },
+            })
+            rumV3SoftNavigationController = rumV3SoftNavigation
+            animation.attachRumV3SoftNavigation(rumV3SoftNavigation)
+            lifecycle.attachRumV3SoftNavigation(rumV3SoftNavigation)
+        }
+        if (rumV2Controller || rumV3SoftNavigationController) {
             __setBrowserBeforeDestroyHook(browserClient, async () => {
                 animation.stop()
-                await rumV2.flush()
-                await rumV2.stopDelivery()
+                const failures: unknown[] = []
+                try {
+                    await rumV2Controller?.flush()
+                } catch (error) {
+                    failures.push(error)
+                }
+                try {
+                    await rumV3SoftNavigationController?.flush()
+                } catch (error) {
+                    failures.push(error)
+                }
+                try {
+                    await rumV2Controller?.stopDelivery()
+                } catch (error) {
+                    failures.push(error)
+                }
+                try {
+                    await rumV3SoftNavigationController?.stopDelivery()
+                } catch (error) {
+                    failures.push(error)
+                }
+                throwAnimationLifecycleFailures('Multiple animation RUM finalization operations failed', failures)
             })
         }
         writeActiveClient({ dsn, client })
@@ -1478,6 +1576,8 @@ export function init(options: BrowserAnimationInitOptions = {}): AnimationBrowse
     } catch (error) {
         rumV2Controller?.dispose()
         void rumV2Controller?.stopDelivery().catch(() => undefined)
+        rumV3SoftNavigationController?.dispose()
+        void rumV3SoftNavigationController?.stopDelivery().catch(() => undefined)
         try {
             lifecycle.destroy()
         } catch {
