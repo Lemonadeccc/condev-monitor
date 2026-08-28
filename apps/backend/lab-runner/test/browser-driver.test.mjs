@@ -622,6 +622,156 @@ test('distinguishes complete, partial, empty, and failed video playback quality 
     }
 })
 
+test('measures catalog v3 video playback quality from per-action counter deltas', async () => {
+    const driver = createBrowserDriver('chromium')
+    const session = await driver.launch()
+    const context = await session.createContext(scenario())
+    try {
+        const page = await context.newPage()
+        const key = '__condevLabProbe_video_window_fixture'
+        const capability = 'V'.repeat(43)
+        const actions = [
+            { actionId: 'stable-video', order: 0, label: 'stable-video', kind: 'wait' },
+            { actionId: 'added-video', order: 1, label: 'added-video', kind: 'wait' },
+            { actionId: 'reset-video', order: 2, label: 'reset-video', kind: 'wait' },
+            { actionId: 'removed-video', order: 3, label: 'removed-video', kind: 'wait' },
+            { actionId: 'unreadable-video', order: 4, label: 'unreadable-video', kind: 'wait' },
+            { actionId: 'reloaded-video', order: 5, label: 'reloaded-video', kind: 'wait' },
+        ]
+        const fakeVideoQuality = `;(() => {
+          window.__videoQuality = { first: { totalVideoFrames: 100, droppedVideoFrames: 2 } };
+          Object.defineProperty(HTMLVideoElement.prototype, 'getVideoPlaybackQuality', {
+            configurable: true,
+            value() { return window.__videoQuality[this.id]; },
+          });
+        })();`
+        await page.addInitScript(
+            `${fakeVideoQuality}${browserProbeSource(key, {
+                capability,
+                expectedRefreshHz: 60,
+                targetFrameMs: 1000 / 60,
+                metricCatalogVersion: 3,
+                actions,
+            })}`
+        )
+        await page.navigate('data:text/html,<!doctype html><video id="first"></video>', 10_000)
+
+        assert.equal(await page.notifyProbe(key, capability, 0, 'stable-video', 'start', 'completed'), true)
+        await page.rawPage.evaluate(() => {
+            window.__videoQuality.first = { totalVideoFrames: 200, droppedVideoFrames: 5 }
+        })
+        assert.equal(await page.notifyProbe(key, capability, 1, 'stable-video', 'end', 'completed'), true)
+
+        assert.equal(await page.notifyProbe(key, capability, 2, 'added-video', 'start', 'completed'), true)
+        await page.rawPage.evaluate(() => {
+            window.__videoQuality.first = { totalVideoFrames: 250, droppedVideoFrames: 6 }
+            window.__videoQuality.second = { totalVideoFrames: 10, droppedVideoFrames: 1 }
+            const video = document.createElement('video')
+            video.id = 'second'
+            document.body.append(video)
+        })
+        assert.equal(await page.notifyProbe(key, capability, 3, 'added-video', 'end', 'completed'), true)
+
+        assert.equal(await page.notifyProbe(key, capability, 4, 'reset-video', 'start', 'completed'), true)
+        await page.rawPage.evaluate(() => {
+            window.__videoQuality.first = { totalVideoFrames: 5, droppedVideoFrames: 0 }
+        })
+        assert.equal(await page.notifyProbe(key, capability, 5, 'reset-video', 'end', 'completed'), true)
+
+        assert.equal(await page.notifyProbe(key, capability, 6, 'removed-video', 'start', 'completed'), true)
+        await page.rawPage.evaluate(() => {
+            window.__videoQuality.first = { totalVideoFrames: 15, droppedVideoFrames: 1 }
+            document.querySelector('#second').remove()
+        })
+        assert.equal(await page.notifyProbe(key, capability, 7, 'removed-video', 'end', 'completed'), true)
+
+        assert.equal(await page.notifyProbe(key, capability, 8, 'unreadable-video', 'start', 'completed'), true)
+        await page.rawPage.evaluate(() => {
+            window.__videoQuality.first = { totalVideoFrames: 5, droppedVideoFrames: 6 }
+        })
+        assert.equal(await page.notifyProbe(key, capability, 9, 'unreadable-video', 'end', 'completed'), true)
+
+        await page.rawPage.evaluate(() => {
+            window.__videoQuality.first = { totalVideoFrames: 100, droppedVideoFrames: 2 }
+        })
+        assert.equal(await page.notifyProbe(key, capability, 10, 'reloaded-video', 'start', 'completed'), true)
+        await page.rawPage.evaluate(() => {
+            window.__videoQuality.first = { totalVideoFrames: 250, droppedVideoFrames: 5 }
+            document.querySelector('#first').dispatchEvent(new Event('loadstart'))
+        })
+        assert.equal(await page.notifyProbe(key, capability, 11, 'reloaded-video', 'end', 'completed'), true)
+
+        const raw = await page.collectProbeResult(key, capability, 12)
+        const result = decodePageProbeResult(
+            raw,
+            actions.map(({ actionId, order, kind }) => ({ actionId, order, kind })),
+            3
+        )
+        const videoMetric = actionId =>
+            result.actionResults
+                .find(action => action.actionId === actionId)
+                .metrics.find(item => item.name === 'videoWindowDroppedFrameRate')
+
+        assert.deepEqual(
+            {
+                value: videoMetric('stable-video').value,
+                samples: videoMetric('stable-video').samples,
+                status: videoMetric('stable-video').status,
+            },
+            { value: 0.03, samples: 100, status: 'measured' }
+        )
+        assert.deepEqual(
+            {
+                value: videoMetric('added-video').value,
+                samples: videoMetric('added-video').samples,
+                status: videoMetric('added-video').status,
+            },
+            { value: 0.02, samples: 50, status: 'partial' }
+        )
+        assert.ok(videoMetric('added-video').limitations.includes('video-playback-quality-window-element-added'))
+        assert.deepEqual(
+            {
+                value: videoMetric('reset-video').value,
+                samples: videoMetric('reset-video').samples,
+                status: videoMetric('reset-video').status,
+            },
+            { value: null, samples: null, status: 'unknown' }
+        )
+        assert.ok(videoMetric('reset-video').limitations.includes('video-playback-quality-window-counter-discontinuity'))
+        assert.deepEqual(
+            {
+                value: videoMetric('removed-video').value,
+                samples: videoMetric('removed-video').samples,
+                status: videoMetric('removed-video').status,
+            },
+            { value: 0.1, samples: 10, status: 'partial' }
+        )
+        assert.ok(videoMetric('removed-video').limitations.includes('video-playback-quality-window-element-removed'))
+        assert.deepEqual(
+            {
+                value: videoMetric('unreadable-video').value,
+                samples: videoMetric('unreadable-video').samples,
+                status: videoMetric('unreadable-video').status,
+            },
+            { value: null, samples: null, status: 'unknown' }
+        )
+        assert.ok(videoMetric('unreadable-video').limitations.includes('video-playback-quality-window-read-error'))
+        assert.deepEqual(
+            {
+                value: videoMetric('reloaded-video').value,
+                samples: videoMetric('reloaded-video').samples,
+                status: videoMetric('reloaded-video').status,
+            },
+            { value: null, samples: null, status: 'unknown' }
+        )
+        assert.ok(videoMetric('reloaded-video').limitations.includes('video-playback-quality-window-counter-discontinuity'))
+        assert.doesNotMatch(JSON.stringify(raw), /currentSrc|sourceIdentity|data:text\/html/)
+    } finally {
+        await context.close().catch(() => undefined)
+        await session.close().catch(() => undefined)
+    }
+})
+
 test('derives catalog v2 LoAF paint phases only from complete browser boundaries', async () => {
     const driver = createBrowserDriver('chromium')
     const session = await driver.launch()

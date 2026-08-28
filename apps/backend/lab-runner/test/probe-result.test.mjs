@@ -1,18 +1,24 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ANIMATION_LAB_METRIC_CATALOG_V1, ANIMATION_LAB_METRIC_CATALOG_V2 } from '@condev-monitor/animation-lab'
+import {
+    ANIMATION_LAB_METRIC_CATALOG_V1,
+    ANIMATION_LAB_METRIC_CATALOG_V2,
+    ANIMATION_LAB_METRIC_CATALOG_V3,
+} from '@condev-monitor/animation-lab'
 
 import {
     decodePageProbeResult,
     decodePageProbeResultWithObserverDrops,
     PAGE_PROBE_ACTION_METRIC_IDS,
     PAGE_PROBE_ACTION_METRIC_IDS_V2,
+    PAGE_PROBE_ACTION_METRIC_IDS_V3,
     PAGE_PROBE_CAPABILITY_KEYS,
     PAGE_PROBE_CAPABILITY_KEYS_V2,
     PAGE_PROBE_OBSERVER_DROP_KEYS,
     PAGE_PROBE_ROOT_METRIC_IDS,
     PAGE_PROBE_ROOT_METRIC_IDS_V2,
+    PAGE_PROBE_ROOT_METRIC_IDS_V3,
 } from '../src/probe-result.ts'
 
 const expectedActions = [{ actionId: 'hero-hover', order: 0, kind: 'hover' }]
@@ -31,7 +37,7 @@ function metric(overrides = {}) {
     }
 }
 
-const catalogByIdV2 = new Map(ANIMATION_LAB_METRIC_CATALOG_V2.map(entry => [entry.metricId, entry]))
+const catalogByIdV3 = new Map(ANIMATION_LAB_METRIC_CATALOG_V3.map(entry => [entry.metricId, entry]))
 const catalogIdByTuple = new Map(
     ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [[entry.family, entry.name, entry.stat, entry.unit].join('|'), entry.metricId])
 )
@@ -41,7 +47,7 @@ function metricId(metric) {
 }
 
 function metricForCatalogId(metrics, id) {
-    const entry = catalogByIdV2.get(id)
+    const entry = catalogByIdV3.get(id)
     assert.ok(entry, id)
     return metrics.find(
         item => item.family === entry.family && item.name === entry.name && item.stat === entry.stat && item.unit === entry.unit
@@ -49,7 +55,7 @@ function metricForCatalogId(metrics, id) {
 }
 
 function metricForId(metricId, overrides = {}) {
-    const entry = catalogByIdV2.get(metricId)
+    const entry = catalogByIdV3.get(metricId)
     assert.ok(entry, metricId)
     return {
         family: entry.family,
@@ -142,6 +148,27 @@ function rawResultV2() {
     result.actionResults[0].metrics = PAGE_PROBE_ACTION_METRIC_IDS_V2.map(metricId => metricForId(metricId))
     result.capabilities = Object.fromEntries(PAGE_PROBE_CAPABILITY_KEYS_V2.map(key => [key, true]))
     result.sampleDrops.inputFrameScheduling = 0
+    return result
+}
+
+function rawResultV3() {
+    const result = rawResultV2()
+    result.metrics = PAGE_PROBE_ROOT_METRIC_IDS_V3.map(metricId =>
+        metricForId(metricId, metricId === 'probe.dropped-samples.count' ? { value: 0 } : {})
+    )
+    result.actionResults[0].metrics = PAGE_PROBE_ACTION_METRIC_IDS_V3.map(metricId =>
+        metricForId(metricId, metricId === 'media.video-window-dropped-frame-rate' ? { value: 0.03, samples: 100 } : {})
+    )
+    result.actionResults[0].videoWindowEvidence = {
+        beginSurfaces: 1,
+        endSurfaces: 1,
+        matchedSurfaces: 1,
+        eligibleSurfaces: 1,
+        readErrorSurfaces: 0,
+        discontinuitySurfaces: 0,
+        totalFrameDelta: 100,
+        droppedFrameDelta: 3,
+    }
     return result
 }
 
@@ -317,6 +344,90 @@ test('keeps video playback quality populations distinct and uses media frames as
         },
         { value: null, samples: null, status: 'unsupported', limitations: videoPlaybackQualityLimitations }
     )
+})
+
+test('decodes catalog v3 action-window video deltas and derives closed limitations', () => {
+    const measured = decodePageProbeResult(rawResultV3(), expectedActions, 3).actionResults[0].metrics.find(
+        item => item.name === 'videoWindowDroppedFrameRate'
+    )
+    assert.deepEqual(
+        { value: measured.value, samples: measured.samples, status: measured.status, limitations: measured.limitations },
+        {
+            value: 0.03,
+            samples: 100,
+            status: 'measured',
+            limitations: [
+                'video-playback-quality-window-counter-delta',
+                'video-playback-quality-total-includes-displayed-and-dropped',
+                'video-playback-quality-window-object-identity-only',
+                'video-playback-quality-not-decode-presentation-or-gpu-timing',
+            ],
+        }
+    )
+
+    const partial = rawResultV3()
+    Object.assign(partial.actionResults[0].metrics.at(-1), { value: 0.02, samples: 50, status: 'partial' })
+    Object.assign(partial.actionResults[0].videoWindowEvidence, {
+        endSurfaces: 2,
+        totalFrameDelta: 50,
+        droppedFrameDelta: 1,
+    })
+    const partialMetric = decodePageProbeResult(partial, expectedActions, 3).actionResults[0].metrics.at(-1)
+    assert.equal(partialMetric.status, 'partial')
+    assert.ok(partialMetric.limitations.includes('video-playback-quality-window-partial-surface-coverage'))
+    assert.ok(partialMetric.limitations.includes('video-playback-quality-window-element-added'))
+
+    const unknown = rawResultV3()
+    Object.assign(unknown.actionResults[0].metrics.at(-1), {
+        value: null,
+        samples: null,
+        status: 'unknown',
+        evidenceLevel: 'unsupported-or-unknown',
+    })
+    Object.assign(unknown.actionResults[0].videoWindowEvidence, {
+        eligibleSurfaces: 0,
+        discontinuitySurfaces: 1,
+        totalFrameDelta: 0,
+        droppedFrameDelta: 0,
+    })
+    const unknownMetric = decodePageProbeResult(unknown, expectedActions, 3).actionResults[0].metrics.at(-1)
+    assert.equal(unknownMetric.status, 'unknown')
+    assert.ok(unknownMetric.limitations.includes('video-playback-quality-window-counter-discontinuity'))
+
+    for (const fixture of [
+        { beginSurfaces: 0, endSurfaces: 0, limitation: 'video-playback-quality-window-no-video-elements' },
+        { beginSurfaces: 1, endSurfaces: 1, limitation: 'video-playback-quality-window-zero-total-frame-delta' },
+    ]) {
+        const raw = rawResultV3()
+        Object.assign(raw.actionResults[0].metrics.at(-1), { value: null, samples: 0, status: 'not-observed' })
+        Object.assign(raw.actionResults[0].videoWindowEvidence, {
+            beginSurfaces: fixture.beginSurfaces,
+            endSurfaces: fixture.endSurfaces,
+            matchedSurfaces: fixture.beginSurfaces,
+            eligibleSurfaces: fixture.beginSurfaces,
+            totalFrameDelta: 0,
+            droppedFrameDelta: 0,
+        })
+        const decoded = decodePageProbeResult(raw, expectedActions, 3).actionResults[0].metrics.at(-1)
+        assert.equal(decoded.status, 'not-observed')
+        assert.ok(decoded.limitations.includes(fixture.limitation))
+    }
+})
+
+test('rejects forged catalog v3 video-window coverage and keeps catalog v2 unchanged', () => {
+    assert.doesNotThrow(() => decodePageProbeResult(rawResultV2(), expectedActions, 2))
+
+    const forgedCoverage = rawResultV3()
+    forgedCoverage.actionResults[0].videoWindowEvidence.endSurfaces = 2
+    assert.throws(() => decodePageProbeResult(forgedCoverage, expectedActions, 3), TypeError)
+
+    const forgedHealthyPartial = rawResultV3()
+    forgedHealthyPartial.actionResults[0].metrics.at(-1).status = 'partial'
+    assert.throws(() => decodePageProbeResult(forgedHealthyPartial, expectedActions, 3), TypeError)
+
+    const forgedLegacy = rawResultV2()
+    forgedLegacy.actionResults[0].videoWindowEvidence = rawResultV3().actionResults[0].videoWindowEvidence
+    assert.throws(() => decodePageProbeResult(forgedLegacy, expectedActions, 2), TypeError)
 })
 
 test('rejects partial status outside video quality and incoherent video sample states', () => {

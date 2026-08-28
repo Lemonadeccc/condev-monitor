@@ -4,6 +4,7 @@ import test from 'node:test'
 import {
     ANIMATION_LAB_METRIC_CATALOG_V1,
     ANIMATION_LAB_METRIC_CATALOG_V2,
+    ANIMATION_LAB_METRIC_CATALOG_V3,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V3,
@@ -608,6 +609,82 @@ test('decorates and validates every new opt-in catalog v2 scheduling and LoAF di
     )
     assert.equal(semantics.measurementContract.metricCatalogVersion, 2)
     assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
+})
+
+test('aggregates catalog v3 action-window video deltas without changing the cumulative video metric', () => {
+    const entry = ANIMATION_LAB_METRIC_CATALOG_V3.find(item => item.metricId === 'media.video-window-dropped-frame-rate')
+    const limitations = [
+        'video-playback-quality-window-counter-delta',
+        'video-playback-quality-total-includes-displayed-and-dropped',
+        'video-playback-quality-window-object-identity-only',
+        'video-playback-quality-not-decode-presentation-or-gpu-timing',
+    ]
+    const attempts = [0, 0.03, 0.06].map((value, index) => {
+        const attemptId = `video-window-${index}`
+        return {
+            attemptId,
+            phase: 'measured',
+            index,
+            startedAt: `2026-08-27T00:00:0${index}.000Z`,
+            endedAt: `2026-08-27T00:00:0${index + 1}.000Z`,
+            durationMs: 1_000,
+            metrics: [
+                decorateLabMetric(
+                    {
+                        family: entry.family,
+                        name: entry.name,
+                        stat: entry.stat,
+                        unit: entry.unit,
+                        value,
+                        samples: 100,
+                        status: 'measured',
+                        evidenceLevel: 'controlled-lab-measurement',
+                        limitations,
+                    },
+                    { level: 'action', attemptId, actionId: 'hero-hover' }
+                ),
+            ],
+            actionWindows: [
+                actionWindowFromProbe(scenario.actions[0], 0, {
+                    startedAtMs: 100,
+                    endedAtMs: 600,
+                    outcome: 'completed',
+                }),
+            ],
+            capabilities: { videoPlaybackQuality: true },
+            limitations: [],
+        }
+    })
+    const aggregateMetrics = aggregateMeasuredAttempts(attempts)
+    assert.deepEqual(
+        aggregateMetrics.map(metric => ({
+            metricId: metric.metricId,
+            value: metric.value,
+            samples: metric.samples,
+            status: metric.status,
+        })),
+        [{ metricId: 'media.video-window-dropped-frame-rate', value: 0.03, samples: 300, status: 'measured' }]
+    )
+
+    const semantics = buildAnimationLabSemantics({
+        scenario: {
+            ...scenario,
+            measurementContract: {
+                contractVersion: 2,
+                expectedHz: 60,
+                targetFrameMs: 16.666667,
+                source: 'explicit',
+                confidence: 'explicit',
+                budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
+                metricCatalogVersion: 3,
+            },
+        },
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts,
+        aggregateMetrics,
+    })
+    assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
+    assert.equal(semantics.metrics[0].scope.level, 'action')
 })
 
 test('keeps canonical analysis valid for the maximum action count by projecting metrics deterministically', () => {
