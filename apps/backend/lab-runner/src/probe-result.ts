@@ -2,6 +2,7 @@ import {
     ANIMATION_LAB_METRIC_CATALOG_V1,
     ANIMATION_LAB_METRIC_CATALOG_V2,
     ANIMATION_LAB_METRIC_CATALOG_V3,
+    ANIMATION_LAB_METRIC_CATALOG_V4,
     type AnimationLabMetric,
     type LabActionKind,
     type LabMetricCatalogEntryV1,
@@ -42,6 +43,7 @@ const CAPABILITY_KEYS_V2 = new Set([
     'loafForcedStyleAndLayoutDuration',
 ])
 const CAPABILITY_KEYS_V3 = CAPABILITY_KEYS_V2
+const CAPABILITY_KEYS_V4 = new Set([...CAPABILITY_KEYS_V3, 'rendererEvidenceBridge'])
 const PAGE_PROBE_LIMITATIONS = [
     'renderer-gpu-timing-requires-explicit-evidence',
     'continuous-input-observation-is-sampled',
@@ -49,7 +51,8 @@ const PAGE_PROBE_LIMITATIONS = [
 ] as const
 const SAMPLE_DROP_KEYS_V1 = ['frames', 'longTasks', 'longAnimationFrames', 'eventTimings', 'resources'] as const
 const SAMPLE_DROP_KEYS_V2 = [...SAMPLE_DROP_KEYS_V1, 'inputFrameScheduling'] as const
-type SampleDropKey = (typeof SAMPLE_DROP_KEYS_V2)[number]
+const SAMPLE_DROP_KEYS_V4 = [...SAMPLE_DROP_KEYS_V2, 'rendererHostEvidence'] as const
+type SampleDropKey = (typeof SAMPLE_DROP_KEYS_V4)[number]
 type PageProbeSampleDrops = Record<SampleDropKey, number>
 export const PAGE_PROBE_OBSERVER_DROP_KEYS = [
     'longTasks',
@@ -154,6 +157,12 @@ const SAMPLE_TRUNCATION_CONTRACT: Readonly<
         capability: 'inputFrameScheduling',
         rootMetricIds: new Set(['main.input-capture-to-next-raf-callback.p95']),
         actionMetricIds: new Set(['main.input-capture-to-next-raf-callback.p95']),
+    },
+    rendererHostEvidence: {
+        limitation: 'page-probe-renderer-host-evidence-truncated',
+        capability: 'rendererEvidenceBridge',
+        rootMetricIds: new Set(['renderer.draw-calls.p95', 'renderer.triangles.p95', 'renderer.gpu-frame.p95']),
+        actionMetricIds: new Set(['renderer.draw-calls.p95', 'renderer.triangles.p95']),
     },
 }
 const OBSERVER_DROP_CONTRACT: Readonly<
@@ -378,6 +387,13 @@ export const PAGE_PROBE_ROOT_METRIC_IDS_V2 = [
 
 export const PAGE_PROBE_ROOT_METRIC_IDS_V3 = PAGE_PROBE_ROOT_METRIC_IDS_V2
 
+export const PAGE_PROBE_ROOT_METRIC_IDS_V4 = [
+    ...PAGE_PROBE_ROOT_METRIC_IDS_V3,
+    'renderer.draw-calls.p95',
+    'renderer.triangles.p95',
+    'renderer.gpu-frame.p95',
+] as const
+
 export const PAGE_PROBE_ACTION_METRIC_IDS = [
     'frame.duration.p50',
     'frame.duration.p95',
@@ -409,10 +425,16 @@ export const PAGE_PROBE_ACTION_METRIC_IDS_V2 = [
 ] as const
 
 export const PAGE_PROBE_ACTION_METRIC_IDS_V3 = [...PAGE_PROBE_ACTION_METRIC_IDS_V2, 'media.video-window-dropped-frame-rate'] as const
+export const PAGE_PROBE_ACTION_METRIC_IDS_V4 = [
+    ...PAGE_PROBE_ACTION_METRIC_IDS_V3,
+    'renderer.draw-calls.p95',
+    'renderer.triangles.p95',
+] as const
 
 export const PAGE_PROBE_CAPABILITY_KEYS = [...CAPABILITY_KEYS_V1] as const
 export const PAGE_PROBE_CAPABILITY_KEYS_V2 = [...CAPABILITY_KEYS_V2] as const
 export const PAGE_PROBE_CAPABILITY_KEYS_V3 = [...CAPABILITY_KEYS_V3] as const
+export const PAGE_PROBE_CAPABILITY_KEYS_V4 = [...CAPABILITY_KEYS_V4] as const
 
 type RecordValue = Record<string, unknown>
 type ProbeMetricStatus = 'measured' | 'partial' | 'not-observed' | 'unsupported' | 'unknown'
@@ -488,6 +510,7 @@ function metricKey(family: string, name: string, stat: string, unit: string): st
 const METRIC_CATALOG_BY_ID_V1 = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [entry.metricId, entry] as const))
 const METRIC_CATALOG_BY_ID_V2 = new Map(ANIMATION_LAB_METRIC_CATALOG_V2.map(entry => [entry.metricId, entry] as const))
 const METRIC_CATALOG_BY_ID_V3 = new Map(ANIMATION_LAB_METRIC_CATALOG_V3.map(entry => [entry.metricId, entry] as const))
+const METRIC_CATALOG_BY_ID_V4 = new Map(ANIMATION_LAB_METRIC_CATALOG_V4.map(entry => [entry.metricId, entry] as const))
 
 function producerMetricCatalog(metricIds: readonly string[], metricCatalog: ReadonlyMap<string, LabMetricCatalogEntryV1>) {
     const catalog = new Map(
@@ -507,6 +530,8 @@ const ROOT_PAGE_PROBE_METRICS_V2 = producerMetricCatalog(PAGE_PROBE_ROOT_METRIC_
 const ACTION_PAGE_PROBE_METRICS_V2 = producerMetricCatalog(PAGE_PROBE_ACTION_METRIC_IDS_V2, METRIC_CATALOG_BY_ID_V2)
 const ROOT_PAGE_PROBE_METRICS_V3 = producerMetricCatalog(PAGE_PROBE_ROOT_METRIC_IDS_V3, METRIC_CATALOG_BY_ID_V3)
 const ACTION_PAGE_PROBE_METRICS_V3 = producerMetricCatalog(PAGE_PROBE_ACTION_METRIC_IDS_V3, METRIC_CATALOG_BY_ID_V3)
+const ROOT_PAGE_PROBE_METRICS_V4 = producerMetricCatalog(PAGE_PROBE_ROOT_METRIC_IDS_V4, METRIC_CATALOG_BY_ID_V4)
+const ACTION_PAGE_PROBE_METRICS_V4 = producerMetricCatalog(PAGE_PROBE_ACTION_METRIC_IDS_V4, METRIC_CATALOG_BY_ID_V4)
 
 function metricMaximum(unit: AnimationLabMetric['unit']): number {
     switch (unit) {
@@ -582,6 +607,12 @@ function metricLimitations(metricId: string): string[] {
     if (metricId.startsWith('pipeline.loaf-attributed-forced-style-layout')) {
         return ['loaf-only-over-50ms', 'loaf-attributed-scripts-lower-bound', 'forced-style-layout-implementation-dependent']
     }
+    if (metricId === 'renderer.draw-calls.p95' || metricId === 'renderer.triangles.p95') {
+        return ['renderer-host-sample-p95', 'renderer-multiple-producers-not-distinguished']
+    }
+    if (metricId === 'renderer.gpu-frame.p95') {
+        return ['renderer-host-gpu-query-p95', 'renderer-multiple-producers-not-distinguished', 'renderer-gpu-action-window-not-proven']
+    }
     return []
 }
 
@@ -617,7 +648,8 @@ function decodeMetrics(
         if (
             status === 'partial' &&
             catalog.metricId !== 'media.video-dropped-frame-rate' &&
-            catalog.metricId !== 'media.video-window-dropped-frame-rate'
+            catalog.metricId !== 'media.video-window-dropped-frame-rate' &&
+            !catalog.metricId.startsWith('renderer.')
         ) {
             fail(`${metricLabel} status`)
         }
@@ -652,7 +684,8 @@ function decodeMetrics(
 
 function decodeCapabilities(value: unknown, metricCatalogVersion: LabMetricCatalogVersion): Record<string, boolean | null> {
     const raw = record(value, 'capabilities')
-    const capabilityKeys = metricCatalogVersion >= 2 ? CAPABILITY_KEYS_V2 : CAPABILITY_KEYS_V1
+    const capabilityKeys =
+        metricCatalogVersion === 4 ? CAPABILITY_KEYS_V4 : metricCatalogVersion >= 2 ? CAPABILITY_KEYS_V2 : CAPABILITY_KEYS_V1
     if (Object.keys(raw).length !== capabilityKeys.size) fail('capabilities count')
     const output: Record<string, boolean | null> = {}
     for (const [key, item] of Object.entries(raw)) {
@@ -684,13 +717,17 @@ function decodeCapabilities(value: unknown, metricCatalogVersion: LabMetricCatal
 
 function decodeSampleDrops(value: unknown, metricCatalogVersion: LabMetricCatalogVersion): PageProbeSampleDrops {
     const raw = record(value, 'sampleDrops')
-    const keys = metricCatalogVersion >= 2 ? SAMPLE_DROP_KEYS_V2 : SAMPLE_DROP_KEYS_V1
+    const keys = metricCatalogVersion === 4 ? SAMPLE_DROP_KEYS_V4 : metricCatalogVersion >= 2 ? SAMPLE_DROP_KEYS_V2 : SAMPLE_DROP_KEYS_V1
     exactKeys(raw, keys, 'sampleDrops')
     if (Object.keys(raw).length !== keys.length) fail('sampleDrops count')
     const decoded = Object.fromEntries(
         keys.map(key => [key, integer(raw[key], `sampleDrops.${key}`, 0, MAX_SAMPLES)])
     ) as Partial<PageProbeSampleDrops>
-    return { ...decoded, inputFrameScheduling: decoded.inputFrameScheduling ?? 0 } as PageProbeSampleDrops
+    return {
+        ...decoded,
+        inputFrameScheduling: decoded.inputFrameScheduling ?? 0,
+        rendererHostEvidence: decoded.rendererHostEvidence ?? 0,
+    } as PageProbeSampleDrops
 }
 
 function decodeObserverDrops(value: unknown): PageProbeObserverDrops {
@@ -1111,18 +1148,229 @@ function enforceVideoWindowContract(
     return output
 }
 
+interface RendererWindowEvidence {
+    acceptedSamples: number
+    retainedSamples: number
+    droppedSamples: number
+    rejectedSamples: number
+    drawCallSamples: number
+    triangleSamples: number
+}
+
+interface RendererRootEvidence extends RendererWindowEvidence {
+    gpuMeasuredSamples: number
+    gpuNotProvidedSamples: number
+    gpuInvalidSamples: number
+    gpuDisjointSamples: number
+    gpuContextLostSamples: number
+    gpuErrorSamples: number
+    gpuSupportedSamples: number
+    gpuUnsupportedSamples: number
+    gpuDisabledSamples: number
+    gpuUnknownCapabilitySamples: number
+}
+
+const RENDERER_WINDOW_EVIDENCE_KEYS = [
+    'acceptedSamples',
+    'retainedSamples',
+    'droppedSamples',
+    'rejectedSamples',
+    'drawCallSamples',
+    'triangleSamples',
+] as const
+const RENDERER_ROOT_EVIDENCE_KEYS = [
+    ...RENDERER_WINDOW_EVIDENCE_KEYS,
+    'gpuMeasuredSamples',
+    'gpuNotProvidedSamples',
+    'gpuInvalidSamples',
+    'gpuDisjointSamples',
+    'gpuContextLostSamples',
+    'gpuErrorSamples',
+    'gpuSupportedSamples',
+    'gpuUnsupportedSamples',
+    'gpuDisabledSamples',
+    'gpuUnknownCapabilitySamples',
+] as const
+
+function decodeRendererWindowEvidence(value: unknown, label: string): RendererWindowEvidence {
+    const raw = record(value, label)
+    exactKeys(raw, RENDERER_WINDOW_EVIDENCE_KEYS, label)
+    if (Object.keys(raw).length !== RENDERER_WINDOW_EVIDENCE_KEYS.length) fail(`${label} count`)
+    const evidence = Object.fromEntries(
+        RENDERER_WINDOW_EVIDENCE_KEYS.map(key => [key, integer(raw[key], `${label}.${key}`, 0, MAX_SAMPLES)])
+    ) as unknown as RendererWindowEvidence
+    if (
+        evidence.acceptedSamples !== evidence.retainedSamples + evidence.droppedSamples ||
+        evidence.drawCallSamples > evidence.retainedSamples ||
+        evidence.triangleSamples > evidence.retainedSamples
+    ) {
+        fail(`${label} coherence`)
+    }
+    return evidence
+}
+
+function decodeRendererRootEvidence(value: unknown): RendererRootEvidence {
+    const label = 'rendererEvidence'
+    const raw = record(value, label)
+    exactKeys(raw, RENDERER_ROOT_EVIDENCE_KEYS, label)
+    if (Object.keys(raw).length !== RENDERER_ROOT_EVIDENCE_KEYS.length) fail(`${label} count`)
+    const evidence = Object.fromEntries(
+        RENDERER_ROOT_EVIDENCE_KEYS.map(key => [key, integer(raw[key], `${label}.${key}`, 0, MAX_SAMPLES)])
+    ) as unknown as RendererRootEvidence
+    if (
+        evidence.acceptedSamples !== evidence.retainedSamples + evidence.droppedSamples ||
+        evidence.drawCallSamples > evidence.retainedSamples ||
+        evidence.triangleSamples > evidence.retainedSamples ||
+        evidence.gpuMeasuredSamples +
+            evidence.gpuNotProvidedSamples +
+            evidence.gpuInvalidSamples +
+            evidence.gpuDisjointSamples +
+            evidence.gpuContextLostSamples +
+            evidence.gpuErrorSamples !==
+            evidence.retainedSamples ||
+        evidence.gpuSupportedSamples +
+            evidence.gpuUnsupportedSamples +
+            evidence.gpuDisabledSamples +
+            evidence.gpuUnknownCapabilitySamples !==
+            evidence.retainedSamples
+    ) {
+        fail(`${label} coherence`)
+    }
+    return evidence
+}
+
+function rendererMetric(
+    metrics: readonly AnimationLabMetric[],
+    catalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
+    metricId: 'renderer.draw-calls.p95' | 'renderer.triangles.p95' | 'renderer.gpu-frame.p95',
+    label: string
+): AnimationLabMetric {
+    const metric = metrics.find(item => catalog.get(metricKey(item.family, item.name, item.stat, item.unit))?.metricId === metricId)
+    return metric ?? fail(`${label} completeness`)
+}
+
+function rendererScalarContract(
+    metrics: readonly AnimationLabMetric[],
+    catalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
+    metricId: 'renderer.draw-calls.p95' | 'renderer.triangles.p95',
+    bridgeCapability: boolean,
+    evidence: RendererWindowEvidence,
+    fieldSamples: number,
+    label: string
+): void {
+    const item = rendererMetric(metrics, catalog, metricId, label)
+    const expectedStatus: ProbeMetricStatus = !bridgeCapability
+        ? 'unsupported'
+        : fieldSamples > 0
+          ? evidence.rejectedSamples > 0 || evidence.droppedSamples > 0 || fieldSamples < evidence.retainedSamples
+              ? 'partial'
+              : 'measured'
+          : evidence.rejectedSamples > 0 || evidence.droppedSamples > 0
+            ? 'unknown'
+            : 'not-observed'
+    const expectedSamples = fieldSamples > 0 ? fieldSamples : expectedStatus === 'not-observed' ? 0 : null
+    if (item.status !== expectedStatus || item.samples !== expectedSamples) fail(`${label} contract`)
+}
+
+function addRendererEvidenceLimitations(
+    metrics: readonly AnimationLabMetric[],
+    catalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
+    evidence: RendererWindowEvidence,
+    includeGpu: boolean
+): AnimationLabMetric[] {
+    const limitations = [
+        ...(evidence.droppedSamples > 0 ? ['page-probe-renderer-host-evidence-truncated'] : []),
+        ...(evidence.rejectedSamples > 0 ? ['renderer-host-evidence-rejected'] : []),
+    ]
+    if (limitations.length === 0) return [...metrics]
+    const affectedMetricIds = new Set([
+        'renderer.draw-calls.p95',
+        'renderer.triangles.p95',
+        ...(includeGpu ? ['renderer.gpu-frame.p95'] : []),
+    ])
+    return metrics.map(metric => {
+        const metricId = catalog.get(metricKey(metric.family, metric.name, metric.stat, metric.unit))?.metricId
+        return metricId && affectedMetricIds.has(metricId)
+            ? { ...metric, limitations: [...new Set([...(metric.limitations ?? []), ...limitations])] }
+            : metric
+    })
+}
+
+function rendererGpuContract(
+    metrics: readonly AnimationLabMetric[],
+    catalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
+    bridgeCapability: boolean,
+    evidence: RendererRootEvidence
+): void {
+    const item = rendererMetric(metrics, catalog, 'renderer.gpu-frame.p95', 'renderer GPU metric')
+    const invalidEvidence =
+        evidence.rejectedSamples > 0 ||
+        evidence.droppedSamples > 0 ||
+        evidence.gpuInvalidSamples > 0 ||
+        evidence.gpuDisjointSamples > 0 ||
+        evidence.gpuContextLostSamples > 0 ||
+        evidence.gpuErrorSamples > 0
+    const expectedStatus: ProbeMetricStatus = !bridgeCapability
+        ? 'unsupported'
+        : evidence.gpuMeasuredSamples > 0
+          ? invalidEvidence || evidence.gpuMeasuredSamples < evidence.retainedSamples
+              ? 'partial'
+              : 'measured'
+          : invalidEvidence || evidence.gpuUnknownCapabilitySamples > 0
+            ? 'unknown'
+            : evidence.retainedSamples === 0
+              ? 'not-observed'
+              : evidence.gpuSupportedSamples === 0 &&
+                  evidence.gpuUnsupportedSamples + evidence.gpuDisabledSamples === evidence.retainedSamples
+                ? 'unsupported'
+                : 'not-observed'
+    const expectedSamples = evidence.gpuMeasuredSamples > 0 ? evidence.gpuMeasuredSamples : expectedStatus === 'not-observed' ? 0 : null
+    if (item.status !== expectedStatus || item.samples !== expectedSamples) fail('renderer GPU metric contract')
+}
+
+function enforceRendererRootContract(
+    metrics: readonly AnimationLabMetric[],
+    catalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
+    bridgeCapability: boolean,
+    evidence: RendererRootEvidence
+): void {
+    if (!bridgeCapability && Object.values(evidence).some(value => value !== 0)) fail('renderer bridge capability coherence')
+    rendererScalarContract(
+        metrics,
+        catalog,
+        'renderer.draw-calls.p95',
+        bridgeCapability,
+        evidence,
+        evidence.drawCallSamples,
+        'renderer draw-call metric'
+    )
+    rendererScalarContract(
+        metrics,
+        catalog,
+        'renderer.triangles.p95',
+        bridgeCapability,
+        evidence,
+        evidence.triangleSamples,
+        'renderer triangle metric'
+    )
+    rendererGpuContract(metrics, catalog, bridgeCapability, evidence)
+}
+
 function decodeActionResults(
     value: unknown,
     expectedActions: readonly ExpectedPageProbeAction[],
     durationMs: number,
     metricCatalogVersion: LabMetricCatalogVersion,
     actionMetricCatalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
-    videoPlaybackQualityCapability: boolean | null
+    videoPlaybackQualityCapability: boolean | null,
+    rendererBridgeCapability: boolean | null,
+    rendererRootEvidence: RendererRootEvidence | null
 ): DecodedPageProbeActionResult[] {
     const source = boundedArray(value, 'actionResults', MAX_ACTIONS)
     if (source.length !== expectedActions.length) fail('actionResults count')
     const expectedById = new Map(expectedActions.map(action => [action.actionId, action] as const))
     const decodedById = new Map<string, DecodedPageProbeActionResult>()
+    const rendererWindows: RendererWindowEvidence[] = []
     for (let index = 0; index < source.length; index += 1) {
         const label = `actionResults[${index}]`
         const raw = record(source[index], label)
@@ -1137,7 +1385,8 @@ function decodeActionResults(
                 'endedAtMs',
                 'outcome',
                 'metrics',
-                ...(metricCatalogVersion === 3 ? ['videoWindowEvidence'] : []),
+                ...(metricCatalogVersion >= 3 ? ['videoWindowEvidence'] : []),
+                ...(metricCatalogVersion === 4 ? ['rendererWindowEvidence'] : []),
             ],
             label
         )
@@ -1153,8 +1402,8 @@ function decodeActionResults(
         if (endedAtMs > durationMs) fail(`${label} clock bounds`)
         if (typeof raw.outcome !== 'string' || !ACTION_OUTCOMES.has(raw.outcome)) fail(`${label} outcome`)
         const decodedMetrics = decodeMetrics(raw.metrics, `${label}.metrics`, actionMetricCatalog, metricCatalogVersion, MAX_ACTION_METRICS)
-        const metrics =
-            metricCatalogVersion === 3
+        let metrics =
+            metricCatalogVersion >= 3
                 ? enforceVideoWindowContract(
                       decodedMetrics,
                       actionMetricCatalog,
@@ -1162,6 +1411,33 @@ function decodeActionResults(
                       decodeVideoWindowEvidence(raw.videoWindowEvidence, `${label}.videoWindowEvidence`)
                   )
                 : decodedMetrics
+        if (metricCatalogVersion === 4) {
+            if (rendererBridgeCapability === null || rendererRootEvidence === null) fail(`${label} renderer contract`)
+            const rendererWindow = decodeRendererWindowEvidence(raw.rendererWindowEvidence, `${label}.rendererWindowEvidence`)
+            if (!rendererBridgeCapability && Object.values(rendererWindow).some(item => item !== 0)) {
+                fail(`${label} renderer capability coherence`)
+            }
+            rendererScalarContract(
+                metrics,
+                actionMetricCatalog,
+                'renderer.draw-calls.p95',
+                rendererBridgeCapability,
+                rendererWindow,
+                rendererWindow.drawCallSamples,
+                `${label} renderer draw-call metric`
+            )
+            rendererScalarContract(
+                metrics,
+                actionMetricCatalog,
+                'renderer.triangles.p95',
+                rendererBridgeCapability,
+                rendererWindow,
+                rendererWindow.triangleSamples,
+                `${label} renderer triangle metric`
+            )
+            metrics = addRendererEvidenceLimitations(metrics, actionMetricCatalog, rendererWindow, false)
+            rendererWindows.push(rendererWindow)
+        }
         decodedById.set(actionId, {
             actionId: expected.actionId,
             order: expected.order,
@@ -1172,6 +1448,12 @@ function decodeActionResults(
             metrics,
         })
     }
+    if (metricCatalogVersion === 4 && rendererRootEvidence) {
+        for (const key of RENDERER_WINDOW_EVIDENCE_KEYS) {
+            const actionTotal = rendererWindows.reduce((total, evidence) => total + evidence[key], 0)
+            if (actionTotal > rendererRootEvidence[key]) fail('renderer action evidence coherence')
+        }
+    }
     return expectedActions.map(action => decodedById.get(action.actionId) ?? fail('actionResults one-to-one mapping'))
 }
 
@@ -1181,7 +1463,9 @@ function decodePageProbeResultWire(
     metricCatalogVersion: LabMetricCatalogVersion,
     observerDropContractVersion: PageProbeObserverDropContractVersion
 ): DecodedPageProbeResultWithObserverDrops {
-    if (metricCatalogVersion !== 1 && metricCatalogVersion !== 2 && metricCatalogVersion !== 3) fail('metric catalog version')
+    if (metricCatalogVersion !== 1 && metricCatalogVersion !== 2 && metricCatalogVersion !== 3 && metricCatalogVersion !== 4) {
+        fail('metric catalog version')
+    }
     if (observerDropContractVersion !== 0 && observerDropContractVersion !== 1) fail('observer drop contract version')
     const raw = record(rawValue, 'root')
     exactKeys(
@@ -1195,6 +1479,7 @@ function decodePageProbeResultWire(
             ...(observerDropContractVersion === 1
                 ? ['observerDrops', 'observerDropCountUnavailable', 'observerDropCountCapped', 'observerEntryDeliveryObserved']
                 : []),
+            ...(metricCatalogVersion === 4 ? ['rendererEvidence'] : []),
             'limitations',
         ],
         'root'
@@ -1202,20 +1487,40 @@ function decodePageProbeResultWire(
     const durationMs = finite(raw.durationMs, 'duration', 0, MAX_DURATION_MS)
     const expectedActions = decodeExpectedActions(expectedActionsValue)
     const rootMetricCatalog =
-        metricCatalogVersion === 3
-            ? ROOT_PAGE_PROBE_METRICS_V3
-            : metricCatalogVersion === 2
-              ? ROOT_PAGE_PROBE_METRICS_V2
-              : ROOT_PAGE_PROBE_METRICS_V1
+        metricCatalogVersion === 4
+            ? ROOT_PAGE_PROBE_METRICS_V4
+            : metricCatalogVersion === 3
+              ? ROOT_PAGE_PROBE_METRICS_V3
+              : metricCatalogVersion === 2
+                ? ROOT_PAGE_PROBE_METRICS_V2
+                : ROOT_PAGE_PROBE_METRICS_V1
     const actionMetricCatalog =
-        metricCatalogVersion === 3
-            ? ACTION_PAGE_PROBE_METRICS_V3
-            : metricCatalogVersion === 2
-              ? ACTION_PAGE_PROBE_METRICS_V2
-              : ACTION_PAGE_PROBE_METRICS_V1
-    const rawMetrics = decodeMetrics(raw.metrics, 'metrics', rootMetricCatalog, metricCatalogVersion)
+        metricCatalogVersion === 4
+            ? ACTION_PAGE_PROBE_METRICS_V4
+            : metricCatalogVersion === 3
+              ? ACTION_PAGE_PROBE_METRICS_V3
+              : metricCatalogVersion === 2
+                ? ACTION_PAGE_PROBE_METRICS_V2
+                : ACTION_PAGE_PROBE_METRICS_V1
+    let rawMetrics = decodeMetrics(raw.metrics, 'metrics', rootMetricCatalog, metricCatalogVersion)
     const capabilities = decodeCapabilities(raw.capabilities, metricCatalogVersion)
     const sampleDrops = decodeSampleDrops(raw.sampleDrops, metricCatalogVersion)
+    const rendererBridgeCapability: boolean | null =
+        metricCatalogVersion === 4
+            ? (() => {
+                  const value = capabilities.rendererEvidenceBridge
+                  if (typeof value !== 'boolean') fail('renderer bridge capability')
+                  return value
+              })()
+            : null
+    const rendererEvidence = metricCatalogVersion === 4 ? decodeRendererRootEvidence(raw.rendererEvidence) : null
+    if (rendererEvidence && rendererBridgeCapability !== null) {
+        if (rendererEvidence.droppedSamples !== sampleDrops.rendererHostEvidence) {
+            fail('renderer sample drop coherence')
+        }
+        enforceRendererRootContract(rawMetrics, rootMetricCatalog, rendererBridgeCapability, rendererEvidence)
+        rawMetrics = addRendererEvidenceLimitations(rawMetrics, rootMetricCatalog, rendererEvidence, true)
+    }
     const observerDrops = observerDropContractVersion === 1 ? decodeObserverDrops(raw.observerDrops) : emptyObserverDrops()
     const observerDropCountUnavailable =
         observerDropContractVersion === 1
@@ -1233,7 +1538,8 @@ function decodePageProbeResultWire(
     const ignoredLimitations = boundedArray(raw.limitations, 'limitations', MAX_LIMITATION_INPUTS)
     if (ignoredLimitations.some(item => typeof item !== 'string' || item.length > 200)) fail('limitations')
     const droppedSamples = rawMetrics.find(metric => metric.family === 'monitorOverhead' && metric.name === 'droppedProbeSamples')?.value
-    const activeSampleDropKeys = metricCatalogVersion >= 2 ? SAMPLE_DROP_KEYS_V2 : SAMPLE_DROP_KEYS_V1
+    const activeSampleDropKeys =
+        metricCatalogVersion === 4 ? SAMPLE_DROP_KEYS_V4 : metricCatalogVersion >= 2 ? SAMPLE_DROP_KEYS_V2 : SAMPLE_DROP_KEYS_V1
     if (droppedSamples !== activeSampleDropKeys.reduce((total, key) => total + sampleDrops[key], 0)) {
         fail('sampleDrops total coherence')
     }
@@ -1286,7 +1592,9 @@ function decodePageProbeResultWire(
         durationMs,
         metricCatalogVersion,
         actionMetricCatalog,
-        videoPlaybackQualityCapability
+        videoPlaybackQualityCapability,
+        rendererBridgeCapability,
+        rendererEvidence
     ).map(action => {
         const actionPairs =
             metricCatalogVersion >= 2
@@ -1317,6 +1625,12 @@ function decodePageProbeResultWire(
         observerEntryDeliveryObserved,
         limitations: [
             ...PAGE_PROBE_LIMITATIONS,
+            ...(metricCatalogVersion === 4
+                ? ['renderer-gpu-action-window-not-proven', 'renderer-multiple-producers-not-distinguished']
+                : []),
+            ...(metricCatalogVersion === 4 && rendererBridgeCapability === false ? ['renderer-evidence-bridge-unavailable'] : []),
+            ...(rendererEvidence && rendererEvidence.rejectedSamples > 0 ? ['renderer-host-evidence-rejected'] : []),
+            ...(sampleDrops.rendererHostEvidence > 0 ? ['page-probe-renderer-host-evidence-truncated'] : []),
             ...(typeof droppedSamples === 'number' && droppedSamples > 0 ? ['page-probe-samples-truncated'] : []),
             ...PAGE_PROBE_OBSERVER_DROP_KEYS.flatMap(stream => {
                 const contract = OBSERVER_DROP_CONTRACT[stream]

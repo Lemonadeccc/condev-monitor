@@ -772,6 +772,112 @@ test('measures catalog v3 video playback quality from per-action counter deltas'
     }
 })
 
+test('captures catalog v4 renderer evidence with page-owned clocks and action attribution', async () => {
+    const driver = createBrowserDriver('chromium')
+    const session = await driver.launch()
+    const context = await session.createContext(scenario())
+    try {
+        const page = await context.newPage()
+        const key = '__condevLabProbe_renderer_fixture'
+        const capability = 'R'.repeat(43)
+        const actions = [{ actionId: 'renderer-action', order: 0, label: 'renderer-action', kind: 'wait' }]
+        await page.addInitScript(
+            browserProbeSource(key, {
+                capability,
+                expectedRefreshHz: 60,
+                targetFrameMs: 1000 / 60,
+                metricCatalogVersion: 4,
+                actions,
+            })
+        )
+        await page.navigate('data:text/html,<!doctype html><canvas></canvas>', 10_000)
+
+        const emit = (drawCalls, triangles, timeMs, extra = {}) =>
+            page.rawPage.evaluate(
+                ({ drawCalls, triangles, timeMs, extra }) => {
+                    const sink = globalThis[Symbol.for('@condev-monitor/animation-lab/renderer-evidence/v1')]
+                    return sink({
+                        contractVersion: 1,
+                        backend: 'webgl2',
+                        gpuTimerCapability: 'supported',
+                        drawCalls,
+                        triangles,
+                        gpu: {
+                            status: 'measured',
+                            timeMs,
+                            source: 'webgl-disjoint-timer-query',
+                            valid: true,
+                            disjoint: false,
+                            contextLost: false,
+                        },
+                        ...extra,
+                    })
+                },
+                { drawCalls, triangles, timeMs, extra }
+            )
+
+        assert.equal(await emit(1, 10, 4), true)
+        assert.equal(await page.notifyProbe(key, capability, 0, 'renderer-action', 'start', 'completed'), true)
+        assert.equal(await emit(3, 30, 5), true)
+        assert.equal(await emit(9, 90, 9, { scene: 'private-scene-secret' }), false)
+        assert.equal(await emit(2, 20, 6), true)
+        assert.equal(await page.notifyProbe(key, capability, 1, 'renderer-action', 'end', 'completed'), true)
+
+        const raw = await page.collectProbeResult(key, capability, 2)
+        const result = decodePageProbeResult(raw, [{ actionId: 'renderer-action', order: 0, kind: 'wait' }], 4)
+        const rootMetric = name => result.metrics.find(item => item.name === name)
+        const actionMetric = name => result.actionResults[0].metrics.find(item => item.name === name)
+
+        assert.deepEqual(raw.rendererEvidence, {
+            acceptedSamples: 3,
+            retainedSamples: 3,
+            droppedSamples: 0,
+            rejectedSamples: 1,
+            drawCallSamples: 3,
+            triangleSamples: 3,
+            gpuMeasuredSamples: 3,
+            gpuNotProvidedSamples: 0,
+            gpuInvalidSamples: 0,
+            gpuDisjointSamples: 0,
+            gpuContextLostSamples: 0,
+            gpuErrorSamples: 0,
+            gpuSupportedSamples: 3,
+            gpuUnsupportedSamples: 0,
+            gpuDisabledSamples: 0,
+            gpuUnknownCapabilitySamples: 0,
+        })
+        assert.deepEqual(raw.actionResults[0].rendererWindowEvidence, {
+            acceptedSamples: 2,
+            retainedSamples: 2,
+            droppedSamples: 0,
+            rejectedSamples: 1,
+            drawCallSamples: 2,
+            triangleSamples: 2,
+        })
+        assert.deepEqual(
+            [rootMetric('drawCalls').value, rootMetric('drawCalls').samples, rootMetric('drawCalls').status],
+            [3, 3, 'partial']
+        )
+        assert.deepEqual(
+            [rootMetric('gpuFrameMs').value, rootMetric('gpuFrameMs').samples, rootMetric('gpuFrameMs').status],
+            [6, 3, 'partial']
+        )
+        assert.deepEqual(
+            [actionMetric('drawCalls').value, actionMetric('drawCalls').samples, actionMetric('drawCalls').status],
+            [3, 2, 'partial']
+        )
+        assert.equal(
+            result.actionResults[0].metrics.some(item => item.name === 'gpuFrameMs'),
+            false
+        )
+        assert.ok(result.limitations.includes('renderer-host-evidence-rejected'))
+        assert.doesNotMatch(JSON.stringify(raw), /private-scene-secret|webgl-disjoint-timer-query|backend/)
+    } finally {
+        await context.close().catch(() => undefined)
+        await session.close().catch(() => undefined)
+    }
+})
+
 test('derives catalog v2 LoAF paint phases only from complete browser boundaries', async () => {
     const driver = createBrowserDriver('chromium')
     const session = await driver.launch()

@@ -5,9 +5,11 @@ import {
     ANIMATION_LAB_METRIC_CATALOG_V1,
     ANIMATION_LAB_METRIC_CATALOG_V2,
     ANIMATION_LAB_METRIC_CATALOG_V3,
+    ANIMATION_LAB_METRIC_CATALOG_V4,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V3,
+    DEFAULT_ANIMATION_LAB_BUDGET_REF_V4,
     DEFAULT_ANIMATION_LAB_BUDGET_V2,
     evaluateAnimationLabBudgetRule,
     validateAnimationLabSemanticsV2,
@@ -183,7 +185,7 @@ test('keeps decoration on budget v1 unless a known newer reference is explicit',
         { level: 'run' },
         {
             acrossAttempts: true,
-            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 4 },
+            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 5 },
         }
     )
     assert.deepEqual(unknown.budgetRefs, [])
@@ -685,6 +687,141 @@ test('aggregates catalog v3 action-window video deltas without changing the cumu
     })
     assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
     assert.equal(semantics.metrics[0].scope.level, 'action')
+})
+
+test('aggregates catalog v4 renderer evidence while keeping GPU page-scoped', () => {
+    const metric = (name, value, samples = 40) => ({
+        family: 'renderer',
+        name,
+        stat: 'p95',
+        unit: name === 'gpuFrameMs' ? 'ms' : 'count',
+        value,
+        samples,
+        status: 'measured',
+        evidenceLevel: 'controlled-lab-measurement',
+        limitations: [],
+    })
+    const attempts = [14, 15, 16].map((gpuValue, index) => {
+        const attemptId = `renderer-attempt-${index}`
+        return {
+            attemptId,
+            phase: 'measured',
+            index,
+            startedAt: `2026-08-26T00:00:0${index}.000Z`,
+            endedAt: `2026-08-26T00:00:0${index + 1}.000Z`,
+            durationMs: 1_000,
+            metrics: [
+                decorateLabMetric(
+                    metric('drawCalls', 100 + index),
+                    { level: 'attempt', attemptId },
+                    { budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V4 }
+                ),
+                decorateLabMetric(
+                    metric('triangles', 10_000 + index),
+                    { level: 'attempt', attemptId },
+                    { budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V4 }
+                ),
+                decorateLabMetric(
+                    metric('gpuFrameMs', gpuValue),
+                    { level: 'attempt', attemptId },
+                    { budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V4 }
+                ),
+                decorateLabMetric(
+                    metric('drawCalls', 50 + index),
+                    { level: 'action', attemptId, actionId: 'hero-hover' },
+                    { budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V4 }
+                ),
+                decorateLabMetric(
+                    metric('triangles', 5_000 + index),
+                    { level: 'action', attemptId, actionId: 'hero-hover' },
+                    { budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V4 }
+                ),
+            ],
+            actionWindows: [
+                actionWindowFromProbe(scenario.actions[0], 0, {
+                    startedAtMs: 100,
+                    endedAtMs: 600,
+                    outcome: 'completed',
+                }),
+            ],
+            capabilities: { rendererEvidenceBridge: true },
+            limitations: ['renderer-gpu-action-window-not-proven'],
+        }
+    })
+    const aggregateMetrics = aggregateMeasuredAttempts(attempts)
+    const gpu = aggregateMetrics.find(item => item.metricId === 'renderer.gpu-frame.p95')
+    const actionDraw = aggregateMetrics.find(item => item.metricId === 'renderer.draw-calls.p95' && item.scope.actionId === 'hero-hover')
+    assert.deepEqual(
+        { value: gpu.value, samples: gpu.samples, status: gpu.status, scope: gpu.scope.level },
+        {
+            value: 15,
+            samples: 120,
+            status: 'measured',
+            scope: 'run',
+        }
+    )
+    assert.deepEqual(
+        { value: actionDraw.value, samples: actionDraw.samples, scope: actionDraw.scope },
+        {
+            value: 51,
+            samples: 120,
+            scope: { level: 'action', actionId: 'hero-hover' },
+        }
+    )
+    assert.equal(
+        aggregateMetrics.some(item => item.metricId === 'renderer.gpu-frame.p95' && item.scope.actionId === 'hero-hover'),
+        false
+    )
+
+    const semantics = buildAnimationLabSemantics({
+        scenario: {
+            ...scenario,
+            measurementContract: {
+                contractVersion: 2,
+                expectedHz: 60,
+                targetFrameMs: 16.666667,
+                source: 'explicit',
+                confidence: 'explicit',
+                budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V4,
+                metricCatalogVersion: 4,
+            },
+        },
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts,
+        aggregateMetrics,
+    })
+    assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
+    assert.ok(semantics.findings.some(item => item.ruleId === 'renderer-gpu-frame-tail' && item.status === 'observed'))
+
+    const truncatedAggregateMetrics = aggregateMetrics.map(item =>
+        item.metricId === 'renderer.gpu-frame.p95'
+            ? {
+                  ...item,
+                  status: 'partial',
+                  limitations: [...item.limitations, 'page-probe-renderer-host-evidence-truncated'],
+              }
+            : item
+    )
+    const truncatedSemantics = buildAnimationLabSemantics({
+        scenario: {
+            ...scenario,
+            measurementContract: {
+                contractVersion: 2,
+                expectedHz: 60,
+                targetFrameMs: 16.666667,
+                source: 'explicit',
+                confidence: 'explicit',
+                budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V4,
+                metricCatalogVersion: 4,
+            },
+        },
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts,
+        aggregateMetrics: truncatedAggregateMetrics,
+    })
+    const truncatedFinding = truncatedSemantics.findings.find(item => item.ruleId === 'renderer-gpu-frame-tail')
+    assert.equal(truncatedFinding.status, 'candidate')
+    assert.ok(truncatedFinding.limitations.includes('page-probe-renderer-host-evidence-truncated'))
 })
 
 test('keeps canonical analysis valid for the maximum action count by projecting metrics deterministically', () => {

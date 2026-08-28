@@ -4,7 +4,7 @@ import test from 'node:test'
 import {
     ANIMATION_LAB_METRIC_CATALOG_V1,
     ANIMATION_LAB_METRIC_CATALOG_V2,
-    ANIMATION_LAB_METRIC_CATALOG_V3,
+    ANIMATION_LAB_METRIC_CATALOG_V4,
 } from '@condev-monitor/animation-lab'
 
 import {
@@ -13,12 +13,15 @@ import {
     PAGE_PROBE_ACTION_METRIC_IDS,
     PAGE_PROBE_ACTION_METRIC_IDS_V2,
     PAGE_PROBE_ACTION_METRIC_IDS_V3,
+    PAGE_PROBE_ACTION_METRIC_IDS_V4,
     PAGE_PROBE_CAPABILITY_KEYS,
     PAGE_PROBE_CAPABILITY_KEYS_V2,
+    PAGE_PROBE_CAPABILITY_KEYS_V4,
     PAGE_PROBE_OBSERVER_DROP_KEYS,
     PAGE_PROBE_ROOT_METRIC_IDS,
     PAGE_PROBE_ROOT_METRIC_IDS_V2,
     PAGE_PROBE_ROOT_METRIC_IDS_V3,
+    PAGE_PROBE_ROOT_METRIC_IDS_V4,
 } from '../src/probe-result.ts'
 
 const expectedActions = [{ actionId: 'hero-hover', order: 0, kind: 'hover' }]
@@ -37,7 +40,7 @@ function metric(overrides = {}) {
     }
 }
 
-const catalogByIdV3 = new Map(ANIMATION_LAB_METRIC_CATALOG_V3.map(entry => [entry.metricId, entry]))
+const catalogByIdV3 = new Map(ANIMATION_LAB_METRIC_CATALOG_V4.map(entry => [entry.metricId, entry]))
 const catalogIdByTuple = new Map(
     ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [[entry.family, entry.name, entry.stat, entry.unit].join('|'), entry.metricId])
 )
@@ -169,6 +172,57 @@ function rawResultV3() {
         totalFrameDelta: 100,
         droppedFrameDelta: 3,
     }
+    return result
+}
+
+function rendererWindowEvidence(overrides = {}) {
+    return {
+        acceptedSamples: 1,
+        retainedSamples: 1,
+        droppedSamples: 0,
+        rejectedSamples: 0,
+        drawCallSamples: 1,
+        triangleSamples: 1,
+        ...overrides,
+    }
+}
+
+function rendererRootEvidence(overrides = {}) {
+    return {
+        ...rendererWindowEvidence({ acceptedSamples: 2, retainedSamples: 2, drawCallSamples: 2, triangleSamples: 2 }),
+        gpuMeasuredSamples: 2,
+        gpuNotProvidedSamples: 0,
+        gpuInvalidSamples: 0,
+        gpuDisjointSamples: 0,
+        gpuContextLostSamples: 0,
+        gpuErrorSamples: 0,
+        gpuSupportedSamples: 2,
+        gpuUnsupportedSamples: 0,
+        gpuDisabledSamples: 0,
+        gpuUnknownCapabilitySamples: 0,
+        ...overrides,
+    }
+}
+
+function rawResultV4() {
+    const result = rawResultV3()
+    result.metrics = PAGE_PROBE_ROOT_METRIC_IDS_V4.map(metricId => {
+        if (metricId === 'probe.dropped-samples.count') return metricForId(metricId, { value: 0 })
+        if (metricId === 'renderer.draw-calls.p95') return metricForId(metricId, { value: 4, samples: 2 })
+        if (metricId === 'renderer.triangles.p95') return metricForId(metricId, { value: 120, samples: 2 })
+        if (metricId === 'renderer.gpu-frame.p95') return metricForId(metricId, { value: 4.5, samples: 2 })
+        return metricForId(metricId)
+    })
+    result.actionResults[0].metrics = PAGE_PROBE_ACTION_METRIC_IDS_V4.map(metricId => {
+        if (metricId === 'media.video-window-dropped-frame-rate') return metricForId(metricId, { value: 0.03, samples: 100 })
+        if (metricId === 'renderer.draw-calls.p95') return metricForId(metricId, { value: 4, samples: 1 })
+        if (metricId === 'renderer.triangles.p95') return metricForId(metricId, { value: 120, samples: 1 })
+        return metricForId(metricId)
+    })
+    result.actionResults[0].rendererWindowEvidence = rendererWindowEvidence()
+    result.capabilities = Object.fromEntries(PAGE_PROBE_CAPABILITY_KEYS_V4.map(key => [key, true]))
+    result.sampleDrops.rendererHostEvidence = 0
+    result.rendererEvidence = rendererRootEvidence()
     return result
 }
 
@@ -412,6 +466,181 @@ test('decodes catalog v3 action-window video deltas and derives closed limitatio
         assert.equal(decoded.status, 'not-observed')
         assert.ok(decoded.limitations.includes(fixture.limitation))
     }
+})
+
+test('decodes catalog v4 renderer evidence without manufacturing adapter or GPU measurements', () => {
+    const decoded = decodePageProbeResult(rawResultV4(), expectedActions, 4)
+    const rootRenderer = decoded.metrics.filter(
+        item => item.family === 'renderer' && ['drawCalls', 'triangles', 'gpuFrameMs'].includes(item.name)
+    )
+    assert.deepEqual(
+        rootRenderer.map(item => [item.name, item.value, item.samples, item.status]),
+        [
+            ['drawCalls', 4, 2, 'measured'],
+            ['triangles', 120, 2, 'measured'],
+            ['gpuFrameMs', 4.5, 2, 'measured'],
+        ]
+    )
+    const actionRenderer = decoded.actionResults[0].metrics.filter(item => item.family === 'renderer')
+    assert.deepEqual(
+        actionRenderer.map(item => [item.name, item.samples, item.status]),
+        [
+            ['drawCalls', 1, 'measured'],
+            ['triangles', 1, 'measured'],
+        ]
+    )
+    assert.equal(
+        actionRenderer.some(item => item.name === 'gpuFrameMs'),
+        false
+    )
+    assert.ok(decoded.limitations.includes('renderer-gpu-action-window-not-proven'))
+    assert.ok(rootRenderer.every(item => item.limitations.includes('renderer-multiple-producers-not-distinguished')))
+
+    const noAdapter = rawResultV4()
+    for (const item of noAdapter.metrics.filter(
+        item => item.family === 'renderer' && ['drawCalls', 'triangles', 'gpuFrameMs'].includes(item.name)
+    )) {
+        Object.assign(item, { value: null, samples: 0, status: 'not-observed' })
+    }
+    for (const item of noAdapter.actionResults[0].metrics.filter(item => item.family === 'renderer')) {
+        Object.assign(item, { value: null, samples: 0, status: 'not-observed' })
+    }
+    noAdapter.rendererEvidence = rendererRootEvidence({
+        acceptedSamples: 0,
+        retainedSamples: 0,
+        drawCallSamples: 0,
+        triangleSamples: 0,
+        gpuMeasuredSamples: 0,
+        gpuSupportedSamples: 0,
+    })
+    noAdapter.actionResults[0].rendererWindowEvidence = rendererWindowEvidence({
+        acceptedSamples: 0,
+        retainedSamples: 0,
+        drawCallSamples: 0,
+        triangleSamples: 0,
+    })
+    const noAdapterRenderer = decodePageProbeResult(noAdapter, expectedActions, 4).metrics.filter(item =>
+        ['drawCalls', 'triangles', 'gpuFrameMs'].includes(item.name)
+    )
+    assert.ok(noAdapterRenderer.every(item => item.status === 'not-observed' && item.value === null && item.samples === 0))
+
+    const unsupportedGpu = rawResultV4()
+    unsupportedGpu.rendererEvidence = rendererRootEvidence({
+        acceptedSamples: 1,
+        retainedSamples: 1,
+        drawCallSamples: 1,
+        triangleSamples: 1,
+        gpuMeasuredSamples: 0,
+        gpuNotProvidedSamples: 1,
+        gpuSupportedSamples: 0,
+        gpuDisabledSamples: 1,
+    })
+    for (const item of unsupportedGpu.metrics.filter(item => item.name === 'drawCalls' || item.name === 'triangles')) {
+        item.samples = 1
+    }
+    Object.assign(
+        unsupportedGpu.metrics.find(item => item.name === 'gpuFrameMs'),
+        {
+            value: null,
+            samples: null,
+            status: 'unsupported',
+            evidenceLevel: 'unsupported-or-unknown',
+        }
+    )
+    assert.equal(
+        decodePageProbeResult(unsupportedGpu, expectedActions, 4).metrics.find(item => item.name === 'gpuFrameMs')?.status,
+        'unsupported'
+    )
+})
+
+test('derives catalog v4 renderer partial and unknown states from closed evidence counters', () => {
+    const partial = rawResultV4()
+    partial.rendererEvidence.rejectedSamples = 1
+    for (const item of partial.metrics.filter(
+        item => item.family === 'renderer' && ['drawCalls', 'triangles', 'gpuFrameMs'].includes(item.name)
+    )) {
+        item.status = 'partial'
+    }
+    const partialDecoded = decodePageProbeResult(partial, expectedActions, 4)
+    assert.ok(
+        partialDecoded.metrics
+            .filter(item => item.family === 'renderer' && ['drawCalls', 'triangles', 'gpuFrameMs'].includes(item.name))
+            .every(item => item.status === 'partial')
+    )
+    assert.ok(partialDecoded.limitations.includes('renderer-host-evidence-rejected'))
+
+    const disjoint = rawResultV4()
+    Object.assign(disjoint.rendererEvidence, {
+        gpuMeasuredSamples: 0,
+        gpuDisjointSamples: 2,
+    })
+    Object.assign(
+        disjoint.metrics.find(item => item.name === 'gpuFrameMs'),
+        {
+            value: null,
+            samples: null,
+            status: 'unknown',
+            evidenceLevel: 'unsupported-or-unknown',
+        }
+    )
+    assert.equal(decodePageProbeResult(disjoint, expectedActions, 4).metrics.find(item => item.name === 'gpuFrameMs')?.status, 'unknown')
+
+    const forgedSamples = rawResultV4()
+    forgedSamples.metrics.find(item => item.name === 'drawCalls').samples = 1
+    assert.throws(() => decodePageProbeResult(forgedSamples, expectedActions, 4), /renderer draw-call metric contract/)
+
+    const privateRendererField = rawResultV4()
+    privateRendererField.rendererEvidence.scene = 'private-scene'
+    assert.throws(() => decodePageProbeResult(privateRendererField, expectedActions, 4), /unsupported fields/)
+
+    const forgedDrop = rawResultV4()
+    forgedDrop.sampleDrops.rendererHostEvidence = 1
+    forgedDrop.metrics.find(item => item.name === 'droppedProbeSamples').value = 1
+    assert.throws(() => decodePageProbeResult(forgedDrop, expectedActions, 4), /renderer sample drop coherence/)
+})
+
+test('keeps catalog v4 renderer evidence truncation scoped to the affected root and action windows', () => {
+    const raw = rawResultV4()
+    raw.sampleDrops.rendererHostEvidence = 1
+    raw.metrics.find(item => item.name === 'droppedProbeSamples').value = 1
+    Object.assign(raw.rendererEvidence, {
+        acceptedSamples: 3,
+        droppedSamples: 1,
+    })
+    for (const item of raw.metrics.filter(item => ['drawCalls', 'triangles', 'gpuFrameMs'].includes(item.name))) {
+        item.status = 'partial'
+    }
+
+    const decoded = decodePageProbeResult(raw, expectedActions, 4)
+    const rootRenderer = decoded.metrics.filter(item => ['drawCalls', 'triangles', 'gpuFrameMs'].includes(item.name))
+    const actionRenderer = decoded.actionResults[0].metrics.filter(item => ['drawCalls', 'triangles'].includes(item.name))
+
+    assert.ok(rootRenderer.every(item => item.status === 'partial'))
+    assert.ok(rootRenderer.every(item => item.limitations.includes('page-probe-renderer-host-evidence-truncated')))
+    assert.ok(actionRenderer.every(item => item.status === 'measured'))
+    assert.ok(actionRenderer.every(item => !item.limitations.includes('page-probe-renderer-host-evidence-truncated')))
+
+    const actionTruncated = rawResultV4()
+    actionTruncated.sampleDrops.rendererHostEvidence = 1
+    actionTruncated.metrics.find(item => item.name === 'droppedProbeSamples').value = 1
+    Object.assign(actionTruncated.rendererEvidence, { acceptedSamples: 3, droppedSamples: 1 })
+    Object.assign(actionTruncated.actionResults[0].rendererWindowEvidence, {
+        acceptedSamples: 2,
+        droppedSamples: 1,
+    })
+    for (const item of actionTruncated.metrics.filter(item => ['drawCalls', 'triangles', 'gpuFrameMs'].includes(item.name))) {
+        item.status = 'partial'
+    }
+    for (const item of actionTruncated.actionResults[0].metrics.filter(item => ['drawCalls', 'triangles'].includes(item.name))) {
+        item.status = 'partial'
+    }
+
+    const actionTruncatedDecoded = decodePageProbeResult(actionTruncated, expectedActions, 4)
+    const truncatedActionRenderer = actionTruncatedDecoded.actionResults[0].metrics.filter(item =>
+        ['drawCalls', 'triangles'].includes(item.name)
+    )
+    assert.ok(truncatedActionRenderer.every(item => item.status === 'partial'))
+    assert.ok(truncatedActionRenderer.every(item => item.limitations.includes('page-probe-renderer-host-evidence-truncated')))
 })
 
 test('rejects forged catalog v3 video-window coverage and keeps catalog v2 unchanged', () => {

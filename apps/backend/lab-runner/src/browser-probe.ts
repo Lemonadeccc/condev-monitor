@@ -17,7 +17,7 @@ export interface LabBrowserProbeConfig {
     targetFrameMs?: number
     slowFrameFactor?: number
     /** Additive metric payload contract. Omitted callers retain the exact v1 shape. */
-    metricCatalogVersion?: 1 | 2 | 3
+    metricCatalogVersion?: 1 | 2 | 3 | 4
     /** Additive page-probe wire evidence. Omitted callers retain the exact legacy shape. */
     observerDropContractVersion?: 1
     actions?: readonly LabBrowserProbeActionConfig[]
@@ -26,7 +26,8 @@ export interface LabBrowserProbeConfig {
 export function installLabBrowserProbe(globalKey: string, config: LabBrowserProbeConfig = {}): void {
     const windowValue = window as unknown as Window & Record<string, unknown>
     const startedAt = performance.now()
-    const metricCatalogVersion = config.metricCatalogVersion === 3 ? 3 : config.metricCatalogVersion === 2 ? 2 : 1
+    const metricCatalogVersion =
+        config.metricCatalogVersion === 4 ? 4 : config.metricCatalogVersion === 3 ? 3 : config.metricCatalogVersion === 2 ? 2 : 1
     const observerDropContractVersion = config.observerDropContractVersion === 1 ? 1 : null
     const maximumSamples = 20_000
     const maximumMetricSamples = 10_000_000
@@ -115,6 +116,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         eventTimings: 0,
         resources: 0,
         inputFrameScheduling: 0,
+        rendererHostEvidence: 0,
     }
     const streamTotals = {
         longTasks: { count: 0, duration: 0 },
@@ -156,6 +158,243 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
     const inputCompletedByAction = new Map<string, number>()
     const inputListenerCleanups: Array<() => void> = []
     const frameLifecycleListenerCleanups: Array<() => void> = []
+
+    type RendererGpuStatus = 'measured' | 'not-provided' | 'invalid' | 'disjoint' | 'context-lost' | 'error'
+    type RendererTimerCapability = 'supported' | 'unsupported' | 'disabled' | 'unknown'
+    type RendererEvidenceSample = {
+        actionId: string | null
+        drawCalls: number | null
+        triangles: number | null
+        gpuStatus: RendererGpuStatus
+        gpuTimeMs: number | null
+        timerCapability: RendererTimerCapability | null
+    }
+    type RendererWindowEvidence = {
+        acceptedSamples: number
+        retainedSamples: number
+        droppedSamples: number
+        rejectedSamples: number
+        drawCallSamples: number
+        triangleSamples: number
+    }
+    type RendererRootEvidence = RendererWindowEvidence & {
+        gpuMeasuredSamples: number
+        gpuNotProvidedSamples: number
+        gpuInvalidSamples: number
+        gpuDisjointSamples: number
+        gpuContextLostSamples: number
+        gpuErrorSamples: number
+        gpuSupportedSamples: number
+        gpuUnsupportedSamples: number
+        gpuDisabledSamples: number
+        gpuUnknownCapabilitySamples: number
+    }
+    const emptyRendererWindowEvidence = (): RendererWindowEvidence => ({
+        acceptedSamples: 0,
+        retainedSamples: 0,
+        droppedSamples: 0,
+        rejectedSamples: 0,
+        drawCallSamples: 0,
+        triangleSamples: 0,
+    })
+    const rendererEvidence: RendererRootEvidence = {
+        ...emptyRendererWindowEvidence(),
+        gpuMeasuredSamples: 0,
+        gpuNotProvidedSamples: 0,
+        gpuInvalidSamples: 0,
+        gpuDisjointSamples: 0,
+        gpuContextLostSamples: 0,
+        gpuErrorSamples: 0,
+        gpuSupportedSamples: 0,
+        gpuUnsupportedSamples: 0,
+        gpuDisabledSamples: 0,
+        gpuUnknownCapabilitySamples: 0,
+    }
+    const rendererActionEvidence = new Map<string, RendererWindowEvidence>()
+    const rendererSamples: RendererEvidenceSample[] = []
+    let rendererEvidenceBridgeCapability = false
+    let recordingRendererEvidence = false
+
+    const rendererWindowForAction = (actionId: string | null): RendererWindowEvidence | null => {
+        if (actionId === null) return null
+        const existing = rendererActionEvidence.get(actionId)
+        if (existing) return existing
+        const created = emptyRendererWindowEvidence()
+        rendererActionEvidence.set(actionId, created)
+        return created
+    }
+    const incrementRendererCounter = (target: RendererWindowEvidence | RendererRootEvidence, key: keyof RendererWindowEvidence): void => {
+        target[key] = Math.min(maximumMetricSamples, target[key] + 1)
+    }
+    const rejectRendererEvidence = (actionEvidence: RendererWindowEvidence | null): false => {
+        incrementRendererCounter(rendererEvidence, 'rejectedSamples')
+        if (actionEvidence) incrementRendererCounter(actionEvidence, 'rejectedSamples')
+        return false
+    }
+    const rendererRecord = (value: unknown): Record<string, unknown> | null => {
+        try {
+            return value && typeof value === 'object' && !Array.isArray(value) && Object.getPrototypeOf(value) === Object.prototype
+                ? (value as Record<string, unknown>)
+                : null
+        } catch {
+            return null
+        }
+    }
+    const rendererExactKeys = (value: Record<string, unknown>, required: readonly string[], optional: readonly string[] = []): boolean => {
+        try {
+            const ownKeys = Reflect.ownKeys(value)
+            if (ownKeys.some(key => typeof key !== 'string')) return false
+            const keys = ownKeys as string[]
+            const allowed = new Set([...required, ...optional])
+            return required.every(key => keys.includes(key)) && keys.every(key => allowed.has(key))
+        } catch {
+            return false
+        }
+    }
+    const rendererCount = (value: unknown): number | null =>
+        typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 && value <= maximumMetricSamples ? value : null
+    const rendererGpuTime = (value: unknown): number | null =>
+        typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= maximumMetricDurationMs ? value : null
+    const rendererSink = (value: unknown): boolean => {
+        if (recordingRendererEvidence || stopped) return false
+        recordingRendererEvidence = true
+        const actionId = activeActionId
+        const actionEvidence = rendererWindowForAction(actionId)
+        try {
+            const raw = rendererRecord(value)
+            if (!raw || !rendererExactKeys(raw, ['contractVersion', 'backend', 'gpu'], ['gpuTimerCapability', 'drawCalls', 'triangles'])) {
+                return rejectRendererEvidence(actionEvidence)
+            }
+            const contractVersion = raw.contractVersion
+            const backend = raw.backend
+            const rawCapability = raw.gpuTimerCapability
+            const rawDrawCalls = raw.drawCalls
+            const rawTriangles = raw.triangles
+            const rawGpu = rendererRecord(raw.gpu)
+            const backends = new Set(['canvas2d', 'webgl', 'webgl2', 'webgpu', 'unknown'])
+            const timerCapabilities = new Set<RendererTimerCapability>(['supported', 'unsupported', 'disabled', 'unknown'])
+            if (
+                contractVersion !== 1 ||
+                typeof backend !== 'string' ||
+                !backends.has(backend) ||
+                (rawCapability !== undefined &&
+                    (typeof rawCapability !== 'string' || !timerCapabilities.has(rawCapability as RendererTimerCapability))) ||
+                !rawGpu
+            ) {
+                return rejectRendererEvidence(actionEvidence)
+            }
+            const drawCalls = rawDrawCalls === undefined ? null : rendererCount(rawDrawCalls)
+            const triangles = rawTriangles === undefined ? null : rendererCount(rawTriangles)
+            if ((rawDrawCalls !== undefined && drawCalls === null) || (rawTriangles !== undefined && triangles === null)) {
+                return rejectRendererEvidence(actionEvidence)
+            }
+            const gpuStatus = rawGpu.status
+            const gpuStatuses = new Set<RendererGpuStatus>(['measured', 'not-provided', 'invalid', 'disjoint', 'context-lost', 'error'])
+            if (typeof gpuStatus !== 'string' || !gpuStatuses.has(gpuStatus as RendererGpuStatus)) {
+                return rejectRendererEvidence(actionEvidence)
+            }
+            const measuredGpu = gpuStatus === 'measured'
+            if (!rendererExactKeys(rawGpu, measuredGpu ? ['status', 'timeMs', 'source', 'valid', 'disjoint', 'contextLost'] : ['status'])) {
+                return rejectRendererEvidence(actionEvidence)
+            }
+            let gpuTimeMs: number | null = null
+            if (measuredGpu) {
+                const source = rawGpu.source
+                gpuTimeMs = rendererGpuTime(rawGpu.timeMs)
+                const compatibleSource =
+                    source === 'host-timer-query'
+                        ? backend !== 'canvas2d'
+                        : source === 'webgl-disjoint-timer-query'
+                          ? backend === 'webgl' || backend === 'webgl2'
+                          : source === 'webgpu-timestamp-query' && backend === 'webgpu'
+                if (
+                    gpuTimeMs === null ||
+                    !compatibleSource ||
+                    rawGpu.valid !== true ||
+                    rawGpu.disjoint !== false ||
+                    rawGpu.contextLost !== false
+                ) {
+                    return rejectRendererEvidence(actionEvidence)
+                }
+            }
+            const timerCapability = (rawCapability as RendererTimerCapability | undefined) ?? null
+            if (
+                (measuredGpu && timerCapability !== null && timerCapability !== 'supported') ||
+                (timerCapability === 'supported' && (gpuStatus === 'context-lost' || gpuStatus === 'error')) ||
+                ((timerCapability === 'unsupported' || timerCapability === 'disabled') && gpuStatus !== 'not-provided')
+            ) {
+                return rejectRendererEvidence(actionEvidence)
+            }
+
+            incrementRendererCounter(rendererEvidence, 'acceptedSamples')
+            if (actionEvidence) incrementRendererCounter(actionEvidence, 'acceptedSamples')
+            if (rendererSamples.length >= maximumSamples) {
+                incrementRendererCounter(rendererEvidence, 'droppedSamples')
+                if (actionEvidence) incrementRendererCounter(actionEvidence, 'droppedSamples')
+                droppedSamples += 1
+                sampleDrops.rendererHostEvidence += 1
+                return true
+            }
+            rendererSamples.push({
+                actionId,
+                drawCalls,
+                triangles,
+                gpuStatus: gpuStatus as RendererGpuStatus,
+                gpuTimeMs,
+                timerCapability,
+            })
+            incrementRendererCounter(rendererEvidence, 'retainedSamples')
+            if (actionEvidence) incrementRendererCounter(actionEvidence, 'retainedSamples')
+            if (drawCalls !== null) {
+                incrementRendererCounter(rendererEvidence, 'drawCallSamples')
+                if (actionEvidence) incrementRendererCounter(actionEvidence, 'drawCallSamples')
+            }
+            if (triangles !== null) {
+                incrementRendererCounter(rendererEvidence, 'triangleSamples')
+                if (actionEvidence) incrementRendererCounter(actionEvidence, 'triangleSamples')
+            }
+            const gpuStatusCounter = {
+                measured: 'gpuMeasuredSamples',
+                'not-provided': 'gpuNotProvidedSamples',
+                invalid: 'gpuInvalidSamples',
+                disjoint: 'gpuDisjointSamples',
+                'context-lost': 'gpuContextLostSamples',
+                error: 'gpuErrorSamples',
+            } as const
+            rendererEvidence[gpuStatusCounter[gpuStatus as RendererGpuStatus]] = Math.min(
+                maximumMetricSamples,
+                rendererEvidence[gpuStatusCounter[gpuStatus as RendererGpuStatus]] + 1
+            )
+            const capabilityCounter =
+                timerCapability === 'supported'
+                    ? 'gpuSupportedSamples'
+                    : timerCapability === 'unsupported'
+                      ? 'gpuUnsupportedSamples'
+                      : timerCapability === 'disabled'
+                        ? 'gpuDisabledSamples'
+                        : 'gpuUnknownCapabilitySamples'
+            rendererEvidence[capabilityCounter] = Math.min(maximumMetricSamples, rendererEvidence[capabilityCounter] + 1)
+            return true
+        } catch {
+            return rejectRendererEvidence(actionEvidence)
+        } finally {
+            recordingRendererEvidence = false
+        }
+    }
+
+    if (metricCatalogVersion === 4) {
+        try {
+            Object.defineProperty(windowValue, Symbol.for('@condev-monitor/animation-lab/renderer-evidence/v1'), {
+                value: rendererSink,
+                configurable: false,
+                enumerable: false,
+                writable: false,
+            })
+            rendererEvidenceBridgeCapability = true
+        } catch {
+            rendererEvidenceBridgeCapability = false
+        }
+    }
 
     const retain = <T>(stream: keyof typeof sampleDrops, values: T[], value: T): void => {
         if (values.length < maximumSamples) values.push(value)
@@ -699,6 +938,89 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     : 'controlled-lab-measurement',
         }
     }
+    const rendererScalarMetric = (
+        name: 'drawCalls' | 'triangles',
+        values: number[],
+        evidence: RendererWindowEvidence,
+        fieldSamples: number
+    ) => {
+        if (!rendererEvidenceBridgeCapability) {
+            return metric('renderer', name, 'p95', 'count', null, null, 'unsupported')
+        }
+        const stats = statistics(values)
+        if (stats) {
+            const incomplete = evidence.rejectedSamples > 0 || evidence.droppedSamples > 0 || fieldSamples < evidence.retainedSamples
+            return metric('renderer', name, 'p95', 'count', stats.p95, stats.count, incomplete ? 'partial' : 'measured')
+        }
+        const uncertain = evidence.rejectedSamples > 0 || evidence.droppedSamples > 0
+        return metric('renderer', name, 'p95', 'count', null, uncertain ? null : 0, uncertain ? 'unknown' : 'not-observed')
+    }
+    const rendererGpuMetric = () => {
+        if (!rendererEvidenceBridgeCapability) {
+            return metric('renderer', 'gpuFrameMs', 'p95', 'ms', null, null, 'unsupported')
+        }
+        const stats = statistics(rendererSamples.map(sample => sample.gpuTimeMs).filter((value): value is number => value !== null))
+        if (stats) {
+            const incomplete =
+                rendererEvidence.rejectedSamples > 0 ||
+                rendererEvidence.droppedSamples > 0 ||
+                rendererEvidence.gpuMeasuredSamples < rendererEvidence.retainedSamples
+            return metric('renderer', 'gpuFrameMs', 'p95', 'ms', stats.p95, stats.count, incomplete ? 'partial' : 'measured')
+        }
+        const invalidEvidence =
+            rendererEvidence.rejectedSamples > 0 ||
+            rendererEvidence.droppedSamples > 0 ||
+            rendererEvidence.gpuInvalidSamples > 0 ||
+            rendererEvidence.gpuDisjointSamples > 0 ||
+            rendererEvidence.gpuContextLostSamples > 0 ||
+            rendererEvidence.gpuErrorSamples > 0
+        if (invalidEvidence || rendererEvidence.gpuUnknownCapabilitySamples > 0) {
+            return metric('renderer', 'gpuFrameMs', 'p95', 'ms', null, null, 'unknown')
+        }
+        if (rendererEvidence.retainedSamples === 0) {
+            return metric('renderer', 'gpuFrameMs', 'p95', 'ms', null, 0, 'not-observed')
+        }
+        if (
+            rendererEvidence.gpuSupportedSamples === 0 &&
+            rendererEvidence.gpuUnsupportedSamples + rendererEvidence.gpuDisabledSamples === rendererEvidence.retainedSamples
+        ) {
+            return metric('renderer', 'gpuFrameMs', 'p95', 'ms', null, null, 'unsupported')
+        }
+        return metric('renderer', 'gpuFrameMs', 'p95', 'ms', null, 0, 'not-observed')
+    }
+    const rendererRootMetrics = () => [
+        rendererScalarMetric(
+            'drawCalls',
+            rendererSamples.map(sample => sample.drawCalls).filter((value): value is number => value !== null),
+            rendererEvidence,
+            rendererEvidence.drawCallSamples
+        ),
+        rendererScalarMetric(
+            'triangles',
+            rendererSamples.map(sample => sample.triangles).filter((value): value is number => value !== null),
+            rendererEvidence,
+            rendererEvidence.triangleSamples
+        ),
+        rendererGpuMetric(),
+    ]
+    const rendererActionMetrics = (actionId: string) => {
+        const evidence = rendererActionEvidence.get(actionId) ?? emptyRendererWindowEvidence()
+        const actionSamples = rendererSamples.filter(sample => sample.actionId === actionId)
+        return [
+            rendererScalarMetric(
+                'drawCalls',
+                actionSamples.map(sample => sample.drawCalls).filter((value): value is number => value !== null),
+                evidence,
+                evidence.drawCallSamples
+            ),
+            rendererScalarMetric(
+                'triangles',
+                actionSamples.map(sample => sample.triangles).filter((value): value is number => value !== null),
+                evidence,
+                evidence.triangleSamples
+            ),
+        ]
+    }
     const combinedPresentationCapability = (): boolean | null =>
         loafPaintCapabilities.loafPaintTime === false || loafPaintCapabilities.loafPresentationTime === false
             ? false
@@ -1109,6 +1431,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             )
         }
         if (videoWindow) metrics.push(videoWindow.metric)
+        if (metricCatalogVersion === 4) metrics.push(...rendererActionMetrics(actionId))
         return metrics
     }
 
@@ -1129,7 +1452,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                 endedAtMs: null,
                 outcome: 'running',
             })
-            if (metricCatalogVersion === 3) {
+            if (metricCatalogVersion >= 3) {
                 activeVideoWindow = beginVideoWindow(actionId)
             }
             activeActionId = actionId
@@ -1145,7 +1468,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             if (!authorize(capability, sequence) || stopped || activeActionId !== actionId) return false
             const current = actionWindows.get(actionId)
             if (!current || current.endedAtMs !== null) return false
-            if (metricCatalogVersion === 3) actionVideoMeasurements.set(actionId, finishVideoWindow(actionId))
+            if (metricCatalogVersion >= 3) actionVideoMeasurements.set(actionId, finishVideoWindow(actionId))
             current.endedAtMs = Math.max(current.startedAtMs, performance.now() - startedAt)
             current.outcome = outcome
             activeActionId = null
@@ -1593,6 +1916,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     )
                 )
             }
+            if (metricCatalogVersion === 4) metrics.push(...rendererRootMetrics())
             metrics.push(
                 metric('monitorOverhead', 'reportBuildSelfTimeMs', 'latest', 'ms', performance.now() - reportBuildStarted, 1, 'measured')
             )
@@ -1604,7 +1928,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     const absoluteStart = startedAt + window.startedAtMs
                     const absoluteEnd = startedAt + endedAtMs
                     const videoWindow =
-                        metricCatalogVersion === 3
+                        metricCatalogVersion >= 3
                             ? (actionVideoMeasurements.get(window.actionId) ??
                               videoWindowMeasurement(
                                   new Map<HTMLVideoElement, VideoPlaybackCounter>(),
@@ -1618,6 +1942,11 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                         outcome: window.outcome === 'running' ? 'cancelled' : window.outcome,
                         metrics: actionMetrics(window.actionId, absoluteStart, absoluteEnd, targetFrameMs, slowFrameFactor, videoWindow),
                         ...(videoWindow ? { videoWindowEvidence: videoWindow.evidence } : {}),
+                        ...(metricCatalogVersion === 4
+                            ? {
+                                  rendererWindowEvidence: rendererActionEvidence.get(window.actionId) ?? emptyRendererWindowEvidence(),
+                              }
+                            : {}),
                     }
                 })
             const limitations = [
@@ -1635,17 +1964,28 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     ...(metricCatalogVersion >= 2
                         ? { ...loafPaintCapabilities, ...loafDiagnosticCapabilities, inputFrameScheduling: inputFrameSchedulingCapability }
                         : {}),
+                    ...(metricCatalogVersion === 4 ? { rendererEvidenceBridge: rendererEvidenceBridgeCapability } : {}),
                 },
                 sampleDrops:
-                    metricCatalogVersion >= 2
+                    metricCatalogVersion === 4
                         ? sampleDrops
-                        : {
-                              frames: sampleDrops.frames,
-                              longTasks: sampleDrops.longTasks,
-                              longAnimationFrames: sampleDrops.longAnimationFrames,
-                              eventTimings: sampleDrops.eventTimings,
-                              resources: sampleDrops.resources,
-                          },
+                        : metricCatalogVersion >= 2
+                          ? {
+                                frames: sampleDrops.frames,
+                                longTasks: sampleDrops.longTasks,
+                                longAnimationFrames: sampleDrops.longAnimationFrames,
+                                eventTimings: sampleDrops.eventTimings,
+                                resources: sampleDrops.resources,
+                                inputFrameScheduling: sampleDrops.inputFrameScheduling,
+                            }
+                          : {
+                                frames: sampleDrops.frames,
+                                longTasks: sampleDrops.longTasks,
+                                longAnimationFrames: sampleDrops.longAnimationFrames,
+                                eventTimings: sampleDrops.eventTimings,
+                                resources: sampleDrops.resources,
+                            },
+                ...(metricCatalogVersion === 4 ? { rendererEvidence } : {}),
                 ...(observerDropContractVersion === 1
                     ? { observerDrops, observerDropCountUnavailable, observerDropCountCapped, observerEntryDeliveryObserved }
                     : {}),

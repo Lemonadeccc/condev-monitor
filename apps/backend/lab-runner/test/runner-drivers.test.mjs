@@ -1,21 +1,36 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { ANIMATION_LAB_METRIC_CATALOG_V1 } from '@condev-monitor/animation-lab'
+import {
+    ANIMATION_LAB_METRIC_CATALOG_V1,
+    ANIMATION_LAB_METRIC_CATALOG_V4,
+    DEFAULT_ANIMATION_LAB_BUDGET_REF_V4,
+} from '@condev-monitor/animation-lab'
 
 import * as runnerPackage from '../build/index.js'
 import {
     PAGE_PROBE_ACTION_METRIC_IDS,
+    PAGE_PROBE_ACTION_METRIC_IDS_V4,
     PAGE_PROBE_CAPABILITY_KEYS,
+    PAGE_PROBE_CAPABILITY_KEYS_V4,
     PAGE_PROBE_OBSERVER_DROP_KEYS,
     PAGE_PROBE_ROOT_METRIC_IDS,
+    PAGE_PROBE_ROOT_METRIC_IDS_V4,
 } from '../src/probe-result.ts'
 
 const catalogById = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [entry.metricId, entry]))
+const catalogByIdV4 = new Map(ANIMATION_LAB_METRIC_CATALOG_V4.map(entry => [entry.metricId, entry]))
+const phasePairCountMetricIds = new Set([
+    'pipeline.loaf-render-start-to-paint.count',
+    'pipeline.loaf-paint-to-presentation.count',
+    'main.input-capture-to-next-raf-callback.count',
+    'interaction.loaf-first-ui-event-to-frame-end.count',
+    'pipeline.loaf-attributed-forced-style-layout.count',
+])
 const { runAnimationLab } = runnerPackage
 
-function metricForId(metricId, notObservedMetricId) {
-    const entry = catalogById.get(metricId)
+function metricForId(metricId, notObservedMetricId, catalog = catalogById) {
+    const entry = catalog.get(metricId)
     assert.ok(entry, metricId)
     if (metricId === notObservedMetricId) {
         return {
@@ -34,7 +49,14 @@ function metricForId(metricId, notObservedMetricId) {
         name: entry.name,
         stat: entry.stat,
         unit: entry.unit,
-        value: metricId === 'probe.dropped-samples.count' ? 0 : entry.unit === 'ratio' || entry.unit === 'score' ? 0.01 : 1,
+        value:
+            metricId === 'probe.dropped-samples.count'
+                ? 0
+                : phasePairCountMetricIds.has(metricId)
+                  ? 120
+                  : entry.unit === 'ratio' || entry.unit === 'score'
+                    ? 0.01
+                    : 1,
         samples: metricId === 'media.video-elements.count' ? 1 : 120,
         status: 'measured',
         evidenceLevel: 'controlled-lab-measurement',
@@ -42,6 +64,10 @@ function metricForId(metricId, notObservedMetricId) {
 }
 
 function rawProbeResult(action, durationMs = 1_000, options = {}) {
+    const metricCatalogVersion = options.metricCatalogVersion ?? 1
+    const rootMetricIds = metricCatalogVersion === 4 ? PAGE_PROBE_ROOT_METRIC_IDS_V4 : PAGE_PROBE_ROOT_METRIC_IDS
+    const actionMetricIds = metricCatalogVersion === 4 ? PAGE_PROBE_ACTION_METRIC_IDS_V4 : PAGE_PROBE_ACTION_METRIC_IDS
+    const metricCatalog = metricCatalogVersion === 4 ? catalogByIdV4 : catalogById
     const observerDrops = Object.fromEntries(PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => [key, 0]))
     const observerDropCountCapped = Object.fromEntries(PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => [key, false]))
     if (options.observerDropStream) {
@@ -50,7 +76,7 @@ function rawProbeResult(action, durationMs = 1_000, options = {}) {
     }
     return {
         durationMs,
-        metrics: PAGE_PROBE_ROOT_METRIC_IDS.map(metricId => metricForId(metricId, options.notObservedMetricId)),
+        metrics: rootMetricIds.map(metricId => metricForId(metricId, options.notObservedMetricId, metricCatalog)),
         actionResults: options.omitActionResult
             ? []
             : [
@@ -62,21 +88,71 @@ function rawProbeResult(action, durationMs = 1_000, options = {}) {
                       startedAtMs: 100,
                       endedAtMs: 200,
                       outcome: 'completed',
-                      metrics: PAGE_PROBE_ACTION_METRIC_IDS.map(metricForId),
+                      metrics: actionMetricIds.map(metricId => ({
+                          ...metricForId(metricId, undefined, metricCatalog),
+                          ...(metricId === 'media.video-window-dropped-frame-rate' ? { value: 0.01, samples: 100 } : {}),
+                      })),
+                      ...(metricCatalogVersion === 4
+                          ? {
+                                videoWindowEvidence: {
+                                    beginSurfaces: 1,
+                                    endSurfaces: 1,
+                                    matchedSurfaces: 1,
+                                    eligibleSurfaces: 1,
+                                    readErrorSurfaces: 0,
+                                    discontinuitySurfaces: 0,
+                                    totalFrameDelta: 100,
+                                    droppedFrameDelta: 1,
+                                },
+                                rendererWindowEvidence: {
+                                    acceptedSamples: 120,
+                                    retainedSamples: 120,
+                                    droppedSamples: 0,
+                                    rejectedSamples: 0,
+                                    drawCallSamples: 120,
+                                    triangleSamples: 120,
+                                },
+                            }
+                          : {}),
                   },
               ],
-        capabilities: Object.fromEntries(PAGE_PROBE_CAPABILITY_KEYS.map(key => [key, true])),
+        capabilities: Object.fromEntries(
+            (metricCatalogVersion === 4 ? PAGE_PROBE_CAPABILITY_KEYS_V4 : PAGE_PROBE_CAPABILITY_KEYS).map(key => [key, true])
+        ),
         sampleDrops: {
             frames: 0,
             longTasks: 0,
             longAnimationFrames: 0,
             eventTimings: 0,
             resources: 0,
+            ...(metricCatalogVersion === 4 ? { inputFrameScheduling: 0, rendererHostEvidence: 0 } : {}),
         },
         observerDrops,
         observerDropCountUnavailable: Object.fromEntries(PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => [key, false])),
         observerDropCountCapped,
         observerEntryDeliveryObserved: Object.fromEntries(PAGE_PROBE_OBSERVER_DROP_KEYS.map(key => [key, true])),
+        ...(metricCatalogVersion === 4
+            ? {
+                  rendererEvidence: {
+                      acceptedSamples: 120,
+                      retainedSamples: 120,
+                      droppedSamples: 0,
+                      rejectedSamples: 0,
+                      drawCallSamples: 120,
+                      triangleSamples: 120,
+                      gpuMeasuredSamples: 120,
+                      gpuNotProvidedSamples: 0,
+                      gpuInvalidSamples: 0,
+                      gpuDisjointSamples: 0,
+                      gpuContextLostSamples: 0,
+                      gpuErrorSamples: 0,
+                      gpuSupportedSamples: 120,
+                      gpuUnsupportedSamples: 0,
+                      gpuDisabledSamples: 0,
+                      gpuUnknownCapabilitySamples: 0,
+                  },
+              }
+            : {}),
         limitations: [],
     }
 }
@@ -136,6 +212,7 @@ class FakePage {
             observerDropStream: this.state.observerDropStream,
             observerDropCount: this.state.observerDropCount,
             observerDropCountCapped: this.state.observerDropCountCapped,
+            metricCatalogVersion: this.state.metricCatalogVersion,
         })
     }
     async click() {}
@@ -179,6 +256,7 @@ function fakeDriver(engine, options = {}) {
         observerDropStream: options.observerDropStream,
         observerDropCount: options.observerDropCount,
         observerDropCountCapped: options.observerDropCountCapped,
+        metricCatalogVersion: options.metricCatalogVersion ?? 1,
     }
     const session = {
         engine,
@@ -376,6 +454,46 @@ function scenario() {
         lighthouse: { enabled: true },
     }
 }
+
+test('uses the dedicated Lab renderer evidence reference for catalog v4 metrics', async () => {
+    const { driver } = fakeDriver('webkit', { metricCatalogVersion: 4 })
+    const currentScenario = {
+        ...scenario(),
+        cacheMode: 'warm',
+        trace: { enabled: false },
+        lighthouse: { enabled: false },
+        measurementContract: {
+            contractVersion: 2,
+            expectedHz: 60,
+            targetFrameMs: 16.666667,
+            source: 'explicit',
+            confidence: 'explicit',
+            budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V4,
+            metricCatalogVersion: 4,
+        },
+    }
+    const result = await runAnimationLab(currentScenario, { browser: 'webkit', driver })
+    const measuredAttempts = result.report.attempts.filter(attempt => attempt.phase === 'measured')
+    const rendererMetrics = measuredAttempts.flatMap(attempt =>
+        attempt.metrics.filter(metric =>
+            ['renderer.draw-calls.p95', 'renderer.triangles.p95', 'renderer.gpu-frame.p95'].includes(metric.metricId)
+        )
+    )
+    assert.ok(rendererMetrics.length > 0)
+    assert.ok(rendererMetrics.every(metric => metric.evidenceRefs.includes('lab-renderer-adapter')))
+    assert.deepEqual(
+        result.report.technologyEvidence
+            .filter(item => item.evidenceId === 'lab-renderer-adapter')
+            .map(item => ({ source: item.source, status: item.status, scope: item.scope })),
+        [{ source: 'host-adapter', status: 'observed', scope: { level: 'run' } }]
+    )
+    assert.ok(
+        measuredAttempts
+            .flatMap(attempt => attempt.metrics)
+            .find(metric => metric.metricId === 'surface.canvas.count')
+            .evidenceRefs.includes('runtime-browser')
+    )
+})
 
 for (const engine of ['firefox', 'webkit']) {
     test(`${engine} keeps generic measurements and reports unavailable Chromium diagnostics explicitly`, async () => {
