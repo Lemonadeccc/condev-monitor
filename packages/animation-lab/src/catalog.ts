@@ -240,17 +240,9 @@ export const ANIMATION_LAB_METRIC_CATALOG_V3: readonly LabMetricCatalogEntryV1[]
 const ANIMATION_LAB_METRIC_CATALOG_V4_ADDITIONS: readonly LabMetricCatalogEntryV1[] = Object.freeze([
     metric('renderer.draw-calls.p95', 'renderer', 'drawCalls', 'p95', 'count', 'samples', 'nearest-rank'),
     metric('renderer.triangles.p95', 'renderer', 'triangles', 'p95', 'count', 'samples', 'nearest-rank'),
-    metric(
-        'renderer.gpu-frame.p95',
-        'renderer',
-        'gpuFrameMs',
-        'p95',
-        'ms',
-        'samples',
-        'nearest-rank',
-        'attempt',
-        ['renderer-gpu-frame-tail']
-    ),
+    metric('renderer.gpu-frame.p95', 'renderer', 'gpuFrameMs', 'p95', 'ms', 'samples', 'nearest-rank', 'attempt', [
+        'renderer-gpu-frame-tail',
+    ]),
 ])
 
 /** Additive catalog: v4 preserves v3 and adds explicit renderer-adapter evidence. */

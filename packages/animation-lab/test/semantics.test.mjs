@@ -279,27 +279,15 @@ test('adds renderer evidence only in catalog v4 and gates GPU budget evaluation'
     })
     const contract = { targetFrameMs: 16.666667 }
     assert.equal(
-        evaluateAnimationLabBudgetRule(
-            rule,
-            { metricId: rule.metricId, value: 13, samples: 30, status: 'measured' },
-            contract
-        ).status,
+        evaluateAnimationLabBudgetRule(rule, { metricId: rule.metricId, value: 13, samples: 30, status: 'measured' }, contract).status,
         'within-budget'
     )
     assert.equal(
-        evaluateAnimationLabBudgetRule(
-            rule,
-            { metricId: rule.metricId, value: 17, samples: 30, status: 'partial' },
-            contract
-        ).status,
+        evaluateAnimationLabBudgetRule(rule, { metricId: rule.metricId, value: 17, samples: 30, status: 'partial' }, contract).status,
         'candidate-breach'
     )
     assert.equal(
-        evaluateAnimationLabBudgetRule(
-            rule,
-            { metricId: rule.metricId, value: 17, samples: 29, status: 'measured' },
-            contract
-        ).status,
+        evaluateAnimationLabBudgetRule(rule, { metricId: rule.metricId, value: 17, samples: 29, status: 'measured' }, contract).status,
         'insufficient-evidence'
     )
 })
