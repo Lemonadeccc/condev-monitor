@@ -6,6 +6,8 @@ import { spawn } from 'node:child_process'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+// cspell:ignore deply esac multiquery
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const initScript = path.join(repoRoot, 'scripts/init-clickhouse.sh')
 const containerInitScript = path.join(repoRoot, '.devcontainer/clickhouse/init-clickhouse-schema.sh')
@@ -147,6 +149,7 @@ test('schema files are database-neutral and compose wires one resolved name ever
         '003_llm_observability_schema.sql',
         '004_animation_rum_v1.sql',
         '005_animation_rum_v2.sql',
+        '006_animation_rum_v3_soft_navigation.sql',
     ]
     assert.deepEqual((await readdir(schemaDir)).filter(file => file.endsWith('.sql')).sort(), schemaFiles)
     for (const file of schemaFiles) {
@@ -191,6 +194,32 @@ test('animation RUM v2 storage stays isolated, aggregate-only, and queryable by 
     assert.match(sql, /rum_v2_capture_identity/)
     assert.match(sql, /rum_v2_metric_status/)
     assert.match(sql, /rum_v2_provider_counts/)
+    assert.equal(sql.match(/TTL toDateTime\(captured_at\) \+ INTERVAL 90 DAY/g)?.length, 3)
+})
+
+test('animation RUM v3 soft-navigation storage is database-neutral, non-destructive, private, and TTL-bounded', async () => {
+    const sql = await readFile(path.join(schemaDir, '006_animation_rum_v3_soft_navigation.sql'), 'utf8')
+    const statements = sql.replace(/^--.*$/gm, '')
+    const tableNames = [...sql.matchAll(/CREATE TABLE IF NOT EXISTS\s+([a-z0-9_]+)/gi)].map(match => match[1])
+    assert.deepEqual(tableNames, [
+        'animation_rum_soft_navigation_captures_v3',
+        'animation_rum_soft_navigation_metrics_v3',
+        'animation_rum_soft_navigation_provider_evidence_v3',
+    ])
+    assert.doesNotMatch(sql, /\blemonade\s*\./)
+    assert.doesNotMatch(sql, /CREATE\s+DATABASE/i)
+    assert.doesNotMatch(statements, /\b(?:DROP|TRUNCATE|RENAME|DETACH|ATTACH)\b/i)
+    assert.doesNotMatch(sql, /(?:ALTER|DROP|RENAME)\s+TABLE[\s\S]*animation_rum_[a-z_]+_v[12]/i)
+    assert.doesNotMatch(
+        statements,
+        /\b(?:selector|element_id|class_name|dom_text|input_value|url|coordinates|raw_event|keyframes|shader_source|props|metadata)\b/i
+    )
+    assert.match(sql, /capture_kind\s+LowCardinality\(String\)/)
+    assert.match(sql, /route_key\s+LowCardinality\(String\)/)
+    assert.match(sql, /metric_id\s+LowCardinality\(String\)/)
+    assert.match(sql, /evidence_window\s+LowCardinality\(String\)/)
+    assert.match(sql, /provider_evidence_count\s+UInt8/)
+    assert.match(sql, /metric_count\s+UInt8/)
     assert.equal(sql.match(/TTL toDateTime\(captured_at\) \+ INTERVAL 90 DAY/g)?.length, 3)
 })
 

@@ -1,5 +1,10 @@
 import { ClickHouseClient } from '@clickhouse/client'
-import { type AnimationRumV2KafkaEnvelope, createAnimationRumV2ClickHouseInsertPlan } from '@condev-monitor/animation-rum-ingest'
+import {
+    type AnimationRumV2KafkaEnvelope,
+    type AnimationRumV3KafkaEnvelope,
+    createAnimationRumV2ClickHouseInsertPlan,
+    createAnimationRumV3ClickHouseInsertPlan,
+} from '@condev-monitor/animation-rum-ingest'
 import { Inject, Injectable } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 
@@ -104,6 +109,21 @@ export class AnimationRumClickhouseService {
         // The shared plan validates the full closed payload before the first
         // write. Keep inserts sequential so the capture completion marker is
         // written only after every child row succeeds.
+        for (const step of plan) {
+            await this.clickhouseClient.insert<unknown>({
+                table: `${this.database}.${step.table}`,
+                format: 'JSONEachRow',
+                values: step.rows,
+            })
+        }
+    }
+
+    async insertV3SoftNavigation(envelope: AnimationRumV3KafkaEnvelope): Promise<void> {
+        const plan = createAnimationRumV3ClickHouseInsertPlan(envelope)
+
+        // The v3 projector validates the whole closed report before the first
+        // write. Child rows precede the capture completion marker, making an
+        // interrupted fallback safe to replay through ReplacingMergeTree.
         for (const step of plan) {
             await this.clickhouseClient.insert<unknown>({
                 table: `${this.database}.${step.table}`,

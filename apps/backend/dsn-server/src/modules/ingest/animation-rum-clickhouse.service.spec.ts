@@ -1,5 +1,5 @@
-import { createAnimationRumV2GoldenReport } from '@condev-monitor/animation-rum-contract/testing'
-import { buildAnimationRumV2KafkaEnvelope } from '@condev-monitor/animation-rum-ingest'
+import { createAnimationRumV2GoldenReport, createAnimationRumV3GoldenReport } from '@condev-monitor/animation-rum-contract/testing'
+import { buildAnimationRumV2KafkaEnvelope, buildAnimationRumV3KafkaEnvelope } from '@condev-monitor/animation-rum-ingest'
 
 import { AnimationRumClickhouseService } from './animation-rum-clickhouse.service'
 
@@ -129,5 +129,50 @@ describe('AnimationRumClickhouseService v2 projection', () => {
             'renderer-adapter': 'supported',
             'gpu-timer-query': timerState,
         })
+    })
+})
+
+describe('AnimationRumClickhouseService v3 soft-navigation projection', () => {
+    it('writes v3 evidence and metrics before the isolated completion marker', async () => {
+        const insert = jest.fn().mockResolvedValue(undefined)
+        const service = serviceWithInsert(insert)
+        const report = createAnimationRumV3GoldenReport()
+        const receivedAt = new Date()
+        report.capturedAt = new Date(receivedAt.getTime() - 60_000).toISOString()
+        const envelope = buildAnimationRumV3KafkaEnvelope({
+            appId: 'app-12345678',
+            report,
+            receivedAt: receivedAt.toISOString(),
+            nowEpochMs: receivedAt.getTime(),
+        })
+
+        await service.insertV3SoftNavigation(envelope)
+
+        expect(insert.mock.calls.map(call => call[0].table)).toEqual([
+            'lemonade.animation_rum_soft_navigation_provider_evidence_v3',
+            'lemonade.animation_rum_soft_navigation_metrics_v3',
+            'lemonade.animation_rum_soft_navigation_captures_v3',
+        ])
+        expect(insert.mock.calls[1]?.[0].values).toHaveLength(3)
+    })
+
+    it('does not write the v3 completion marker when a child insert fails', async () => {
+        const insert = jest.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('metric insert failed'))
+        const service = serviceWithInsert(insert)
+        const report = createAnimationRumV3GoldenReport()
+        const receivedAt = new Date()
+        report.capturedAt = new Date(receivedAt.getTime() - 60_000).toISOString()
+        const envelope = buildAnimationRumV3KafkaEnvelope({
+            appId: 'app-12345678',
+            report,
+            receivedAt: receivedAt.toISOString(),
+            nowEpochMs: receivedAt.getTime(),
+        })
+
+        await expect(service.insertV3SoftNavigation(envelope)).rejects.toThrow('metric insert failed')
+        expect(insert.mock.calls.map(call => call[0].table)).toEqual([
+            'lemonade.animation_rum_soft_navigation_provider_evidence_v3',
+            'lemonade.animation_rum_soft_navigation_metrics_v3',
+        ])
     })
 })

@@ -1,4 +1,4 @@
-import { createAnimationRumV2GoldenReport } from '@condev-monitor/animation-rum-contract/testing'
+import { createAnimationRumV2GoldenReport, createAnimationRumV3GoldenReport } from '@condev-monitor/animation-rum-contract/testing'
 
 import { ANIMATION_RUM_FAMILIES } from '../../shared/animation-rum-v1'
 import { SpanController } from './span.controller'
@@ -49,7 +49,7 @@ describe('SpanController', () => {
                 resetTimestamp: 1234567890,
             }),
         }
-        const controller = new SpanController(spanService as any, rateLimiter as any, {} as any, {} as any)
+        const controller = new SpanController(spanService as any, rateLimiter as any, {} as any, {} as any, {} as any)
         const res = {
             status: jest.fn().mockReturnThis(),
             header: jest.fn().mockReturnThis(),
@@ -77,7 +77,7 @@ describe('SpanController', () => {
 
     it('charges animation tracking by bounded metric count', () => {
         const rateLimiter = { check: jest.fn().mockReturnValue({ exceeded: true, retryAfterSeconds: 1, resetTimestamp: 2 }) }
-        const controller = new SpanController({ tracking: jest.fn() } as any, rateLimiter as any, {} as any, {} as any)
+        const controller = new SpanController({ tracking: jest.fn() } as any, rateLimiter as any, {} as any, {} as any, {} as any)
         const res = { status: jest.fn().mockReturnThis(), header: jest.fn().mockReturnThis() }
 
         controller.tracking(
@@ -92,7 +92,7 @@ describe('SpanController', () => {
     it('keeps the legacy unit rate cost for a custom event named animation_rum', () => {
         const rateLimiter = { check: jest.fn().mockReturnValue({ exceeded: false }) }
         const spanService = { tracking: jest.fn().mockReturnValue({ ok: true }) }
-        const controller = new SpanController(spanService as any, rateLimiter as any, {} as any, {} as any)
+        const controller = new SpanController(spanService as any, rateLimiter as any, {} as any, {} as any, {} as any)
         const res = { status: jest.fn().mockReturnThis(), header: jest.fn().mockReturnThis() }
 
         controller.tracking('legacy app id', { event_type: 'animation_rum', message: 'legacy custom event' }, res as any)
@@ -104,7 +104,7 @@ describe('SpanController', () => {
     it('accepts the one-character v2 app id boundary', () => {
         const rateLimiter = { check: jest.fn().mockReturnValue({ exceeded: false }) }
         const spanService = { tracking: jest.fn().mockReturnValue({ ok: true }) }
-        const controller = new SpanController(spanService as any, rateLimiter as any, {} as any, {} as any)
+        const controller = new SpanController(spanService as any, rateLimiter as any, {} as any, {} as any, {} as any)
         const res = { status: jest.fn().mockReturnThis(), header: jest.fn().mockReturnThis() }
 
         controller.tracking('a', animationV2Report(), res as any)
@@ -116,7 +116,7 @@ describe('SpanController', () => {
     it('leaves a mixed ordinary lane available when a v2 app id is invalid', () => {
         const rateLimiter = { check: jest.fn().mockReturnValue({ exceeded: false }) }
         const spanService = { tracking: jest.fn().mockReturnValue({ ok: true }) }
-        const controller = new SpanController(spanService as any, rateLimiter as any, {} as any, {} as any)
+        const controller = new SpanController(spanService as any, rateLimiter as any, {} as any, {} as any, {} as any)
         const res = { status: jest.fn().mockReturnThis(), header: jest.fn().mockReturnThis() }
         const body = [{ event_type: 'performance', message: 'navigation' }, animationV2Report()]
 
@@ -131,7 +131,7 @@ describe('SpanController', () => {
         const inbound = {
             filter: jest.fn().mockReturnValue({ accepted: [], rejected: 1, reasons: ['blocked_release'] }),
         }
-        const controller = new SpanController({} as any, rateLimiter as any, writer as any, inbound as any)
+        const controller = new SpanController({} as any, rateLimiter as any, writer as any, inbound as any, {} as any)
         const res = { status: jest.fn().mockReturnThis(), header: jest.fn().mockReturnThis() }
 
         await expect(controller.animationRum('app-1', animationReport(), res as any)).rejects.toMatchObject({
@@ -140,5 +140,53 @@ describe('SpanController', () => {
         expect(inbound.filter).toHaveBeenCalledWith([expect.objectContaining({ event_type: 'animation_rum', _eventId: 'event_12345678' })])
         expect(rateLimiter.check).not.toHaveBeenCalled()
         expect(writer.writeAnimationRum).not.toHaveBeenCalled()
+    })
+
+    it('admits only the dedicated v3 lane and returns its exact receipt wrapper', async () => {
+        const report = createAnimationRumV3GoldenReport()
+        const admission = {
+            admitBatch: jest.fn().mockResolvedValue({
+                accepted: 1,
+                queued: 1,
+                duplicates: 0,
+                receipts: [
+                    {
+                        eventId: report.eventId,
+                        captureId: report.captureId,
+                        receivedAt: '2026-08-29T08:00:00.000Z',
+                        deliveryState: 'pending',
+                        duplicate: false,
+                    },
+                ],
+            }),
+        }
+        const rateLimiter = { check: jest.fn().mockReturnValue({ exceeded: false }) }
+        const controller = new SpanController({} as any, rateLimiter as any, {} as any, {} as any, admission as any)
+        const res = { status: jest.fn().mockReturnThis(), header: jest.fn().mockReturnThis() }
+        const payload = { ...report, event_type: 'animation_soft_navigation_rum', message: '', _eventId: report.eventId }
+
+        await expect(controller.trackingV3SoftNavigation('app-1', JSON.stringify(payload), res as any)).resolves.toEqual({
+            ok: true,
+            persistedVia: 'postgres-outbox',
+            animationRumV3SoftNavigation: expect.objectContaining({ accepted: 1, queued: 1, duplicates: 0 }),
+        })
+        expect(rateLimiter.check).toHaveBeenCalledWith('app-1', 3)
+        expect(admission.admitBatch).toHaveBeenCalledWith('app-1', [payload])
+    })
+
+    it('rejects malformed JSON on tracking-v3 without invoking admission', async () => {
+        const admission = { admitBatch: jest.fn() }
+        const controller = new SpanController(
+            {} as any,
+            { check: jest.fn().mockReturnValue({ exceeded: false }) } as any,
+            {} as any,
+            {} as any,
+            admission as any
+        )
+
+        await expect(controller.trackingV3SoftNavigation('app-1', '{bad', {} as any)).rejects.toMatchObject({
+            response: expect.objectContaining({ error: 'INVALID_ANIMATION_RUM_V3' }),
+        })
+        expect(admission.admitBatch).not.toHaveBeenCalled()
     })
 })

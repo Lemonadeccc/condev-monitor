@@ -3,6 +3,7 @@ import { BadRequestException, Body, Controller, Get, Param, Post, Query, Res } f
 import type { Response } from 'express'
 
 import { validateAnimationRumV1 } from '../../shared/animation-rum-v1'
+import { AnimationRumV3AdmissionService } from '../ingest/animation-rum-v3-admission.service'
 import { InboundFilterService } from '../ingest/inbound-filter.service'
 import { IngestWriterService } from '../ingest/ingest-writer.service'
 import { RateLimiterService } from '../ingest/rate-limiter.service'
@@ -14,7 +15,8 @@ export class SpanController {
         private readonly spanService: SpanService,
         private readonly rateLimiter: RateLimiterService,
         private readonly ingestWriter: IngestWriterService,
-        private readonly inboundFilter: InboundFilterService
+        private readonly inboundFilter: InboundFilterService,
+        private readonly animationRumV3Admission: AnimationRumV3AdmissionService
     ) {}
 
     @Get('/span')
@@ -68,6 +70,35 @@ export class SpanController {
             eventId: validation.value.eventId,
             captureId: validation.value.captureId,
             receivedAt: result.receivedAt,
+        }
+    }
+
+    @Post('/tracking-v3/:app_id')
+    async trackingV3SoftNavigation(@Param('app_id') appId: string, @Body() body: unknown, @Res({ passthrough: true }) res: Response) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u.test(appId)) {
+            throw new BadRequestException({ message: 'Invalid app id', error: 'INVALID_APP_ID' })
+        }
+        let parsed: unknown = body
+        if (typeof body === 'string') {
+            try {
+                parsed = JSON.parse(body)
+            } catch {
+                throw new BadRequestException({ message: 'Invalid Animation RUM v3 JSON', error: 'INVALID_ANIMATION_RUM_V3' })
+            }
+        }
+        const items = Array.isArray(parsed) ? parsed : [parsed]
+        const limit = this.rateLimiter.check(appId, Math.max(1, Math.min(items.length * 3, 192)))
+        if (limit.exceeded) {
+            res.status(429)
+                .header('Retry-After', String(limit.retryAfterSeconds))
+                .header('X-Rate-Limit-Reset', String(limit.resetTimestamp))
+            return { ok: false, reason: 'rate_limited', retryAfter: limit.retryAfterSeconds }
+        }
+        const admission = await this.animationRumV3Admission.admitBatch(appId, items)
+        return {
+            ok: true,
+            persistedVia: 'postgres-outbox',
+            animationRumV3SoftNavigation: admission,
         }
     }
 

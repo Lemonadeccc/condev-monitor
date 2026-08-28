@@ -5,6 +5,9 @@ import { AnimationRumClickhouseService } from './animation-rum-clickhouse.servic
 import { AnimationRumV2AdmissionService } from './animation-rum-v2-admission.service'
 import { AnimationRumV2OutboxDispatcherService } from './animation-rum-v2-outbox-dispatcher.service'
 import { AnimationRumV2RetentionService } from './animation-rum-v2-retention.service'
+import { AnimationRumV3AdmissionService } from './animation-rum-v3-admission.service'
+import { AnimationRumV3OutboxDispatcherService } from './animation-rum-v3-outbox-dispatcher.service'
+import { AnimationRumV3RetentionService } from './animation-rum-v3-retention.service'
 import { ClickhouseFallbackService } from './clickhouse-fallback.service'
 import { InboundFilterService } from './inbound-filter.service'
 import { IngestWriterService } from './ingest-writer.service'
@@ -20,10 +23,19 @@ import { RateLimiterService } from './rate-limiter.service'
         AnimationRumV2AdmissionService,
         AnimationRumV2OutboxDispatcherService,
         AnimationRumV2RetentionService,
+        AnimationRumV3AdmissionService,
+        AnimationRumV3OutboxDispatcherService,
+        AnimationRumV3RetentionService,
         IngestWriterService,
         InboundFilterService,
         RateLimiterService,
     ],
-    exports: [AnimationRumV2AdmissionService, IngestWriterService, InboundFilterService, RateLimiterService],
+    exports: [
+        AnimationRumV2AdmissionService,
+        AnimationRumV3AdmissionService,
+        IngestWriterService,
+        InboundFilterService,
+        RateLimiterService,
+    ],
 })
 export class IngestModule {}
