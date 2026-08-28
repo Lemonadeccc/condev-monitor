@@ -35,7 +35,8 @@
         "clean": "rimraf build",
         "build": "pnpm clean && pnpm build:transpile && pnpm build:types",
         "build:transpile": "tsup",
-        "build:types": "tsc -p tsconfig.types.json"
+        "build:types": "tsc -p tsconfig.types.json",
+        "test": "pnpm build && node --test test/*.test.mjs"
     },
     "dependencies": {
         "@condev-monitor/monitor-sdk-browser": "workspace:*",
