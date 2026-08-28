@@ -502,7 +502,7 @@ GSAP、Lenis 与 ScrollTrigger 现在还可以通过 `createMotionSemanticCheckp
 
 媒体阶段现在可以通过 `createMediaSemanticStageRecorder()` 显式声明一次 image/video/Canvas/WebGL/WebGPU/custom attempt 的 `decode-ready`、`upload-ready` 与 `first-visible`。开始、阶段和结束时间必须来自调用方同一单调时钟；阶段可以缺省，但接受较晚阶段后不能回填较早阶段。duration、bytes 和 item count 都只是有界的调用方 attestation，不是浏览器 decode、GPU upload 或真实呈现的自动测量。recorder 不读取或控制 media/renderer，不保留 URL/src、selector、label、DOM、host object、任意 metadata 或原始事件；取消结果不会暴露 `firstVisible`。完成记录和活跃 attempt 分别有界，销毁会先密封新输入再确定性取消全部未完成监控窗口。Browser convenience 只补 teardown ownership，不会自动打开 collector interaction、改变现有 interaction 聚合或新增 v1/v2 RUM 字段；需要页面性能相关窗口时，调用方必须在相同业务边界另行显式使用 `client.animation.beginInteraction()`。hidden/offscreen 后必须由宿主重新开始 attempt/基线，SDK 不自动推断可见性或业务完成。
 
-当前目标合同把运行时拆成四个可多值轴：`uiFrameworks`、`metaRuntimes`、`renderers`、`motionEngines`。因此 React + Next + Three + GSAP 可以同时出现；原生页面明确为 `uiFrameworks:['vanilla']`，renderer 为 DOM/SVG/Canvas，而不是 `unknown`。没有 framework adapter 时只缺 owner/commit，不影响浏览器与原生目标证据。
+当前目标合同把运行时拆成四个可多值轴：`uiFrameworks`、`metaRuntimes`、`renderers`、`motionEngines`。因此 React + Next + Three + GSAP 可以同时出现。DOM/SVG/Canvas 的直接浏览器证据不依赖框架；但 DOM 节点本身不能证明是 Vanilla、React、Vue 或其他运行时所有，所以没有显式 framework target adapter 时 `uiFrameworks` 为空，由目标自身推断的生产 target RUM framework 为 `unknown`。调用方仍可显式配置页面级 RUM `runtimeFamily`，但它不是目标 owner 证据。原生目标需要由显式 adapter 声明 `uiFrameworks:['vanilla']`；缺少 adapter 不影响 CSS/WAAPI、几何、生命周期与 Canvas 表面证据。
 
 ## React Scan 借鉴边界
 
