@@ -6,6 +6,7 @@ import {
     createGsapLifecycleProbe,
     createGsapTickerObserver,
     createLenisScrollObserver,
+    createMediaSemanticStageRecorder,
     createMotionSemanticCheckpointRecorder,
     createRendererHostProbe,
     createScrollTriggerObserver,
@@ -42,6 +43,8 @@ import {
     type InputFrameSchedulingMarker,
     type LenisScrollObserver,
     type LenisScrollObserverOptions,
+    type MediaSemanticStageRecorder,
+    type MediaSemanticStageRecorderOptions,
     type MotionSemanticCheckpointRecorder,
     type MotionSemanticCheckpointRecorderOptions,
     type RendererHostProbe,
@@ -237,6 +240,8 @@ export interface AnimationClientHandle {
     createGsapTickerObserver(options: GsapTickerObserverOptions): GsapTickerObserver
     /** Local-only public Lenis scroll evidence with Browser-owned teardown. */
     createLenisScrollObserver(options: LenisScrollObserverOptions): LenisScrollObserver
+    /** Explicit local-only media decode/upload/first-visible stages with Browser-owned teardown. */
+    createMediaSemanticStageRecorder(options?: MediaSemanticStageRecorderOptions): MediaSemanticStageRecorder
     /** Explicit local business-interaction checkpoints across optional public motion observers. */
     createMotionSemanticCheckpointRecorder(
         options?: Omit<MotionSemanticCheckpointRecorderOptions, 'beginInteraction'>
@@ -1038,6 +1043,10 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
 
     createLenisScrollObserver(options: LenisScrollObserverOptions): LenisScrollObserver {
         return this.trackObserver(createLenisScrollObserver(options))
+    }
+
+    createMediaSemanticStageRecorder(options: MediaSemanticStageRecorderOptions = {}): MediaSemanticStageRecorder {
+        return this.trackProbe(createMediaSemanticStageRecorder(options))
     }
 
     createMotionSemanticCheckpointRecorder(
