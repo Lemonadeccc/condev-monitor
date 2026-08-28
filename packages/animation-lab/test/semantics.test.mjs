@@ -6,8 +6,10 @@ import {
     ANIMATION_LAB_METRIC_CATALOG_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
+    DEFAULT_ANIMATION_LAB_BUDGET_REF_V3,
     DEFAULT_ANIMATION_LAB_BUDGET_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_V2,
+    DEFAULT_ANIMATION_LAB_BUDGET_V3,
     evaluateAnimationLabBudgetRule,
     getAnimationLabBudgetV1,
     getAnimationLabMetricCatalogEntry,
@@ -211,7 +213,7 @@ test('central metric and budget catalogs are closed, unique, and internally refe
     for (const rule of DEFAULT_ANIMATION_LAB_BUDGET_V1.rules) assert.ok(getAnimationLabMetricCatalogEntry(rule.metricId))
 })
 
-test('adds an explicit budget v2 without changing the v1 rule tuple', () => {
+test('adds explicit budget versions without changing earlier rule tuples', () => {
     assert.equal(DEFAULT_ANIMATION_LAB_BUDGET_V1.budgetVersion, 1)
     assert.equal(DEFAULT_ANIMATION_LAB_BUDGET_V1.rules.find(rule => rule.ruleId === 'long-task-count').minimumSamples, 1)
     assert.equal(DEFAULT_ANIMATION_LAB_BUDGET_V2.budgetVersion, 2)
@@ -225,7 +227,69 @@ test('adds an explicit budget v2 without changing the v1 rule tuple', () => {
     assert.equal(DEFAULT_ANIMATION_LAB_BUDGET_V2.rules.find(rule => rule.ruleId === 'long-task-count').minimumSamples, 0)
     assert.equal(getAnimationLabBudgetV1('condev.animation.default', 1), DEFAULT_ANIMATION_LAB_BUDGET_V1)
     assert.equal(getAnimationLabBudgetV1('condev.animation.default', 2), DEFAULT_ANIMATION_LAB_BUDGET_V2)
-    assert.equal(getAnimationLabBudgetV1('condev.animation.default', 3), undefined)
+    assert.equal(getAnimationLabBudgetV1('condev.animation.default', 3), DEFAULT_ANIMATION_LAB_BUDGET_V3)
+    assert.deepEqual(
+        DEFAULT_ANIMATION_LAB_BUDGET_V3.rules.slice(0, DEFAULT_ANIMATION_LAB_BUDGET_V2.rules.length),
+        DEFAULT_ANIMATION_LAB_BUDGET_V2.rules
+    )
+    assert.equal(DEFAULT_ANIMATION_LAB_BUDGET_V3.rules.length, DEFAULT_ANIMATION_LAB_BUDGET_V2.rules.length + 7)
+    assert.equal(getAnimationLabBudgetV1('condev.animation.default', 4), undefined)
+})
+
+test('evaluates expanded v3 diagnostics only from sufficient measured evidence', () => {
+    const contract = { targetFrameMs: 16.666667 }
+    const cases = [
+        ['loaf-count', 'main.loaf.count', 0, 0],
+        ['interaction-processing-tail', 'interaction.processing.p95', 50, 3],
+        ['interaction-presentation-tail', 'interaction.presentation.p95', 100, 3],
+        ['page-lcp', 'vital.lcp.latest', 2_500, 1],
+        ['page-cls', 'vital.cls.latest', 0.1, 1],
+        ['lighthouse-first-contentful-paint', 'lighthouse.fcp.latest', 1_800, 1],
+        ['lighthouse-total-blocking-time', 'lighthouse.total-blocking-time.latest', 200, 1],
+    ]
+
+    for (const [ruleId, metricId, target, minimumSamples] of cases) {
+        const rule = DEFAULT_ANIMATION_LAB_BUDGET_V3.rules.find(candidate => candidate.ruleId === ruleId)
+        assert.equal(rule.metricId, metricId)
+        assert.equal(
+            evaluateAnimationLabBudgetRule(rule, { metricId, value: target, samples: minimumSamples, status: 'measured' }, contract).status,
+            'within-budget'
+        )
+        const breachedSamples = minimumSamples === 0 ? 1 : minimumSamples
+        assert.equal(
+            evaluateAnimationLabBudgetRule(rule, { metricId, value: target + 0.01, samples: breachedSamples, status: 'measured' }, contract)
+                .status,
+            'breach'
+        )
+        assert.equal(
+            evaluateAnimationLabBudgetRule(rule, { metricId, value: target + 0.01, samples: breachedSamples, status: 'partial' }, contract)
+                .status,
+            'candidate-breach'
+        )
+        assert.equal(
+            evaluateAnimationLabBudgetRule(rule, { metricId, value: target, samples: minimumSamples, status: 'partial' }, contract).status,
+            'insufficient-evidence'
+        )
+        if (minimumSamples > 0) {
+            assert.equal(
+                evaluateAnimationLabBudgetRule(
+                    rule,
+                    { metricId, value: target + 0.01, samples: minimumSamples - 1, status: 'measured' },
+                    contract
+                ).status,
+                'insufficient-evidence'
+            )
+        } else {
+            assert.equal(
+                evaluateAnimationLabBudgetRule(rule, { metricId, value: 1, samples: 0, status: 'measured' }, contract).status,
+                'insufficient-evidence'
+            )
+        }
+        assert.equal(
+            evaluateAnimationLabBudgetRule(rule, { metricId, value: null, samples: null, status: 'unsupported' }, contract).status,
+            'insufficient-evidence'
+        )
+    }
 })
 
 test('evaluates zero-event count evidence only for the opted-in budget version', () => {
@@ -363,7 +427,9 @@ test('rejects a budget reference that the local runner cannot execute', () => {
 
     value.budgetRef = DEFAULT_ANIMATION_LAB_BUDGET_REF_V2
     assert.equal(validateLabMeasurementContract(value).ok, true)
-    value.budgetRef = { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 3 }
+    value.budgetRef = DEFAULT_ANIMATION_LAB_BUDGET_REF_V3
+    assert.equal(validateLabMeasurementContract(value).ok, true)
+    value.budgetRef = { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 4 }
     const unknownVersion = validateLabMeasurementContract(value)
     assert.equal(unknownVersion.ok, false)
     assert.ok(unknownVersion.errors.includes('measurementContract.budgetRef:unknown-local-budget'))

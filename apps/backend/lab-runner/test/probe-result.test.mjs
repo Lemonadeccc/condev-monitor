@@ -219,6 +219,21 @@ test('discloses the conditional Event Timing population and entry-count semantic
     assert.equal(count.value, 1)
 })
 
+test('discloses LoAF and page-vital observation boundaries on decoded metrics', () => {
+    const decoded = decodePageProbeResult(rawResult(), expectedActions)
+    for (const metricIdValue of ['main.loaf.count', 'main.loaf.duration.p95', 'main.loaf.blocking.p95']) {
+        assert.ok(metricForCatalogId(decoded.metrics, metricIdValue).limitations.includes('loaf-only-over-50ms'))
+    }
+    assert.deepEqual(metricForCatalogId(decoded.metrics, 'vital.lcp.latest').limitations, [
+        'single-controlled-run-not-field-p75',
+        'lcp-soft-navigation-not-modeled',
+    ])
+    assert.deepEqual(metricForCatalogId(decoded.metrics, 'vital.cls.latest').limitations, [
+        'single-controlled-run-not-field-p75',
+        'lab-cls-window-may-understate-full-session',
+    ])
+})
+
 test('keeps video playback quality populations distinct and uses media frames as samples', () => {
     const cases = [
         {

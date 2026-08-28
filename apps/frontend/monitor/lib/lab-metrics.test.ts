@@ -173,6 +173,12 @@ describe('Lab catalog v2 metric presentation', () => {
             en: 'Attempts · Median of attempts',
         })
         assert.match(getLabLimitationLabel('loaf-only-over-50ms').zhCN, /50 ms/u)
+        assert.match(getLabLimitationLabel('single-controlled-run-not-field-p75').en, /not a device-segmented field p75/u)
+        assert.match(getLabLimitationLabel('lcp-soft-navigation-not-modeled').zhCN, /软导航边界/u)
+        assert.match(getLabLimitationLabel('lab-cls-window-may-understate-full-session').en, /understate later layout shifts/u)
+        assert.match(getLabLimitationLabel('lighthouse-form-factor-desktop').zhCN, /desktop form factor/u)
+        assert.match(getLabLimitationLabel('lighthouse-form-factor-mobile').en, /mobile form factor/u)
+        assert.match(getLabLimitationLabel('lighthouse-isolated-process-does-not-inherit-measured-cache').zhCN, /独立 Chrome 进程/u)
         assert.match(getLabLimitationLabel('presentation-time-implementation-dependent').en, /implementation-dependent/u)
         assert.match(getLabLimitationLabel('observed-page-raf-cadence-not-display-refresh-rate').zhCN, /不是物理屏幕刷新率/u)
         assert.match(

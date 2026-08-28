@@ -46,8 +46,10 @@ test('projects Lighthouse into bounded categories, metrics, and actionable audit
     assert.equal(report.requestedRouteKey, 'fixture.home')
     assert.equal(report.categories.performance.score, 0.72)
     assert.equal(report.metrics.find(metric => metric.name === 'LCP').value, 3_200)
+    assert.deepEqual(report.metrics.find(metric => metric.name === 'LCP').limitations, ['separate-navigation-experiment'])
     assert.equal(report.metrics.find(metric => metric.name === 'CLS').metricId, 'lighthouse.cls.latest')
     assert.equal(report.metrics.find(metric => metric.name === 'performanceScore').metricId, 'lighthouse.performance.score')
+    assert.deepEqual(report.metrics.find(metric => metric.name === 'performanceScore').limitations, ['separate-navigation-experiment'])
     assert.equal(report.failedAudits[0].id, 'largest-contentful-paint')
     assert.equal(report.failedAudits[0].savingsMs, 400)
     assert.equal(

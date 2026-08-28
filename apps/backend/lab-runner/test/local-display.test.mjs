@@ -168,8 +168,19 @@ function budgetSemantics({ missingRuleId, breachRuleId, budgetVersion = 1, longT
         ['frame-tail', 'frame.duration.p95', 120],
         ['slow-frame-rate', 'frame.slow-rate', 120],
         ['jank-bursts', 'frame.jank-bursts', 120],
-        ['long-task-count', 'main.long-task.count', budgetVersion === 2 ? 0 : 1],
+        ['long-task-count', 'main.long-task.count', budgetVersion >= 2 ? 0 : 1],
         ['input-delay', 'interaction.input-delay.p95', 3],
+        ...(budgetVersion === 3
+            ? [
+                  ['loaf-count', 'main.loaf.count', 0],
+                  ['interaction-processing-tail', 'interaction.processing.p95', 3],
+                  ['interaction-presentation-tail', 'interaction.presentation.p95', 3],
+                  ['page-lcp', 'vital.lcp.latest', 1],
+                  ['page-cls', 'vital.cls.latest', 1],
+                  ['lighthouse-first-contentful-paint', 'lighthouse.fcp.latest', 1],
+                  ['lighthouse-total-blocking-time', 'lighthouse.total-blocking-time.latest', 1],
+              ]
+            : []),
     ]
     const budgetRef = { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion }
     return {
@@ -251,6 +262,24 @@ test('keeps v1 zero-event Long Task evidence insufficient and accepts the explic
         insufficientRules: 0,
         status: 'no-breach-observed',
     })
+})
+
+test('summarizes all twelve evidence-gated rules for explicit budget v3', () => {
+    const v3 = buildLabLocalBudgetDisplayEvent(budgetSemantics({ budgetVersion: 3 }))
+    assert.deepEqual(v3.budget, {
+        catalogVersion: 1,
+        budgetId: 'condev.animation.default',
+        budgetVersion: 3,
+        evaluatedRules: 12,
+        breachCount: 0,
+        insufficientRules: 0,
+        status: 'no-breach-observed',
+    })
+    assert.equal(
+        buildLabLocalBudgetDisplayEvent(budgetSemantics({ budgetVersion: 3, missingRuleId: 'lighthouse-total-blocking-time' })).budget
+            .status,
+        'insufficient-evidence'
+    )
 })
 
 test('keeps incomplete v2 Long Task evidence insufficient and gives observed breaches precedence', () => {

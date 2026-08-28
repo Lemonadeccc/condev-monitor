@@ -327,10 +327,13 @@ describe('resolveLabBudgetRule', () => {
 
         const v1 = resolveLabBudgetRule(ref(1), contract(1))
         const v2 = resolveLabBudgetRule(ref(2), contract(2))
+        const v3 = resolveLabBudgetRule(ref(3), contract(3))
         assert.equal(v1?.minimumSamples, 1)
         assert.equal(v1?.zeroEventCountIsComplete, false)
         assert.equal(v2?.minimumSamples, 0)
         assert.equal(v2?.zeroEventCountIsComplete, true)
+        assert.equal(v3?.minimumSamples, 0)
+        assert.equal(v3?.zeroEventCountIsComplete, true)
         assert.equal(evaluateLabBudgetMetric(metric(), ref(1), contract(1)), 'insufficient-evidence')
         assert.equal(evaluateLabBudgetMetric(metric(), ref(2), contract(2)), 'within-budget')
         assert.equal(evaluateLabBudgetMetric(metric({ value: 1, samples: 1 }), ref(2), contract(2)), 'breach')
@@ -343,7 +346,62 @@ describe('resolveLabBudgetRule', () => {
         const requirement = getLabBudgetRuleEvidenceRequirement(v2!)
         assert.match(requirement, /完整 measured 观察允许 0 个 Long Task/u)
         assert.doesNotMatch(requirement, /最少\s*0/u)
-        assert.equal(resolveLabBudgetRule(ref(3), contract(3)), null)
+        assert.equal(resolveLabBudgetRule(ref(4), contract(4)), null)
         assert.equal(resolveLabBudgetRule(ref(2), contract(1)), null)
+    })
+
+    it('expands the seven evidence-gated diagnostic rules only for budget v3', () => {
+        const contract: LabRunAnalysis['measurementContract'] = {
+            contractVersion: 2,
+            expectedHz: 60,
+            targetFrameMs: 16.666667,
+            source: 'explicit',
+            confidence: 'explicit',
+            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 3 },
+            metricCatalogVersion: 2,
+        }
+        const cases = [
+            ['loaf-count', 'main.loaf.count', 0, 'count', 0],
+            ['interaction-processing-tail', 'interaction.processing.p95', 50, 'ms', 3],
+            ['interaction-presentation-tail', 'interaction.presentation.p95', 100, 'ms', 3],
+            ['page-lcp', 'vital.lcp.latest', 2_500, 'ms', 1],
+            ['page-cls', 'vital.cls.latest', 0.1, 'score', 1],
+            ['lighthouse-first-contentful-paint', 'lighthouse.fcp.latest', 1_800, 'ms', 1],
+            ['lighthouse-total-blocking-time', 'lighthouse.total-blocking-time.latest', 200, 'ms', 1],
+        ] as const
+
+        for (const [ruleId, metricId, target, unit, minimumSamples] of cases) {
+            const ref = { ...contract.budgetRef, ruleId }
+            assert.deepEqual(resolveLabBudgetRule(ref, contract), {
+                comparator: '<=',
+                metricId,
+                target,
+                unit,
+                minimumSamples,
+                zeroEventCountIsComplete: ruleId === 'loaf-count',
+            })
+            if (ruleId === 'loaf-count')
+                assert.match(getLabBudgetRuleEvidenceRequirement(resolveLabBudgetRule(ref, contract)!), /0 个 LoAF/u)
+            const metric = {
+                metricId,
+                family: 'userOutcome',
+                name: 'diagnosticMetric',
+                stat: 'p95',
+                unit,
+                value: target + 1,
+                samples: minimumSamples === 0 ? 1 : minimumSamples,
+                status: 'measured',
+            } as LabMetric
+            assert.equal(evaluateLabBudgetMetric(metric, ref, contract), 'breach')
+            assert.equal(evaluateLabBudgetMetric({ ...metric, status: 'partial' }, ref, contract), 'candidate-breach')
+            assert.equal(
+                evaluateLabBudgetMetric({ ...metric, samples: minimumSamples === 0 ? 0 : minimumSamples - 1 }, ref, contract),
+                'insufficient-evidence'
+            )
+            assert.equal(
+                evaluateLabBudgetMetric({ ...metric, value: null, samples: null, status: 'unsupported' }, ref, contract),
+                'insufficient-evidence'
+            )
+        }
     })
 })

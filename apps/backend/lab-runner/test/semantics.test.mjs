@@ -6,6 +6,7 @@ import {
     ANIMATION_LAB_METRIC_CATALOG_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
+    DEFAULT_ANIMATION_LAB_BUDGET_REF_V3,
     DEFAULT_ANIMATION_LAB_BUDGET_V2,
     evaluateAnimationLabBudgetRule,
     validateAnimationLabSemanticsV2,
@@ -16,6 +17,8 @@ import {
     aggregateMeasuredAttempts,
     buildAnimationLabSemantics,
     decorateLabMetric,
+    decorateLighthouseLabMetric,
+    projectDiagnosticAttemptMetrics,
     projectAttemptsForReport,
 } from '../build/index.js'
 
@@ -131,7 +134,7 @@ test('creates selector-free action semantics and across-attempt metrics', () => 
     assert.equal(JSON.stringify(semantics).includes('[data-lab'), false)
 })
 
-test('keeps decoration on budget v1 unless a known v2 reference is explicit', () => {
+test('keeps decoration on budget v1 unless a known newer reference is explicit', () => {
     const base = decorateLabMetric(longTaskMetric(0, 0), { level: 'run' }, { acrossAttempts: true })
     assert.deepEqual(base.budgetRefs, [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V1, ruleId: 'long-task-count' }])
 
@@ -142,15 +145,145 @@ test('keeps decoration on budget v1 unless a known v2 reference is explicit', ()
     )
     assert.deepEqual(optedIn.budgetRefs, [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V2, ruleId: 'long-task-count' }])
 
+    const expanded = decorateLabMetric(
+        {
+            family: 'userOutcome',
+            name: 'processingDurationMs',
+            stat: 'p95',
+            unit: 'ms',
+            value: 55,
+            samples: 3,
+            status: 'measured',
+            evidenceLevel: 'controlled-lab-measurement',
+        },
+        { level: 'run' },
+        { acrossAttempts: true, budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V3 }
+    )
+    assert.deepEqual(expanded.budgetRefs, [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V3, ruleId: 'interaction-processing-tail' }])
+
+    const loaf = decorateLabMetric(
+        {
+            family: 'mainThread',
+            name: 'longAnimationFrameCount',
+            stat: 'count',
+            unit: 'count',
+            value: 0,
+            samples: 0,
+            status: 'measured',
+            evidenceLevel: 'controlled-lab-measurement',
+        },
+        { level: 'run' },
+        { acrossAttempts: true, budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V3 }
+    )
+    assert.deepEqual(loaf.budgetRefs, [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V3, ruleId: 'loaf-count' }])
+
     const unknown = decorateLabMetric(
         longTaskMetric(0, 0),
         { level: 'run' },
         {
             acrossAttempts: true,
-            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 3 },
+            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 4 },
         }
     )
     assert.deepEqual(unknown.budgetRefs, [])
+})
+
+test('promotes isolated diagnostic metrics into canonical run scope for v3 findings', () => {
+    const lighthouseMetric = decorateLighthouseLabMetric(
+        {
+            family: 'lighthouse',
+            name: 'FCP',
+            stat: 'latest',
+            unit: 'ms',
+            value: 2_000,
+            samples: 1,
+            status: 'measured',
+            evidenceLevel: 'controlled-lab-measurement',
+            limitations: ['separate-navigation-experiment'],
+        },
+        'lighthouse-attempt',
+        DEFAULT_ANIMATION_LAB_BUDGET_REF_V3,
+        'desktop'
+    )
+    const attempts = [
+        {
+            attemptId: 'lighthouse-attempt',
+            phase: 'lighthouse',
+            index: 0,
+            startedAt: '2026-08-26T00:00:00.000Z',
+            endedAt: '2026-08-26T00:00:01.000Z',
+            durationMs: 1_000,
+            metrics: [lighthouseMetric],
+            capabilities: { lighthouse: true },
+            limitations: [],
+        },
+    ]
+    const projected = projectDiagnosticAttemptMetrics(attempts)
+    assert.deepEqual(projected[0].scope, { level: 'run' })
+    assert.deepEqual(projected[0].aggregation, { population: 'latest', method: 'latest' })
+    assert.deepEqual(projected[0].budgetRefs, [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V3, ruleId: 'lighthouse-first-contentful-paint' }])
+    assert.deepEqual(projected[0].limitations, [
+        'separate-navigation-experiment',
+        'lighthouse-form-factor-desktop',
+        'lighthouse-isolated-process-does-not-inherit-measured-cache',
+    ])
+
+    const semantics = buildAnimationLabSemantics({
+        scenario: {
+            ...scenario,
+            measurementContract: {
+                contractVersion: 2,
+                expectedHz: 60,
+                targetFrameMs: 16.666667,
+                source: 'explicit',
+                confidence: 'explicit',
+                budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V3,
+                metricCatalogVersion: 2,
+            },
+        },
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts,
+        aggregateMetrics: projected,
+    })
+    assert.equal(semantics.findings[0].ruleId, 'lighthouse-first-contentful-paint')
+    assert.equal(semantics.findings[0].status, 'observed')
+    assert.ok(semantics.findings[0].limitations.includes('separate-navigation-experiment'))
+    assert.ok(semantics.findings[0].limitations.includes('lighthouse-form-factor-desktop'))
+    assert.ok(semantics.findings[0].limitations.includes('lighthouse-isolated-process-does-not-inherit-measured-cache'))
+    assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
+})
+
+test('fails closed when diagnostic attempts repeat one closed metric identity', () => {
+    const diagnostic = phase => ({
+        attemptId: `${phase}-attempt`,
+        phase,
+        index: 0,
+        startedAt: '2026-08-26T00:00:00.000Z',
+        endedAt: '2026-08-26T00:00:01.000Z',
+        durationMs: 1_000,
+        metrics: [
+            decorateLabMetric(
+                {
+                    family: 'lighthouse',
+                    name: 'FCP',
+                    stat: 'latest',
+                    unit: 'ms',
+                    value: 1_000,
+                    samples: 1,
+                    status: 'measured',
+                    evidenceLevel: 'controlled-lab-measurement',
+                },
+                { level: 'attempt', attemptId: `${phase}-attempt` },
+                { evidenceId: 'lighthouse', budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V3 }
+            ),
+        ],
+        capabilities: {},
+        limitations: [],
+    })
+    assert.throws(
+        () => projectDiagnosticAttemptMetrics([diagnostic('lighthouse'), diagnostic('diagnostic-trace')]),
+        /Duplicate diagnostic/u
+    )
 })
 
 test('treats three complete zero-event Long Task attempts as measured only under budget v2', () => {

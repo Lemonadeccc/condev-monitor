@@ -373,6 +373,141 @@ function completeZeroLongTaskReportV2() {
     return report
 }
 
+function setReportBudgetVersion(report: ReturnType<typeof animationReportV2>, budgetVersion: number) {
+    report.measurementContract.budgetRef.budgetVersion = budgetVersion
+    for (const attempt of report.attempts) {
+        for (const metric of attempt.metrics) {
+            for (const ref of metric.budgetRefs) ref.budgetVersion = budgetVersion
+        }
+    }
+    for (const metric of report.aggregateMetrics) {
+        for (const ref of metric.budgetRefs) ref.budgetVersion = budgetVersion
+    }
+    for (const finding of report.findings) {
+        for (const ref of finding.budgetRefs) ref.budgetVersion = budgetVersion
+    }
+    return report
+}
+
+function diagnosticProjectionReportV3() {
+    const report = setReportBudgetVersion(completeZeroLongTaskReportV2(), 3)
+    const traceAttemptId = 'attempt_trace'
+    const lighthouseAttemptId = 'attempt_lighthouse'
+    const traceMetric = expandedMetric({
+        family: 'mainThread',
+        name: 'trace.script.durationMs',
+        stat: 'sum',
+        unit: 'ms',
+        value: 42,
+        samples: 3,
+        metricId: 'trace.script.duration',
+        scope: { level: 'attempt', attemptId: traceAttemptId },
+        aggregation: { population: 'events', method: 'sum' },
+        budgetRefs: [],
+        evidenceRefs: ['cdp-trace'],
+        limitations: [],
+    })
+    const lighthouseMetric = expandedMetric({
+        family: 'lighthouse',
+        name: 'FCP',
+        stat: 'latest',
+        unit: 'ms',
+        value: 1_200,
+        samples: 1,
+        metricId: 'lighthouse.fcp.latest',
+        scope: { level: 'attempt', attemptId: lighthouseAttemptId },
+        aggregation: { population: 'latest', method: 'latest' },
+        budgetRefs: [
+            {
+                catalogVersion: 1,
+                budgetId: 'condev.animation.default',
+                budgetVersion: 3,
+                ruleId: 'lighthouse-first-contentful-paint',
+            },
+        ],
+        evidenceRefs: ['lighthouse'],
+        limitations: [
+            'separate-navigation-experiment',
+            'lighthouse-form-factor-desktop',
+            'lighthouse-isolated-process-does-not-inherit-measured-cache',
+        ],
+    })
+    Object.assign(report.scenario, {
+        execution: {
+            warmupRuns: 0,
+            measuredRuns: 3,
+            trace: true,
+            lighthouse: true,
+            colorScheme: 'light',
+            cpuThrottleRate: 1,
+            network: null,
+        },
+    })
+    ;(report.attempts as unknown as Array<Record<string, unknown>>).push(
+        {
+            attemptId: traceAttemptId,
+            phase: 'diagnostic-trace',
+            index: 0,
+            startedAt: '2026-08-25T00:00:10.000Z',
+            endedAt: '2026-08-25T00:00:11.000Z',
+            durationMs: 1_000,
+            observationDurationMs: 500,
+            metrics: [traceMetric],
+            capabilities: { cdpTrace: true, cpuProfile: true, screenshots: false },
+            limitations: ['Trace category durations may overlap and are not exclusive CPU accounting.'],
+            actionWindows: [],
+        },
+        {
+            attemptId: lighthouseAttemptId,
+            phase: 'lighthouse',
+            index: 0,
+            startedAt: '2026-08-25T00:00:11.000Z',
+            endedAt: '2026-08-25T00:00:12.000Z',
+            durationMs: 1_000,
+            metrics: [lighthouseMetric],
+            capabilities: { lighthouse: true, chromium: true },
+            limitations: ['Lighthouse is a separate Chromium navigation experiment.'],
+            actionWindows: [],
+        }
+    )
+    report.aggregateMetrics.push({ ...traceMetric, scope: { level: 'run' } }, { ...lighthouseMetric, scope: { level: 'run' } })
+    ;(report.technologyEvidence as unknown as Array<Record<string, unknown>>).push(
+        {
+            evidenceId: 'cdp-trace',
+            axis: 'browser-runtime',
+            technologyKey: 'chromium-devtools-trace',
+            source: 'cdp-trace',
+            confidence: 'high',
+            status: 'observed',
+            scope: { level: 'run' },
+            limitations: ['trace-category-durations-may-overlap'],
+        },
+        {
+            evidenceId: 'lighthouse',
+            axis: 'browser-runtime',
+            technologyKey: 'lighthouse',
+            source: 'lighthouse',
+            confidence: 'high',
+            status: 'observed',
+            scope: { level: 'run' },
+            limitations: ['separate-navigation-experiment'],
+        }
+    )
+    report.lighthouse.metrics = [
+        metric({
+            family: 'lighthouse',
+            name: 'FCP',
+            stat: 'latest',
+            unit: 'ms',
+            value: 1_200,
+            samples: 1,
+            metricId: 'lighthouse.fcp.latest',
+        }),
+    ]
+    report.findings = []
+    return report
+}
+
 function slowFrameMetric(overrides: Record<string, unknown> = {}) {
     return expandedMetric({
         family: 'frameCadence',
@@ -808,19 +943,10 @@ describe('lab platform artifact projections', () => {
     })
 
     it('preserves opaque budget references and rejects mixed references or mismatched canonical rules', () => {
-        const unknownVersion = completeZeroLongTaskReportV2()
-        unknownVersion.measurementContract.budgetRef.budgetVersion = 3
-        for (const attempt of unknownVersion.attempts) {
-            for (const metric of attempt.metrics) {
-                for (const ref of metric.budgetRefs) ref.budgetVersion = 3
-            }
-        }
-        for (const metric of unknownVersion.aggregateMetrics) {
-            for (const ref of metric.budgetRefs) ref.budgetVersion = 3
-        }
+        const unknownVersion = setReportBudgetVersion(completeZeroLongTaskReportV2(), 4)
         const parsedUnknownVersion = parseAnimationReportArtifact(unknownVersion)
-        expect(parsedUnknownVersion.analysis?.measurementContract.budgetRef.budgetVersion).toBe(3)
-        expect(parsedUnknownVersion.analysis?.metrics[0]?.budgetRefs[0]?.budgetVersion).toBe(3)
+        expect(parsedUnknownVersion.analysis?.measurementContract.budgetRef.budgetVersion).toBe(4)
+        expect(parsedUnknownVersion.analysis?.metrics[0]?.budgetRefs[0]?.budgetVersion).toBe(4)
 
         const unknownId = completeZeroLongTaskReportV2()
         unknownId.measurementContract.budgetRef.budgetId = 'unknown-budget'
@@ -876,6 +1002,84 @@ describe('lab platform artifact projections', () => {
         wrongFindingMetric.findings[0]!.ruleId = 'long-task-count'
         wrongFindingMetric.findings[0]!.budgetRefs[0]!.ruleId = 'long-task-count'
         expect(() => parseAnimationReportArtifact(wrongFindingMetric)).toThrow('budget rule does not apply to metricIds')
+    })
+
+    it('validates the closed v3 rule map while keeping v1 and v2 identities unchanged', () => {
+        const validV3 = setReportBudgetVersion(completeZeroLongTaskReportV2(), 3)
+        const parsed = parseAnimationReportArtifact(validV3)
+        expect(parsed.analysis?.measurementContract.budgetRef.budgetVersion).toBe(3)
+        expect(parsed.analysis?.metrics[0]?.budgetRefs[0]).toEqual(expect.objectContaining({ budgetVersion: 3, ruleId: 'long-task-count' }))
+
+        const forgedV3Metric = setReportBudgetVersion(completeZeroLongTaskReportV2(), 3)
+        forgedV3Metric.aggregateMetrics[0]!.budgetRefs[0]!.ruleId = 'loaf-count'
+        expect(() => parseAnimationReportArtifact(forgedV3Metric)).toThrow('budget rule does not apply to metricId')
+
+        const forgedV3Rule = setReportBudgetVersion(completeZeroLongTaskReportV2(), 3)
+        forgedV3Rule.aggregateMetrics[0]!.budgetRefs[0]!.ruleId = 'unknown-rule'
+        expect(() => parseAnimationReportArtifact(forgedV3Rule)).toThrow('unknown canonical budget rule')
+
+        const forgedV2Rule = completeZeroLongTaskReportV2()
+        forgedV2Rule.aggregateMetrics[0]!.budgetRefs[0]!.ruleId = 'loaf-count'
+        expect(() => parseAnimationReportArtifact(forgedV2Rule)).toThrow('unknown canonical budget rule')
+
+        const forgedV3Finding = setReportBudgetVersion(animationReportV2(), 3)
+        forgedV3Finding.findings[0]!.ruleId = 'loaf-count'
+        forgedV3Finding.findings[0]!.budgetRefs[0]!.ruleId = 'loaf-count'
+        expect(() => parseAnimationReportArtifact(forgedV3Finding)).toThrow('budget rule does not apply to metricIds')
+    })
+
+    it('accepts exact run-scope Trace and Lighthouse projections and rejects forged diagnostic aggregates', () => {
+        const report = diagnosticProjectionReportV3()
+        const parsed = parseAnimationReportArtifact(report)
+        expect(parsed.analysis?.metrics).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    metricId: 'trace.script.duration',
+                    scope: { level: 'run' },
+                    aggregation: { population: 'events', method: 'sum' },
+                    evidenceRefs: ['cdp-trace'],
+                }),
+                expect.objectContaining({
+                    metricId: 'lighthouse.fcp.latest',
+                    scope: { level: 'run' },
+                    aggregation: { population: 'latest', method: 'latest' },
+                    evidenceRefs: ['lighthouse'],
+                }),
+            ])
+        )
+
+        const forgedValue = diagnosticProjectionReportV3()
+        forgedValue.aggregateMetrics.find(metric => metric.metricId === 'lighthouse.fcp.latest')!.value = 1_201
+        expect(() => parseAnimationReportArtifact(forgedValue)).toThrow('conflicts with its lighthouse attempt')
+
+        const forgedEvidence = diagnosticProjectionReportV3()
+        forgedEvidence.aggregateMetrics.find(metric => metric.metricId === 'trace.script.duration')!.evidenceRefs = ['runtime-browser']
+        expect(() => parseAnimationReportArtifact(forgedEvidence)).toThrow('conflicts with its diagnostic-trace attempt')
+
+        const missingSource = diagnosticProjectionReportV3()
+        missingSource.attempts.find(attempt => attempt.phase === 'diagnostic-trace')!.metrics = []
+        expect(() => parseAnimationReportArtifact(missingSource)).toThrow('requires one matching diagnostic-trace metric')
+
+        const narrowedScope = diagnosticProjectionReportV3()
+        const narrowedTrace = narrowedScope.aggregateMetrics.find(metric => metric.metricId === 'trace.script.duration') as Record<
+            string,
+            unknown
+        >
+        narrowedTrace.scope = {
+            level: 'action',
+            actionId: 'hero-hover-01',
+        }
+        narrowedTrace.aggregation = { population: 'attempts', method: 'median-of-attempts' }
+        expect(() => parseAnimationReportArtifact(narrowedScope)).toThrow('diagnostic projection must use run scope')
+
+        const forgedAggregation = diagnosticProjectionReportV3()
+        const aggregateLighthouse = forgedAggregation.aggregateMetrics.find(metric => metric.metricId === 'lighthouse.fcp.latest')!
+        const attemptLighthouse = forgedAggregation.attempts
+            .find(attempt => attempt.phase === 'lighthouse')!
+            .metrics.find(metric => metric.metricId === 'lighthouse.fcp.latest')!
+        aggregateLighthouse.aggregation = { population: 'events', method: 'sum' }
+        attemptLighthouse.aggregation = { population: 'events', method: 'sum' }
+        expect(() => parseAnimationReportArtifact(forgedAggregation)).toThrow('conflicts with its lighthouse attempt')
     })
 
     it('keeps a real-scale action catalog in raw analysis without overflowing the persisted summary', () => {
