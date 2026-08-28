@@ -1058,6 +1058,66 @@ test('explicit host evidence is bounded, capture-clocked, coverage-aware, and ex
     assert.equal(errorMedia.playbackQualityErrorSampleCount, 1)
 })
 
+test('framework check windows stay distinct from updates, render, commit, paint, and GPU work', () => {
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime })
+    collector.start()
+    const probe = createFrameworkCommitProbe({ framework: 'angular', sink: collector, now: () => 999_999 })
+
+    runtime.advance(4)
+    assert.equal(probe.recordCheckWindow({ checkWindowMs: 4 }), true)
+    for (const invalidSample of [
+        {
+            source: 'framework-check',
+            framework: 'angular',
+            phase: 'update',
+            checkWindowMs: 4,
+            timestampMs: 0,
+        },
+        {
+            source: 'framework-check',
+            framework: 'angular',
+            phase: 'check',
+            checkWindowMs: 4,
+            renderMs: 1,
+            timestampMs: 0,
+        },
+        {
+            source: 'framework-check',
+            framework: 'angular',
+            phase: 'check',
+            timestampMs: 0,
+        },
+        {
+            source: 'framework-lifecycle',
+            framework: 'angular',
+            phase: 'update',
+            updateWindowMs: 4,
+            checkWindowMs: 4,
+            timestampMs: 0,
+        },
+        {
+            source: 'manual',
+            framework: 'angular',
+            phase: 'check',
+            renderMs: 1,
+            checkWindowMs: 4,
+            timestampMs: 0,
+        },
+    ]) {
+        assert.equal(collector.recordFrameworkStats(invalidSample), false)
+    }
+
+    const snapshot = collector.stop()
+    assert.deepEqual(snapshot.hostEvidence.framework.frameworks, ['angular'])
+    assert.equal(snapshot.hostEvidence.framework.phases.check, 1)
+    assert.equal(snapshot.hostEvidence.framework.checkWindowMs.p95, 4)
+    assert.equal(snapshot.hostEvidence.framework.updateWindowMs, null)
+    assert.equal(snapshot.hostEvidence.framework.renderMs, null)
+    assert.equal(snapshot.hostEvidence.framework.commitMs, null)
+    assert.equal(snapshot.hostEvidence.framework.rejectedSampleCount, 5)
+})
+
 test('host renderer evidence rejects backend-specific GPU sources from a different backend', () => {
     const runtime = new FakeRuntime()
     const collector = new AnimationCollector({ runtime }).start()
@@ -3583,6 +3643,7 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
         renderMs: statistics(3.2, 6),
         commitMs: statistics(1.4, 6),
         updateWindowMs: statistics(8.5, 4),
+        checkWindowMs: statistics(5.5, 3),
     })
     Object.assign(snapshot.hostEvidence.work, {
         ...hostFamily({ accepted: 7, retained: 7, evidence: 7 }),
@@ -3844,6 +3905,7 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     assert.match(fakeNodeText(workHostMetric('framework-render-p95')), /Framework render p95 3\.20 ms/)
     assert.match(fakeNodeText(workHostMetric('framework-commit-p95')), /Framework commit p95 1\.40 ms/)
     assert.match(fakeNodeText(workHostMetric('framework-update-window-p95')), /Framework update window p95 8\.50 ms/)
+    assert.match(fakeNodeText(workHostMetric('framework-check-window-p95')), /Framework check window p95 5\.50 ms/)
     assert.match(fakeNodeText(workHostMetric('total-work-samples')), /Total work samples 7/)
     assert.match(fakeNodeText(workHostMetric('work-categories')), /Work categories script 2 · layout 2 · paint 1 · composite 1 · other 1/)
 

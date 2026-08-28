@@ -50,11 +50,22 @@ test('framework probe keeps React render work distinct from commit work and isol
     })
     assert.equal(probe.recordUpdateWindow({ updateWindowMs: Number.NaN }), false)
     assert.equal(probe.recordUpdateWindow({ updateWindowMs: 600_001 }), false)
+    assert.equal(probe.recordCheckWindow({ checkWindowMs: 5, timestampMs: 70 }), true)
+    assert.deepEqual(samples[3], {
+        source: 'framework-check',
+        framework: 'react',
+        phase: 'check',
+        checkWindowMs: 5,
+        timestampMs: 70,
+    })
+    assert.equal(probe.recordCheckWindow({ checkWindowMs: Number.NaN }), false)
+    assert.equal(probe.recordCheckWindow({ checkWindowMs: 600_001 }), false)
 
     probe.dispose()
     probe.dispose()
     assert.equal(probe.recordCommit({ renderMs: 1 }), false)
     assert.equal(probe.recordUpdateWindow({ updateWindowMs: 1 }), false)
+    assert.equal(probe.recordCheckWindow({ checkWindowMs: 1 }), false)
 
     const throwingProbe = createFrameworkCommitProbe({
         framework: 'vue',
