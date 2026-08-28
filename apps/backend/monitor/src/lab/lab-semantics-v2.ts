@@ -13,31 +13,125 @@ const MAX_LIMITATIONS = 32
 const MAX_WINDOW_MS = 60 * 60 * 1000
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,159}$/
 const EXPANDED_METRIC_KEYS = ['metricId', 'scope', 'aggregation', 'budgetRefs', 'evidenceRefs', 'limitations'] as const
-const DEFAULT_BUDGET_RULE_METRICS_V1: Readonly<Record<string, string>> = Object.freeze({
-    'frame-tail': 'frame.duration.p95',
-    'slow-frame-rate': 'frame.slow-rate',
-    'jank-bursts': 'frame.jank-bursts',
-    'long-task-count': 'main.long-task.count',
-    'input-delay': 'interaction.input-delay.p95',
-})
-const DEFAULT_BUDGET_RULE_METRICS_BY_VERSION = new Map<number, Readonly<Record<string, string>>>([
-    [1, DEFAULT_BUDGET_RULE_METRICS_V1],
-    [2, DEFAULT_BUDGET_RULE_METRICS_V1],
-    [
-        3,
-        Object.freeze({
-            ...DEFAULT_BUDGET_RULE_METRICS_V1,
-            'loaf-count': 'main.loaf.count',
-            'interaction-processing-tail': 'interaction.processing.p95',
-            'interaction-presentation-tail': 'interaction.presentation.p95',
-            'page-lcp': 'vital.lcp.latest',
-            'page-cls': 'vital.cls.latest',
-            'lighthouse-first-contentful-paint': 'lighthouse.fcp.latest',
-            'lighthouse-total-blocking-time': 'lighthouse.total-blocking-time.latest',
-        }),
-    ],
+type DefaultBudgetRuleDefinition = {
+    ruleId: string
+    metricId: string
+    comparator: '<=' | '<' | '>=' | '>'
+    target: { kind: 'absolute' | 'target-frame-multiple'; value: number }
+    minimumSamples: number
+}
+
+const DEFAULT_BUDGET_RULES_V1: readonly DefaultBudgetRuleDefinition[] = [
+    {
+        ruleId: 'frame-tail',
+        metricId: 'frame.duration.p95',
+        comparator: '<=',
+        target: { kind: 'target-frame-multiple', value: 1.5 },
+        minimumSamples: 120,
+    },
+    {
+        ruleId: 'slow-frame-rate',
+        metricId: 'frame.slow-rate',
+        comparator: '<=',
+        target: { kind: 'absolute', value: 0.05 },
+        minimumSamples: 120,
+    },
+    {
+        ruleId: 'jank-bursts',
+        metricId: 'frame.jank-bursts',
+        comparator: '<=',
+        target: { kind: 'absolute', value: 0 },
+        minimumSamples: 120,
+    },
+    {
+        ruleId: 'long-task-count',
+        metricId: 'main.long-task.count',
+        comparator: '<=',
+        target: { kind: 'absolute', value: 0 },
+        minimumSamples: 1,
+    },
+    {
+        ruleId: 'input-delay',
+        metricId: 'interaction.input-delay.p95',
+        comparator: '<=',
+        target: { kind: 'absolute', value: 100 },
+        minimumSamples: 3,
+    },
+]
+const DEFAULT_BUDGET_RULES_V2: readonly DefaultBudgetRuleDefinition[] = DEFAULT_BUDGET_RULES_V1.map(rule =>
+    rule.ruleId === 'long-task-count' ? { ...rule, minimumSamples: 0 } : { ...rule }
+)
+const DEFAULT_BUDGET_RULES_V3: readonly DefaultBudgetRuleDefinition[] = [
+    ...DEFAULT_BUDGET_RULES_V2,
+    {
+        ruleId: 'loaf-count',
+        metricId: 'main.loaf.count',
+        comparator: '<=',
+        target: { kind: 'absolute', value: 0 },
+        minimumSamples: 0,
+    },
+    {
+        ruleId: 'interaction-processing-tail',
+        metricId: 'interaction.processing.p95',
+        comparator: '<=',
+        target: { kind: 'absolute', value: 50 },
+        minimumSamples: 3,
+    },
+    {
+        ruleId: 'interaction-presentation-tail',
+        metricId: 'interaction.presentation.p95',
+        comparator: '<=',
+        target: { kind: 'absolute', value: 100 },
+        minimumSamples: 3,
+    },
+    {
+        ruleId: 'page-lcp',
+        metricId: 'vital.lcp.latest',
+        comparator: '<=',
+        target: { kind: 'absolute', value: 2_500 },
+        minimumSamples: 1,
+    },
+    {
+        ruleId: 'page-cls',
+        metricId: 'vital.cls.latest',
+        comparator: '<=',
+        target: { kind: 'absolute', value: 0.1 },
+        minimumSamples: 1,
+    },
+    {
+        ruleId: 'lighthouse-first-contentful-paint',
+        metricId: 'lighthouse.fcp.latest',
+        comparator: '<=',
+        target: { kind: 'absolute', value: 1_800 },
+        minimumSamples: 1,
+    },
+    {
+        ruleId: 'lighthouse-total-blocking-time',
+        metricId: 'lighthouse.total-blocking-time.latest',
+        comparator: '<=',
+        target: { kind: 'absolute', value: 200 },
+        minimumSamples: 1,
+    },
+]
+const DEFAULT_BUDGET_RULES_BY_VERSION = new Map<number, readonly DefaultBudgetRuleDefinition[]>([
+    [1, DEFAULT_BUDGET_RULES_V1],
+    [2, DEFAULT_BUDGET_RULES_V2],
+    [3, DEFAULT_BUDGET_RULES_V3],
 ])
+const DEFAULT_BUDGET_RULE_METRICS_BY_VERSION = new Map<number, Readonly<Record<string, string>>>(
+    [...DEFAULT_BUDGET_RULES_BY_VERSION].map(([version, rules]) => [
+        version,
+        Object.freeze(Object.fromEntries(rules.map(rule => [rule.ruleId, rule.metricId]))),
+    ])
+)
 const DEFAULT_BUDGET_ID = 'condev.animation.default'
+
+function defaultBudgetRuleDefinitions(ref: {
+    budgetId: string
+    budgetVersion: number
+}): readonly DefaultBudgetRuleDefinition[] | undefined {
+    return ref.budgetId === DEFAULT_BUDGET_ID ? DEFAULT_BUDGET_RULES_BY_VERSION.get(ref.budgetVersion) : undefined
+}
 
 function defaultBudgetRules(ref: { budgetId: string; budgetVersion: number }): Readonly<Record<string, string>> | undefined {
     return ref.budgetId === DEFAULT_BUDGET_ID ? DEFAULT_BUDGET_RULE_METRICS_BY_VERSION.get(ref.budgetVersion) : undefined
@@ -732,6 +826,150 @@ function assertScopeReferences(
 ): void {
     if (scope.actionId && !actionIds.has(scope.actionId)) throw new BadRequestException(`${label} references an unknown actionId`)
     if (scope.attemptId && !attemptIds.has(scope.attemptId)) throw new BadRequestException(`${label} references an unknown attemptId`)
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+    return left.length === right.length && left.every((item, index) => item === right[index])
+}
+
+function sameMetricScope(left: LabMetricScopeV2Projection, right: LabMetricScopeV2Projection): boolean {
+    return (
+        left.level === right.level &&
+        left.attemptId === right.attemptId &&
+        left.actionId === right.actionId &&
+        left.subjectKey === right.subjectKey
+    )
+}
+
+function sameBudgetRuleRefs(left: readonly LabBudgetRuleRefV1Projection[], right: readonly LabBudgetRuleRefV1Projection[]): boolean {
+    return (
+        left.length === right.length &&
+        left.every((item, index) => {
+            const other = right[index]
+            return (
+                other !== undefined &&
+                item.catalogVersion === other.catalogVersion &&
+                item.budgetId === other.budgetId &&
+                item.budgetVersion === other.budgetVersion &&
+                item.ruleId === other.ruleId
+            )
+        })
+    )
+}
+
+function resolveDefaultBudgetTarget(rule: DefaultBudgetRuleDefinition, targetFrameMs: number): number {
+    return rule.target.kind === 'target-frame-multiple' ? targetFrameMs * rule.target.value : rule.target.value
+}
+
+function violatesDefaultBudget(value: number, rule: DefaultBudgetRuleDefinition, target: number): boolean {
+    if (rule.comparator === '<=') return value > target
+    if (rule.comparator === '<') return value >= target
+    if (rule.comparator === '>=') return value < target
+    return value <= target
+}
+
+function evaluateDefaultBudgetRule(
+    rule: DefaultBudgetRuleDefinition,
+    metric: AnimationLabMetricV2Projection,
+    targetFrameMs: number
+): { status: 'breach' | 'candidate-breach' | 'within-budget' | 'insufficient-evidence'; target: number } {
+    const target = resolveDefaultBudgetTarget(rule, targetFrameMs)
+    if (
+        metric.metricId !== rule.metricId ||
+        typeof metric.value !== 'number' ||
+        !Number.isFinite(metric.value) ||
+        metric.value < 0 ||
+        typeof metric.samples !== 'number' ||
+        !Number.isFinite(metric.samples) ||
+        metric.samples < rule.minimumSamples ||
+        !Number.isInteger(metric.samples) ||
+        (metric.status !== 'measured' && metric.status !== 'partial')
+    ) {
+        return { status: 'insufficient-evidence', target }
+    }
+    const zeroEventCountRule =
+        rule.minimumSamples === 0 &&
+        (rule.metricId === 'main.long-task.count' || rule.metricId === 'main.loaf.count') &&
+        rule.comparator === '<=' &&
+        rule.target.kind === 'absolute' &&
+        rule.target.value === 0
+    if (zeroEventCountRule && (metric.value === 0) !== (metric.samples === 0)) {
+        return { status: 'insufficient-evidence', target }
+    }
+    const breached = violatesDefaultBudget(metric.value, rule, target)
+    if (metric.status === 'partial') {
+        return { status: breached ? 'candidate-breach' : 'insufficient-evidence', target }
+    }
+    return { status: breached ? 'breach' : 'within-budget', target }
+}
+
+function canonicalFindings(semantics: AnimationLabSemanticsV2): Finding[] {
+    const budgetRef = semantics.measurementContract.budgetRef
+    const rules = defaultBudgetRuleDefinitions(budgetRef)
+    if (!rules || budgetRef.catalogVersion !== 1) return []
+    const rulesById = new Map(rules.map(rule => [rule.ruleId, rule]))
+    const output: Finding[] = []
+    for (const metric of semantics.metrics) {
+        for (const metricBudgetRef of metric.budgetRefs) {
+            if (
+                metricBudgetRef.catalogVersion !== budgetRef.catalogVersion ||
+                metricBudgetRef.budgetId !== budgetRef.budgetId ||
+                metricBudgetRef.budgetVersion !== budgetRef.budgetVersion
+            ) {
+                continue
+            }
+            const rule = rulesById.get(metricBudgetRef.ruleId)
+            if (!rule || rule.metricId !== metric.metricId) continue
+            const evaluation = evaluateDefaultBudgetRule(rule, metric, semantics.measurementContract.targetFrameMs)
+            if (evaluation.status !== 'breach' && evaluation.status !== 'candidate-breach') continue
+            const actionId = metric.scope.actionId
+            output.push({
+                findingId: `finding-${rule.ruleId}-${metric.scope.level}-${actionId ?? 'all'}`,
+                ruleId: rule.ruleId,
+                severity:
+                    evaluation.target > 0 &&
+                    typeof metric.value === 'number' &&
+                    Number.isFinite(metric.value) &&
+                    metric.value > evaluation.target * 2
+                        ? 'critical'
+                        : 'warning',
+                status: evaluation.status === 'breach' ? 'observed' : 'candidate',
+                scope: metric.scope,
+                metricIds: [metric.metricId],
+                evidenceRefs: metric.evidenceRefs,
+                budgetRefs: [metricBudgetRef],
+                actionIds: actionId ? [actionId] : [],
+                limitations: [...new Set([...metric.limitations, 'diagnostic-project-budget-not-web-standard'])],
+            })
+        }
+    }
+    return output.slice(0, MAX_FINDINGS)
+}
+
+/** Verifies that caller-supplied findings are the exact closed projection of accepted canonical metrics. */
+export function assertAnimationLabCanonicalFindings(semantics: AnimationLabSemanticsV2): void {
+    const expected = canonicalFindings(semantics)
+    if (expected.length !== semantics.findings.length) {
+        throw new BadRequestException('animation-report findings conflict with canonical budget evaluation')
+    }
+    for (const [index, findingValue] of semantics.findings.entries()) {
+        const expectedFinding = expected[index]
+        if (
+            expectedFinding === undefined ||
+            findingValue.findingId !== expectedFinding.findingId ||
+            findingValue.ruleId !== expectedFinding.ruleId ||
+            findingValue.severity !== expectedFinding.severity ||
+            findingValue.status !== expectedFinding.status ||
+            !sameMetricScope(findingValue.scope, expectedFinding.scope) ||
+            !sameStringArray(findingValue.metricIds, expectedFinding.metricIds) ||
+            !sameStringArray(findingValue.evidenceRefs, expectedFinding.evidenceRefs) ||
+            !sameBudgetRuleRefs(findingValue.budgetRefs, expectedFinding.budgetRefs) ||
+            !sameStringArray(findingValue.actionIds, expectedFinding.actionIds) ||
+            !sameStringArray(findingValue.limitations, expectedFinding.limitations)
+        ) {
+            throw new BadRequestException(`animation-report findings[${index}] conflicts with canonical budget evaluation`)
+        }
+    }
 }
 
 /** Parses the semantic fields embedded in a schema-v1 report with semanticsVersion 2. */

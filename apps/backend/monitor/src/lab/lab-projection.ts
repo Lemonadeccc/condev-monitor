@@ -6,6 +6,7 @@ import {
     ANIMATION_LAB_METRIC_SAMPLES_MAX,
     type AnimationLabMetricV2Projection,
     type AnimationLabSemanticsV2,
+    assertAnimationLabCanonicalFindings,
     assertAnimationLabMetricCatalogTupleV2,
     parseAnimationLabMetricV2,
     parseAnimationLabSemanticsV2FromReport,
@@ -1304,7 +1305,10 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
         semanticsV2,
         semanticsV2 ? metricCatalogVersion : undefined
     )
-    if (semanticsV2) assertV2AggregateMetrics(aggregateMetrics, parsedAttempts)
+    if (semanticsV2) {
+        assertV2AggregateMetrics(aggregateMetrics, parsedAttempts)
+        assertAnimationLabCanonicalFindings(analysis!)
+    }
     if (raw.timeline !== undefined) parseTraceIndexArtifact(raw.timeline)
     const parsedLighthouse = raw.lighthouse === undefined ? null : lighthouse(raw.lighthouse, semanticsV2, metricCatalogVersion)
     if (parsedScenario.execution) {
