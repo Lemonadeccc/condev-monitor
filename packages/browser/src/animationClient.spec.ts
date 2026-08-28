@@ -649,6 +649,44 @@ describe('browser animation single-init entry', () => {
         expect(remove).toHaveBeenCalledTimes(2)
     })
 
+    it('keeps failed Browser-owned motion recorder cleanup retryable after client destroy', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const originalBegin = client.animation.beginInteraction.bind(client.animation)
+        let cancelAttempts = 0
+        jest.spyOn(client.animation, 'beginInteraction').mockImplementation((kind, label) => {
+            const interaction = originalBegin(kind, label)
+            return {
+                ...interaction,
+                cancel: () => {
+                    cancelAttempts += 1
+                    if (cancelAttempts === 1) throw new Error('temporary recorder cleanup failure')
+                    return interaction.cancel()
+                },
+            }
+        })
+        const recorder = client.animation.createMotionSemanticCheckpointRecorder()
+        recorder.begin('pointer')
+
+        await client.destroy()
+        expect(recorder.snapshot()).toMatchObject({
+            status: 'dispose-failed',
+            cleanupFailed: true,
+            activeInteractionCount: 1,
+        })
+        expect(cancelAttempts).toBe(1)
+
+        recorder.dispose()
+        expect(recorder.snapshot()).toMatchObject({
+            status: 'disposed',
+            cleanupFailed: false,
+            activeInteractionCount: 0,
+            cancelledInteractionCount: 0,
+            abandonedInteractionCount: 1,
+        })
+        expect(cancelAttempts).toBe(2)
+    })
+
     it('does not repeat observer removal after manual disposal or repeated client destruction', async () => {
         const { init } = require('./animation') as typeof import('./animation')
         const client = init({ animation: { runtime: runtime() } })
@@ -669,6 +707,77 @@ describe('browser animation single-init entry', () => {
         await client.destroy()
         observer.dispose()
         expect(remove).toHaveBeenCalledTimes(1)
+    })
+
+    it('bridges explicit business interactions to local motion checkpoints and owns recorder teardown', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+
+        let tickerListener: ((timeSeconds: number, deltaTimeMs: number, frame: number) => void) | undefined
+        const tickerRemove = jest.fn()
+        const ticker = client.animation.createGsapTickerObserver({
+            ticker: {
+                add(listener) {
+                    tickerListener = listener
+                },
+                remove: tickerRemove,
+            },
+        })
+        expect(ticker.start()).toBe(true)
+        tickerListener?.(0.016, 16, 1)
+
+        let lenisListener: ((event: { progress?: number; velocity?: number }) => void) | undefined
+        const lenisCleanup = jest.fn()
+        const lenis = client.animation.createLenisScrollObserver({
+            lenis: {
+                on(_event, listener) {
+                    lenisListener = listener
+                    return lenisCleanup
+                },
+            },
+        })
+        expect(lenis.start()).toBe(true)
+        lenisListener?.({ progress: 0.5, velocity: 2 })
+
+        const scrollTriggerRemove = jest.fn()
+        const scrollTrigger = client.animation.createScrollTriggerObserver({
+            scrollTrigger: {
+                getAll: () => [{ progress: 0.5, isActive: true, start: 0, end: 300, getVelocity: () => 180 }],
+                addEventListener() {},
+                removeEventListener: scrollTriggerRemove,
+            },
+        })
+        expect(scrollTrigger.start()).toBe(true)
+
+        const recorder = client.animation.createMotionSemanticCheckpointRecorder({
+            gsapTicker: ticker,
+            lenisScroll: lenis,
+            scrollTrigger,
+        })
+        const completed = recorder.begin('scroll', 'gallery-scroll')
+        expect(completed.recordQuality({ progressError: 0.05 })).toBe(true)
+        const result = completed.end()
+        expect(result.semantic).toMatchObject({
+            kind: 'scroll',
+            outcome: 'completed',
+            before: { status: 'measured', configuredSourceCount: 3, measuredSourceCount: 3 },
+            after: { status: 'measured', configuredSourceCount: 3, measuredSourceCount: 3 },
+        })
+
+        recorder.begin('pointer', 'open-window')
+        await client.destroy()
+
+        expect(recorder.snapshot()).toMatchObject({
+            status: 'disposed',
+            begunInteractionCount: 2,
+            retainedInteractionCount: 2,
+            completedInteractionCount: 1,
+            cancelledInteractionCount: 1,
+            activeInteractionCount: 0,
+        })
+        expect(tickerRemove).toHaveBeenCalledTimes(1)
+        expect(lenisCleanup).toHaveBeenCalledTimes(1)
+        expect(scrollTriggerRemove).toHaveBeenCalledTimes(6)
     })
 
     it('fails clearly when the ordinary Browser client was initialized first', async () => {
