@@ -48,6 +48,14 @@ function actionKindLabel(value: string | null | undefined) {
             return '悬停'
         case 'pointer-path':
             return '指针轨迹'
+        case 'touch-tap':
+            return '触摸点击'
+        case 'touch-swipe':
+            return '触摸滑动'
+        case 'touch-pinch':
+            return '双指缩放'
+        case 'pen-path':
+            return '触控笔轨迹'
         case 'scroll':
             return '滚动'
         case 'resize':
@@ -63,6 +71,8 @@ function actionKindLabel(value: string | null | undefined) {
 
 function actionModalityLabel(value: string | null | undefined) {
     if (value === 'click' || value === 'hover' || value === 'pointer-path' || value === 'drag') return '指针'
+    if (value === 'touch-tap' || value === 'touch-swipe' || value === 'touch-pinch') return '触摸'
+    if (value === 'pen-path') return '触控笔'
     if (value === 'scroll') return '滚动'
     if (value === 'resize') return '窗口缩放'
     if (value === 'press') return '键盘'

@@ -45,7 +45,20 @@ const DEFAULT_BUDGET_RULE_IDS_BY_VERSION: Readonly<Record<1 | 2 | 3 | 4, Readonl
     4: new Set(DEFAULT_BUDGET_V4_RULE_IDS),
 })
 
-const ACTION_KINDS = new Set<LabActionKind>(['wait', 'click', 'hover', 'pointer-path', 'scroll', 'resize', 'drag', 'press'])
+const ACTION_KINDS = new Set<LabActionKind>([
+    'wait',
+    'click',
+    'hover',
+    'pointer-path',
+    'touch-tap',
+    'touch-swipe',
+    'touch-pinch',
+    'pen-path',
+    'scroll',
+    'resize',
+    'drag',
+    'press',
+])
 
 export type LabActionDataSource = 'structured-report' | 'legacy-timeline-label'
 

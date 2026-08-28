@@ -270,6 +270,31 @@ describe('buildLabActionDiagnostics', () => {
         assert.equal(result.actions[0].action.subject?.subjectKey, undefined)
         assert.equal(result.actions[0].action.subject?.surface, 'dom')
     })
+
+    it('keeps touch and pen action kinds from structured reports', () => {
+        for (const kind of ['touch-tap', 'touch-swipe', 'touch-pinch', 'pen-path'] as const) {
+            const analysis = {
+                semanticsVersion: 2,
+                scenarioActions: [
+                    {
+                        actionId: `${kind}-hero`,
+                        order: 0,
+                        kind,
+                        label: `${kind}-hero`,
+                        trigger: { source: 'scenario' },
+                    },
+                ],
+                actionWindows: [],
+                metrics: [],
+                technologyEvidence: [],
+                findings: [],
+            } as unknown as LabRunAnalysis
+
+            const result = buildLabActionDiagnostics(run, analysis, [])
+            assert.equal(result.actions[0].action.kind, kind)
+            assert.equal(result.actions[0].source, 'structured-report')
+        }
+    })
 })
 
 describe('resolveLabBudgetRule', () => {
