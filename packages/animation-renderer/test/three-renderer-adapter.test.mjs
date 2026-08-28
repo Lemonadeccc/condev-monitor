@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createThreeRendererAdapter } from '../build/esm/index.mjs'
+import { createThreeAfterRenderRegistry, createThreeRendererAdapter, ThreeRendererAdapterOptionsError } from '../build/esm/index.mjs'
 
 function createProbePort(events, options = {}) {
     let read
@@ -234,6 +234,124 @@ test('Three adapter never relabels cumulative autoReset=false render counters as
         programs: 2,
     })
     adapter.dispose()
+})
+
+test('Three adapter observes externally rendered frames without rendering or duplicating a frame', () => {
+    const events = []
+    const port = createProbePort(events)
+    const renderer = {
+        info: { render: { frame: 0, calls: 0, triangles: 0 } },
+        render() {
+            events.push('unexpected-render')
+        },
+    }
+    const adapter = createThreeRendererAdapter({ animation: port.animation, renderer, backend: 'webgl2' })
+
+    assert.equal(adapter.captureFrame(), false)
+    renderer.info.render = { frame: 1, calls: 3, triangles: 12 }
+    assert.equal(adapter.captureFrame(), true)
+    assert.equal(adapter.captureFrame(), false)
+    assert.deepEqual(events, ['create-probe', 'capture'])
+    assert.deepEqual(port.read(), {
+        gpuTimerCapability: 'disabled',
+        gpu: null,
+        drawCalls: 3,
+        triangles: 12,
+    })
+
+    renderer.info.render = { frame: 2, calls: 4, triangles: 18 }
+    assert.equal(adapter.captureFrame(), true)
+    adapter.dispose()
+    assert.equal(adapter.captureFrame(), false)
+    assert.deepEqual(events, ['create-probe', 'capture', 'capture', 'dispose-probe'])
+})
+
+test('Three adapter keeps using the public frame sequence when autoReset disables counter resets', () => {
+    const events = []
+    const port = createProbePort(events)
+    const renderer = {
+        info: { autoReset: false, render: { frame: 1, calls: 9, triangles: 27 } },
+        render() {
+            events.push('unexpected-render')
+        },
+    }
+    const adapter = createThreeRendererAdapter({ animation: port.animation, renderer, backend: 'webgl2' })
+
+    assert.equal(adapter.captureFrame(), true)
+    assert.equal(adapter.captureFrame(), false)
+    renderer.info.render.frame = 2
+    assert.equal(adapter.captureFrame(), true)
+    assert.deepEqual(events, ['create-probe', 'capture', 'capture'])
+    assert.deepEqual(port.read(), {
+        gpuTimerCapability: 'disabled',
+        gpu: null,
+    })
+})
+
+test('Three adapter fails closed when an external frame sequence is missing or capture fails', () => {
+    const events = []
+    const renderer = {
+        info: { render: { calls: 1 } },
+        render() {
+            events.push('unexpected-render')
+        },
+    }
+    const adapter = createThreeRendererAdapter({
+        animation: createProbePort(events, { captureError: new Error('sink unavailable') }).animation,
+        renderer,
+        backend: 'webgl2',
+    })
+
+    assert.equal(adapter.captureFrame(), false)
+    renderer.info.render.frame = 1
+    assert.equal(adapter.captureFrame(), false)
+    assert.equal(adapter.captureFrame(), false)
+    assert.deepEqual(events, ['create-probe', 'capture'])
+})
+
+test('Three after-render registry shares one subscription and isolates renderer roots', () => {
+    const events = []
+    let afterRender
+    let subscribeCount = 0
+    let unsubscribeCount = 0
+    const registry = createThreeAfterRenderRegistry(callback => {
+        subscribeCount += 1
+        afterRender = callback
+        return () => {
+            unsubscribeCount += 1
+        }
+    })
+    const first = {
+        captureFrame() {
+            events.push('first')
+            return true
+        },
+    }
+    const second = {
+        captureFrame() {
+            events.push('second')
+            throw new Error('root disappeared')
+        },
+    }
+
+    const unregisterFirst = registry.register(first)
+    const unregisterFirstDuplicate = registry.register(first)
+    const unregisterSecond = registry.register(second)
+    assert.equal(subscribeCount, 1)
+    assert.doesNotThrow(() => afterRender())
+    assert.deepEqual(events, ['first', 'second'])
+
+    unregisterFirst()
+    assert.equal(unsubscribeCount, 0)
+    unregisterSecond()
+    assert.equal(unsubscribeCount, 0)
+    unregisterFirstDuplicate()
+    unregisterFirstDuplicate()
+    assert.equal(unsubscribeCount, 1)
+
+    registry.dispose()
+    registry.dispose()
+    assert.throws(() => registry.register(first), ThreeRendererAdapterOptionsError)
 })
 
 test('Three adapter isolates monitoring failures and rolls back setup failures', () => {
