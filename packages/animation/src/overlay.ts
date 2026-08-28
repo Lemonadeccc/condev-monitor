@@ -1,6 +1,11 @@
 import { createAnimationElementPicker } from './element-picker'
 import type { AnimationGpuTimerCapability } from './host-adapters'
 import { type LiveFrameRateResult, measureLiveFrameRate } from './live-frame-rate'
+import {
+    type AnimationLocalEvidenceSnapshot,
+    type AnimationLocalMediaStageEvidence,
+    projectAnimationLocalEvidenceSnapshot,
+} from './local-evidence'
 import { collectorStateText, overlayText, resolveOverlayLocale } from './overlay-i18n'
 import {
     type AnimationOverlayViewModel,
@@ -126,6 +131,8 @@ function clamp(value: number, minimum: number, maximum: number): number {
 export interface AnimationOverlaySource {
     readonly state?: CollectorState
     snapshot(): AnimationSnapshot
+    /** Optional bounded, local-only semantic evidence. It is never added to an AnimationSnapshot or RUM payload. */
+    localEvidenceSnapshot?(): AnimationLocalEvidenceSnapshot
     selectElement?(element: Element, options?: AnimationElementSelectionOptions): AnimationElementSelectionHandle
 }
 
@@ -172,6 +179,22 @@ function readCollectorState(source: AnimationOverlaySource): CollectorState | un
         return source.state
     } catch {
         return undefined
+    }
+}
+
+type LocalEvidenceRead =
+    | { readonly status: 'absent' }
+    | { readonly status: 'unavailable' }
+    | { readonly status: 'available'; readonly snapshot: AnimationLocalEvidenceSnapshot }
+
+function readLocalEvidenceSnapshot(source: AnimationOverlaySource): LocalEvidenceRead {
+    try {
+        const provider = source.localEvidenceSnapshot
+        if (typeof provider !== 'function') return { status: 'absent' }
+        const snapshot = projectAnimationLocalEvidenceSnapshot(provider.call(source))
+        return snapshot ? { status: 'available', snapshot } : { status: 'unavailable' }
+    } catch {
+        return { status: 'unavailable' }
     }
 }
 
@@ -325,7 +348,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         .content { min-height: 0; overflow: hidden; }
         .tab-panel { height: 100%; min-height: 0; }
         .tab-panel[hidden] { display: none; }
-        .overview-panel { display: grid; grid-template-rows: auto minmax(0,1fr); }
+        .overview-panel { display: grid; grid-template-rows: auto auto minmax(0,1fr); }
         .overview-evidence { padding: 8px 11px; border-bottom: 1px solid var(--border); display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
         .evidence-card { min-width: 0; padding: 8px 9px; border: 1px solid var(--border); border-radius: 9px; background: var(--raised); }
         .evidence-card-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
@@ -338,6 +361,22 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         .evidence-duration strong, .vital-item strong { display: block; margin-top: 1px; color: var(--text); font: 620 10px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric: tabular-nums; }
         .vital-item[data-observed='false'] strong { color: var(--text-3); }
         .evidence-reasons { margin: 5px 0 0; color: var(--text-3); font-size: 8.5px; line-height: 1.4; }
+        .local-evidence-panel { max-height: 178px; padding: 9px 11px; overflow: auto; overscroll-behavior: contain; border-bottom: 1px solid var(--border); background: rgba(155,135,245,.045); scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+        .local-evidence-panel[hidden] { display: none; }
+        .local-evidence-panel::-webkit-scrollbar { width: 6px; height: 6px; }
+        .local-evidence-panel::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--border-strong); }
+        .local-evidence-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+        .local-evidence-header strong { color: var(--accent); font-size: 9.5px; font-weight: 690; }
+        .local-evidence-header span { color: var(--text-3); font: 8.5px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .local-evidence-boundary { margin: 4px 0 7px; color: var(--text-3); font-size: 8.5px; line-height: 1.4; }
+        .local-evidence-groups { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
+        .local-evidence-group { min-width: 0; padding: 7px 8px; border: 1px solid rgba(155,135,245,.22); border-radius: 8px; background: var(--raised); }
+        .local-evidence-group h4 { margin: 0 0 5px; color: var(--text-2); font-size: 9px; font-weight: 670; }
+        .local-evidence-record { padding: 5px 0; border-top: 1px solid var(--border); }
+        .local-evidence-record:first-of-type { border-top: 0; padding-top: 0; }
+        .local-evidence-record strong { display: block; color: var(--text); font-size: 9px; font-weight: 620; }
+        .local-evidence-record span { display: block; margin-top: 2px; color: var(--text-3); font: 8px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap: anywhere; }
+        .local-evidence-empty { color: var(--text-3); font-size: 8.5px; }
         .workspace { height: 100%; min-height: 0; display: grid; grid-template-rows: minmax(140px,.8fr) minmax(190px,1.2fr); }
         .dock[data-layout='wide'] .workspace { grid-template-columns: minmax(250px,.78fr) minmax(360px,1.22fr); grid-template-rows: minmax(0,1fr); }
         .list-pane, .detail-pane { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
@@ -578,6 +617,10 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     overviewWorkspace.className = 'workspace'
     const overviewEvidence = documentValue.createElement('section')
     overviewEvidence.className = 'overview-evidence'
+    const localEvidencePanel = documentValue.createElement('section')
+    localEvidencePanel.className = 'local-evidence-panel'
+    localEvidencePanel.setAttribute('data-overlay-local-evidence', '')
+    localEvidencePanel.hidden = true
     const issuePane = documentValue.createElement('div')
     issuePane.className = 'list-pane'
     const issueHeading = documentValue.createElement('div')
@@ -596,7 +639,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     const issueDetail = documentValue.createElement('article')
     issueDetail.className = 'detail-pane'
     overviewWorkspace.append(issuePane, issueDetail)
-    overviewPanel.append(overviewEvidence, overviewWorkspace)
+    overviewPanel.append(overviewEvidence, localEvidencePanel, overviewWorkspace)
 
     const interactionsPanel = documentValue.createElement('section')
     interactionsPanel.className = 'tab-panel'
@@ -782,6 +825,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     let renderedCoverageFamily: AnimationRumFamily | undefined
     let previousFrameRateSnapshot: AnimationSnapshot | undefined
     let lastSnapshot: AnimationSnapshot | undefined
+    let currentLocalEvidence: LocalEvidenceRead = { status: 'absent' }
     let lastLiveFrameRate: LiveFrameRateResult = { status: 'collecting' }
     let lastPanelSelfTime = overlayText(locale, 'unavailable')
     let unavailableRendered = false
@@ -1111,6 +1155,197 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         }
         vitalsCard.appendChild(vitalsGrid)
         overviewEvidence.append(captureCard, vitalsCard)
+    }
+
+    const localEvidenceValue = (value: number | null, unit: 'ms' | 'bytes' | 'count'): string =>
+        value === null ? overlayText(locale, 'unavailable') : formatOverlayMeasurement(value, unit, locale)
+
+    const mediaStageText = (stage: AnimationLocalMediaStageEvidence): string => {
+        const stageLabel = overlayText(
+            locale,
+            stage.stage === 'decode-ready'
+                ? 'localEvidenceDecodeReady'
+                : stage.stage === 'upload-ready'
+                  ? 'localEvidenceUploadReady'
+                  : 'localEvidenceFirstVisible'
+        )
+        return overlayText(locale, 'localEvidenceMediaStageSummary', {
+            stage: stageLabel,
+            elapsed: localEvidenceValue(stage.elapsedMs, 'ms'),
+            duration: localEvidenceValue(stage.durationMs, 'ms'),
+            bytes: localEvidenceValue(stage.byteCount, 'bytes'),
+            items: localEvidenceValue(stage.itemCount, 'count'),
+        })
+    }
+
+    const renderLocalEvidence = (read: LocalEvidenceRead): void => {
+        const wasVisible = !localEvidencePanel.hidden
+        const scrollTop = localEvidencePanel.scrollTop
+        const scrollLeft = localEvidencePanel.scrollLeft
+        localEvidencePanel.replaceChildren()
+        currentLocalEvidence = read
+        if (read.status === 'absent') {
+            localEvidencePanel.hidden = true
+            return
+        }
+        if (read.status === 'unavailable') {
+            localEvidencePanel.hidden = false
+            const header = documentValue.createElement('div')
+            header.className = 'local-evidence-header'
+            appendTextElement(documentValue, header, 'strong', '', overlayText(locale, 'localSemanticEvidence'))
+            localEvidencePanel.appendChild(header)
+            appendTextElement(
+                documentValue,
+                localEvidencePanel,
+                'p',
+                'local-evidence-boundary',
+                overlayText(locale, 'localEvidenceUnavailable')
+            )
+            if (wasVisible) {
+                localEvidencePanel.scrollTop = scrollTop
+                localEvidencePanel.scrollLeft = scrollLeft
+            }
+            return
+        }
+        const evidence = read.snapshot
+        const hasEvidence =
+            evidence.providerCount > 0 ||
+            evidence.rejectedProviderCount > 0 ||
+            evidence.droppedProviderCount > 0 ||
+            evidence.media.retainedRecordCount > 0 ||
+            evidence.media.droppedRecordCount > 0 ||
+            evidence.motion.retainedRecordCount > 0 ||
+            evidence.motion.droppedRecordCount > 0
+        if (!hasEvidence) {
+            localEvidencePanel.hidden = true
+            return
+        }
+        localEvidencePanel.hidden = false
+        const header = documentValue.createElement('div')
+        header.className = 'local-evidence-header'
+        appendTextElement(documentValue, header, 'strong', '', overlayText(locale, 'localSemanticEvidence'))
+        appendTextElement(
+            documentValue,
+            header,
+            'span',
+            '',
+            overlayText(locale, 'localEvidenceProviderSummary', {
+                providers: evidence.providerCount,
+                dropped: evidence.droppedProviderCount,
+                rejected: evidence.rejectedProviderCount,
+            })
+        )
+        localEvidencePanel.appendChild(header)
+        appendTextElement(documentValue, localEvidencePanel, 'p', 'local-evidence-boundary', overlayText(locale, 'localEvidenceBoundary'))
+
+        const groups = documentValue.createElement('div')
+        groups.className = 'local-evidence-groups'
+        const mediaGroup = documentValue.createElement('section')
+        mediaGroup.className = 'local-evidence-group'
+        appendTextElement(
+            documentValue,
+            mediaGroup,
+            'h4',
+            '',
+            overlayText(locale, 'localEvidenceMediaHeading', {
+                retained: evidence.media.retainedRecordCount,
+                dropped: evidence.media.droppedRecordCount,
+            })
+        )
+        if (evidence.media.records.length === 0) {
+            appendTextElement(documentValue, mediaGroup, 'div', 'local-evidence-empty', overlayText(locale, 'localEvidenceNoMedia'))
+        } else {
+            for (const attempt of [...evidence.media.records].reverse()) {
+                const item = documentValue.createElement('article')
+                item.className = 'local-evidence-record'
+                appendTextElement(
+                    documentValue,
+                    item,
+                    'strong',
+                    '',
+                    overlayText(locale, 'localEvidenceMediaAttemptSummary', {
+                        kind: attempt.kind,
+                        outcome: attempt.outcome,
+                        duration: localEvidenceValue(attempt.durationMs, 'ms'),
+                    })
+                )
+                const stages = [attempt.decodeReady, attempt.uploadReady, attempt.firstVisible].filter(
+                    (stage): stage is AnimationLocalMediaStageEvidence => stage !== null
+                )
+                appendTextElement(
+                    documentValue,
+                    item,
+                    'span',
+                    '',
+                    stages.length > 0 ? stages.map(mediaStageText).join(' · ') : overlayText(locale, 'localEvidenceNoDeclaredStage')
+                )
+                mediaGroup.appendChild(item)
+            }
+        }
+
+        const motionGroup = documentValue.createElement('section')
+        motionGroup.className = 'local-evidence-group'
+        appendTextElement(
+            documentValue,
+            motionGroup,
+            'h4',
+            '',
+            overlayText(locale, 'localEvidenceMotionHeading', {
+                retained: evidence.motion.retainedRecordCount,
+                dropped: evidence.motion.droppedRecordCount,
+            })
+        )
+        if (evidence.motion.records.length === 0) {
+            appendTextElement(documentValue, motionGroup, 'div', 'local-evidence-empty', overlayText(locale, 'localEvidenceNoMotion'))
+        } else {
+            for (const interaction of [...evidence.motion.records].reverse()) {
+                const item = documentValue.createElement('article')
+                item.className = 'local-evidence-record'
+                appendTextElement(
+                    documentValue,
+                    item,
+                    'strong',
+                    '',
+                    overlayText(locale, 'localEvidenceMotionInteractionSummary', {
+                        kind: interaction.kind,
+                        outcome: interaction.outcome,
+                        duration: localEvidenceValue(interaction.durationMs, 'ms'),
+                    })
+                )
+                appendTextElement(
+                    documentValue,
+                    item,
+                    'span',
+                    '',
+                    overlayText(locale, 'localEvidenceMotionCheckpointSummary', {
+                        before: interaction.before.status,
+                        beforeMeasured: interaction.before.measuredSourceCount,
+                        beforeConfigured: interaction.before.configuredSourceCount,
+                        after: interaction.after.status,
+                        afterMeasured: interaction.after.measuredSourceCount,
+                        afterConfigured: interaction.after.configuredSourceCount,
+                    })
+                )
+                appendTextElement(
+                    documentValue,
+                    item,
+                    'span',
+                    '',
+                    overlayText(locale, 'localEvidenceMotionSourceSummary', {
+                        gsap: interaction.after.sourceStatus['gsap-ticker'],
+                        lenis: interaction.after.sourceStatus['lenis-scroll'],
+                        scrollTrigger: interaction.after.sourceStatus['scroll-trigger'],
+                    })
+                )
+                motionGroup.appendChild(item)
+            }
+        }
+        groups.append(mediaGroup, motionGroup)
+        localEvidencePanel.appendChild(groups)
+        if (wasVisible) {
+            localEvidencePanel.scrollTop = scrollTop
+            localEvidencePanel.scrollLeft = scrollLeft
+        }
     }
 
     const renderIssueDetail = (): void => {
@@ -2362,6 +2597,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             metricGrid.appendChild(card)
         }
         renderOverviewEvidence(viewModel)
+        renderLocalEvidence(currentLocalEvidence)
         if (recordHistory) issueHistory = updateOverlayIssueHistory(issueHistory, viewModel.issues, snapshot.capturedAt)
         const activeIssueCount = issueHistory.filter(issue => issue.active).length
         triggerBadge.textContent = activeIssueCount > 99 ? '99+' : String(activeIssueCount)
@@ -2402,6 +2638,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             metricGrid.appendChild(card)
         }
         renderOverviewEvidence()
+        renderLocalEvidence({ status: 'absent' })
         renderIssueHistory()
         renderInteractions([])
         coverageGrid.replaceChildren()
@@ -2416,10 +2653,12 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         const startedAt = safeNow(timerOwner)
         try {
             const snapshot = source.snapshot()
+            currentLocalEvidence = readLocalEvidenceSnapshot(source)
             lastLiveFrameRate = measureLiveFrameRate(previousFrameRateSnapshot, snapshot)
             previousFrameRateSnapshot = snapshot
             renderViewModel(snapshot, buildAnimationOverlayViewModel(snapshot, locale, lastLiveFrameRate))
         } catch {
+            currentLocalEvidence = { status: 'absent' }
             previousFrameRateSnapshot = undefined
             lastLiveFrameRate = { status: 'not-observed' }
             renderUnavailable()
@@ -2501,6 +2740,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             interactionCount.textContent = overlayText(locale, 'retained', { count: 0 })
             coverageCount.textContent = overlayText(locale, 'coverageCount', { count: 0 })
             renderOverviewEvidence()
+            renderLocalEvidence({ status: 'absent' })
             renderIssueHistory()
             renderInteractions([])
             coverageDetail.replaceChildren()

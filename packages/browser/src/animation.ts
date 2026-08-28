@@ -27,6 +27,7 @@ import {
     type AnimationMediaStatsSample,
     type AnimationOverlay,
     type AnimationOverlayOptions,
+    type AnimationOverlaySource,
     type AnimationRenderStatsSample,
     type AnimationRumOptions,
     type AnimationRuntime,
@@ -78,6 +79,7 @@ import {
     type BrowserAnimationPageEvidenceController,
     type BrowserAnimationPageEvidenceSnapshot,
 } from './animation-page-evidence'
+import { BrowserAnimationLocalEvidenceRegistry } from './animation-local-evidence'
 
 export type {
     BrowserAnimationAutoPageEvidenceOptions,
@@ -768,7 +770,7 @@ class DeferredAnimationDevtools implements AnimationDevtoolsController {
 
     constructor(
         readonly enabled: boolean,
-        private readonly source: AnimationCollector,
+        private readonly source: AnimationOverlaySource,
         private readonly options: BrowserAnimationDevtoolsOptions,
         private readonly targetAdapter: ReturnType<typeof createAnimationTargetAdapterRegistry>['adapter']
     ) {}
@@ -901,6 +903,7 @@ function resolveDevtoolsOptions(value: BrowserAnimationFeatureOptions['devtools'
 class AnimationClientHandleImpl implements AnimationClientHandle {
     readonly collector: AnimationCollector
     readonly devtools: DeferredAnimationDevtools
+    private readonly localEvidence = new BrowserAnimationLocalEvidenceRegistry()
     private readonly targetRegistry = createAnimationTargetAdapterRegistry(TARGET_ADAPTER_ID, TARGET_ADAPTER_VERSION)
     private readonly probes = new Set<{ dispose(): void }>()
     private readonly observers = new Set<{ dispose(): void }>()
@@ -918,7 +921,16 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     ) {
         this.collector = integration.collector
         const devtools = resolveDevtoolsOptions(options.devtools)
-        this.devtools = new DeferredAnimationDevtools(devtools.enabled, this.collector, devtools.options, this.targetRegistry.adapter)
+        const collector = this.collector
+        const overlaySource: AnimationOverlaySource = {
+            get state() {
+                return collector.state
+            },
+            snapshot: () => collector.snapshot(),
+            selectElement: (element, selectionOptions) => collector.selectElement(element, selectionOptions),
+            localEvidenceSnapshot: () => this.localEvidence.snapshot(),
+        }
+        this.devtools = new DeferredAnimationDevtools(devtools.enabled, overlaySource, devtools.options, this.targetRegistry.adapter)
     }
 
     get sampled(): boolean {
@@ -1046,18 +1058,20 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     }
 
     createMediaSemanticStageRecorder(options: MediaSemanticStageRecorderOptions = {}): MediaSemanticStageRecorder {
-        return this.trackProbe(createMediaSemanticStageRecorder(options))
+        const recorder = createMediaSemanticStageRecorder(options)
+        const registration = this.localEvidence.registerMedia(recorder)
+        return this.trackProbe(recorder, () => registration.unregister())
     }
 
     createMotionSemanticCheckpointRecorder(
         options: Omit<MotionSemanticCheckpointRecorderOptions, 'beginInteraction'> = {}
     ): MotionSemanticCheckpointRecorder {
-        return this.trackObserver(
-            createMotionSemanticCheckpointRecorder({
-                ...options,
-                beginInteraction: (kind, label) => this.beginInteraction(kind, label),
-            })
-        )
+        const recorder = createMotionSemanticCheckpointRecorder({
+            ...options,
+            beginInteraction: (kind, label) => this.beginInteraction(kind, label),
+        })
+        const registration = this.localEvidence.registerMotion(recorder)
+        return this.trackObserver(recorder, () => registration.unregister())
     }
 
     createRendererProbe(options: Omit<RendererHostProbeOptions, 'sink'>): RendererHostProbe {
@@ -1113,12 +1127,18 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         else this.targetRegistry.unregister(element)
     }
 
-    private trackProbe<T extends { dispose(): void }>(probe: T): T {
+    private trackProbe<T extends { dispose(): void }>(probe: T, onDisposed?: () => void): T {
         if (this.disposed) {
             try {
                 probe.dispose()
             } catch {
                 // The state error below is the actionable failure for the caller.
+            } finally {
+                try {
+                    onDisposed?.()
+                } catch {
+                    // Local diagnostics never get to replace the lifecycle error.
+                }
             }
             throw new Error('Cannot create an animation probe after the client was destroyed')
         }
@@ -1131,6 +1151,11 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
                 active = false
                 registry.deref()?.delete(ownedProbe)
                 originalDispose()
+                try {
+                    onDisposed?.()
+                } catch {
+                    // Local diagnostics never get to break caller-owned teardown.
+                }
             },
         }
         Object.defineProperty(probe, 'dispose', {
@@ -1143,12 +1168,18 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         return probe
     }
 
-    private trackObserver<T extends { dispose(): void; snapshot(): { cleanupFailed: boolean } }>(observer: T): T {
+    private trackObserver<T extends { dispose(): void; snapshot(): { cleanupFailed: boolean } }>(observer: T, onDisposed?: () => void): T {
         if (this.disposed) {
             try {
                 observer.dispose()
             } catch {
                 // The state error below is the actionable failure for the caller.
+            } finally {
+                try {
+                    onDisposed?.()
+                } catch {
+                    // Local diagnostics never get to replace the lifecycle error.
+                }
             }
             throw new Error('Cannot create an animation observer after the client was destroyed')
         }
@@ -1162,6 +1193,11 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
                 if (observer.snapshot().cleanupFailed) return
                 cleanupComplete = true
                 registry.deref()?.delete(ownedObserver)
+                try {
+                    onDisposed?.()
+                } catch {
+                    // Local diagnostics never get to break caller-owned teardown.
+                }
             },
         }
         Object.defineProperty(observer, 'dispose', {
@@ -1203,6 +1239,7 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
             }
         }
         this.observers.clear()
+        this.localEvidence.clear()
     }
 }
 
