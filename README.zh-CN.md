@@ -642,6 +642,41 @@ useCondevAnimation({ client: monitor, getTarget: () => host.value })
 
 这个 composable 必须在 `setup()` 中同步调用。它只使用 Vue 官方 `onBeforeUpdate` 与 `onUpdated` 生命周期，并把两者之间的耗时作为**更新窗口**写入同一个 Browser client。这个窗口可能包含组件及同步后代更新、DOM patch，以及落在两个回调之间的生命周期工作，因此 Condev 不会把它标成 Vue render、commit、paint 或 GPU 时间。可选的真实元素身份与原始 owner 证据只留在页面内存；如果应用另外把该元素授权为语义化 RUM v2 target，只会投影闭集 `vue` framework 与 `framework-adapter` capability，不保留或上传组件名、props、state、文字、selector、class、id 或 URL。不使用 composable 也不影响页面级动效采集。
 
+### Angular 集成
+
+```ts
+import { ElementRef, inject, Injector } from '@angular/core'
+import { createCondevAngularAnimationScope, init, registerCondevAngularPostRender } from '@condev-monitor/angular/animation'
+
+const monitor = init({
+    dsn: 'https://monitor.example.com/tracking/<appId>',
+    performance: true,
+    animation: { devtools: !import.meta.env.PROD },
+})
+
+export class AnimatedCard {
+    private readonly injector = inject(Injector)
+    private readonly host = inject<ElementRef<HTMLElement>>(ElementRef).nativeElement
+    private readonly condev = createCondevAngularAnimationScope({ client: monitor, getTarget: () => this.host })
+    private readonly postRender = registerCondevAngularPostRender(this.condev, { injector: this.injector })
+
+    ngDoCheck(): void {
+        this.condev.checkStarted()
+    }
+
+    ngAfterViewChecked(): void {
+        this.condev.viewChecked()
+    }
+
+    ngOnDestroy(): void {
+        this.postRender.destroy()
+        this.condev.destroy()
+    }
+}
+```
+
+这里仍然只有一个 Browser client 和一次 `init()`。公开的 `ngDoCheck` 到 `ngAfterViewChecked` 区间只记为**组件检查窗口**：它可能包含后代检查，也不能证明发生了 DOM 变更。Angular 20+ 的应用级 `afterEveryRender({ read })` 只用于在页面 DOM 渲染后同步匿名 target 归属；它不与组件窗口拼接，也不产生耗时。两者都不会被标成 render、commit、DOM update、paint 或 GPU 时间。真实 Element 只留在本地；显式授权的语义化 RUM v2 target 最多只投影闭集 `angular` framework 与 `framework-adapter` capability，不会上传组件名、inputs、state、文字、selector、class、id 或 URL。
+
 ### 浏览器 SDK 快速开始
 
 ```ts
@@ -836,6 +871,7 @@ POST /api/sourcemap/upload
 - `@condev-monitor/monitor-sdk-ai`
 - `@condev-monitor/react`
 - `@condev-monitor/vue`
+- `@condev-monitor/angular`
 - `@condev-monitor/nextjs`
 
 建议流程：
@@ -857,7 +893,8 @@ pnpm -r --filter "./packages/*" publish --access public --no-git-checks
 5. `@condev-monitor/monitor-sdk-ai`
 6. `@condev-monitor/react`
 7. `@condev-monitor/vue`
-8. `@condev-monitor/nextjs`
+8. `@condev-monitor/angular`
+9. `@condev-monitor/nextjs`
 
 ### Python 包
 
