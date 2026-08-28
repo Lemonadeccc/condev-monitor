@@ -698,6 +698,26 @@ import { CondevErrorBoundary, useMonitorUser } from '@condev-monitor/react'
 init({ dsn: 'https://monitor.example.com/tracking/<appId>' })
 ```
 
+Use the dedicated animation entry when the same client also needs React render evidence:
+
+```tsx
+import { CondevAnimationProfiler, init } from '@condev-monitor/react/animation'
+
+const monitor = init({
+    dsn: 'https://monitor.example.com/tracking/<appId>',
+    performance: true,
+    animation: { devtools: import.meta.env.DEV },
+})
+
+root.render(
+    <CondevAnimationProfiler client={monitor}>
+        <App />
+    </CondevAnimationProfiler>
+)
+```
+
+This is still one Browser client and one `init()` call. The animation entry also re-exports the React package's ErrorBoundary and user hooks, so mixed imports do not need a second package entry. The wrapper uses React's public `Profiler`, records anonymous subtree render duration, and never retains the Profiler id, component names, props, or state. It does not manufacture commit duration: React's `commitTime` is passed only as an inbound adapter timestamp, while the bounded recorder stores the SDK's own monotonic capture time. Standard production React builds disable Profiler callbacks by default, so use a profiling-enabled React build only when production framework evidence is an intentional, measured opt-in; page-level animation collection continues without this wrapper.
+
 ### Browser SDK Quick Start
 
 ```ts

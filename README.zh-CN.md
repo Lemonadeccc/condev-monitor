@@ -604,6 +604,26 @@ import { CondevErrorBoundary, useMonitorUser } from '@condev-monitor/react'
 init({ dsn: 'https://monitor.example.com/tracking/<appId>' })
 ```
 
+同一个客户端还需要 React 渲染证据时，使用独立的 animation 入口：
+
+```tsx
+import { CondevAnimationProfiler, init } from '@condev-monitor/react/animation'
+
+const monitor = init({
+    dsn: 'https://monitor.example.com/tracking/<appId>',
+    performance: true,
+    animation: { devtools: import.meta.env.DEV },
+})
+
+root.render(
+    <CondevAnimationProfiler client={monitor}>
+        <App />
+    </CondevAnimationProfiler>
+)
+```
+
+这里仍然只有一个 Browser client 和一次 `init()`。animation 入口也会继续导出 React 包原有的 ErrorBoundary 和用户 hooks，因此混合使用时不需要拆成两个包入口。该包装器使用 React 官方 `Profiler`，只记录匿名子树渲染时长，不保留 Profiler id、组件名、props 或 state；也不会把 React 的 `commitTime` 冒充 commit 耗时：它只是传入 adapter 的时间戳，最终有界记录使用 SDK 自己的单调采集时钟。标准 React 生产构建默认关闭 Profiler 回调，因此只有在明确授权并衡量额外开销后，才应使用启用 profiling 的 React 构建采集生产框架证据；不使用该包装器也不影响页面级动效采集。
+
 ### 浏览器 SDK 快速开始
 
 ```ts
