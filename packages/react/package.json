@@ -46,7 +46,8 @@
         "build": "pnpm clean && pnpm build:transpile && pnpm build:types",
         "build:transpile": "tsup",
         "build:types": "tsc -p tsconfig.types.json",
-        "test": "pnpm build && node --test test/*.test.mjs"
+        "test": "pnpm build && node --test test/*.test.mjs",
+        "test:compat:r3f8": "pnpm -w build:sdk && node test/r3f-peer-compat.mjs"
     },
     "dependencies": {
         "@condev-monitor/monitor-sdk-animation-renderer": "workspace:*",
