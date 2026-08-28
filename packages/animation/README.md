@@ -89,14 +89,26 @@ const gsapProbe = client.animation.createGsapProbe({ gsap, scrollTrigger: Scroll
 const tickerCadence = client.animation.createGsapTickerObserver({ ticker: gsap.ticker })
 const lenisScroll = client.animation.createLenisScrollObserver({ lenis })
 const scrollTriggerState = client.animation.createScrollTriggerObserver({ scrollTrigger: ScrollTrigger })
+const motionSemantics = client.animation.createMotionSemanticCheckpointRecorder({
+    gsapTicker: tickerCadence,
+    lenisScroll,
+    scrollTrigger: scrollTriggerState,
+})
 const renderer = client.animation.createThreeProbe({ renderer: threeRenderer, backend: 'webgl2' })
 
 tickerCadence.start()
 lenisScroll.start()
 scrollTriggerState.start()
+
+const interaction = motionSemantics.begin('scroll', 'gallery-scroll')
+// Record only quality values the application can actually prove.
+interaction.recordQuality({ progressError: 0.03 })
+interaction.end()
 ```
 
 The three motion observers remain explicit and local-only: Browser does not discover globals or add their evidence to host/RUM projection. Creating them through `client.animation` keeps their bounded snapshots on the returned handles and makes `client.destroy()` attempt listener cleanup. A failed removal remains visible through `cleanupFailed`, and caller-owned `observer.dispose()` can retry it. The lower-level exports in this package remain available for custom runtimes, injected labs, and advanced integrations.
+
+`createMotionSemanticCheckpointRecorder()` is the explicit business-semantics bridge. Only the caller's `begin()` plus `end()`/`cancel()` boundary creates one record; ScrollTrigger `scrollStart`/`scrollEnd`, GSAP ticker callbacks, and Lenis events never create or complete a business interaction on their own. Each record keeps exactly one compact before/after projection of the configured public observers and a closed copy of the existing bounded interaction-quality summary. It retains no raw event, host instance, selector, DOM, URL, props/state, arbitrary metadata, or caller label. Completed records use a bounded ring, and open windows have a separate hard limit (32 by default). Disposal seals new input before cancelling open monitoring windows; a failed cancellation stays visible as `dispose-failed`/`cleanupFailed` and remains caller-retryable. If the parent collector has already abandoned a window during teardown, only the recorder's internal disposal path accepts that terminal result and counts it separately; public `end()`/`cancel()` still require their exact requested outcome. Observer checkpoint evidence never enters RUM; the underlying page interaction still follows the existing explicit animation RUM configuration and closed projection rules.
 
 ## What it measures
 
@@ -316,7 +328,7 @@ const videoFrames = createVideoFrameProbe({ sink: animation, video })
 videoFrames.start()
 ```
 
-With the browser client, pass the already set-up and running `AnimationIntegration` as the same sink, or use the matching `client.animation.create*` method so the Browser client owns teardown. The Browser handle exposes explicit `createGsapTickerObserver()`, `createLenisScrollObserver()`, and `createScrollTriggerObserver()` convenience methods without auto-discovering host globals or promoting their local snapshots into host/RUM evidence. Observer collection still begins only after the application calls `start()`. All five sink methods return `false` while the collector is not running; lower-level helpers must be installed after the integration has started and disposed during application teardown.
+With the browser client, pass the already set-up and running `AnimationIntegration` as the same sink, or use the matching `client.animation.create*` method so the Browser client owns teardown. The Browser handle exposes explicit `createGsapTickerObserver()`, `createLenisScrollObserver()`, `createScrollTriggerObserver()`, and `createMotionSemanticCheckpointRecorder()` convenience methods without auto-discovering host globals or promoting their local snapshots into host/RUM evidence. Observer collection still begins only after the application calls `start()`, and semantic records exist only after the application explicitly calls `begin()` and `end()`/`cancel()`. All five sink methods return `false` while the collector is not running; lower-level helpers must be installed after the integration has started and disposed during application teardown.
 
 `createFrameworkCommitProbe()` can also accept a manual `recordCommit()` call for React, Vue, Angular, Svelte, Solid, vanilla, or another host. Its React Profiler callback records `actualDuration` as `renderMs` and `baseDuration` as `baseRenderMs`; React's `commitTime` is a timestamp, not commit work, so the helper never relabels it as `commitMs`. Supply `commitMs` only when the host measured that duration independently. Public lifecycle adapters instead call `recordUpdateWindow()`, which emits only `updateWindowMs` with a distinct `framework-lifecycle` source and cannot carry render/commit fields. A host whose public API exposes only component checking calls `recordCheckWindow()` instead; its `framework-check` source cannot carry update/render/commit fields and does not prove a DOM mutation. The helper does not import a framework or discover component ownership.
 
