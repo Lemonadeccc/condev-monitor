@@ -5,6 +5,7 @@ import test from 'node:test'
 
 import {
     createFrameworkCommitProbe,
+    createGsapLifecycleCycleAnalyzer,
     createGsapLifecycleProbe,
     createRendererHostProbe,
     createThreeRendererProbe,
@@ -627,6 +628,150 @@ test('GSAP lifecycle probe uses public snapshots, tolerates child failures, and 
     const unavailable = readGsapLifecycleSnapshot({})
     assert.equal(unavailable.animations.status, 'unsupported')
     assert.equal(unavailable.scrollTriggers.status, 'unsupported')
+})
+
+test('GSAP lifecycle cycle analyzer requires ordered equivalent cycles before reporting a growth candidate', () => {
+    const analyzer = createGsapLifecycleCycleAnalyzer({ minimumCycles: 3, capacity: 3 })
+    const sample = (checkpoint, animations, scrollTriggers) => ({
+        source: 'gsap-public-api',
+        checkpoint,
+        timestampMs: 10,
+        animations: animations === null ? { status: 'unsupported' } : { status: 'measured', total: animations },
+        scrollTriggers: scrollTriggers === null ? { status: 'unsupported' } : { status: 'measured', total: scrollTriggers },
+    })
+    const cycle = (animations, scrollTriggers) => {
+        assert.equal(analyzer.record(sample('mount', animations + 2, scrollTriggers + 1)), true)
+        assert.equal(analyzer.record(sample('after-interaction', animations + 1, scrollTriggers + 1)), true)
+        assert.equal(analyzer.record(sample('unmount', animations, scrollTriggers)), true)
+    }
+
+    assert.equal(analyzer.record(sample('manual', 99, 99)), false)
+    assert.equal(analyzer.record(sample('unmount', 99, 99)), false)
+    cycle(1, 4)
+    cycle(2, 4)
+    assert.deepEqual(analyzer.snapshot(), {
+        status: 'insufficient-cycles',
+        growthCandidate: null,
+        animationGrowthCandidate: null,
+        scrollTriggerGrowthCandidate: null,
+        completedCycleCount: 2,
+        retainedCycleCount: 2,
+        minimumCycles: 3,
+        capacity: 3,
+        droppedCycleCount: 0,
+        rejectedCheckpointCount: 2,
+        truncated: false,
+        postUnmountAnimationTotals: [1, 2],
+        postUnmountScrollTriggerTotals: [4, 4],
+    })
+
+    cycle(3, 4)
+    assert.deepEqual(analyzer.snapshot(), {
+        status: 'growth-candidate',
+        growthCandidate: true,
+        animationGrowthCandidate: true,
+        scrollTriggerGrowthCandidate: false,
+        completedCycleCount: 3,
+        retainedCycleCount: 3,
+        minimumCycles: 3,
+        capacity: 3,
+        droppedCycleCount: 0,
+        rejectedCheckpointCount: 2,
+        truncated: false,
+        postUnmountAnimationTotals: [1, 2, 3],
+        postUnmountScrollTriggerTotals: [4, 4, 4],
+    })
+
+    cycle(2, 4)
+    const bounded = analyzer.snapshot()
+    assert.equal(bounded.status, 'no-strict-growth-candidate')
+    assert.equal(bounded.growthCandidate, false)
+    assert.deepEqual(bounded.postUnmountAnimationTotals, [2, 3, 2])
+    assert.equal(bounded.completedCycleCount, 4)
+    assert.equal(bounded.droppedCycleCount, 1)
+    assert.equal(bounded.truncated, true)
+
+    analyzer.dispose()
+    assert.equal(analyzer.record(sample('mount', 1, 1)), false)
+    assert.equal(analyzer.snapshot().completedCycleCount, 4)
+})
+
+test('GSAP lifecycle cycle analyzer invalidates interrupted cycles and reset clears every local state', () => {
+    const analyzer = createGsapLifecycleCycleAnalyzer()
+    const sample = checkpoint => ({
+        source: 'gsap-public-api',
+        checkpoint,
+        timestampMs: 1,
+        animations: { status: 'measured', total: 1 },
+        scrollTriggers: { status: 'measured', total: 1 },
+    })
+
+    assert.equal(analyzer.record(sample('mount')), true)
+    assert.equal(analyzer.record(sample('unmount')), false)
+    assert.equal(analyzer.record(sample('after-interaction')), false)
+    assert.equal(analyzer.record(sample('unmount')), false)
+    assert.equal(analyzer.snapshot().completedCycleCount, 0)
+
+    assert.equal(analyzer.record(sample('mount')), true)
+    assert.equal(analyzer.record(sample('after-interaction')), true)
+    assert.equal(analyzer.record(sample('mount')), true)
+    assert.equal(analyzer.record(sample('after-interaction')), true)
+    assert.equal(analyzer.record(sample('unmount')), true)
+    assert.equal(analyzer.snapshot().completedCycleCount, 1)
+
+    analyzer.record(sample('mount'))
+    analyzer.reset()
+    assert.deepEqual(analyzer.snapshot(), {
+        status: 'insufficient-cycles',
+        growthCandidate: null,
+        animationGrowthCandidate: null,
+        scrollTriggerGrowthCandidate: null,
+        completedCycleCount: 0,
+        retainedCycleCount: 0,
+        minimumCycles: 3,
+        capacity: 10,
+        droppedCycleCount: 0,
+        rejectedCheckpointCount: 0,
+        truncated: false,
+        postUnmountAnimationTotals: [],
+        postUnmountScrollTriggerTotals: [],
+    })
+    assert.equal(analyzer.record(sample('after-interaction')), false)
+    assert.equal(analyzer.record(sample('unmount')), false)
+    assert.equal(analyzer.snapshot().completedCycleCount, 0)
+})
+
+test('GSAP lifecycle cycle analyzer stays inconclusive when retained cleanup evidence is unavailable', () => {
+    const analyzer = createGsapLifecycleCycleAnalyzer()
+    for (let index = 0; index < 3; index += 1) {
+        analyzer.record({
+            source: 'gsap-public-api',
+            checkpoint: 'mount',
+            timestampMs: index,
+            animations: { status: 'unsupported' },
+            scrollTriggers: { status: 'measured', total: 2 },
+        })
+        analyzer.record({
+            source: 'gsap-public-api',
+            checkpoint: 'after-interaction',
+            timestampMs: index,
+            animations: { status: 'unsupported' },
+            scrollTriggers: { status: 'measured', total: 2 },
+        })
+        analyzer.record({
+            source: 'gsap-public-api',
+            checkpoint: 'unmount',
+            timestampMs: index,
+            animations: { status: 'unsupported' },
+            scrollTriggers: { status: 'measured', total: 2 },
+        })
+    }
+
+    const result = analyzer.snapshot()
+    assert.equal(result.status, 'inconclusive')
+    assert.equal(result.growthCandidate, null)
+    assert.equal(result.animationGrowthCandidate, null)
+    assert.equal(result.scrollTriggerGrowthCandidate, false)
 })
 
 class FakeVideo {
