@@ -1,12 +1,19 @@
 import { afterEveryRender, type AfterRenderRef, type Injector } from '@angular/core'
 import type { AnimationBrowserClient } from '@condev-monitor/monitor-sdk-browser/animation'
 
-type AngularAnimationClient = Pick<AnimationBrowserClient, 'animation'>
+export type CondevAngularAnimationClient = Pick<AnimationBrowserClient, 'animation'>
 type AngularFrameworkProbe = ReturnType<AnimationBrowserClient['animation']['createFrameworkProbe']>
+
+export type CondevAngularAnimationTargetBindingStatus = 'attached' | 'replaced' | 'unavailable' | 'disposed' | 'cleanup-failed'
+
+export interface CondevAngularAnimationTargetBinding {
+    (): void
+    readonly status: CondevAngularAnimationTargetBindingStatus
+}
 
 export interface CondevAngularAnimationOptions {
     /** The same client returned by `@condev-monitor/angular/animation` `init()`. */
-    client: AngularAnimationClient
+    client: CondevAngularAnimationClient
     /** Optional real DOM host used only for local, anonymous target attribution. */
     getTarget?: () => Element | null
     /** Monotonic clock override for deterministic tests or an application-owned clock. */
@@ -37,6 +44,12 @@ const ANGULAR_TARGET_INSPECTION = Object.freeze({
     inventory: Object.freeze({ uiFrameworks: Object.freeze(['angular'] as const) }),
     owners: Object.freeze([Object.freeze({ relation: 'framework-owner' as const, framework: 'angular' as const })]),
 })
+interface AngularTargetRegistrationRecord {
+    readonly owners: Set<object>
+    readonly unregister: ReturnType<CondevAngularAnimationClient['animation']['registerTarget']>
+}
+
+const angularTargetBindingsByClient = new WeakMap<object, WeakMap<Element, AngularTargetRegistrationRecord>>()
 
 function defaultNow(): number {
     return globalThis.performance?.now?.() ?? Date.now()
@@ -51,12 +64,85 @@ function readMonotonicNow(now: () => number): number | undefined {
     }
 }
 
-function safeDispose(dispose: (() => void) | undefined): void {
+function safeDispose(dispose: (() => void) | undefined): boolean {
     try {
         dispose?.()
+        return true
     } catch {
         // Monitoring cleanup must never affect application lifecycle behavior.
+        return false
     }
+}
+
+type AngularTargetRegistration = { status: 'attached'; active: () => boolean; dispose: () => boolean } | { status: 'unavailable' }
+
+type AttachedAngularTargetRegistration = Extract<AngularTargetRegistration, { status: 'attached' }>
+
+function registerAngularTarget(client: CondevAngularAnimationClient, target: Element): AngularTargetRegistration {
+    const clientKey = client.animation
+    let bindingByElement = angularTargetBindingsByClient.get(clientKey)
+    if (!bindingByElement) {
+        bindingByElement = new WeakMap()
+        angularTargetBindingsByClient.set(clientKey, bindingByElement)
+    }
+
+    const owner = {}
+    let record = bindingByElement.get(target)
+    if (record && !record.unregister.active) {
+        bindingByElement.delete(target)
+        record = undefined
+    }
+    if (!record) {
+        let unregister: ReturnType<CondevAngularAnimationClient['animation']['registerTarget']>
+        try {
+            unregister = client.animation.registerTarget(target, () => ANGULAR_TARGET_INSPECTION)
+        } catch {
+            return { status: 'unavailable' }
+        }
+        record = { owners: new Set(), unregister }
+        bindingByElement.set(target, record)
+    }
+    record.owners.add(owner)
+
+    let active = true
+    return {
+        status: 'attached',
+        active: () => active && record.owners.has(owner) && record.unregister.active,
+        dispose(): boolean {
+            if (!active) return true
+            active = false
+            record.owners.delete(owner)
+            if (record.owners.size > 0) return true
+            if (bindingByElement.get(target) === record) bindingByElement.delete(target)
+            return safeDispose(record.unregister)
+        },
+    }
+}
+
+function createTargetBinding(registration: AngularTargetRegistration): CondevAngularAnimationTargetBinding {
+    let status: CondevAngularAnimationTargetBindingStatus = registration.status
+    const binding = (): void => {
+        if (status !== 'attached' || registration.status !== 'attached') return
+        status = registration.dispose() ? 'disposed' : 'cleanup-failed'
+    }
+    Object.defineProperty(binding, 'status', {
+        get: () => (status === 'attached' && registration.status === 'attached' && !registration.active() ? 'replaced' : status),
+    })
+    return binding as CondevAngularAnimationTargetBinding
+}
+
+/**
+ * Binds one anonymous Angular-owned Element without requiring Angular decorators
+ * in this package's published output.
+ *
+ * Applications can call this helper from an app-local attribute directive so
+ * their own Angular compiler owns the directive's AOT compilation.
+ */
+export function bindCondevAngularAnimationTarget(
+    client: CondevAngularAnimationClient,
+    target: Element
+): CondevAngularAnimationTargetBinding {
+    return createTargetBinding(registerAngularTarget(client, target))
 }
 
 /**
@@ -72,7 +158,7 @@ export function createCondevAngularAnimationScope(options: CondevAngularAnimatio
     let probe: AngularFrameworkProbe | undefined
     let checkStartedAt: number | undefined
     let registeredTarget: Element | undefined
-    let unregisterTarget: (() => void) | undefined
+    let targetRegistration: AttachedAngularTargetRegistration | undefined
     let destroyed = false
 
     try {
@@ -82,8 +168,8 @@ export function createCondevAngularAnimationScope(options: CondevAngularAnimatio
     }
 
     const clearTarget = (): void => {
-        safeDispose(unregisterTarget)
-        unregisterTarget = undefined
+        safeDispose(() => targetRegistration?.dispose())
+        targetRegistration = undefined
         registeredTarget = undefined
     }
 
@@ -99,24 +185,22 @@ export function createCondevAngularAnimationScope(options: CondevAngularAnimatio
     const syncTarget = (): void => {
         if (destroyed || !options.getTarget) return
         const nextTarget = readTarget()
-        if (nextTarget === registeredTarget) return
+        if (nextTarget === registeredTarget && targetRegistration?.active()) return
         if (!nextTarget) {
             clearTarget()
             return
         }
 
-        let nextUnregister: (() => void) | undefined
-        try {
-            nextUnregister = options.client.animation.registerTarget(nextTarget, () => ANGULAR_TARGET_INSPECTION)
-        } catch {
+        const nextRegistration = registerAngularTarget(options.client, nextTarget)
+        if (nextRegistration.status !== 'attached') {
             clearTarget()
             return
         }
 
-        const previousUnregister = unregisterTarget
+        const previousRegistration = targetRegistration
         registeredTarget = nextTarget
-        unregisterTarget = nextUnregister
-        safeDispose(previousUnregister)
+        targetRegistration = nextRegistration
+        safeDispose(() => previousRegistration?.dispose())
     }
 
     const destroy = (): void => {
