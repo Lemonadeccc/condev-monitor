@@ -14,7 +14,7 @@
         "examples:react": "pnpm turbo build --filter=@condev-monitor/react && pnpm --filter example-react dev --host 127.0.0.1 --port 43112 --strictPort",
         "examples:vanilla": "pnpm build:sdk && pnpm --filter vanilla dev --host 127.0.0.1 --port 43111 --strictPort",
         "build": "turbo build --filter=!aisdk-rag-chatbox --filter=!ragzbxy --filter=!vanilla --filter=!lemon-bureau --filter=!nico-palmer --filter=!salle-blanche",
-        "build:sdk": "turbo build --filter='@condev-monitor/monitor-sdk-*' --filter=@condev-monitor/react --filter=@condev-monitor/vue --filter=@condev-monitor/angular",
+        "build:sdk": "turbo build --filter='@condev-monitor/monitor-sdk-*' --filter=@condev-monitor/react --filter=@condev-monitor/vue --filter=@condev-monitor/angular --filter=@condev-monitor/svelte",
         "build:watch": "turbo build:watch",
         "docker:start": "docker compose -p condev-monitor -f .devcontainer/docker-compose.yml up -d && COMPOSE_FILE=.devcontainer/docker-compose.yml pnpm docker:init-postgres && pnpm docker:init-kafka && COMPOSE_FILE=.devcontainer/docker-compose.yml pnpm docker:init-clickhouse",
         "docker:stop": "docker compose -p condev-monitor -f .devcontainer/docker-compose.yml down",
