@@ -1266,6 +1266,16 @@ importers:
         specifier: ^19.0.0
         version: 19.2.3(@types/react@19.2.5)
 
+  packages/solid:
+    dependencies:
+      '@condev-monitor/monitor-sdk-browser':
+        specifier: workspace:*
+        version: link:../browser
+    devDependencies:
+      solid-js:
+        specifier: ^1.9.10
+        version: 1.9.15
+
   packages/svelte:
     dependencies:
       '@condev-monitor/monitor-sdk-browser':
@@ -13105,6 +13115,16 @@ packages:
   serialize-javascript@6.0.2:
     resolution: {integrity: sha512-Saa1xPByTTq2gdeFZYLLo+RFE35NHZkAbqZeWNd3BpzppeVisAqpDjcp8dyf6uIvEqJRd46jemmyA4iFIeVk8g==}
 
+  seroval-plugins@1.5.6:
+    resolution: {integrity: sha512-HXuLAX2pu/UByPpaeo/TaMfvMIi+1QqIoPJYCcAtU8QkVNwgR6MPlGuCQTErV1JwraaMbYaWVIBX7mppzGLATQ==}
+    engines: {node: '>=10'}
+    peerDependencies:
+      seroval: ^1.0
+
+  seroval@1.5.6:
+    resolution: {integrity: sha512-rVQVWjjSvlINzaQPZH5JFqsqEsIWdTxY3iJZCnTL/5gQbXIRooVZKI60tVCkOVfzcRPejboxO2t0P89dg5mQaA==}
+    engines: {node: '>=10'}
+
   serve-static@2.2.0:
     resolution: {integrity: sha512-61g9pCh0Vnh7IutZjtLGGpTA355+OPn2TyDv/6ivP2h/AdAVX9azsoxmg2/M6nZeQZNYBEwIcsne1mJd9oQItQ==}
     engines: {node: '>= 18'}
@@ -13215,6 +13235,9 @@ packages:
   socks@2.8.7:
     resolution: {integrity: sha512-HLpt+uLy/pxB+bum/9DzAgiKS8CX1EvbWxI4zlmgGCExImLdiad2iCwXT5Z4c9c3Eq8rP2318mPW2c+QbtjK8A==}
     engines: {node: '>= 10.0.0', npm: '>= 3.0.0'}
+
+  solid-js@1.9.15:
+    resolution: {integrity: sha512-EeiY2xfpZJqPLjXspVEKjAII4yv8NyG//NxZ3IpOFHdUNnnTyL0uJOeS9LWGvA7cFCz5y94cjFwYlmw5Luncsg==}
 
   sonic-boom@4.2.0:
     resolution: {integrity: sha512-INb7TM37/mAcsGmc9hyyI6+QR3rR1zVRu36B0NeGXKnOOLiZOfER5SA+N7X7k3yUYRzLWafduTDvJAfDswwEww==}
@@ -29637,6 +29660,12 @@ snapshots:
     dependencies:
       randombytes: 2.1.0
 
+  seroval-plugins@1.5.6(seroval@1.5.6):
+    dependencies:
+      seroval: 1.5.6
+
+  seroval@1.5.6: {}
+
   serve-static@2.2.0:
     dependencies:
       encodeurl: 2.0.0
@@ -29821,6 +29850,12 @@ snapshots:
     dependencies:
       ip-address: 10.1.0
       smart-buffer: 4.2.0
+
+  solid-js@1.9.15:
+    dependencies:
+      csstype: 3.2.3
+      seroval: 1.5.6
+      seroval-plugins: 1.5.6(seroval@1.5.6)
 
   sonic-boom@4.2.0:
     dependencies:
