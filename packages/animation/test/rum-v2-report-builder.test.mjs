@@ -798,6 +798,22 @@ test('target builder requires an explicit semantic target key and keeps direct, 
     assert.equal(svelteReport.capabilities['framework-adapter'], 'supported')
     assert.doesNotMatch(JSON.stringify(svelteReport), /framework-owner|component|selector|private/)
 
+    const solidTarget = targetSnapshot()
+    solidTarget.inventory.uiFrameworks = ['solid']
+    solidTarget.owners = [{ relation: 'framework-owner', framework: 'solid' }]
+    const solidReport = toAnimationRumV2TargetReport(
+        snapshot,
+        solidTarget,
+        projectionOptions(runtime, {
+            eventId: 'event_target_solid_12345678',
+            captureId: 'capture_target_solid_12345678',
+            targetKey: 'hero-solid',
+        })
+    )
+    assert.equal(solidReport.context.runtime.framework, 'solid')
+    assert.equal(solidReport.capabilities['framework-adapter'], 'supported')
+    assert.doesNotMatch(JSON.stringify(solidReport), /framework-owner|component|selector|private/)
+
     const page = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
     const supportedIds = new Set([...page.metrics, ...report.metrics].map(item => item.metricId))
     assert.equal(supportedIds.size, 69)
