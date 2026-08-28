@@ -277,6 +277,9 @@ function parseMeasurementContract(value: unknown, label: string, errors: string[
     ) {
         add(errors, `${label}:invalid-metric-catalog-version`)
     }
+    if (record(value.budgetRef) && value.budgetRef.budgetVersion === 4 && value.metricCatalogVersion !== 4) {
+        add(errors, `${label}:budget-v4-requires-metric-catalog-v4`)
+    }
     if (finite(value.expectedHz, 1, 1_000) && finite(value.targetFrameMs, 1, 1_000)) {
         const expectedTarget = 1_000 / value.expectedHz
         if (Math.abs(value.targetFrameMs - expectedTarget) > Math.max(0.05, expectedTarget * 0.01)) {

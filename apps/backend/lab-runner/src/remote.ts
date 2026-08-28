@@ -97,6 +97,12 @@ function claimedBoolean(value: unknown, label: string): boolean {
     return value
 }
 
+function assertCompatibleMeasurementVersions(metricCatalogVersion: number, budgetVersion: number): void {
+    if (budgetVersion === 4 && metricCatalogVersion !== 4) {
+        throw new Error('Lab server returned an incompatible platform metric catalog and budget')
+    }
+}
+
 function claimedMeasurementContract(value: unknown): LabMeasurementContractV2 {
     const contract = claimedRecord(value, 'config measurement contract')
     claimedExactKeys(
@@ -131,6 +137,7 @@ function claimedMeasurementContract(value: unknown): LabMeasurementContractV2 {
     if (budgetRef.budgetId !== 'condev.animation.default') {
         throw new Error('Lab server returned an unknown platform measurement budget')
     }
+    assertCompatibleMeasurementVersions(metricCatalogVersion, budgetVersion)
     const normalized: LabMeasurementContractV2 = {
         contractVersion: 2,
         expectedHz,
@@ -167,16 +174,19 @@ function claimedRequiredCapabilities(value: unknown): RemoteRequiredCapabilities
     if (budgetRef.catalogVersion !== 1 || budgetRef.budgetId !== 'condev.animation.default') {
         throw new Error('Lab server returned an invalid platform required budget')
     }
+    const metricCatalogVersion = claimedInteger(capabilities.metricCatalogVersion, 1, 4, 'requiredCapabilities.metricCatalogVersion') as
+        | 1
+        | 2
+        | 3
+        | 4
+    const budgetVersion = claimedInteger(budgetRef.budgetVersion, 1, 4, 'requiredCapabilities.budgetRef.budgetVersion')
+    assertCompatibleMeasurementVersions(metricCatalogVersion, budgetVersion)
     return {
-        metricCatalogVersion: claimedInteger(capabilities.metricCatalogVersion, 1, 4, 'requiredCapabilities.metricCatalogVersion') as
-            | 1
-            | 2
-            | 3
-            | 4,
+        metricCatalogVersion,
         budgetRef: {
             catalogVersion: 1,
             budgetId: budgetRef.budgetId,
-            budgetVersion: claimedInteger(budgetRef.budgetVersion, 1, 4, 'requiredCapabilities.budgetRef.budgetVersion'),
+            budgetVersion,
         },
     }
 }

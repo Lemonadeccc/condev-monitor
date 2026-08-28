@@ -426,6 +426,40 @@ test('accepts and preserves the closed platform measurement contract', async t =
     assert.deepEqual((await client.claim()).config.measurementContract, measurementContract)
 })
 
+test('rejects budget v4 paired with an older metric catalog before navigation', async t => {
+    const originalFetch = globalThis.fetch
+    const measurementContract = {
+        ...claimedConfig().measurementContract,
+        source: 'explicit',
+        confidence: 'explicit',
+        budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 4 },
+        metricCatalogVersion: 3,
+    }
+    const capabilities = requiredCapabilities(measurementContract)
+    let requests = 0
+    globalThis.fetch = async url => {
+        requests += 1
+        const data = String(url).endsWith('/contract')
+            ? contractData({ requiredCapabilities: capabilities })
+            : {
+                  ...contractData({ requiredCapabilities: capabilities }),
+                  targetUrl: 'http://localhost:5173/',
+                  config: claimedConfig({ measurementContract }),
+              }
+        return new Response(JSON.stringify({ success: true, data }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })
+    }
+    t.after(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
+    await assert.rejects(client.claim(), /incompatible platform metric catalog and budget/u)
+    assert.equal(requests, 1)
+})
+
 test('fails closed when a platform claim omits, extends, or corrupts execution authority', async t => {
     const originalFetch = globalThis.fetch
     t.after(() => {

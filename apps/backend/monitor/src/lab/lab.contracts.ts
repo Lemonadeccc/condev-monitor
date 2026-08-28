@@ -349,6 +349,9 @@ function parseLabRunMeasurementContract(raw: unknown): LabRunMeasurementContract
         throw new BadRequestException('config.measurementContract references an unknown local budget')
     }
     const metricCatalogVersion = integer(raw.metricCatalogVersion, 'config.measurementContract.metricCatalogVersion', 1, 4) as 1 | 2 | 3 | 4
+    if (budgetVersion === 4 && metricCatalogVersion !== 4) {
+        throw new BadRequestException('config.measurementContract budget v4 requires metric catalog v4')
+    }
     const normalized: LabRunMeasurementContract = {
         contractVersion: 2,
         expectedHz,

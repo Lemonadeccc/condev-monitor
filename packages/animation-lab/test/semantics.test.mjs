@@ -550,6 +550,22 @@ test('rejects a budget reference that the local runner cannot execute', () => {
     assert.ok(unknownVersion.errors.includes('measurementContract.budgetRef:unknown-local-budget'))
 })
 
+test('requires metric catalog v4 for budget v4 without blocking older budgets on catalog v4', () => {
+    const value = semantics().measurementContract
+    value.budgetRef = DEFAULT_ANIMATION_LAB_BUDGET_REF_V4
+    value.metricCatalogVersion = 3
+
+    const incompatible = validateLabMeasurementContract(value)
+    assert.equal(incompatible.ok, false)
+    assert.ok(incompatible.errors.includes('measurementContract:budget-v4-requires-metric-catalog-v4'))
+
+    value.metricCatalogVersion = 4
+    assert.equal(validateLabMeasurementContract(value).ok, true)
+
+    value.budgetRef = DEFAULT_ANIMATION_LAB_BUDGET_REF_V3
+    assert.equal(validateLabMeasurementContract(value).ok, true)
+})
+
 test('accepts budget v2 and rejects mixed metric or finding budget references', () => {
     const input = semantics()
     input.measurementContract.budgetRef = DEFAULT_ANIMATION_LAB_BUDGET_REF_V2

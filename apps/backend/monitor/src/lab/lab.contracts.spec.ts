@@ -166,6 +166,7 @@ describe('animation lab contracts', () => {
             { ...valid, budgetRef: { ...valid.budgetRef, privateBudget: true } },
             { ...valid, budgetRef: { ...valid.budgetRef, budgetId: 'custom.uninstalled' } },
             { ...valid, budgetRef: { ...valid.budgetRef, budgetVersion: 5 } },
+            { ...valid, budgetRef: { ...valid.budgetRef, budgetVersion: 4 }, metricCatalogVersion: 3 },
             {
                 ...valid,
                 expectedHz: 120,
@@ -186,6 +187,31 @@ describe('animation lab contracts', () => {
                 })
             ).toThrow(BadRequestException)
         }
+    })
+
+    it('allows metric catalog v4 with an older budget during rolling upgrades', () => {
+        expect(
+            parseCreateLabRunInput({
+                appId: 'app-123',
+                scenarioKey: 'renderer.catalog-v4-budget-v3',
+                config: {
+                    measurementContract: {
+                        contractVersion: 2,
+                        expectedHz: 60,
+                        targetFrameMs: 16.666667,
+                        source: 'explicit',
+                        confidence: 'explicit',
+                        budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 3 },
+                        metricCatalogVersion: 4,
+                    },
+                },
+            }).config.measurementContract
+        ).toEqual(
+            expect.objectContaining({
+                budgetRef: expect.objectContaining({ budgetVersion: 3 }),
+                metricCatalogVersion: 4,
+            })
+        )
     })
 
     it('accepts the explicit catalog v3 action-window video contract', () => {
