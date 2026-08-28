@@ -66,6 +66,21 @@ const V3_VIDEO_LIMITATION_CODES = [
     'video-playback-quality-api-unsupported',
 ] as const
 
+const V4_RENDERER_METRIC_IDS = ['renderer.draw-calls.p95', 'renderer.triangles.p95', 'renderer.gpu-frame.p95'] as const
+
+const V4_RENDERER_LIMITATION_CODES = [
+    'renderer-adapter-identity-not-retained',
+    'renderer-evidence-is-page-level',
+    'renderer-adapter-samples-not-observed-or-rejected',
+    'renderer-host-evidence-rejected',
+    'page-probe-renderer-host-evidence-truncated',
+    'renderer-host-sample-p95',
+    'renderer-multiple-producers-not-distinguished',
+    'renderer-host-gpu-query-p95',
+    'renderer-gpu-action-window-not-proven',
+    'renderer-evidence-bridge-unavailable',
+] as const
+
 function metric(metricId: string, scope: LabMetric['scope']): LabMetric {
     return {
         metricId,
@@ -165,6 +180,23 @@ describe('Lab catalog v2 metric presentation', () => {
             en: 'Action-window video dropped-frame rate',
         })
         for (const limitation of V3_VIDEO_LIMITATION_CODES) {
+            const label = getLabLimitationLabel(limitation)
+            assert.ok(label.zhCN.length > 5, limitation)
+            assert.ok(label.en.length > 5, limitation)
+            assert.notEqual(label.zhCN, `限制：${limitation}`)
+            assert.notEqual(label.en, limitation)
+        }
+    })
+
+    it('presents catalog-v4 renderer metrics and every closed limitation bilingually', () => {
+        for (const metricId of V4_RENDERER_METRIC_IDS) {
+            const label = getLabMetricLabel({ metricId, name: 'rawRendererMetric' })
+            assert.ok(label.zhCN.length > 5, metricId)
+            assert.ok(label.en.length > 5, metricId)
+            assert.notEqual(label.zhCN, '指标：rawRendererMetric')
+            assert.notEqual(label.en, 'raw Renderer Metric')
+        }
+        for (const limitation of V4_RENDERER_LIMITATION_CODES) {
             const label = getLabLimitationLabel(limitation)
             assert.ok(label.zhCN.length > 5, limitation)
             assert.ok(label.en.length > 5, limitation)

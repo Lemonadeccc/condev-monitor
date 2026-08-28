@@ -346,7 +346,7 @@ describe('resolveLabBudgetRule', () => {
         const requirement = getLabBudgetRuleEvidenceRequirement(v2!)
         assert.match(requirement, /完整 measured 观察允许 0 个 Long Task/u)
         assert.doesNotMatch(requirement, /最少\s*0/u)
-        assert.equal(resolveLabBudgetRule(ref(4), contract(4)), null)
+        assert.equal(resolveLabBudgetRule(ref(5), contract(5)), null)
         assert.equal(resolveLabBudgetRule(ref(2), contract(1)), null)
     })
 
@@ -413,5 +413,46 @@ describe('resolveLabBudgetRule', () => {
         }
 
         assert.ok(resolveLabBudgetRule({ ...contract.budgetRef, ruleId: 'frame-tail' }, contract))
+    })
+
+    it('expands the renderer GPU tail rule only for budget v4', () => {
+        const contract = (budgetVersion: 3 | 4): LabRunAnalysis['measurementContract'] => ({
+            contractVersion: 2,
+            expectedHz: 60,
+            targetFrameMs: 16.666667,
+            source: 'explicit',
+            confidence: 'explicit',
+            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion },
+            metricCatalogVersion: budgetVersion,
+        })
+        const v4 = contract(4)
+        const ref = { ...v4.budgetRef, ruleId: 'renderer-gpu-frame-tail' }
+
+        assert.deepEqual(resolveLabBudgetRule(ref, v4), {
+            comparator: '<=',
+            metricId: 'renderer.gpu-frame.p95',
+            target: 16.666667 * 0.8,
+            unit: 'ms',
+            minimumSamples: 30,
+            zeroEventCountIsComplete: false,
+        })
+        assert.equal(resolveLabBudgetRule({ ...contract(3).budgetRef, ruleId: ref.ruleId }, contract(3)), null)
+        assert.equal(
+            evaluateLabBudgetMetric(
+                {
+                    metricId: 'renderer.gpu-frame.p95',
+                    family: 'renderer',
+                    name: 'gpuFrameMs',
+                    stat: 'p95',
+                    unit: 'ms',
+                    value: 14,
+                    samples: 30,
+                    status: 'measured',
+                },
+                ref,
+                v4
+            ),
+            'breach'
+        )
     })
 })

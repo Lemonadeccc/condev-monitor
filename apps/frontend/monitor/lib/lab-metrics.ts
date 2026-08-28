@@ -17,6 +17,18 @@ const METRIC_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
         zhCN: '动作窗口视频丢帧率',
         en: 'Action-window video dropped-frame rate',
     },
+    'renderer.draw-calls.p95': {
+        zhCN: '渲染器每样本 Draw Call p95',
+        en: 'Renderer draw calls per sample p95',
+    },
+    'renderer.triangles.p95': {
+        zhCN: '渲染器每样本三角形数量 p95',
+        en: 'Renderer triangles per sample p95',
+    },
+    'renderer.gpu-frame.p95': {
+        zhCN: '渲染器 GPU 帧耗时 p95',
+        en: 'Renderer GPU frame duration p95',
+    },
     'pipeline.loaf-render-start-to-paint.count': {
         zhCN: 'LoAF 渲染开始 → Paint 有效样本数',
         en: 'LoAF render start → paint valid samples',
@@ -314,6 +326,46 @@ const LIMITATION_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
     'renderer-gpu-timing-requires-explicit-evidence': {
         zhCN: '渲染器 / GPU 耗时需要显式 adapter 或计时器证据；DOM 页面探针不能推断。',
         en: 'Renderer / GPU timing requires explicit adapter or timer evidence; the DOM page probe cannot infer it.',
+    },
+    'renderer-adapter-identity-not-retained': {
+        zhCN: '只保留渲染器 adapter 的聚合证据，不保留 adapter、场景对象或业务对象身份。',
+        en: 'Only aggregate renderer-adapter evidence is retained; adapter, scene-object, and business-object identities are omitted.',
+    },
+    'renderer-evidence-is-page-level': {
+        zhCN: '渲染器证据只归属于页面级测量，不能证明某个 DOM 元素或组件造成该成本。',
+        en: 'Renderer evidence is page-scoped and cannot prove that a DOM element or component caused the cost.',
+    },
+    'renderer-adapter-samples-not-observed-or-rejected': {
+        zhCN: '没有观察到通过合同校验的渲染器 adapter 样本；可能未接入、没有产出或已被拒绝。',
+        en: 'No contract-valid renderer-adapter samples were observed; the adapter may be absent, silent, or rejected.',
+    },
+    'renderer-host-evidence-rejected': {
+        zhCN: '页面提供的渲染器证据未通过闭合集合、数值范围或时间边界校验，已被拒绝。',
+        en: 'Page-provided renderer evidence failed closed-set, numeric-bound, or timing validation and was rejected.',
+    },
+    'page-probe-renderer-host-evidence-truncated': {
+        zhCN: '页面探针的渲染器样本缓冲已截断，保留的分布属于部分证据。',
+        en: 'The page-probe renderer sample buffer was truncated; the retained distribution is partial evidence.',
+    },
+    'renderer-host-sample-p95': {
+        zhCN: '该 p95 来自显式渲染器 adapter 提供并由页面探针验证的有界样本。',
+        en: 'This p95 comes from bounded samples supplied by an explicit renderer adapter and validated by the page probe.',
+    },
+    'renderer-multiple-producers-not-distinguished': {
+        zhCN: '多个渲染器生产者会合并为页面级样本，不保留各生产者身份或独立分布。',
+        en: 'Multiple renderer producers are merged into page-level samples without producer identities or separate distributions.',
+    },
+    'renderer-host-gpu-query-p95': {
+        zhCN: '该 p95 只来自 adapter 提交的已完成 GPU query 样本，不是 JavaScript 提交命令耗时。',
+        en: 'This p95 uses only completed GPU-query samples submitted by an adapter, not JavaScript command-submission time.',
+    },
+    'renderer-gpu-action-window-not-proven': {
+        zhCN: 'GPU query 的异步完成边界不能可靠归因到单个动作窗口，因此 GPU 指标只保留页面级归属。',
+        en: 'Asynchronous GPU-query completion cannot be reliably attributed to one action window, so GPU metrics remain page-scoped.',
+    },
+    'renderer-evidence-bridge-unavailable': {
+        zhCN: '页面没有可用的 Condev 渲染器证据 bridge，无法读取显式 renderer / GPU 样本。',
+        en: 'No Condev renderer-evidence bridge was available on the page, so explicit renderer or GPU samples could not be read.',
     },
     'continuous-input-observation-is-sampled': {
         zhCN: '连续输入采用采样观测，不代表每个 pointermove 或 scroll 事件。',

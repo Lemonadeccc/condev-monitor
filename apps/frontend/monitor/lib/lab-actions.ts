@@ -37,10 +37,12 @@ const DEFAULT_BUDGET_V3_RULE_IDS = Object.freeze([
     'lighthouse-first-contentful-paint',
     'lighthouse-total-blocking-time',
 ] as const)
-const DEFAULT_BUDGET_RULE_IDS_BY_VERSION: Readonly<Record<1 | 2 | 3, ReadonlySet<string>>> = Object.freeze({
+const DEFAULT_BUDGET_V4_RULE_IDS = Object.freeze([...DEFAULT_BUDGET_V3_RULE_IDS, 'renderer-gpu-frame-tail'] as const)
+const DEFAULT_BUDGET_RULE_IDS_BY_VERSION: Readonly<Record<1 | 2 | 3 | 4, ReadonlySet<string>>> = Object.freeze({
     1: new Set(DEFAULT_BUDGET_V1_RULE_IDS),
     2: new Set(DEFAULT_BUDGET_V1_RULE_IDS),
     3: new Set(DEFAULT_BUDGET_V3_RULE_IDS),
+    4: new Set(DEFAULT_BUDGET_V4_RULE_IDS),
 })
 
 const ACTION_KINDS = new Set<LabActionKind>(['wait', 'click', 'hover', 'pointer-path', 'scroll', 'resize', 'drag', 'press'])
@@ -104,7 +106,7 @@ export function resolveLabBudgetRule(
     if (
         ref.catalogVersion !== 1 ||
         ref.budgetId !== 'condev.animation.default' ||
-        (budgetVersion !== 1 && budgetVersion !== 2 && budgetVersion !== 3) ||
+        (budgetVersion !== 1 && budgetVersion !== 2 && budgetVersion !== 3 && budgetVersion !== 4) ||
         !contract ||
         contract.budgetRef.catalogVersion !== ref.catalogVersion ||
         contract.budgetRef.budgetId !== ref.budgetId ||
@@ -220,6 +222,15 @@ export function resolveLabBudgetRule(
                 target: 200,
                 unit: 'ms',
                 minimumSamples: 1,
+                zeroEventCountIsComplete: false,
+            }
+        case 'renderer-gpu-frame-tail':
+            return {
+                comparator: '<=',
+                metricId: 'renderer.gpu-frame.p95',
+                target: contract.targetFrameMs * 0.8,
+                unit: 'ms',
+                minimumSamples: 30,
                 zeroEventCountIsComplete: false,
             }
         default:

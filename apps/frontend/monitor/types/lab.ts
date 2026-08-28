@@ -103,7 +103,7 @@ export type LabMeasurementContract = {
     source: 'explicit' | 'observed' | 'inferred' | 'package-default' | 'unknown'
     confidence: LabEvidenceConfidence
     budgetRef: LabBudgetRef
-    metricCatalogVersion: 1 | 2 | 3
+    metricCatalogVersion: 1 | 2 | 3 | 4
 }
 
 export type LabTechnologyAxis =
