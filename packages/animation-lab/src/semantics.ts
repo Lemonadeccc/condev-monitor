@@ -25,6 +25,7 @@ const MAX_FINDINGS = 256
 const MAX_REFS = 64
 const MAX_LIMITATIONS = 32
 const MAX_WINDOW_MS = 3_600_000
+const AGGREGATE_SAMPLE_OVERFLOW_LIMITATION = 'aggregate-sample-count-exceeds-contract-bound'
 
 const ACTION_KINDS = new Set(['wait', 'click', 'hover', 'pointer-path', 'scroll', 'resize', 'drag', 'press'])
 const SUBJECT_SCOPES = new Set(['page', 'route', 'frame', 'subject', 'renderer-surface', 'media'])
@@ -435,6 +436,7 @@ function validateMetric(value: unknown, index: number, metricCatalogVersion: Lab
     tokenArray(value.limitations, `${label}.limitations`, errors, MAX_LIMITATIONS)
     if (value.metricId === 'media.video-window-dropped-frame-rate') {
         const scope = record(value.scope) ? value.scope : null
+        const aggregation = record(value.aggregation) ? value.aggregation : null
         const limitations = Array.isArray(value.limitations)
             ? value.limitations.filter((item): item is string => typeof item === 'string')
             : []
@@ -448,9 +450,17 @@ function validateMetric(value: unknown, index: number, metricCatalogVersion: Lab
         if (required.some(limitation => !limitations.includes(limitation))) {
             add(errors, `${label}:video-window-missing-boundary-limitations`)
         }
+        const aggregateSamplesOverflow =
+            scope?.level === 'action' &&
+            scope.attemptId === undefined &&
+            aggregation?.population === 'attempts' &&
+            aggregation.method === 'median-of-attempts' &&
+            value.status === 'partial' &&
+            value.samples === null &&
+            limitations.includes(AGGREGATE_SAMPLE_OVERFLOW_LIMITATION)
         if (
             (value.status === 'measured' || value.status === 'partial') &&
-            (!integer(value.samples, 1, 10_000_000) || value.value === null)
+            ((!integer(value.samples, 1, 10_000_000) && !aggregateSamplesOverflow) || value.value === null)
         ) {
             add(errors, `${label}:video-window-needs-positive-frame-delta`)
         }

@@ -340,6 +340,19 @@ describe('resolveLabBudgetRule', () => {
         assert.equal(evaluateLabBudgetMetric(metric({ value: 1, samples: 1, status: 'partial' }), ref(2), contract(2)), 'candidate-breach')
         assert.equal(evaluateLabBudgetMetric(metric({ status: 'partial' }), ref(2), contract(2)), 'insufficient-evidence')
         assert.equal(evaluateLabBudgetMetric(metric({ samples: null }), ref(2), contract(2)), 'insufficient-evidence')
+        assert.equal(
+            evaluateLabBudgetMetric(
+                metric({
+                    value: 1,
+                    samples: null,
+                    status: 'partial',
+                    limitations: ['aggregate-sample-count-exceeds-contract-bound'],
+                }),
+                ref(2),
+                contract(2)
+            ),
+            'insufficient-evidence'
+        )
         assert.equal(evaluateLabBudgetMetric(metric({ samples: 1 }), ref(2), contract(2)), 'insufficient-evidence')
         assert.equal(evaluateLabBudgetMetric(metric({ value: 1 }), ref(2), contract(2)), 'insufficient-evidence')
 

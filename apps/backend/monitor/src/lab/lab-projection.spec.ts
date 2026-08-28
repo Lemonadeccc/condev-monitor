@@ -1311,6 +1311,24 @@ describe('lab platform artifact projections', () => {
         aggregateLighthouse.aggregation = { population: 'events', method: 'sum' }
         attemptLighthouse.aggregation = { population: 'events', method: 'sum' }
         expect(() => parseAnimationReportArtifact(forgedAggregation)).toThrow('conflicts with its lighthouse attempt')
+
+        const forgedDiagnosticOverflow = diagnosticProjectionReportV3()
+        const overflowTraceAttempt = forgedDiagnosticOverflow.attempts
+            .find(attempt => attempt.phase === 'diagnostic-trace')!
+            .metrics.find(metric => metric.metricId === 'trace.script.duration')!
+        const overflowTraceAggregate = forgedDiagnosticOverflow.aggregateMetrics.find(
+            metric => metric.metricId === 'trace.script.duration'
+        )!
+        for (const metricValue of [overflowTraceAttempt, overflowTraceAggregate]) {
+            Object.assign(metricValue, {
+                samples: null,
+                status: 'measured',
+                limitations: ['aggregate-sample-count-exceeds-contract-bound'],
+            })
+        }
+        expect(() => parseAnimationReportArtifact(forgedDiagnosticOverflow)).toThrow(
+            'cannot use the repeated-attempt sample overflow limitation'
+        )
     })
 
     it('keeps a real-scale action catalog in raw analysis without overflowing the persisted summary', () => {
@@ -2013,7 +2031,7 @@ describe('lab platform artifact projections', () => {
             expandedMetric({
                 value: 0.2,
                 samples: null,
-                status: 'measured',
+                status: 'partial',
                 limitations: ['eligible-attempts-3', 'total-attempts-3', 'aggregate-sample-count-exceeds-contract-bound'],
             }),
         ]
@@ -2021,8 +2039,16 @@ describe('lab platform artifact projections', () => {
 
         const parsed = parseAnimationReportArtifact(report)
         expect(parsed.analysis?.metrics[0]?.samples).toBeNull()
+        expect(parsed.analysis?.metrics[0]?.status).toBe('partial')
         expect(parsed.analysis?.metrics[0]?.limitations).toContain('aggregate-sample-count-exceeds-contract-bound')
         expect(parsed.compactSummary.metrics?.[0]?.samples).toBeNull()
+        expect(parsed.compactSummary.metrics?.[0]?.status).toBe('partial')
+
+        report.aggregateMetrics[0]!.status = 'measured'
+        const normalizedLegacy = parseAnimationReportArtifact(report)
+        expect(normalizedLegacy.analysis?.metrics[0]?.status).toBe('partial')
+        expect(normalizedLegacy.compactSummary.metrics?.[0]?.status).toBe('partial')
+        report.aggregateMetrics[0]!.status = 'partial'
 
         report.aggregateMetrics[0]!.samples = 10_000_000
         expect(() => parseAnimationReportArtifact(report)).toThrow('conflicts with measured attempts')
@@ -2035,7 +2061,11 @@ describe('lab platform artifact projections', () => {
         report.attempts.forEach((attempt, index) => {
             attempt.metrics[0]!.samples = boundarySamples[index]!
         })
-        report.aggregateMetrics[0]!.samples = 10_000_000
+        Object.assign(report.aggregateMetrics[0]!, {
+            samples: 10_000_000,
+            status: 'measured',
+            limitations: ['eligible-attempts-3', 'total-attempts-3'],
+        })
         expect(parseAnimationReportArtifact(report).analysis?.metrics[0]?.samples).toBe(10_000_000)
 
         Object.assign(report.aggregateMetrics[0]!, { samples: null })
@@ -2059,6 +2089,63 @@ describe('lab platform artifact projections', () => {
 
         report.aggregateMetrics[0]!.samples = 10_000_000
         expect(() => parseAnimationReportArtifact(report)).toThrow('conflicts with measured attempts')
+    })
+
+    it('accepts catalog v3 video-window aggregate overflow while retaining positive attempt deltas', () => {
+        const report = animationReportV2()
+        report.measurementContract.metricCatalogVersion = 3
+        const baseAttempt = report.attempts[0]!
+        report.attempts = [0.01, 0.03, 0.05].map((value, index) => {
+            const attemptId = `attempt_${index + 1}`
+            return {
+                ...baseAttempt,
+                attemptId,
+                index,
+                capabilities: { ...baseAttempt.capabilities, videoPlaybackQuality: true },
+                limitations: [...baseAttempt.limitations],
+                actionWindows: [actionWindow()],
+                metrics: [
+                    videoWindowMetric({
+                        value,
+                        samples: 4_000_000,
+                        scope: { level: 'action', attemptId, actionId: 'hero-hover-01' },
+                        aggregation: { population: 'media-frames', method: 'ratio' },
+                    }),
+                ],
+            }
+        })
+        report.aggregateMetrics = [
+            videoWindowMetric({
+                value: 0.03,
+                samples: null,
+                status: 'partial',
+                limitations: [
+                    'video-playback-quality-window-counter-delta',
+                    'video-playback-quality-total-includes-displayed-and-dropped',
+                    'video-playback-quality-window-object-identity-only',
+                    'video-playback-quality-not-decode-presentation-or-gpu-timing',
+                    'eligible-attempts-3',
+                    'total-attempts-3',
+                    'aggregate-sample-count-exceeds-contract-bound',
+                ],
+            }),
+        ]
+        report.findings = []
+
+        const parsed = parseAnimationReportArtifact(report)
+        expect(parsed.analysis?.metrics[0]).toEqual(
+            expect.objectContaining({
+                metricId: 'media.video-window-dropped-frame-rate',
+                value: 0.03,
+                samples: null,
+                status: 'partial',
+            })
+        )
+
+        report.aggregateMetrics[0]!.limitations = report.aggregateMetrics[0]!.limitations.filter(
+            limitation => limitation !== 'aggregate-sample-count-exceeds-contract-bound'
+        )
+        expect(() => parseAnimationReportArtifact(report)).toThrow('video window measurement requires a positive frame delta')
     })
 
     it('requires every measured attempt to back action aggregates with the matching metric and capability', () => {

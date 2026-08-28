@@ -46,7 +46,8 @@ export function aggregateMeasuredAttempts(attempts: readonly LabAttemptSummary[]
             values.length >= 3 &&
             values.length === measuredAttempts.length &&
             group.length === measuredAttempts.length &&
-            group.every(metric => metric.status === 'measured')
+            group.every(metric => metric.status === 'measured') &&
+            retainedSamples !== null
                 ? 'measured'
                 : values.length > 0
                   ? 'partial'

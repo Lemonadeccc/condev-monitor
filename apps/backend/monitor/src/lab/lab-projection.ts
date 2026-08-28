@@ -433,6 +433,22 @@ function expandedMetric(value: ParsedMetric): value is AnimationLabMetricV2Proje
     return 'metricId' in value && typeof value.metricId === 'string' && 'scope' in value && typeof value.scope === 'object'
 }
 
+function normalizeVerifiedLegacyAggregateSampleOverflow<T extends ParsedMetric>(
+    metricValue: T,
+    verifiedLegacyOverflowIdentities: ReadonlySet<string>
+): T {
+    if (
+        expandedMetric(metricValue) &&
+        verifiedLegacyOverflowIdentities.has(aggregateScopeIdentity(metricValue)) &&
+        metricValue.status === 'measured' &&
+        metricValue.samples === null &&
+        metricValue.limitations.includes(ANIMATION_LAB_AGGREGATE_SAMPLE_OVERFLOW_LIMITATION)
+    ) {
+        return { ...metricValue, status: 'partial' } as T
+    }
+    return metricValue
+}
+
 function aggregateScopeIdentity(metricValue: AnimationLabMetricV2Projection): string {
     const scope = metricValue.scope
     const level = scope.level === 'attempt' ? 'run' : scope.level
@@ -589,12 +605,13 @@ function assertV2AggregateMetrics(
         metrics: readonly ParsedMetric[]
         capabilities: Readonly<Record<string, boolean | null>>
     }[]
-): void {
+): ReadonlySet<string> {
     if (aggregateMetrics.some(item => !expandedMetric(item))) {
         throw new BadRequestException('animation-report.aggregateMetrics must use expanded catalog metrics')
     }
     const aggregates = aggregateMetrics.filter(expandedMetric)
     const aggregateIdentities = new Set<string>()
+    const verifiedLegacyOverflowIdentities = new Set<string>()
     for (const metricValue of aggregates) {
         if (metricValue.scope.level === 'attempt' || metricValue.scope.attemptId !== undefined) {
             throw new BadRequestException('animation-report.aggregateMetrics cannot use attempt scope')
@@ -637,6 +654,11 @@ function assertV2AggregateMetrics(
     for (const metricValue of aggregates) {
         const diagnosticPhase = diagnosticPhaseForMetric(metricValue.metricId)
         if (diagnosticPhase !== null) {
+            if (metricValue.limitations.includes(ANIMATION_LAB_AGGREGATE_SAMPLE_OVERFLOW_LIMITATION)) {
+                throw new BadRequestException(
+                    `animation-report.aggregateMetrics ${metricValue.metricId} cannot use the repeated-attempt sample overflow limitation`
+                )
+            }
             assertDiagnosticAggregateMetric(metricValue, diagnosticPhase, attemptsValue)
             continue
         }
@@ -662,8 +684,10 @@ function assertV2AggregateMetrics(
         ) {
             throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} conflicts with measured attempts`)
         }
-        const expectedStatus: AnimationLabMetricV2Projection['status'] =
+        const hasCompleteAttemptCoverage =
             values.length >= 3 && values.length === measuredAttempts.length && sourceMetrics.every(item => item.status === 'measured')
+        const expectedStatus: AnimationLabMetricV2Projection['status'] =
+            hasCompleteAttemptCoverage && !samplesOverflow
                 ? 'measured'
                 : values.length > 0
                   ? 'partial'
@@ -684,8 +708,9 @@ function assertV2AggregateMetrics(
             ...aggregateAttemptCoverageLimitations(values.length, measuredAttempts.length),
             ...(samplesOverflow ? [ANIMATION_LAB_AGGREGATE_SAMPLE_OVERFLOW_LIMITATION] : []),
         ]
+        const legacyMeasuredOverflow = samplesOverflow && hasCompleteAttemptCoverage && metricValue.status === 'measured'
         if (
-            metricValue.status !== expectedStatus ||
+            (metricValue.status !== expectedStatus && !legacyMeasuredOverflow) ||
             metricValue.value !== expectedValue ||
             metricValue.samples !== expectedSamples ||
             metricValue.evidenceLevel !== expectedEvidenceLevel ||
@@ -695,6 +720,7 @@ function assertV2AggregateMetrics(
         ) {
             throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} conflicts with measured attempts`)
         }
+        if (legacyMeasuredOverflow) verifiedLegacyOverflowIdentities.add(identity)
 
         const capabilityValues = measuredAttempts.map(item => aggregateCapabilityForMetric(metricValue.metricId, item.capabilities))
         if (!capabilityBacked) continue
@@ -749,6 +775,7 @@ function assertV2AggregateMetrics(
             throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} conflicts with mixed capabilities`)
         }
     }
+    return verifiedLegacyOverflowIdentities
 }
 
 function metrics(
@@ -1345,17 +1372,30 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
             throw new BadRequestException('animation-report timeline does not match an executed CDP Trace')
         }
     }
-    const aggregateMetrics = metrics(
+    const parsedAggregateMetrics = metrics(
         raw.aggregateMetrics,
         'animation-report.aggregateMetrics',
         256,
         semanticsV2,
         semanticsV2 ? metricCatalogVersion : undefined
     )
+    const verifiedLegacyOverflowIdentities = semanticsV2
+        ? assertV2AggregateMetrics(parsedAggregateMetrics, parsedAttempts)
+        : new Set<string>()
     if (semanticsV2) {
-        assertV2AggregateMetrics(aggregateMetrics, parsedAttempts)
         assertAnimationLabCanonicalFindings(analysis!)
     }
+    const aggregateMetrics = parsedAggregateMetrics.map(metricValue =>
+        normalizeVerifiedLegacyAggregateSampleOverflow(metricValue, verifiedLegacyOverflowIdentities)
+    )
+    const normalizedAnalysis = analysis
+        ? {
+              ...analysis,
+              metrics: analysis.metrics.map(metricValue =>
+                  normalizeVerifiedLegacyAggregateSampleOverflow(metricValue, verifiedLegacyOverflowIdentities)
+              ),
+          }
+        : null
     if (raw.timeline !== undefined) parseTraceIndexArtifact(raw.timeline)
     const parsedLighthouse = raw.lighthouse === undefined ? null : lighthouse(raw.lighthouse, semanticsV2, metricCatalogVersion)
     if (parsedScenario.execution) {
@@ -1431,7 +1471,7 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
     return {
         runId: reportRunId,
         compactSummary,
-        analysis,
+        analysis: normalizedAnalysis,
         measuredAttempts,
         context: {
             startedAt,

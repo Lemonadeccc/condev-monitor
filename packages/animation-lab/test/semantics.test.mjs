@@ -525,6 +525,51 @@ test('accepts the windowed video metric only when the measurement contract selec
     assert.ok(legacy.errors.includes('metrics[0]:unknown-metric-id'))
 })
 
+test('accepts a disclosed aggregate video sample overflow without weakening attempt evidence', () => {
+    const input = semantics()
+    input.measurementContract.metricCatalogVersion = 3
+    input.metrics = [
+        {
+            metricId: 'media.video-window-dropped-frame-rate',
+            family: 'resourcesMedia',
+            name: 'videoWindowDroppedFrameRate',
+            stat: 'ratio',
+            unit: 'ratio',
+            value: 0.03,
+            samples: null,
+            status: 'partial',
+            evidenceLevel: 'controlled-lab-measurement',
+            scope: { level: 'action', actionId: 'hero-hover-01' },
+            aggregation: { population: 'attempts', method: 'median-of-attempts' },
+            budgetRefs: [],
+            evidenceRefs: ['technology.browser.chromium'],
+            limitations: [
+                'video-playback-quality-window-counter-delta',
+                'video-playback-quality-total-includes-displayed-and-dropped',
+                'video-playback-quality-window-object-identity-only',
+                'video-playback-quality-not-decode-presentation-or-gpu-timing',
+                'aggregate-sample-count-exceeds-contract-bound',
+            ],
+        },
+    ]
+    input.findings = []
+    assert.equal(validateAnimationLabSemanticsV2(input).ok, true)
+
+    const attemptScoped = structuredClone(input)
+    attemptScoped.metrics[0].scope.attemptId = 'measured-01'
+    const attemptResult = validateAnimationLabSemanticsV2(attemptScoped)
+    assert.equal(attemptResult.ok, false)
+    assert.ok(attemptResult.errors.includes('metrics[0]:video-window-needs-positive-frame-delta'))
+
+    const undisclosed = structuredClone(input)
+    undisclosed.metrics[0].limitations.pop()
+    assert.equal(validateAnimationLabSemanticsV2(undisclosed).ok, false)
+
+    const measured = structuredClone(input)
+    measured.metrics[0].status = 'measured'
+    assert.equal(validateAnimationLabSemanticsV2(measured).ok, false)
+})
+
 test('measurement contract validator fails closed on unknown fields', () => {
     const value = semantics().measurementContract
     value.expectedFpsLabel = 'from DOM'

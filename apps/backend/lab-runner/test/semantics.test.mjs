@@ -687,6 +687,40 @@ test('aggregates catalog v3 action-window video deltas without changing the cumu
     })
     assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
     assert.equal(semantics.metrics[0].scope.level, 'action')
+
+    const overflowAttempts = attempts.map(attempt => ({
+        ...attempt,
+        metrics: attempt.metrics.map(metric => ({ ...metric, samples: 4_000_000 })),
+    }))
+    const overflowAggregateMetrics = aggregateMeasuredAttempts(overflowAttempts)
+    const overflowSemantics = buildAnimationLabSemantics({
+        scenario: {
+            ...scenario,
+            measurementContract: {
+                contractVersion: 2,
+                expectedHz: 60,
+                targetFrameMs: 16.666667,
+                source: 'explicit',
+                confidence: 'explicit',
+                budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
+                metricCatalogVersion: 3,
+            },
+        },
+        browser: { name: 'chromium', version: '140.0.0' },
+        attempts: overflowAttempts,
+        aggregateMetrics: overflowAggregateMetrics,
+    })
+    assert.deepEqual(
+        overflowAggregateMetrics.map(metric => ({
+            metricId: metric.metricId,
+            value: metric.value,
+            samples: metric.samples,
+            status: metric.status,
+        })),
+        [{ metricId: 'media.video-window-dropped-frame-rate', value: 0.03, samples: null, status: 'partial' }]
+    )
+    assert.ok(overflowAggregateMetrics[0].limitations.includes('aggregate-sample-count-exceeds-contract-bound'))
+    assert.equal(validateAnimationLabSemanticsV2(overflowSemantics).ok, true)
 })
 
 test('aggregates catalog v4 renderer evidence while keeping GPU page-scoped', () => {
@@ -1081,7 +1115,7 @@ test('uses a true even-sample median for metrics and action windows', () => {
     assert.equal(semantics.actionWindows[0].timestamps.durationMs, 60)
 })
 
-test('keeps a measured aggregate valid when summed sample counts exceed the report bound', () => {
+test('marks an aggregate partial when the exact summed sample count exceeds the report bound', () => {
     const attempts = Array.from({ length: 3 }, (_, index) => {
         const attemptId = `bounded-samples-${index}`
         return {
@@ -1120,7 +1154,7 @@ test('keeps a measured aggregate valid when summed sample counts exceed the repo
 
     assert.equal(aggregateMetrics[0].value, 0.2)
     assert.equal(aggregateMetrics[0].samples, null)
-    assert.equal(aggregateMetrics[0].status, 'measured')
+    assert.equal(aggregateMetrics[0].status, 'partial')
     assert.ok(aggregateMetrics[0].limitations.includes('aggregate-sample-count-exceeds-contract-bound'))
     assert.equal(validateAnimationLabSemanticsV2(semantics).ok, true)
     assert.equal(semantics.findings.length, 0)

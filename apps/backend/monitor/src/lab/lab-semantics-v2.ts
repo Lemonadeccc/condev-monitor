@@ -746,7 +746,14 @@ export function parseAnimationLabMetricV2(
         if (scope.level !== 'action' || required.some(limitation => !limitations.includes(limitation))) {
             throw new BadRequestException(`${label} has an invalid video window evidence contract`)
         }
-        if ((status === 'measured' || status === 'partial') && (samples === null || samples <= 0)) {
+        const aggregateSamplesOverflow =
+            scope.attemptId === undefined &&
+            aggregation.population === 'attempts' &&
+            aggregation.method === 'median-of-attempts' &&
+            status === 'partial' &&
+            samples === null &&
+            limitations.includes(ANIMATION_LAB_AGGREGATE_SAMPLE_OVERFLOW_LIMITATION)
+        if ((status === 'measured' || status === 'partial') && ((samples === null && !aggregateSamplesOverflow) || samples === 0)) {
             throw new BadRequestException(`${label} video window measurement requires a positive frame delta`)
         }
         if (
