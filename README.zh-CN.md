@@ -677,6 +677,29 @@ export class AnimatedCard {
 
 这里仍然只有一个 Browser client 和一次 `init()`。公开的 `ngDoCheck` 到 `ngAfterViewChecked` 区间只记为**组件检查窗口**：它可能包含后代检查，也不能证明发生了 DOM 变更。Angular 20+ 的应用级 `afterEveryRender({ read })` 只用于在页面 DOM 渲染后同步匿名 target 归属；它不与组件窗口拼接，也不产生耗时。两者都不会被标成 render、commit、DOM update、paint 或 GPU 时间。真实 Element 只留在本地；显式授权的语义化 RUM v2 target 最多只投影闭集 `angular` framework 与 `framework-adapter` capability，不会上传组件名、inputs、state、文字、selector、class、id 或 URL。
 
+### Svelte 集成
+
+```svelte
+<script lang="ts">
+    import { condevAnimationTarget, init, useCondevAnimation } from '@condev-monitor/svelte/animation'
+
+    const monitor = init({
+        dsn: 'https://monitor.example.com/tracking/<appId>',
+        performance: true,
+        animation: { devtools: import.meta.env.DEV },
+    })
+
+    let count = $state(0)
+    const condev = useCondevAnimation({ client: monitor })
+
+    $effect.pre(() => condev.trackPendingStateWindow(count))
+</script>
+
+<button use:condevAnimationTarget={condev} onclick={() => count += 1}>{count}</button>
+```
+
+这里仍然只有一个 Browser client 和一次 `init()`。Svelte-aware 的 `/animation` 入口因为使用 Svelte 5 ESM runtime 而仅提供 ESM；不感知框架的 package root 仍保留 CommonJS 导出。runes 模式下，第一次 `$effect.pre` 只为 scope 预热；后续调用开始一个追踪依赖窗口，并在公开 `tick()` 确认 pending state changes 已应用后闭合。runes 模式没有公开的组件级统一 before/after update 生命周期，因此这个窗口不能证明当前组件或 target 确实修改了 DOM，也不会被标成 render、commit、paint 或 GPU 时间。需要触发观测的 state 或 derived value 都应作为参数传入。action 只把真实 Element 和匿名 owner 证据留在本地内存；显式授权的语义化 RUM v2 target 最多投影闭集 `svelte` framework 与 `framework-adapter` capability，不保留或上传依赖值、组件名、props、state、文字、selector、class、id 或 URL。本地有界 `getDiagnostics()` 计数会把 adapter 失败与空闲 scope 区分开，但不会上传这些诊断。
+
 ### 浏览器 SDK 快速开始
 
 ```ts
