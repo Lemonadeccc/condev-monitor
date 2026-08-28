@@ -231,6 +231,21 @@ for (const backend of ['webgl', 'webgl2']) {
         assert.equal(fake.calls.includes(backend === 'webgl' ? 'gl.createQuery' : 'ext.createQueryEXT'), false)
         timer.dispose()
     })
+
+    test(`${backend} cancelFrame reports deletion failure instead of claiming cancellation`, () => {
+        const deleteCall = backend === 'webgl' ? 'ext.deleteQueryEXT' : 'gl.deleteQuery'
+        const fake = createFakeContext(backend, { throwOn: [deleteCall] })
+        const timer = createWebGlGpuTimer({ gl: fake.gl, backend, sampleEvery: 1 })
+
+        assert.equal(timer.beginFrame(), true)
+        assert.equal(timer.cancelFrame(), false)
+        assert.equal(timer.getSnapshot().cancelledQueryCount, 0)
+        assert.equal(timer.getSnapshot().capability, 'error')
+        assert.equal(timer.getSnapshot().errorCount, 1)
+        assert.equal(timer.takeLatestEvidence()?.status, 'error')
+        assert.equal(fake.calls.filter(call => call === deleteCall).length, 1)
+        timer.dispose()
+    })
 }
 
 for (const backend of ['webgl', 'webgl2']) {
@@ -669,6 +684,35 @@ test('dispose balances owned active queries, deletes each query once, and is ide
     assert.doesNotThrow(() => timer.poll())
     assert.equal(timer.takeLatestEvidence(), null)
 })
+
+for (const backend of ['webgl', 'webgl2']) {
+    test(`${backend} cancelFrame balances and deletes an active query without retaining evidence`, () => {
+        const fake = createFakeContext(backend)
+        const timer = createWebGlGpuTimer({ gl: fake.gl, backend, sampleEvery: 1 })
+
+        assert.equal(timer.beginFrame(), true)
+        assert.equal(timer.cancelFrame(), true)
+        assert.equal(timer.cancelFrame(), false)
+        assert.equal(timer.takeLatestEvidence(), null)
+        assert.deepEqual(timer.getSnapshot(), {
+            ...timer.getSnapshot(),
+            active: false,
+            pendingQueryCount: 0,
+            evidenceBuffered: false,
+            startedQueryCount: 1,
+            cancelledQueryCount: 1,
+            acceptedTargetSampleCount: 0,
+            retainedTargetSampleCount: 0,
+            rejectedTargetSampleCount: 0,
+        })
+        assert.equal(fake.queries[0].deleteCount, 1)
+        assert.equal(timer.inspectWindow(targetWindow(0, 10)).capability.observed, false)
+
+        assert.equal(timer.beginFrame(), true)
+        assert.equal(timer.endFrame(), true)
+        timer.dispose()
+    })
+}
 
 function targetWindow(startedAt, endedAt, relation = 'selection-window') {
     return { startedAt, endedAt, relation }
