@@ -624,6 +624,24 @@ root.render(
 
 这里仍然只有一个 Browser client 和一次 `init()`。animation 入口也会继续导出 React 包原有的 ErrorBoundary 和用户 hooks，因此混合使用时不需要拆成两个包入口。该包装器使用 React 官方 `Profiler`，只记录匿名子树渲染时长，不保留 Profiler id、组件名、props 或 state；也不会把 React 的 `commitTime` 冒充 commit 耗时：它只是传入 adapter 的时间戳，最终有界记录使用 SDK 自己的单调采集时钟。标准 React 生产构建默认关闭 Profiler 回调，因此只有在明确授权并衡量额外开销后，才应使用启用 profiling 的 React 构建采集生产框架证据；不使用该包装器也不影响页面级动效采集。
 
+### Vue 集成
+
+```ts
+import { init, useCondevAnimation } from '@condev-monitor/vue/animation'
+import { ref } from 'vue'
+
+const monitor = init({
+    dsn: 'https://monitor.example.com/tracking/<appId>',
+    performance: true,
+    animation: { devtools: import.meta.env.DEV },
+})
+
+const host = ref<HTMLElement | null>(null)
+useCondevAnimation({ client: monitor, getTarget: () => host.value })
+```
+
+这个 composable 必须在 `setup()` 中同步调用。它只使用 Vue 官方 `onBeforeUpdate` 与 `onUpdated` 生命周期，并把两者之间的耗时作为**更新窗口**写入同一个 Browser client。这个窗口可能包含组件及同步后代更新、DOM patch，以及落在两个回调之间的生命周期工作，因此 Condev 不会把它标成 Vue render、commit、paint 或 GPU 时间。可选的真实元素身份与原始 owner 证据只留在页面内存；如果应用另外把该元素授权为语义化 RUM v2 target，只会投影闭集 `vue` framework 与 `framework-adapter` capability，不保留或上传组件名、props、state、文字、selector、class、id 或 URL。不使用 composable 也不影响页面级动效采集。
+
 ### 浏览器 SDK 快速开始
 
 ```ts
@@ -817,6 +835,7 @@ POST /api/sourcemap/upload
 - `@condev-monitor/monitor-sdk-browser`
 - `@condev-monitor/monitor-sdk-ai`
 - `@condev-monitor/react`
+- `@condev-monitor/vue`
 - `@condev-monitor/nextjs`
 
 建议流程：
@@ -837,7 +856,8 @@ pnpm -r --filter "./packages/*" publish --access public --no-git-checks
 4. `@condev-monitor/monitor-sdk-browser`
 5. `@condev-monitor/monitor-sdk-ai`
 6. `@condev-monitor/react`
-7. `@condev-monitor/nextjs`
+7. `@condev-monitor/vue`
+8. `@condev-monitor/nextjs`
 
 ### Python 包
 

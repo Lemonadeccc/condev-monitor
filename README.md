@@ -718,6 +718,24 @@ root.render(
 
 This is still one Browser client and one `init()` call. The animation entry also re-exports the React package's ErrorBoundary and user hooks, so mixed imports do not need a second package entry. The wrapper uses React's public `Profiler`, records anonymous subtree render duration, and never retains the Profiler id, component names, props, or state. It does not manufacture commit duration: React's `commitTime` is passed only as an inbound adapter timestamp, while the bounded recorder stores the SDK's own monotonic capture time. Standard production React builds disable Profiler callbacks by default, so use a profiling-enabled React build only when production framework evidence is an intentional, measured opt-in; page-level animation collection continues without this wrapper.
 
+### Vue Integration
+
+```ts
+import { init, useCondevAnimation } from '@condev-monitor/vue/animation'
+import { ref } from 'vue'
+
+const monitor = init({
+    dsn: 'https://monitor.example.com/tracking/<appId>',
+    performance: true,
+    animation: { devtools: import.meta.env.DEV },
+})
+
+const host = ref<HTMLElement | null>(null)
+useCondevAnimation({ client: monitor, getTarget: () => host.value })
+```
+
+Call the composable synchronously in `setup()`. It uses Vue's public `onBeforeUpdate` and `onUpdated` hooks and reports their elapsed **update window** into the same Browser client. That window can include component and synchronous descendant updates, DOM patching, and lifecycle work between those callbacks, so Condev never labels it Vue render, commit, paint, or GPU time. The optional real-element identity and raw owner evidence stay in page memory. If the application separately authorizes that element as a semantic RUM v2 target, only the closed `vue` framework value and `framework-adapter` capability can be projected; component names, props, state, text, selectors, classes, IDs, and URLs are not retained or uploaded. Page-level animation evidence remains available without the composable.
+
 ### Browser SDK Quick Start
 
 ```ts
@@ -911,6 +929,7 @@ The publishable packages live under `packages/`:
 - `@condev-monitor/monitor-sdk-browser`
 - `@condev-monitor/monitor-sdk-ai`
 - `@condev-monitor/react`
+- `@condev-monitor/vue`
 - `@condev-monitor/nextjs`
 
 Suggested workflow:
@@ -931,7 +950,8 @@ If you need to publish one-by-one, use dependency order:
 4. `@condev-monitor/monitor-sdk-browser`
 5. `@condev-monitor/monitor-sdk-ai`
 6. `@condev-monitor/react`
-7. `@condev-monitor/nextjs`
+7. `@condev-monitor/vue`
+8. `@condev-monitor/nextjs`
 
 ### Python Package
 
