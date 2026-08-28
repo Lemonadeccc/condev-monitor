@@ -502,7 +502,7 @@ function ActionDetail({
                     </p>
                 ) : null}
                 <p className="mt-2 text-xs text-muted-foreground">
-                    平台只展开匹配 `condev.animation.default@1`、`@2` 或 `@3` 的本地版本化规则；未知 catalog 仍保持引用，不猜测阈值。
+                    平台只展开匹配 `condev.animation.default@1`、`@2`、`@3` 或 `@4` 的本地版本化规则；未知 catalog 仍保持引用，不猜测阈值。
                 </p>
             </section>
 
