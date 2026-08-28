@@ -1,6 +1,6 @@
 # Condev Monitor Animation Renderer
 
-Optional, framework-neutral renderer instrumentation for Condev Monitor animation monitoring. It supplies an explicit Canvas2D logical-frame recorder, GPU command-interval timers for WebGL 1/2, host-attested single- or multi-pass WebGPU renderer-frame command intervals, and explicit WebGPU transfer/readback observation.
+Optional, framework-neutral renderer instrumentation for Condev Monitor animation monitoring. It supplies an explicit Canvas2D logical-frame recorder, a public-counter Three.js adapter, GPU command-interval timers for WebGL 1/2, host-attested single- or multi-pass WebGPU renderer-frame command intervals, and explicit WebGPU transfer/readback observation.
 
 This package is intentionally separate from the Browser SDK. A Browser client cannot know an application's real renderer boundaries, so the application owns the integration: Canvas2D explicitly brackets one logical frame and reports only commands/transfers it can attest, WebGL places explicit begin/end calls around its render, while WebGPU instruments either one complete pass or the first/last pass boundaries of one command buffer, encodes resolve/copy, and confirms the associated submit. `pnpm build:sdk` already includes this package through the existing `@condev-monitor/monitor-sdk-*` filter; no extra root build script is required.
 
@@ -111,12 +111,17 @@ function renderFrame() {
     // Poll before beginFrame. One call examines at most the oldest pending query.
     gpuTimer.poll()
     const measuring = gpuTimer.beginFrame()
+    let complete = false
     try {
         renderer.render(scene, camera)
+        complete = true
     } finally {
-        if (measuring) gpuTimer.endFrame()
+        if (measuring) {
+            if (complete) gpuTimer.endFrame()
+            else gpuTimer.cancelFrame()
+        }
     }
-    rendererProbe.capture()
+    if (complete) rendererProbe.capture()
 }
 
 function destroyMonitoring() {
@@ -128,13 +133,55 @@ function destroyMonitoring() {
 
 `takeLatestEvidence()` remains available for low-level consumers. Prefer `takeRendererHostTiming()` with the generic renderer probe because it keeps an enabled-but-not-yet-resolved timer distinct from an unsupported or disabled timer. Legacy Three GPU readings with `valid/disjoint/contextLost` flags remain supported.
 
-`beginFrame()` and `endFrame()` must synchronously enclose one complete renderer frame. Do not put an `await` between them, and do not use the result for an arbitrary sub-region while naming it GPU frame time. The result measures completion of the enclosed GPU command interval; it does not measure browser composition, display scanout, INP, CPU submission time, or the entire page frame.
+`beginFrame()` and `endFrame()` must synchronously enclose one complete renderer frame. If application rendering throws or otherwise does not complete, call `cancelFrame()` instead: it balances and deletes the active query without adding pending, host, or target evidence. Do not put an `await` between the boundaries, and do not use the result for an arbitrary sub-region while naming it GPU frame time. The result measures completion of the enclosed GPU command interval; it does not measure browser composition, display scanout, INP, CPU submission time, or the entire page frame.
 
 The same timer can provide local selected-target evidence through its bound `inspect` callback, so a host can pass `gpuTimer.inspect` directly to `client.animation.registerTarget(canvas, ...)`. `inspectWindow()` and `inspect()` read a separate bounded history and do not consume or reset `takeLatestEvidence()` / `takeRendererHostTiming()`; repeated Overlay snapshots therefore do not manufacture new query samples. The target path reports the existing target-side source `webgl-timer-query`, while page host evidence keeps the more specific `webgl-disjoint-timer-query` source.
 
 Each sampled query retains the caller-clock bounds captured by `beginFrame()`/`endFrame()`. An asynchronous result is eligible only when that complete renderer-frame interval is wholly contained in the SDK selection or interaction window; merely overlapping a boundary is excluded, and a pending query remains not observed until it resolves. The normal same-document default uses `performance.now()` (with the existing fallback), while a custom `now` must share the target collector's clock domain. `maxRetainedFrames` bounds the local history. Eviction and rejected query evidence remain explicit through sample counts and truncation; forgotten evidence that cannot support exact window arithmetic is not converted into a partial percentile or zero.
 
 GPU validity remains fail-closed. Unsupported or pending queries, invalid results, a disjoint epoch, context loss, API errors, and a retained mixture whose validity cannot support one aggregate do not emit `gpuFrameMsP95`. Target inspection observes the registered WebGL canvas as one renderer surface; it does not identify or attribute Three meshes, Pixi display objects, Babylon meshes, shaders, textures, or pixels. The timer still does not patch the context or renderer, schedule rAF/timers, call `gl.finish()`/`gl.flush()`, or alter application rendering.
+
+## Three.js public renderer adapter
+
+`createThreeRendererAdapter()` reduces a Three WebGL integration to one explicit render-loop replacement. It accepts the Browser client's existing `animation` handle through a structural port, reads only public `renderer.info.autoReset`, `renderer.info.render`, `renderer.info.memory`, and `renderer.info.programs.length` fields, and writes into the existing closed renderer host/RUM v2 path. It imports neither Three nor the Browser/animation runtime, patches no renderer method, creates no frame scheduler, and never reads a scene, camera, mesh, material, shader, texture identity, selector, URL, or pixel. When `renderer.info.autoReset` is explicitly `false`, Three's render counters accumulate across frames, so the adapter omits calls/triangles/lines/points instead of relabelling cumulative values as per-frame evidence; resource inventory and independent GPU timing remain available.
+
+```ts
+import { init } from '@condev-monitor/monitor-sdk-browser/animation'
+import { createThreeRendererAdapter, createWebGlGpuTimer } from '@condev-monitor/monitor-sdk-animation-renderer'
+
+const client = init({
+    dsn: import.meta.env.VITE_MONITOR_DSN,
+    animation: { rum: { contractVersion: 2, sampleRate: 1 } },
+})
+const gpuTimer = createWebGlGpuTimer({
+    gl: renderer.getContext(),
+    backend: 'webgl2',
+    disjointQueryOwnership: 'exclusive',
+    sampleEvery: 60,
+})
+const monitor = createThreeRendererAdapter({
+    animation: client.animation,
+    renderer,
+    backend: 'webgl2',
+    gpuTimer: { timer: gpuTimer, ownership: 'adapter' },
+    // Explicit: registering replaces an older provider for this Element.
+    target: { element: renderer.domElement },
+})
+
+function renderFrame() {
+    updateScene()
+    monitor.render(scene, camera)
+    requestAnimationFrame(renderFrame)
+}
+
+window.addEventListener('pagehide', event => {
+    if (!event.persisted) monitor.dispose()
+})
+```
+
+The adapter calls `poll → beginFrame → renderer.render → endFrame → host capture`. If `renderer.render()` throws, it calls `cancelFrame()` and rethrows the exact application error. Three's public render contract is synchronous and returns `void`; a non-`undefined` result, including an opaque Promise, is returned unchanged without reading `then` or attaching handlers, but that attempt is not recorded as a complete renderer frame. Monitoring/timer/sink failures are isolated from successful application rendering. `dispose()` is idempotent and releases the timer only when ownership is explicitly `adapter`.
+
+Without `gpuTimer`, the adapter still promotes public draw-call and triangle counters to the existing page RUM v2 metrics and reports GPU timing as disabled. With the timer, page RUM can additionally receive resolved GPU p95. The optional explicit target registration reuses the timer's whole-canvas target-window evidence; it does not add per-mesh attribution. The current target renderer contract has one shared sample-count family, so this first adapter deliberately does not merge every-frame Three counters with sparse target GPU queries. Target draw-call/triangle correlation needs a future per-family composite contract rather than fabricated shared counts.
 
 ## WebGPU frame timers
 
