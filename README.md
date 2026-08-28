@@ -749,6 +749,30 @@ const condevGpuTiming = {
 
 The GPU mode adds one public root-scoped, earliest-priority `useFrame()` callback only inside each opted-in Canvas and shares one public `addAfterEffect()` completion subscription across monitored roots. It starts no loop and polls asynchronously without `gl.finish()`. Another Canvas cannot consume an inactive demand root's sparse sampling attempts, and a frame whose public Three sequence did not advance is cancelled rather than published. It reports only completed, non-disjoint, non-context-lost timer results. The interval covers WebGL commands submitted after Condev's root callback through R3F's global after-render phase; it cannot include work submitted by a global `addEffect()` callback or an equal-priority root callback that ran earlier. It does not prove browser-compositor presentation, identify a mesh/component or post-processing pass, or add Canvas-internal hit testing. Omit `gpuTiming` when exclusive ownership cannot be attested, and mount at most one GPU-enabled observer for a renderer. Use the optional local-only `onSetupError` callback when timer, adapter, or subscription setup failures must appear in application diagnostics; neither the error nor its cause is retained or uploaded by Condev.
 
+### Babylon.js Integration
+
+Keep the same Browser client and pass a caller-created public `SceneInstrumentation` to the optional renderer package:
+
+```ts
+import { SceneInstrumentation } from '@babylonjs/core/Instrumentation/sceneInstrumentation'
+import { PerfCounter } from '@babylonjs/core/Misc/perfCounter'
+import { createBabylonRendererAdapter } from '@condev-monitor/monitor-sdk-animation-renderer'
+
+if (!PerfCounter.Enabled) throw new Error('Babylon PerfCounter is disabled')
+
+const instrumentation = new SceneInstrumentation(scene)
+const babylonMonitor = createBabylonRendererAdapter({
+    animation: monitor.animation,
+    scene,
+    instrumentation,
+    backend: 'webgl2',
+    readPerfCounterEnabled: () => PerfCounter.Enabled,
+    instrumentationOwnership: 'adapter',
+})
+```
+
+The adapter passively reads Babylon's public per-scene draw-call counter after `scene.onAfterRenderObservable`. The live `PerfCounter.Enabled` reader prevents a runtime-disabled counter from becoming a false measured zero. It does not import Babylon, invoke `scene.render()`, alter the application's render loop, inspect `_drawCalls`, infer triangles/resources, or enable GPU queries. The existing page RUM v2 draw-call metric can consume the result; GPU completion, browser presentation, per-mesh/pass attribution, target-window evidence, and resource lifecycle remain explicitly uninstrumented.
+
 ### Vue Integration
 
 ```ts

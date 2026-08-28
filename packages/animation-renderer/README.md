@@ -189,6 +189,48 @@ R3F GPU timing covers WebGL commands submitted after Condev's earliest-priority 
 
 Without `gpuTimer`, the adapter still promotes public draw-call and triangle counters to the existing page RUM v2 metrics and reports GPU timing as disabled. With the timer, page RUM can additionally receive resolved GPU p95. The optional explicit target registration reuses the timer's whole-canvas target-window evidence; it does not add per-mesh attribution. The current target renderer contract has one shared sample-count family, so this first adapter deliberately does not merge every-frame Three counters with sparse target GPU queries. Target draw-call/triangle correlation needs a future per-family composite contract rather than fabricated shared counts.
 
+## Babylon.js public scene adapter
+
+`createBabylonRendererAdapter()` passively subscribes to Babylon's public `scene.onAfterRenderObservable` and reads only the caller-created public `SceneInstrumentation.drawCallsCounter.current/count`. It imports no Babylon package, calls no render method, starts no ticker or rAF, reads no private engine field, and never enables or disables Babylon instrumentation. The adapter requires the instrumentation's public `scene` identity to match the supplied scene and suppresses duplicate callbacks whose public `PerfCounter.count` did not advance.
+
+```ts
+import { SceneInstrumentation } from '@babylonjs/core/Instrumentation/sceneInstrumentation'
+import { PerfCounter } from '@babylonjs/core/Misc/perfCounter'
+import { init } from '@condev-monitor/monitor-sdk-browser/animation'
+import { createBabylonRendererAdapter } from '@condev-monitor/monitor-sdk-animation-renderer'
+
+const client = init({
+    dsn: import.meta.env.VITE_MONITOR_DSN,
+    animation: { rum: { contractVersion: 2, sampleRate: 1 } },
+})
+
+if (!PerfCounter.Enabled) {
+    throw new Error('Babylon PerfCounter is disabled; draw-call evidence is unavailable')
+}
+
+const instrumentation = new SceneInstrumentation(scene)
+const monitor = createBabylonRendererAdapter({
+    animation: client.animation,
+    scene,
+    instrumentation,
+    backend: 'webgl2',
+    readPerfCounterEnabled: () => PerfCounter.Enabled,
+    instrumentationOwnership: 'adapter',
+})
+
+// Existing application loop remains unchanged.
+engine.runRenderLoop(() => scene.render())
+
+// Optional when ownership is caller; scene disposal also tears down the adapter.
+window.addEventListener('pagehide', event => {
+    if (!event.persisted) monitor.dispose()
+})
+```
+
+`readPerfCounterEnabled` reads Babylon's public static flag before and after each counter snapshot. If the flag is false, throws, or changes while the snapshot is read, the adapter emits no sample and does not advance its deduplication sequence, so a runtime-disabled counter cannot look like a measured zero. The adapter never mutates that flag. It also permits at most one active adapter for the same monitor/scene pair. Default instrumentation ownership is `caller`; `adapter` ownership disposes the supplied instrumentation exactly once during explicit adapter disposal, scene disposal, or setup rollback.
+
+This first adapter reports only Babylon's sanctioned per-scene draw-call count into the existing page renderer/RUM v2 metric. It does not infer triangles from active indices, treat scene array lengths as GPU resource allocation, or read Babylon's private `_drawCalls`. It also does not enable or sample `EngineInstrumentation` GPU queries: engine-frame GPU timing has a different boundary and asynchronous lifecycle from a scene's after-render callback. WebGL/WebGPU draw accounting can therefore be compared only as Babylon engine command accounting, not as equivalent hardware work. Mesh/display-object attribution, per-pass timing, built-in GPU timing coordination, resource lifecycle, target-window evidence, context/device loss, browser presentation, and Pixi remain separate work.
+
 ## WebGPU frame timers
 
 The device must be created with the optional `timestamp-query` feature. An existing device cannot enable it later; a device without the feature remains a normal `unsupported` capability and allocates no timer resources.
