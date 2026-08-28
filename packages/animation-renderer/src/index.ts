@@ -1,3 +1,16 @@
+export { BabylonRendererAdapterOptionsError, createBabylonRendererAdapter } from './babylon-renderer-adapter'
+export type {
+    BabylonAnimationMonitorPort,
+    BabylonObservablePublicLike,
+    BabylonPerfCounterPublicLike,
+    BabylonRendererAdapter,
+    BabylonRendererAdapterOptions,
+    BabylonRendererBackend,
+    BabylonRendererHostReading,
+    BabylonRendererProbePort,
+    BabylonSceneInstrumentationPublicLike,
+    BabylonScenePublicLike,
+} from './babylon-renderer-adapter'
 export { Canvas2dRecorderOptionsError, createCanvas2dRecorder } from './canvas2d-recorder'
 export type {
     Canvas2dContextLike,
