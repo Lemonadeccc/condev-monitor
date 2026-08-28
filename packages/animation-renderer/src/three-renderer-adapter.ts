@@ -72,6 +72,12 @@ export interface ThreeRendererAdapter<Scene = unknown, Camera = unknown, Result 
      * sequence is required to reject initial and duplicate observations.
      */
     captureFrame(): boolean
+    /** Starts an optional GPU boundary before an externally owned render. */
+    beginExternalFrame(): boolean
+    /** Ends an externally owned GPU boundary and captures the completed public frame. */
+    completeExternalFrame(): boolean
+    /** Cancels an incomplete external boundary without publishing evidence. */
+    cancelExternalFrame(): boolean
     dispose(): void
 }
 
@@ -287,9 +293,12 @@ export function createThreeRendererAdapter<Scene = unknown, Camera = unknown, Re
     let disposed = false
     let capturing = false
     let lastCapturedFrame: number | undefined
+    let externalFrameActive = false
+    let externalTimerActive = false
+    let externalFrameStartSequence: number | undefined
 
     const captureCompletedFrame = (pollTimer: boolean, requireFrameSequence: boolean): boolean => {
-        if (disposed || capturing || !probe) return false
+        if (disposed || capturing || externalFrameActive || !probe) return false
         capturing = true
         try {
             if (pollTimer && timer) safeCall(() => timer.poll())
@@ -307,9 +316,21 @@ export function createThreeRendererAdapter<Scene = unknown, Camera = unknown, Re
         }
     }
 
+    const cancelExternalFrame = (): boolean => {
+        if (!externalFrameActive) return false
+        externalFrameActive = false
+        const measuring = externalTimerActive
+        externalTimerActive = false
+        externalFrameStartSequence = undefined
+        if (measuring && timer) safeCall(() => timer.cancelFrame())
+        return true
+    }
+
     return {
         render(scene: Scene, camera: Camera): Result {
             if (disposed) return renderer.render(scene, camera)
+
+            cancelExternalFrame()
 
             if (timer) safeCall(() => timer.poll())
             const measuring = timer ? safeBoolean(() => timer.beginFrame()) : false
@@ -336,8 +357,36 @@ export function createThreeRendererAdapter<Scene = unknown, Camera = unknown, Re
         captureFrame(): boolean {
             return captureCompletedFrame(true, true)
         },
+        beginExternalFrame(): boolean {
+            if (disposed || capturing) return false
+            cancelExternalFrame()
+            const frame = safeFrameSequence(renderer)
+            if (frame === undefined) return false
+            if (timer) safeCall(() => timer.poll())
+            externalFrameActive = true
+            externalFrameStartSequence = frame
+            externalTimerActive = timer ? safeBoolean(() => timer.beginFrame()) : false
+            return true
+        },
+        completeExternalFrame(): boolean {
+            if (disposed || capturing || !externalFrameActive) return false
+            const frame = safeFrameSequence(renderer)
+            const startFrame = externalFrameStartSequence
+            if (frame === undefined || startFrame === undefined || frame <= startFrame) {
+                cancelExternalFrame()
+                return false
+            }
+            externalFrameActive = false
+            const measuring = externalTimerActive
+            externalTimerActive = false
+            externalFrameStartSequence = undefined
+            if (measuring && timer) safeCall(() => timer.endFrame())
+            return captureCompletedFrame(false, true)
+        },
+        cancelExternalFrame,
         dispose(): void {
             if (disposed) return
+            cancelExternalFrame()
             disposed = true
             if (unregisterTarget) safeCall(unregisterTarget)
             safeCall(() => probe?.dispose())
