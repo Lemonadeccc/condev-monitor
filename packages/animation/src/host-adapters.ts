@@ -9,7 +9,7 @@
  */
 
 import { isHostGpuTimingSourceCompatible } from './gpu-timing-compatibility'
-import { BoundedRing, durationStatistics } from './statistics'
+import { BoundedRing, durationStatistics, percentile, round } from './statistics'
 import type { DurationStatistics } from './types'
 
 export type AnimationHostFramework = 'react' | 'preact' | 'vue' | 'angular' | 'svelte' | 'solid' | 'qwik' | 'lit' | 'vanilla' | 'other'
@@ -1108,6 +1108,342 @@ export function createGsapTickerObserver(options: GsapTickerObserverOptions): Gs
             deltas = new BoundedRing<number>(capacity)
             rejectedTickCount = 0
             slowTickTotalObservedCount = 0
+        },
+        dispose(): void {
+            if (disposed && !registered) return
+            collecting = false
+            disposed = true
+            removeListener('disposed', 'disposed')
+            status = 'disposed'
+        },
+    }
+}
+
+export type LenisScrollState = false | 'native' | 'smooth'
+
+/** Closed public Lenis values read from one emitted scroll event. */
+export interface LenisScrollEventLike {
+    isScrolling?: LenisScrollState
+    progress?: number
+    velocity?: number
+    lastVelocity?: number
+    direction?: -1 | 0 | 1
+    time?: number
+}
+
+export type LenisScrollListener = (lenis: LenisScrollEventLike) => void
+
+/** Narrow public Lenis event surface supplied by the host application. */
+export interface LenisLike {
+    on(event: 'scroll', listener: LenisScrollListener): void | (() => void)
+    off?(event: 'scroll', listener: LenisScrollListener): void
+}
+
+export interface LenisScrollObserverOptions {
+    lenis: Partial<LenisLike>
+    /** Bounded retained event tail. Defaults to 256 and is capped at 4,096. */
+    capacity?: number
+}
+
+export type LenisScrollObserverStatus = 'idle' | 'observing' | 'unsupported' | 'add-failed' | 'remove-failed' | 'disposed'
+
+export interface LenisNumericStatistics {
+    count: number
+    p50: number
+    p75: number
+    p95: number
+    p99: number
+    min: number
+    max: number
+    total: number
+}
+
+export interface LenisScrollObserverSnapshot {
+    status: LenisScrollObserverStatus
+    running: boolean
+    cleanupFailed: boolean
+    capacity: number
+    acceptedEventCount: number
+    retainedEventCount: number
+    droppedEventCount: number
+    rejectedEventCount: number
+    truncated: boolean
+    scrollStateTotalObservedCounts: Readonly<{ smooth: number; native: number; idle: number }>
+    directionTotalObservedCounts: Readonly<{ negative: number; zero: number; positive: number }>
+    progress: LenisNumericStatistics | null
+    /** Unit is intentionally unspecified by the public Lenis contract. */
+    velocity: LenisNumericStatistics | null
+    /** Unit is intentionally unspecified by the public Lenis contract. */
+    lastVelocity: LenisNumericStatistics | null
+    /** Last observed public Lenis `time`; not an event timestamp, age, or latency. */
+    latestObservedLenisTimeMs: number | null
+}
+
+export interface LenisScrollObserver {
+    readonly running: boolean
+    start(): boolean
+    stop(): boolean
+    snapshot(): LenisScrollObserverSnapshot
+    reset(): void
+    dispose(): void
+}
+
+interface NormalizedLenisScrollSample {
+    isScrolling?: LenisScrollState
+    progress?: number
+    velocity?: number
+    lastVelocity?: number
+    direction?: -1 | 0 | 1
+    time?: number
+}
+
+const MAX_HOST_SIGNED_VALUE = 1_000_000_000_000
+
+function finiteSigned(value: unknown, maximum = MAX_HOST_SIGNED_VALUE): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= maximum ? value : undefined
+}
+
+function lenisNumericStatistics(values: readonly number[]): LenisNumericStatistics | null {
+    const finite = values.filter(value => Number.isFinite(value) && Math.abs(value) <= MAX_HOST_SIGNED_VALUE)
+    if (finite.length === 0) return null
+    const sorted = [...finite].sort((left, right) => left - right)
+    return {
+        count: sorted.length,
+        p50: round(percentile(sorted, 0.5)),
+        p75: round(percentile(sorted, 0.75)),
+        p95: round(percentile(sorted, 0.95)),
+        p99: round(percentile(sorted, 0.99)),
+        min: round(sorted[0] ?? 0),
+        max: round(sorted[sorted.length - 1] ?? 0),
+        total: round(sorted.reduce((sum, value) => sum + value, 0)),
+    }
+}
+
+function normalizeLenisScrollSample(value: unknown): NormalizedLenisScrollSample | null {
+    if (typeof value !== 'object' || value === null) return null
+    try {
+        if (Array.isArray(value)) return null
+    } catch {
+        return null
+    }
+
+    const candidate = value as LenisScrollEventLike
+    const isScrolling = safePropertyResult(() => candidate.isScrolling)
+    const progress = safePropertyResult(() => candidate.progress)
+    const velocity = safePropertyResult(() => candidate.velocity)
+    const lastVelocity = safePropertyResult(() => candidate.lastVelocity)
+    const direction = safePropertyResult(() => candidate.direction)
+    const time = safePropertyResult(() => candidate.time)
+    if (!isScrolling.ok || !progress.ok || !velocity.ok || !lastVelocity.ok || !direction.ok || !time.ok) return null
+
+    if (
+        isScrolling.value !== undefined &&
+        isScrolling.value !== false &&
+        isScrolling.value !== 'native' &&
+        isScrolling.value !== 'smooth'
+    ) {
+        return null
+    }
+    const normalizedProgress = progress.value === undefined ? undefined : finiteNonNegative(progress.value, 1)
+    const normalizedVelocity = velocity.value === undefined ? undefined : finiteSigned(velocity.value)
+    const normalizedLastVelocity = lastVelocity.value === undefined ? undefined : finiteSigned(lastVelocity.value)
+    const normalizedDirection =
+        direction.value === undefined || direction.value === -1 || direction.value === 0 || direction.value === 1
+            ? direction.value
+            : undefined
+    const normalizedTime = time.value === undefined ? undefined : finiteTimestamp(time.value)
+    if (
+        (progress.value !== undefined && normalizedProgress === undefined) ||
+        (velocity.value !== undefined && normalizedVelocity === undefined) ||
+        (lastVelocity.value !== undefined && normalizedLastVelocity === undefined) ||
+        (direction.value !== undefined && normalizedDirection === undefined) ||
+        (time.value !== undefined && normalizedTime === undefined)
+    ) {
+        return null
+    }
+    if (
+        isScrolling.value === undefined &&
+        normalizedProgress === undefined &&
+        normalizedVelocity === undefined &&
+        normalizedLastVelocity === undefined &&
+        normalizedDirection === undefined &&
+        normalizedTime === undefined
+    ) {
+        return null
+    }
+
+    return {
+        ...(isScrolling.value === undefined ? {} : { isScrolling: isScrolling.value }),
+        ...(normalizedProgress === undefined ? {} : { progress: normalizedProgress }),
+        ...(normalizedVelocity === undefined ? {} : { velocity: normalizedVelocity }),
+        ...(normalizedLastVelocity === undefined ? {} : { lastVelocity: normalizedLastVelocity }),
+        ...(normalizedDirection === undefined ? {} : { direction: normalizedDirection }),
+        ...(normalizedTime === undefined ? {} : { time: normalizedTime }),
+    }
+}
+
+/**
+ * Observes Lenis' public scroll event without advancing or controlling Lenis.
+ *
+ * Raw event objects are normalized immediately into a closed numeric sample
+ * and are never retained. The supplied Lenis host is held only while the
+ * observer can subscribe or retry cleanup, then released after successful
+ * disposal. Velocity units are deliberately unnamed: the public contract does
+ * not define a stable physical unit across integrations.
+ */
+export function createLenisScrollObserver(options: LenisScrollObserverOptions): LenisScrollObserver {
+    const capacity = boundedCycleInteger(options.capacity, 256, 1, 4_096)
+    let lenis: Partial<LenisLike> | null = null
+    let lenisReadFailed = false
+    try {
+        lenis = options.lenis
+    } catch {
+        lenisReadFailed = true
+    }
+    let samples = new BoundedRing<NormalizedLenisScrollSample>(capacity)
+    let rejectedEventCount = 0
+    let scrollStateTotalObservedCounts = { smooth: 0, native: 0, idle: 0 }
+    let directionTotalObservedCounts = { negative: 0, zero: 0, positive: 0 }
+    let latestObservedLenisTimeMs: number | null = null
+    let collecting = false
+    let registered = false
+    let registeredCleanup: (() => void) | null = null
+    let cleanupFailed = false
+    let disposed = false
+    let status: LenisScrollObserverStatus = lenisReadFailed ? 'add-failed' : 'idle'
+
+    const listener: LenisScrollListener = event => {
+        if (!collecting || disposed) return
+        const sample = normalizeLenisScrollSample(event)
+        if (!sample) {
+            rejectedEventCount = incrementBoundedCount(rejectedEventCount)
+            return
+        }
+        samples.push(sample)
+        if (sample.isScrolling === 'smooth') {
+            scrollStateTotalObservedCounts.smooth = incrementBoundedCount(scrollStateTotalObservedCounts.smooth)
+        } else if (sample.isScrolling === 'native') {
+            scrollStateTotalObservedCounts.native = incrementBoundedCount(scrollStateTotalObservedCounts.native)
+        } else if (sample.isScrolling === false) {
+            scrollStateTotalObservedCounts.idle = incrementBoundedCount(scrollStateTotalObservedCounts.idle)
+        }
+        if (sample.direction === -1) {
+            directionTotalObservedCounts.negative = incrementBoundedCount(directionTotalObservedCounts.negative)
+        } else if (sample.direction === 0) {
+            directionTotalObservedCounts.zero = incrementBoundedCount(directionTotalObservedCounts.zero)
+        } else if (sample.direction === 1) {
+            directionTotalObservedCounts.positive = incrementBoundedCount(directionTotalObservedCounts.positive)
+        }
+        if (sample.time !== undefined) latestObservedLenisTimeMs = sample.time
+    }
+
+    const removeListener = (successStatus: LenisScrollObserverStatus, failureStatus: LenisScrollObserverStatus): boolean => {
+        collecting = false
+        if (!registered) {
+            if (status === 'observing') status = successStatus
+            if (disposed) lenis = null
+            return true
+        }
+        if (!registeredCleanup) {
+            cleanupFailed = true
+            status = failureStatus
+            return false
+        }
+        try {
+            registeredCleanup()
+            registered = false
+            registeredCleanup = null
+            cleanupFailed = false
+            status = successStatus
+            if (disposed) lenis = null
+            return true
+        } catch {
+            cleanupFailed = true
+            status = failureStatus
+            return false
+        }
+    }
+
+    return {
+        get running(): boolean {
+            return collecting
+        },
+        start(): boolean {
+            if (disposed || collecting || registered) return false
+            let on: LenisLike['on'] | undefined
+            let off: LenisLike['off'] | undefined
+            try {
+                on = lenis?.on
+                off = lenis?.off
+            } catch {
+                status = 'add-failed'
+                return false
+            }
+            if (!lenis || typeof on !== 'function') {
+                status = 'unsupported'
+                return false
+            }
+
+            registered = true
+            let returnedCleanup: void | (() => void)
+            try {
+                returnedCleanup = on.call(lenis, 'scroll', listener)
+            } catch {
+                if (typeof off === 'function') registeredCleanup = () => off!.call(lenis!, 'scroll', listener)
+                status = 'add-failed'
+                removeListener('add-failed', 'add-failed')
+                return false
+            }
+            if (typeof returnedCleanup === 'function') {
+                registeredCleanup = returnedCleanup
+            } else if (typeof off === 'function') {
+                registeredCleanup = () => off!.call(lenis!, 'scroll', listener)
+            } else {
+                cleanupFailed = true
+                status = 'add-failed'
+                return false
+            }
+
+            collecting = true
+            cleanupFailed = false
+            status = 'observing'
+            return true
+        },
+        stop(): boolean {
+            if (disposed) return removeListener('disposed', 'disposed')
+            if (status === 'add-failed') return removeListener('add-failed', 'add-failed')
+            if (status === 'unsupported') return true
+            return removeListener('idle', 'remove-failed')
+        },
+        snapshot(): LenisScrollObserverSnapshot {
+            const retained = samples.toArray()
+            return {
+                status,
+                running: collecting,
+                cleanupFailed,
+                capacity,
+                acceptedEventCount: samples.totalCount,
+                retainedEventCount: samples.retainedCount,
+                droppedEventCount: samples.droppedCount,
+                rejectedEventCount,
+                truncated: samples.droppedCount > 0,
+                scrollStateTotalObservedCounts: Object.freeze({ ...scrollStateTotalObservedCounts }),
+                directionTotalObservedCounts: Object.freeze({ ...directionTotalObservedCounts }),
+                progress: lenisNumericStatistics(retained.flatMap(sample => (sample.progress === undefined ? [] : [sample.progress]))),
+                velocity: lenisNumericStatistics(retained.flatMap(sample => (sample.velocity === undefined ? [] : [sample.velocity]))),
+                lastVelocity: lenisNumericStatistics(
+                    retained.flatMap(sample => (sample.lastVelocity === undefined ? [] : [sample.lastVelocity]))
+                ),
+                latestObservedLenisTimeMs,
+            }
+        },
+        reset(): void {
+            if (disposed) return
+            samples = new BoundedRing<NormalizedLenisScrollSample>(capacity)
+            rejectedEventCount = 0
+            scrollStateTotalObservedCounts = { smooth: 0, native: 0, idle: 0 }
+            directionTotalObservedCounts = { negative: 0, zero: 0, positive: 0 }
+            latestObservedLenisTimeMs = null
         },
         dispose(): void {
             if (disposed && !registered) return
