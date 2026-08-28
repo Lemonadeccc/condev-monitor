@@ -70,6 +70,35 @@ function budgetRuleRef() {
     }
 }
 
+type TestFinding = {
+    findingId: string
+    ruleId: string
+    severity: 'info' | 'warning' | 'critical'
+    status: 'observed' | 'candidate' | 'not-observed' | 'unsupported'
+    scope: { level: 'run' | 'action' | 'subject'; actionId?: string; subjectKey?: string }
+    metricIds: string[]
+    evidenceRefs: string[]
+    budgetRefs: ReturnType<typeof budgetRuleRef>[]
+    actionIds: string[]
+    limitations: string[]
+}
+
+function frameTailFinding(overrides: Partial<TestFinding> = {}): TestFinding {
+    return {
+        findingId: 'finding-frame-tail-run-all',
+        ruleId: 'frame-tail',
+        severity: 'warning',
+        status: 'candidate',
+        scope: { level: 'run' },
+        metricIds: ['frame.duration.p95'],
+        evidenceRefs: ['runtime-browser'],
+        budgetRefs: [budgetRuleRef()],
+        actionIds: [],
+        limitations: ['eligible-attempts-1', 'total-attempts-1', 'diagnostic-project-budget-not-web-standard'],
+        ...overrides,
+    }
+}
+
 function expandedMetric(overrides: Record<string, unknown> = {}) {
     const scope = overrides.scope as { attemptId?: unknown } | undefined
     const attemptScoped = typeof scope?.attemptId === 'string'
@@ -331,21 +360,16 @@ function animationReportV2() {
                 limitations: ['browser-outcomes-do-not-prove-framework-owner'],
             },
         ],
-        findings: [
-            {
-                findingId: 'frame-tail-warning',
-                ruleId: 'frame-tail',
-                severity: 'warning',
-                status: 'observed',
-                scope: { level: 'run' },
-                metricIds: ['frame.duration.p95'],
-                evidenceRefs: ['runtime-browser'],
-                budgetRefs: [budgetRuleRef()],
-                actionIds: ['hero-hover-01'],
-                limitations: [],
-            },
-        ],
+        findings: [] as TestFinding[],
     }
+}
+
+function candidateFrameTailReportV2(value = 30) {
+    const report = animationReportV2()
+    report.attempts[0]!.metrics[0]!.value = value
+    report.aggregateMetrics[0]!.value = value
+    report.findings = [frameTailFinding({ severity: value > 50.000001 ? 'critical' : 'warning' })]
+    return report
 }
 
 function completeZeroLongTaskReportV2() {
@@ -388,6 +412,30 @@ function completeZeroLongTaskReportV2() {
         ),
     ]
     report.findings = []
+    return report
+}
+
+function observedLongTaskReportV2() {
+    const report = completeZeroLongTaskReportV2()
+    const budgetRef = { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 2, ruleId: 'long-task-count' }
+    for (const attempt of report.attempts) {
+        Object.assign(attempt.metrics[0]!, { value: 1, samples: 1 })
+    }
+    Object.assign(report.aggregateMetrics[0]!, { value: 1, samples: 3 })
+    report.findings = [
+        {
+            findingId: 'finding-long-task-count-run-all',
+            ruleId: 'long-task-count',
+            severity: 'warning',
+            status: 'observed',
+            scope: { level: 'run' },
+            metricIds: ['main.long-task.count'],
+            evidenceRefs: ['runtime-browser'],
+            budgetRefs: [budgetRef],
+            actionIds: [],
+            limitations: ['eligible-attempts-3', 'total-attempts-3', 'diagnostic-project-budget-not-web-standard'],
+        },
+    ]
     return report
 }
 
@@ -906,7 +954,7 @@ describe('lab platform artifact projections', () => {
                     }),
                 ],
                 technologyEvidence: [expect.objectContaining({ evidenceId: 'runtime-browser' })],
-                findings: [expect.objectContaining({ findingId: 'frame-tail-warning' })],
+                findings: [],
             })
         )
         expect(parsed.compactSummary.metrics?.[0]).toEqual({
@@ -1001,7 +1049,7 @@ describe('lab platform artifact projections', () => {
         wrongMetric.aggregateMetrics[0]!.budgetRefs[0]!.ruleId = 'frame-tail'
         expect(() => parseAnimationReportArtifact(wrongMetric)).toThrow('budget rule does not apply to metricId')
 
-        const mixedFinding = animationReportV2()
+        const mixedFinding = candidateFrameTailReportV2()
         mixedFinding.measurementContract.budgetRef.budgetVersion = 2
         for (const attempt of mixedFinding.attempts) {
             for (const metric of attempt.metrics) {
@@ -1013,14 +1061,76 @@ describe('lab platform artifact projections', () => {
         }
         expect(() => parseAnimationReportArtifact(mixedFinding)).toThrow('budgetRef conflicts with measurementContract')
 
-        const wrongFindingRule = animationReportV2()
+        const wrongFindingRule = candidateFrameTailReportV2()
         wrongFindingRule.findings[0]!.ruleId = 'slow-frame-rate'
         expect(() => parseAnimationReportArtifact(wrongFindingRule)).toThrow('ruleId conflicts with budgetRef')
 
-        const wrongFindingMetric = animationReportV2()
+        const wrongFindingMetric = candidateFrameTailReportV2()
         wrongFindingMetric.findings[0]!.ruleId = 'long-task-count'
         wrongFindingMetric.findings[0]!.budgetRefs[0]!.ruleId = 'long-task-count'
         expect(() => parseAnimationReportArtifact(wrongFindingMetric)).toThrow('budget rule does not apply to metricIds')
+    })
+
+    it('requires findings to match the canonical budget evaluation', () => {
+        const underBudget = animationReportV2()
+        underBudget.findings = []
+        expect(parseAnimationReportArtifact(underBudget).analysis?.findings).toEqual([])
+
+        const invented = animationReportV2()
+        invented.findings = [frameTailFinding()]
+        expect(() => parseAnimationReportArtifact(invented)).toThrow('canonical budget evaluation')
+
+        const candidate = candidateFrameTailReportV2()
+        expect(parseAnimationReportArtifact(candidate).analysis?.findings).toEqual(candidate.findings)
+
+        const critical = candidateFrameTailReportV2(60)
+        expect(parseAnimationReportArtifact(critical).analysis?.findings[0]).toEqual(expect.objectContaining({ severity: 'critical' }))
+
+        const observed = observedLongTaskReportV2()
+        expect(parseAnimationReportArtifact(observed).analysis?.findings[0]).toEqual(
+            expect.objectContaining({ findingId: 'finding-long-task-count-run-all', status: 'observed', severity: 'warning' })
+        )
+
+        const omitted = candidateFrameTailReportV2()
+        omitted.findings = []
+        expect(() => parseAnimationReportArtifact(omitted)).toThrow('canonical budget evaluation')
+
+        const omittedObserved = observedLongTaskReportV2()
+        omittedObserved.findings = []
+        expect(() => parseAnimationReportArtifact(omittedObserved)).toThrow('canonical budget evaluation')
+
+        const unknownBudgetFinding = setReportBudgetVersion(candidateFrameTailReportV2(), 4)
+        expect(() => parseAnimationReportArtifact(unknownBudgetFinding)).toThrow('canonical budget evaluation')
+
+        const actionCandidate = candidateFrameTailReportV2()
+        Object.assign(actionCandidate.attempts[0]!.metrics[0]!.scope, {
+            level: 'action',
+            attemptId: 'attempt_1',
+            actionId: 'hero-hover-01',
+        })
+        Object.assign(actionCandidate.aggregateMetrics[0]!.scope, { level: 'action', actionId: 'hero-hover-01' })
+        actionCandidate.findings = [
+            frameTailFinding({
+                findingId: 'finding-frame-tail-action-hero-hover-01',
+                scope: { level: 'action', actionId: 'hero-hover-01' },
+                actionIds: ['hero-hover-01'],
+            }),
+        ]
+        expect(parseAnimationReportArtifact(actionCandidate).analysis?.findings).toEqual(actionCandidate.findings)
+
+        for (const mutate of [
+            (report: ReturnType<typeof candidateFrameTailReportV2>) => void (report.findings[0]!.severity = 'critical'),
+            (report: ReturnType<typeof candidateFrameTailReportV2>) => void (report.findings[0]!.status = 'observed'),
+            (report: ReturnType<typeof candidateFrameTailReportV2>) => void (report.findings[0]!.findingId = 'caller-authored-id'),
+            (report: ReturnType<typeof candidateFrameTailReportV2>) => void (report.findings[0]!.metricIds = []),
+            (report: ReturnType<typeof candidateFrameTailReportV2>) => void (report.findings[0]!.evidenceRefs = []),
+            (report: ReturnType<typeof candidateFrameTailReportV2>) => void (report.findings[0]!.actionIds = ['hero-hover-01']),
+            (report: ReturnType<typeof candidateFrameTailReportV2>) => void (report.findings[0]!.limitations = []),
+        ]) {
+            const forged = candidateFrameTailReportV2()
+            mutate(forged)
+            expect(() => parseAnimationReportArtifact(forged)).toThrow(BadRequestException)
+        }
     })
 
     it('validates the closed v3 rule map while keeping v1 and v2 identities unchanged', () => {
@@ -1041,7 +1151,7 @@ describe('lab platform artifact projections', () => {
         forgedV2Rule.aggregateMetrics[0]!.budgetRefs[0]!.ruleId = 'loaf-count'
         expect(() => parseAnimationReportArtifact(forgedV2Rule)).toThrow('unknown canonical budget rule')
 
-        const forgedV3Finding = setReportBudgetVersion(animationReportV2(), 3)
+        const forgedV3Finding = setReportBudgetVersion(candidateFrameTailReportV2(), 3)
         forgedV3Finding.findings[0]!.ruleId = 'loaf-count'
         forgedV3Finding.findings[0]!.budgetRefs[0]!.ruleId = 'loaf-count'
         expect(() => parseAnimationReportArtifact(forgedV3Finding)).toThrow('budget rule does not apply to metricIds')
@@ -1066,6 +1176,50 @@ describe('lab platform artifact projections', () => {
                 }),
             ])
         )
+
+        const breachedLighthouse = diagnosticProjectionReportV3()
+        const breachedAttemptMetric = breachedLighthouse.attempts
+            .find(attempt => attempt.phase === 'lighthouse')!
+            .metrics.find(metric => metric.metricId === 'lighthouse.fcp.latest')!
+        const breachedAggregateMetric = breachedLighthouse.aggregateMetrics.find(metric => metric.metricId === 'lighthouse.fcp.latest')!
+        breachedAttemptMetric.value = 2_000
+        breachedAggregateMetric.value = 2_000
+        breachedLighthouse.lighthouse.metrics[0]!.value = 2_000
+        breachedLighthouse.findings = [
+            {
+                findingId: 'finding-lighthouse-first-contentful-paint-run-all',
+                ruleId: 'lighthouse-first-contentful-paint',
+                severity: 'warning',
+                status: 'observed',
+                scope: { level: 'run' },
+                metricIds: ['lighthouse.fcp.latest'],
+                evidenceRefs: ['lighthouse'],
+                budgetRefs: [
+                    {
+                        catalogVersion: 1,
+                        budgetId: 'condev.animation.default',
+                        budgetVersion: 3,
+                        ruleId: 'lighthouse-first-contentful-paint',
+                    },
+                ],
+                actionIds: [],
+                limitations: [
+                    'separate-navigation-experiment',
+                    'lighthouse-form-factor-desktop',
+                    'lighthouse-isolated-process-does-not-inherit-measured-cache',
+                    'diagnostic-project-budget-not-web-standard',
+                ],
+            },
+        ]
+        expect(parseAnimationReportArtifact(breachedLighthouse).analysis?.findings).toEqual(breachedLighthouse.findings)
+
+        const omittedLighthouseFinding = diagnosticProjectionReportV3()
+        omittedLighthouseFinding.attempts
+            .find(attempt => attempt.phase === 'lighthouse')!
+            .metrics.find(metric => metric.metricId === 'lighthouse.fcp.latest')!.value = 2_000
+        omittedLighthouseFinding.aggregateMetrics.find(metric => metric.metricId === 'lighthouse.fcp.latest')!.value = 2_000
+        omittedLighthouseFinding.lighthouse.metrics[0]!.value = 2_000
+        expect(() => parseAnimationReportArtifact(omittedLighthouseFinding)).toThrow('canonical budget evaluation')
 
         const forgedValue = diagnosticProjectionReportV3()
         forgedValue.aggregateMetrics.find(metric => metric.metricId === 'lighthouse.fcp.latest')!.value = 1_201
@@ -1722,7 +1876,7 @@ describe('lab platform artifact projections', () => {
     })
 
     it('rejects generic v2 passthrough, partial expansion and metric catalog drift', () => {
-        const passthrough = animationReportV2()
+        const passthrough = candidateFrameTailReportV2()
         ;(passthrough.findings[0] as unknown as Record<string, unknown>).details = 'unsupported data'
         expect(() => parseAnimationReportArtifact(passthrough)).toThrow(BadRequestException)
 
