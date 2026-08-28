@@ -718,6 +718,24 @@ root.render(
 
 This is still one Browser client and one `init()` call. The animation entry also re-exports the React package's ErrorBoundary and user hooks, so mixed imports do not need a second package entry. The wrapper uses React's public `Profiler`, records anonymous subtree render duration, and never retains the Profiler id, component names, props, or state. It does not manufacture commit duration: React's `commitTime` is passed only as an inbound adapter timestamp, while the bounded recorder stores the SDK's own monotonic capture time. Standard production React builds disable Profiler callbacks by default, so use a profiling-enabled React build only when production framework evidence is an intentional, measured opt-in; page-level animation collection continues without this wrapper.
 
+For React Three Fiber, keep the same client and mount the optional observer inside each monitored `Canvas`:
+
+```tsx
+import { Canvas } from '@react-three/fiber'
+import { CondevR3FObserver } from '@condev-monitor/react/animation/r3f'
+
+function SceneCanvas() {
+    return (
+        <Canvas>
+            <CondevR3FObserver client={monitor} backend="webgl2" />
+            <Scene />
+        </Canvas>
+    )
+}
+```
+
+The optional `/animation/r3f` entry is isolated from the ordinary React entries, so applications that do not use R3F do not load it. The observer uses R3F's public after-render callback and Three's public `renderer.info` counters. It does not create a second render loop, call `render()`, `invalidate()`, `advance()`, or `setFrameloop()`, and it does not dispose the caller-owned renderer. Multiple Canvas roots share one after-render subscription and suppress callbacks for roots whose positive public frame sequence did not change. `frameloop="demand"` and `frameloop="never"` therefore produce samples only when R3F actually renders. This observer reports page-level public renderer counters; it does not prove GPU presentation time, identify a mesh/component, or add Canvas-internal hit testing. When `renderer.info.autoReset` is `false`, per-frame draw counters are omitted because they are cumulative, while Three's independently incremented frame sequence still provides deduplication. Use the optional local-only `onSetupError` callback when adapter initialization failures must appear in application diagnostics; neither the error nor its cause is retained or uploaded by Condev.
+
 ### Vue Integration
 
 ```ts
