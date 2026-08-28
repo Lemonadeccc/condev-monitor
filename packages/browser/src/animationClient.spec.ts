@@ -689,6 +689,27 @@ describe('browser animation single-init entry', () => {
         await client.destroy()
     })
 
+    it('exposes target registration lease activity across replacement and client cleanup', async () => {
+        const restoreGlobals = installBrowserGlobals()
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const target = {} as Element
+
+        const first = client.animation.registerTarget(target, () => null)
+        expect(first.active).toBe(true)
+
+        const replacement = client.animation.registerTarget(target, () => null)
+        expect(first.active).toBe(false)
+        expect(replacement.active).toBe(true)
+
+        first()
+        expect(replacement.active).toBe(true)
+
+        await client.destroy()
+        expect(replacement.active).toBe(false)
+        restoreGlobals()
+    })
+
     it('enables privacy-safe automatic load, pointer, scroll, hover, keyboard, and resize windows by default', async () => {
         jest.useFakeTimers()
         const globals = installInteractiveBrowserGlobals()
