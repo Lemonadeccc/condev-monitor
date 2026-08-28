@@ -8,6 +8,9 @@ import type {
 } from '@condev-monitor/monitor-sdk-animation'
 
 import type {
+    BabylonAnimationMonitorPort,
+    BabylonSceneInstrumentationPublicLike,
+    BabylonScenePublicLike,
     WebGlGpuTimer,
     WebGlGpuTimerTargetAdapterInspection,
     WebGlGpuTimerTargetInspectionContext,
@@ -26,12 +29,34 @@ import type {
     WebGpuTransferTargetRendererInspection,
 } from '../src'
 import {
+    createBabylonRendererAdapter,
     createCanvas2dRecorder,
     createWebGlGpuTimer,
     createWebGpuMultiPassTimestampTimer,
     createWebGpuTimestampTimer,
     createWebGpuTransferRecorder,
 } from '../src'
+
+declare const babylonAnimation: BabylonAnimationMonitorPort
+declare const babylonScene: BabylonScenePublicLike
+declare const babylonInstrumentation: BabylonSceneInstrumentationPublicLike
+const babylonAdapter = createBabylonRendererAdapter({
+    animation: babylonAnimation,
+    scene: babylonScene,
+    instrumentation: babylonInstrumentation,
+    backend: 'webgpu',
+    readPerfCounterEnabled: () => true,
+    instrumentationOwnership: 'caller',
+})
+babylonAdapter.dispose()
+
+// @ts-expect-error a live Babylon PerfCounter.Enabled reader is required
+createBabylonRendererAdapter({
+    animation: babylonAnimation,
+    scene: babylonScene,
+    instrumentation: babylonInstrumentation,
+    backend: 'webgl2',
+})
 
 declare const evidence: WebGlGpuTimingEvidence
 const rendererHostReading: RendererHostGpuTimingReading = evidence

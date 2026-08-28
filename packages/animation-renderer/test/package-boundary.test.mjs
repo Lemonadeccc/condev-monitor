@@ -5,6 +5,8 @@ import { dirname, resolve } from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 
+// cspell:ignore babylonjs
+
 const packageDirectory = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const require = createRequire(import.meta.url)
 
@@ -30,12 +32,22 @@ test('package exports resolve for ESM, CommonJS, and declarations', async () => 
     assert.equal(typeof cjs.createWebGlGpuTimer, 'function')
     assert.equal(typeof esm.createThreeRendererAdapter, 'function')
     assert.equal(typeof cjs.createThreeRendererAdapter, 'function')
+    assert.equal(typeof esm.createBabylonRendererAdapter, 'function')
+    assert.equal(typeof cjs.createBabylonRendererAdapter, 'function')
     assert.equal(typeof esm.createWebGpuTimestampTimer, 'function')
     assert.equal(typeof cjs.createWebGpuTimestampTimer, 'function')
     assert.equal(typeof esm.createCanvas2dRecorder, 'function')
     assert.equal(typeof cjs.createCanvas2dRecorder, 'function')
     assert.equal(typeof esm.createWebGpuTransferRecorder, 'function')
     assert.equal(typeof cjs.createWebGpuTransferRecorder, 'function')
+})
+
+test('Babylon adapter uses no Babylon dependency, private counter, or renderer pipeline', () => {
+    const source = readFileSync(resolve(packageDirectory, 'src/babylon-renderer-adapter.ts'), 'utf8')
+    assert.doesNotMatch(source, /@babylonjs|babylonjs/u)
+    assert.doesNotMatch(source, /_drawCalls|renderPipes|runners/u)
+    assert.doesNotMatch(source, /\.render\s*\(/u)
+    assert.doesNotMatch(source, /requestAnimationFrame|setInterval|setTimeout/u)
 })
 
 test('runtime bundle contains no blocking, scheduling, or context-destroy calls', () => {
