@@ -687,6 +687,37 @@ describe('browser animation single-init entry', () => {
         expect(cancelAttempts).toBe(2)
     })
 
+    it('owns explicit local media stage attempts without changing the upload contract', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const beginInteraction = jest.spyOn(client.animation, 'beginInteraction')
+        const recorder = client.animation.createMediaSemanticStageRecorder({ capacity: 2 })
+        const attempt = recorder.begin('video', 100)
+
+        expect(attempt.decodeReady({ timestampMs: 112, durationMs: 8, byteCount: 4_096, itemCount: 1 })).toBe(true)
+        expect(attempt.uploadReady({ timestampMs: 120, durationMs: 4, byteCount: 4_096, itemCount: 1 })).toBe(true)
+        expect(attempt.firstVisible({ timestampMs: 132, itemCount: 1 })).toBe(true)
+        expect(attempt.end(140)).toMatchObject({
+            kind: 'video',
+            outcome: 'completed',
+            decodeReady: { elapsedMs: 12, byteCount: 4_096 },
+            uploadReady: { elapsedMs: 20, byteCount: 4_096 },
+            firstVisible: { elapsedMs: 32 },
+        })
+
+        recorder.begin('image', 200)
+        await client.destroy()
+
+        expect(recorder.snapshot()).toMatchObject({
+            status: 'disposed',
+            begunAttemptCount: 2,
+            completedAttemptCount: 1,
+            cancelledAttemptCount: 1,
+            activeAttemptCount: 0,
+        })
+        expect(beginInteraction).not.toHaveBeenCalled()
+    })
+
     it('does not repeat observer removal after manual disposal or repeated client destruction', async () => {
         const { init } = require('./animation') as typeof import('./animation')
         const client = init({ animation: { runtime: runtime() } })
@@ -853,6 +884,7 @@ describe('browser animation single-init entry', () => {
             'after the client was destroyed'
         )
         expect(() => client.animation.createLenisScrollObserver({ lenis: { on() {} } })).toThrow('after the client was destroyed')
+        expect(() => client.animation.createMediaSemanticStageRecorder()).toThrow('after the client was destroyed')
         expect(() => client.animation.createScrollTriggerObserver({ scrollTrigger: { getAll: () => [] } })).toThrow(
             'after the client was destroyed'
         )
