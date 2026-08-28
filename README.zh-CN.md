@@ -677,6 +677,8 @@ export class AnimatedCard {
 
 这里仍然只有一个 Browser client 和一次 `init()`。公开的 `ngDoCheck` 到 `ngAfterViewChecked` 区间只记为**组件检查窗口**：它可能包含后代检查，也不能证明发生了 DOM 变更。Angular 20+ 的应用级 `afterEveryRender({ read })` 只用于在页面 DOM 渲染后同步匿名 target 归属；它不与组件窗口拼接，也不产生耗时。两者都不会被标成 render、commit、DOM update、paint 或 GPU 时间。真实 Element 只留在本地；显式授权的语义化 RUM v2 target 最多只投影闭集 `angular` framework 与 `framework-adapter` capability，不会上传组件名、inputs、state、文字、selector、class、id 或 URL。
 
+只需要低侵入 target 归属时，可以在应用自己的 standalone attribute directive 中调用 `bindCondevAngularAnimationTarget()`；完整配方见 `packages/angular/README.md`。helper 只增加匿名归属，并返回带状态的幂等可调用 handle，让不可用注册保持可见；当它与 scope 的 `getTarget` 使用同一个 client 和 Element 时，两者共享一个带引用计数的 Angular 注册。当前包还不会直接发布带装饰器的 directive，因为现有 `tsup` 产物不等于 Angular partial compilation/APF；包装迁移以及 Angular 20/21/22 真实 AOT consumer 矩阵仍是明确的后续任务。
+
 ### Svelte 集成
 
 ```svelte

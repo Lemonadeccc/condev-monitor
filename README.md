@@ -771,6 +771,8 @@ export class AnimatedCard {
 
 This is still one Browser client and one `init()` call. The public `ngDoCheck` to `ngAfterViewChecked` interval is recorded only as a **component check window**: it can include descendant checks and does not prove a DOM mutation. Angular 20+'s application-wide `afterEveryRender({ read })` callback is used only to synchronize anonymous target ownership after page DOM rendering; it is not paired with the component window and records no duration. Neither signal is labelled render, commit, DOM update, paint, or GPU time. The real Element stays local. An explicitly authorized semantic RUM v2 target can project only the closed `angular` framework value and `framework-adapter` capability, never component names, inputs, state, text, selectors, classes, IDs, or URLs.
 
+For lower-intrusion target-only attribution, `bindCondevAngularAnimationTarget()` can be called from an application-local standalone attribute directive; a complete recipe is in `packages/angular/README.md`. The helper adds only anonymous ownership and an idempotent callable handle whose status keeps unavailable registration visible. It shares one ref-counted Angular registration with the scope's `getTarget` when both use the same client and Element. This package does not yet publish a decorated directive because the current `tsup` output is not Angular partial compilation/APF; that packaging migration and Angular 20/21/22 AOT consumer matrix remain explicit follow-up work.
+
 ### Svelte Integration
 
 ```svelte
