@@ -4,7 +4,10 @@ import {
     createBrowserAnimationRuntime,
     createFrameworkCommitProbe,
     createGsapLifecycleProbe,
+    createGsapTickerObserver,
+    createLenisScrollObserver,
     createRendererHostProbe,
+    createScrollTriggerObserver,
     createThreeRendererProbe,
     createVideoFrameProbe,
     recommendAnimationImprovements,
@@ -32,10 +35,16 @@ import {
     type FrameworkCommitProbe,
     type GsapLifecycleProbe,
     type GsapLifecycleProbeOptions,
+    type GsapTickerObserver,
+    type GsapTickerObserverOptions,
     type InputFrameSchedulingRecorder,
     type InputFrameSchedulingMarker,
+    type LenisScrollObserver,
+    type LenisScrollObserverOptions,
     type RendererHostProbe,
     type RendererHostProbeOptions,
+    type ScrollTriggerObserver,
+    type ScrollTriggerObserverOptions,
     type ThreeRendererProbe,
     type ThreeRendererProbeOptions,
     type VideoFrameProbe,
@@ -221,7 +230,13 @@ export interface AnimationClientHandle {
     recordMediaStats(sample: AnimationMediaStatsSample): boolean
     createFrameworkProbe(framework: AnimationHostFramework): FrameworkCommitProbe
     createGsapProbe(options: Omit<GsapLifecycleProbeOptions, 'sink'>): GsapLifecycleProbe
+    /** Local-only public GSAP ticker cadence with Browser-owned teardown. */
+    createGsapTickerObserver(options: GsapTickerObserverOptions): GsapTickerObserver
+    /** Local-only public Lenis scroll evidence with Browser-owned teardown. */
+    createLenisScrollObserver(options: LenisScrollObserverOptions): LenisScrollObserver
     createRendererProbe(options: Omit<RendererHostProbeOptions, 'sink'>): RendererHostProbe
+    /** Local-only public ScrollTrigger state with Browser-owned teardown. */
+    createScrollTriggerObserver(options: ScrollTriggerObserverOptions): ScrollTriggerObserver
     createThreeProbe(options: Omit<ThreeRendererProbeOptions, 'sink'>): ThreeRendererProbe
     createVideoProbe(video: VideoFrameSourceLike): VideoFrameProbe
     /** Registers one caller-owned semantic target for RUM v2. Picker/overlay selections are never uploaded. */
@@ -876,6 +891,7 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     readonly devtools: DeferredAnimationDevtools
     private readonly targetRegistry = createAnimationTargetAdapterRegistry(TARGET_ADAPTER_ID, TARGET_ADAPTER_VERSION)
     private readonly probes = new Set<{ dispose(): void }>()
+    private readonly observers = new Set<{ dispose(): void }>()
     private readonly registrations = new Set<AnimationTargetRegistrationHandle>()
     private readonly registrationByElement = new Map<Element, AnimationTargetRegistrationHandle>()
     private automaticInputWindows: AutomaticInputWindows | null = null
@@ -1009,8 +1025,20 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         return this.trackProbe(createGsapLifecycleProbe({ ...options, sink: this }))
     }
 
+    createGsapTickerObserver(options: GsapTickerObserverOptions): GsapTickerObserver {
+        return this.trackObserver(createGsapTickerObserver(options))
+    }
+
+    createLenisScrollObserver(options: LenisScrollObserverOptions): LenisScrollObserver {
+        return this.trackObserver(createLenisScrollObserver(options))
+    }
+
     createRendererProbe(options: Omit<RendererHostProbeOptions, 'sink'>): RendererHostProbe {
         return this.trackProbe(createRendererHostProbe({ ...options, sink: this }))
+    }
+
+    createScrollTriggerObserver(options: ScrollTriggerObserverOptions): ScrollTriggerObserver {
+        return this.trackObserver(createScrollTriggerObserver(options))
     }
 
     createThreeProbe(options: Omit<ThreeRendererProbeOptions, 'sink'>): ThreeRendererProbe {
@@ -1087,6 +1115,37 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         return probe
     }
 
+    private trackObserver<T extends { dispose(): void; snapshot(): { cleanupFailed: boolean } }>(observer: T): T {
+        if (this.disposed) {
+            try {
+                observer.dispose()
+            } catch {
+                // The state error below is the actionable failure for the caller.
+            }
+            throw new Error('Cannot create an animation observer after the client was destroyed')
+        }
+        const originalDispose = observer.dispose.bind(observer)
+        const registry = new WeakRef(this.observers)
+        let cleanupComplete = false
+        const ownedObserver = {
+            dispose: (): void => {
+                if (cleanupComplete) return
+                originalDispose()
+                if (observer.snapshot().cleanupFailed) return
+                cleanupComplete = true
+                registry.deref()?.delete(ownedObserver)
+            },
+        }
+        Object.defineProperty(observer, 'dispose', {
+            configurable: true,
+            enumerable: true,
+            value: ownedObserver.dispose,
+            writable: false,
+        })
+        this.observers.add(ownedObserver)
+        return observer
+    }
+
     dispose(): void {
         if (this.disposed) return
         this.disposed = true
@@ -1108,6 +1167,14 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
             }
         }
         this.probes.clear()
+        for (const observer of [...this.observers].reverse()) {
+            try {
+                observer.dispose()
+            } catch {
+                // Failed cleanup stays retryable through the caller-owned observer.
+            }
+        }
+        this.observers.clear()
     }
 }
 
