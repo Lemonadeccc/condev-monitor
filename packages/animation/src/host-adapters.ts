@@ -1,4 +1,4 @@
-// cspell:ignore gsap profiler rvfc tweens webgl webgpu
+// cspell:ignore gsap inspectable profiler rvfc tweens uninspected webgl webgpu
 
 /**
  * Explicit, framework-neutral evidence emitted by host integrations.
@@ -1119,6 +1119,464 @@ export function createGsapTickerObserver(options: GsapTickerObserverOptions): Gs
     }
 }
 
+export interface AnimationNumericStatistics {
+    readonly count: number
+    readonly p50: number
+    readonly p75: number
+    readonly p95: number
+    readonly p99: number
+    readonly min: number
+    readonly max: number
+    readonly total: number
+}
+
+const MAX_HOST_SIGNED_VALUE = 1_000_000_000_000
+
+function finiteSigned(value: unknown, maximum = MAX_HOST_SIGNED_VALUE): number | undefined {
+    return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= maximum ? value : undefined
+}
+
+function hostNumericStatistics(values: readonly number[]): AnimationNumericStatistics | null {
+    const finite = values.filter(value => Number.isFinite(value) && Math.abs(value) <= MAX_HOST_SIGNED_VALUE)
+    if (finite.length === 0) return null
+    const sorted = [...finite].sort((left, right) => left - right)
+    return Object.freeze({
+        count: sorted.length,
+        p50: round(percentile(sorted, 0.5)),
+        p75: round(percentile(sorted, 0.75)),
+        p95: round(percentile(sorted, 0.95)),
+        p99: round(percentile(sorted, 0.99)),
+        min: round(sorted[0] ?? 0),
+        max: round(sorted[sorted.length - 1] ?? 0),
+        total: round(sorted.reduce((sum, value) => sum + value, 0)),
+    })
+}
+
+export type ScrollTriggerGlobalEvent = 'scrollStart' | 'scrollEnd' | 'refreshInit' | 'refresh' | 'revert' | 'matchMedia'
+export type ScrollTriggerCaptureReason = 'manual' | ScrollTriggerGlobalEvent
+
+export interface ScrollTriggerInstanceLike {
+    progress?: number
+    direction?: -1 | 0 | 1
+    isActive?: boolean
+    start?: number
+    end?: number
+    getVelocity?(): number
+}
+
+/** Narrow public ScrollTrigger surface supplied by the host application. */
+export interface ScrollTriggerObserverLike extends ScrollTriggerLike {
+    addEventListener?(type: ScrollTriggerGlobalEvent, listener: () => void): void
+    removeEventListener?(type: ScrollTriggerGlobalEvent, listener: () => void): void
+}
+
+export interface ScrollTriggerObserverOptions {
+    scrollTrigger: Partial<ScrollTriggerObserverLike>
+    /** Bounded retained checkpoint tail. Defaults to 64 and is capped at 1,024. */
+    capacity?: number
+    /** Maximum public instances inspected per checkpoint. Defaults to 512 and is capped at 4,096. */
+    maximumTriggersPerCapture?: number
+    now?: () => number
+}
+
+export type ScrollTriggerObserverStatus = 'idle' | 'observing' | 'unsupported' | 'add-failed' | 'remove-failed' | 'disposed'
+
+export interface ScrollTriggerPublicStateCapture {
+    reason: ScrollTriggerCaptureReason
+    timestampMs: number
+    totalTriggerCount: number
+    /** Number of array slots actually read under `maximumTriggersPerCapture`. */
+    inspectedTriggerCount: number
+    uninspectedTriggerCount: number
+    triggerListTruncated: boolean
+    rejectedTriggerCount: number
+    rejectedFieldCount: number
+    activeStateSampleCount: number
+    activeTriggerCount: number
+    inactiveTriggerCount: number
+    directionSampleCount: number
+    directionCounts: Readonly<{ negative: number; zero: number; positive: number }>
+    progress: AnimationNumericStatistics | null
+    /** Public ScrollTrigger `getVelocity()` values are documented as px/s. */
+    velocityPxPerSecond: AnimationNumericStatistics | null
+    /** Public `end - start` scroll distance for instances with an ordered range. */
+    spanPx: AnimationNumericStatistics | null
+}
+
+export interface ScrollTriggerObserverSnapshot {
+    status: ScrollTriggerObserverStatus
+    running: boolean
+    cleanupFailed: boolean
+    capacity: number
+    maximumTriggersPerCapture: number
+    captureCount: number
+    retainedCaptureCount: number
+    droppedCaptureCount: number
+    rejectedCaptureCount: number
+    truncated: boolean
+    globalEventTotalObservedCounts: Readonly<Record<ScrollTriggerGlobalEvent, number>>
+    captures: readonly ScrollTriggerPublicStateCapture[]
+}
+
+export interface ScrollTriggerObserver {
+    readonly running: boolean
+    start(): boolean
+    stop(): boolean
+    /** Captures one explicit checkpoint without changing ScrollTrigger state. */
+    capture(): ScrollTriggerPublicStateCapture | null
+    snapshot(): ScrollTriggerObserverSnapshot
+    reset(): void
+    dispose(): void
+}
+
+const SCROLL_TRIGGER_GLOBAL_EVENTS = [
+    'scrollStart',
+    'scrollEnd',
+    'refreshInit',
+    'refresh',
+    'revert',
+    'matchMedia',
+] as const satisfies readonly ScrollTriggerGlobalEvent[]
+
+function emptyScrollTriggerEventCounts(): Record<ScrollTriggerGlobalEvent, number> {
+    return {
+        scrollStart: 0,
+        scrollEnd: 0,
+        refreshInit: 0,
+        refresh: 0,
+        revert: 0,
+        matchMedia: 0,
+    }
+}
+
+function isInspectableScrollTrigger(value: unknown): value is ScrollTriggerInstanceLike {
+    if (typeof value !== 'object' || value === null) return false
+    try {
+        return !Array.isArray(value)
+    } catch {
+        return false
+    }
+}
+
+function readScrollTriggerPublicState(
+    host: Partial<ScrollTriggerObserverLike>,
+    getAll: NonNullable<ScrollTriggerLike['getAll']>,
+    reason: ScrollTriggerCaptureReason,
+    now: () => number,
+    maximumTriggersPerCapture: number
+): ScrollTriggerPublicStateCapture | null {
+    let triggers: readonly unknown[]
+    let totalTriggerCount: number
+    try {
+        triggers = getAll.call(host)
+        if (!Array.isArray(triggers)) return null
+        totalTriggerCount = triggers.length
+    } catch {
+        return null
+    }
+    if (!Number.isSafeInteger(totalTriggerCount) || totalTriggerCount < 0) return null
+
+    let inspectedTriggerCount = 0
+    let rejectedTriggerCount = 0
+    let rejectedFieldCount = 0
+    let activeStateSampleCount = 0
+    let activeTriggerCount = 0
+    let inactiveTriggerCount = 0
+    let directionSampleCount = 0
+    const directionCounts = { negative: 0, zero: 0, positive: 0 }
+    const progressValues: number[] = []
+    const velocityValues: number[] = []
+    const spanValues: number[] = []
+
+    const inspectionCount = Math.min(totalTriggerCount, maximumTriggersPerCapture)
+    for (let index = 0; index < inspectionCount; index += 1) {
+        inspectedTriggerCount = incrementBoundedCount(inspectedTriggerCount)
+        let trigger: unknown
+        try {
+            trigger = triggers[index]
+        } catch {
+            rejectedTriggerCount = incrementBoundedCount(rejectedTriggerCount)
+            continue
+        }
+        if (!isInspectableScrollTrigger(trigger)) {
+            rejectedTriggerCount = incrementBoundedCount(rejectedTriggerCount)
+            continue
+        }
+
+        const progress = safePropertyResult(() => trigger.progress)
+        if (!progress.ok) {
+            rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+        } else if (progress.value !== undefined) {
+            const normalized = finiteNonNegative(progress.value, 1)
+            if (normalized === undefined) rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+            else progressValues.push(normalized)
+        }
+
+        const isActive = safePropertyResult(() => trigger.isActive)
+        if (!isActive.ok) {
+            rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+        } else if (isActive.value !== undefined) {
+            if (typeof isActive.value !== 'boolean') {
+                rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+            } else {
+                activeStateSampleCount = incrementBoundedCount(activeStateSampleCount)
+                if (isActive.value) activeTriggerCount = incrementBoundedCount(activeTriggerCount)
+                else inactiveTriggerCount = incrementBoundedCount(inactiveTriggerCount)
+            }
+        }
+
+        const direction = safePropertyResult(() => trigger.direction)
+        if (!direction.ok) {
+            rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+        } else if (direction.value !== undefined) {
+            if (direction.value !== -1 && direction.value !== 0 && direction.value !== 1) {
+                rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+            } else {
+                directionSampleCount = incrementBoundedCount(directionSampleCount)
+                if (direction.value === -1) directionCounts.negative = incrementBoundedCount(directionCounts.negative)
+                else if (direction.value === 0) directionCounts.zero = incrementBoundedCount(directionCounts.zero)
+                else directionCounts.positive = incrementBoundedCount(directionCounts.positive)
+            }
+        }
+
+        const getVelocity = safePropertyResult(() => trigger.getVelocity)
+        if (!getVelocity.ok) {
+            rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+        } else if (getVelocity.value !== undefined) {
+            if (typeof getVelocity.value !== 'function') {
+                rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+            } else {
+                let velocity: unknown
+                try {
+                    velocity = getVelocity.value.call(trigger)
+                } catch {
+                    rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+                    velocity = undefined
+                }
+                if (velocity !== undefined) {
+                    const normalized = finiteSigned(velocity)
+                    if (normalized === undefined) rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+                    else velocityValues.push(normalized)
+                }
+            }
+        }
+
+        const start = safePropertyResult(() => trigger.start)
+        const end = safePropertyResult(() => trigger.end)
+        if (!start.ok) rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+        if (!end.ok) rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+        if (start.ok && end.ok && start.value !== undefined && end.value !== undefined) {
+            const normalizedStart = finiteSigned(start.value)
+            const normalizedEnd = finiteSigned(end.value)
+            if (normalizedStart === undefined || normalizedEnd === undefined || normalizedEnd < normalizedStart) {
+                rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+            } else {
+                spanValues.push(normalizedEnd - normalizedStart)
+            }
+        } else {
+            if (start.ok && start.value !== undefined && finiteSigned(start.value) === undefined) {
+                rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+            }
+            if (end.ok && end.value !== undefined && finiteSigned(end.value) === undefined) {
+                rejectedFieldCount = incrementBoundedCount(rejectedFieldCount)
+            }
+        }
+    }
+
+    return Object.freeze({
+        reason,
+        timestampMs: safeNow(now),
+        totalTriggerCount,
+        inspectedTriggerCount,
+        uninspectedTriggerCount: totalTriggerCount - inspectionCount,
+        triggerListTruncated: inspectionCount < totalTriggerCount,
+        rejectedTriggerCount,
+        rejectedFieldCount,
+        activeStateSampleCount,
+        activeTriggerCount,
+        inactiveTriggerCount,
+        directionSampleCount,
+        directionCounts: Object.freeze({ ...directionCounts }),
+        progress: hostNumericStatistics(progressValues),
+        velocityPxPerSecond: hostNumericStatistics(velocityValues),
+        spanPx: hostNumericStatistics(spanValues),
+    })
+}
+
+/**
+ * Observes only public ScrollTrigger instance state and global lifecycle events.
+ *
+ * It never calls refresh, update, kill, enable, disable, scroll, or another
+ * control API. Automatic checkpoints contain closed aggregate values only; raw
+ * instances, DOM targets, selectors, ids, vars, callbacks, and scrollers are
+ * never retained.
+ */
+export function createScrollTriggerObserver(options: ScrollTriggerObserverOptions): ScrollTriggerObserver {
+    const capacity = boundedCycleInteger(options.capacity, 64, 1, 1_024)
+    const maximumTriggersPerCapture = boundedCycleInteger(options.maximumTriggersPerCapture, 512, 1, 4_096)
+    const now = options.now ?? defaultNow
+    let host: Partial<ScrollTriggerObserverLike> | null = null
+    let getAll: NonNullable<ScrollTriggerLike['getAll']> | null = null
+    let hostReadFailed = false
+    try {
+        host = options.scrollTrigger
+        const candidate = host?.getAll
+        if (typeof candidate === 'function') getAll = candidate
+    } catch {
+        hostReadFailed = true
+    }
+    let captures = new BoundedRing<ScrollTriggerPublicStateCapture>(capacity)
+    let rejectedCaptureCount = 0
+    let globalEventTotalObservedCounts = emptyScrollTriggerEventCounts()
+    let collecting = false
+    let registeredRemove: ScrollTriggerObserverLike['removeEventListener'] | null = null
+    const registeredEvents = new Set<ScrollTriggerGlobalEvent>()
+    let cleanupFailed = false
+    let disposed = false
+    let status: ScrollTriggerObserverStatus = hostReadFailed ? 'add-failed' : 'idle'
+
+    const captureInternal = (reason: ScrollTriggerCaptureReason): ScrollTriggerPublicStateCapture | null => {
+        if (disposed || !host || !getAll) {
+            if (!disposed) rejectedCaptureCount = incrementBoundedCount(rejectedCaptureCount)
+            return null
+        }
+        const capture = readScrollTriggerPublicState(host, getAll, reason, now, maximumTriggersPerCapture)
+        if (!capture) {
+            rejectedCaptureCount = incrementBoundedCount(rejectedCaptureCount)
+            return null
+        }
+        captures.push(capture)
+        return capture
+    }
+
+    const eventListeners = Object.fromEntries(
+        SCROLL_TRIGGER_GLOBAL_EVENTS.map(event => [
+            event,
+            () => {
+                if (!collecting || disposed) return
+                globalEventTotalObservedCounts[event] = incrementBoundedCount(globalEventTotalObservedCounts[event])
+                captureInternal(event)
+            },
+        ])
+    ) as Record<ScrollTriggerGlobalEvent, () => void>
+
+    const removeListeners = (successStatus: ScrollTriggerObserverStatus, failureStatus: ScrollTriggerObserverStatus): boolean => {
+        collecting = false
+        if (registeredEvents.size === 0) {
+            if (status === 'observing') status = successStatus
+            if (disposed) {
+                host = null
+                getAll = null
+            }
+            return true
+        }
+        if (!host || typeof registeredRemove !== 'function') {
+            cleanupFailed = true
+            status = failureStatus
+            return false
+        }
+
+        let failed = false
+        for (const event of [...registeredEvents]) {
+            try {
+                registeredRemove.call(host, event, eventListeners[event])
+                registeredEvents.delete(event)
+            } catch {
+                failed = true
+            }
+        }
+        if (failed) {
+            cleanupFailed = true
+            status = failureStatus
+            return false
+        }
+        registeredRemove = null
+        cleanupFailed = false
+        status = successStatus
+        if (disposed) {
+            host = null
+            getAll = null
+        }
+        return true
+    }
+
+    return {
+        get running(): boolean {
+            return collecting
+        },
+        start(): boolean {
+            if (disposed || collecting || registeredEvents.size > 0) return false
+            let add: ScrollTriggerObserverLike['addEventListener'] | undefined
+            let remove: ScrollTriggerObserverLike['removeEventListener'] | undefined
+            try {
+                add = host?.addEventListener
+                remove = host?.removeEventListener
+            } catch {
+                status = 'add-failed'
+                return false
+            }
+            if (!host || !getAll || typeof add !== 'function' || typeof remove !== 'function') {
+                status = 'unsupported'
+                return false
+            }
+
+            registeredRemove = remove
+            for (const event of SCROLL_TRIGGER_GLOBAL_EVENTS) {
+                registeredEvents.add(event)
+                try {
+                    add.call(host, event, eventListeners[event])
+                } catch {
+                    status = 'add-failed'
+                    removeListeners('add-failed', 'add-failed')
+                    return false
+                }
+            }
+            collecting = true
+            cleanupFailed = false
+            status = 'observing'
+            return true
+        },
+        stop(): boolean {
+            if (disposed) return removeListeners('disposed', 'disposed')
+            if (status === 'add-failed') return removeListeners('add-failed', 'add-failed')
+            if (status === 'unsupported') return true
+            return removeListeners('idle', 'remove-failed')
+        },
+        capture(): ScrollTriggerPublicStateCapture | null {
+            return captureInternal('manual')
+        },
+        snapshot(): ScrollTriggerObserverSnapshot {
+            return {
+                status,
+                running: collecting,
+                cleanupFailed,
+                capacity,
+                maximumTriggersPerCapture,
+                captureCount: captures.totalCount,
+                retainedCaptureCount: captures.retainedCount,
+                droppedCaptureCount: captures.droppedCount,
+                rejectedCaptureCount,
+                truncated: captures.droppedCount > 0,
+                globalEventTotalObservedCounts: Object.freeze({ ...globalEventTotalObservedCounts }),
+                captures: Object.freeze(captures.toArray()),
+            }
+        },
+        reset(): void {
+            if (disposed) return
+            captures = new BoundedRing<ScrollTriggerPublicStateCapture>(capacity)
+            rejectedCaptureCount = 0
+            globalEventTotalObservedCounts = emptyScrollTriggerEventCounts()
+        },
+        dispose(): void {
+            if (disposed && registeredEvents.size === 0) return
+            collecting = false
+            disposed = true
+            removeListeners('disposed', 'disposed')
+            status = 'disposed'
+        },
+    }
+}
+
 export type LenisScrollState = false | 'native' | 'smooth'
 
 /** Closed public Lenis values read from one emitted scroll event. */
@@ -1147,16 +1605,7 @@ export interface LenisScrollObserverOptions {
 
 export type LenisScrollObserverStatus = 'idle' | 'observing' | 'unsupported' | 'add-failed' | 'remove-failed' | 'disposed'
 
-export interface LenisNumericStatistics {
-    count: number
-    p50: number
-    p75: number
-    p95: number
-    p99: number
-    min: number
-    max: number
-    total: number
-}
+export type LenisNumericStatistics = AnimationNumericStatistics
 
 export interface LenisScrollObserverSnapshot {
     status: LenisScrollObserverStatus
@@ -1195,28 +1644,6 @@ interface NormalizedLenisScrollSample {
     lastVelocity?: number
     direction?: -1 | 0 | 1
     time?: number
-}
-
-const MAX_HOST_SIGNED_VALUE = 1_000_000_000_000
-
-function finiteSigned(value: unknown, maximum = MAX_HOST_SIGNED_VALUE): number | undefined {
-    return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= maximum ? value : undefined
-}
-
-function lenisNumericStatistics(values: readonly number[]): LenisNumericStatistics | null {
-    const finite = values.filter(value => Number.isFinite(value) && Math.abs(value) <= MAX_HOST_SIGNED_VALUE)
-    if (finite.length === 0) return null
-    const sorted = [...finite].sort((left, right) => left - right)
-    return {
-        count: sorted.length,
-        p50: round(percentile(sorted, 0.5)),
-        p75: round(percentile(sorted, 0.75)),
-        p95: round(percentile(sorted, 0.95)),
-        p99: round(percentile(sorted, 0.99)),
-        min: round(sorted[0] ?? 0),
-        max: round(sorted[sorted.length - 1] ?? 0),
-        total: round(sorted.reduce((sum, value) => sum + value, 0)),
-    }
 }
 
 function normalizeLenisScrollSample(value: unknown): NormalizedLenisScrollSample | null {
@@ -1429,9 +1856,9 @@ export function createLenisScrollObserver(options: LenisScrollObserverOptions): 
                 truncated: samples.droppedCount > 0,
                 scrollStateTotalObservedCounts: Object.freeze({ ...scrollStateTotalObservedCounts }),
                 directionTotalObservedCounts: Object.freeze({ ...directionTotalObservedCounts }),
-                progress: lenisNumericStatistics(retained.flatMap(sample => (sample.progress === undefined ? [] : [sample.progress]))),
-                velocity: lenisNumericStatistics(retained.flatMap(sample => (sample.velocity === undefined ? [] : [sample.velocity]))),
-                lastVelocity: lenisNumericStatistics(
+                progress: hostNumericStatistics(retained.flatMap(sample => (sample.progress === undefined ? [] : [sample.progress]))),
+                velocity: hostNumericStatistics(retained.flatMap(sample => (sample.velocity === undefined ? [] : [sample.velocity]))),
+                lastVelocity: hostNumericStatistics(
                     retained.flatMap(sample => (sample.lastVelocity === undefined ? [] : [sample.lastVelocity]))
                 ),
                 latestObservedLenisTimeMs,
