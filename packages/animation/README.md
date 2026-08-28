@@ -232,6 +232,7 @@ import {
     createGsapLifecycleCycleAnalyzer,
     createGsapLifecycleProbe,
     createGsapTickerObserver,
+    createLenisScrollObserver,
     createRendererHostProbe,
     createThreeRendererProbe,
     createVideoFrameProbe,
@@ -293,6 +294,11 @@ tickerCadence.start()
 // Later, read a bounded local-only cadence distribution:
 const tickerTrend = tickerCadence.snapshot()
 
+const lenisScroll = createLenisScrollObserver({ lenis })
+lenisScroll.start()
+// Later, read bounded local progress/state/velocity samples:
+const lenisTrend = lenisScroll.snapshot()
+
 const videoFrames = createVideoFrameProbe({ sink: animation, video })
 videoFrames.start()
 ```
@@ -326,6 +332,8 @@ RUM v2 keeps GPU query rejection distinct from pending: supported with no resolv
 `createGsapLifecycleProbe()` uses only public `globalTimeline.getChildren()` and `ScrollTrigger.getAll()` access. It does not inspect private ticker state, create animations, or call `kill()` during `dispose()`. A count at one checkpoint is inventory, not a leak verdict. `createGsapLifecycleCycleAnalyzer()` accepts only explicit ordered mount → representative interaction → application-owned cleanup/unmount sequences, invalidates an interrupted partial sequence, retains at most 10 cleanup snapshots by default, and requires at least three caller-declared equivalent cycles. It reports `growth-candidate` only when a public post-unmount inventory grows strictly across the configured trailing window; incomplete public evidence stays `inconclusive`, and `no-strict-growth-candidate` means only that this exact predicate did not fire—it does not claim that no intermediate or long-term growth occurred. The analyzer never reports a leak, does not retain route or cycle identifiers, stays outside host/RUM projection, and still needs matching route/build/input/waits plus separate heap/post-GC evidence before a leak conclusion.
 
 `createGsapTickerObserver()` subscribes only through public `gsap.ticker.add(listener)` and removes that exact listener identity. It uses the default post-core-update ordering and never calls `fps()`, `lagSmoothing()`, `timeScale()`, or another control API. Its bounded `deltaTimeMs` result describes elapsed time between GSAP ticker callbacks. GSAP time can be lag-smoothed and callbacks are background-throttled, so this evidence is not page FPS, display refresh, presented-frame time, or GPU time. There is no default “slow” threshold; `slowTickTotalObservedCount` exists only when the application supplies `slowTickThresholdMs`. The observer is standalone local evidence and is not written to the host-evidence sink or RUM contracts. `stop()` returns `false` when listener removal throws, immediately disables further sampling, and preserves `cleanupFailed` so an uncertain attached no-op listener is not hidden.
+
+`createLenisScrollObserver()` listens only to the public `lenis.on('scroll', listener)` event. It prefers the returned unsubscribe function and falls back to the exact public `off('scroll', listener)` pair for compatible older/forked hosts. It never calls `raf()`, `scrollTo()`, `resize()`, `start()`, `stop()`, or `destroy()`, so it does not advance or control application scrolling. Each event is immediately reduced to closed `isScrolling/progress/velocity/lastVelocity/direction/time` evidence; the raw event, target, selectors, options, callbacks, and user data are never retained. The supplied Lenis host exists in the observer only while it may subscribe or retry cleanup and is released after successful disposal. `progress` is constrained to `0..1`, while velocity stays a signed numeric sample with no `px/s` claim because the public Lenis contract does not define a stable physical unit. Direction counts remain evidence-neutral `negative/zero/positive` because orientation is not observed. `latestObservedLenisTimeMs` is only the last public Lenis `time` value seen on an accepted scroll event; it is not an event timestamp, event age, or latency. Counts are full-stream and distributions describe only the retained bounded tail. The observer is standalone local evidence, outside host/RUM projection, and exposes uncertain removal through `cleanupFailed`.
 
 `createVideoFrameProbe()` observes `requestVideoFrameCallback` without calling `play()`, `pause()`, changing `src`, or otherwise controlling playback. The first callback—and the first callback after a timestamp or counter reset—establishes a baseline and emits no delta sample. Call `resetBaseline()` across hidden/offscreen → visible boundaries so a paused callback interval is not reported as one giant media sample; this resets measurement state without changing playback. `getVideoPlaybackQuality().totalVideoFrames` is the browser's cumulative playback-quality total used to derive interval deltas; it is not a decoded-frame count. `presentedFrames` from RVFC metadata remains a separate presentation counter. Stopping or disposing the probe cancels its pending callback when possible and clears the baseline.
 
