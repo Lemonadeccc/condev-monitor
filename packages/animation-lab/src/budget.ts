@@ -43,7 +43,7 @@ export function evaluateAnimationLabBudgetRule(
 
     const zeroEventCountRule =
         rule.minimumSamples === 0 &&
-        rule.metricId === 'main.long-task.count' &&
+        (rule.metricId === 'main.long-task.count' || rule.metricId === 'main.loaf.count') &&
         rule.comparator === '<=' &&
         rule.target.kind === 'absolute' &&
         rule.target.value === 0

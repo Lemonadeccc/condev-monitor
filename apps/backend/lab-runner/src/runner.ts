@@ -14,7 +14,7 @@ import * as chromeLauncher from 'chrome-launcher'
 import lighthouse from 'lighthouse'
 
 import { type ProbeCommandState, runScenarioActions, type ScenarioActionExecution, scenarioActionId } from './actions'
-import { aggregateMeasuredAttempts } from './aggregate'
+import { aggregateMeasuredAttempts, projectDiagnosticAttemptMetrics } from './aggregate'
 import {
     type BrowserDriver,
     type BrowserDriverContextOptions,
@@ -32,6 +32,7 @@ import {
     actionWindowFromProbe,
     buildAnimationLabSemantics,
     decorateLabMetric,
+    decorateLighthouseLabMetric,
     measurementContractForReport,
     probeFrameContract,
     projectAttemptsForReport,
@@ -434,9 +435,7 @@ async function lighthouseAttempt(
                 startedAt: started.toISOString(),
                 endedAt: ended.toISOString(),
                 durationMs: Math.max(0, performance.now() - monotonicStarted),
-                metrics: summary.metrics.map(metric =>
-                    decorateLabMetric(metric, { level: 'attempt', attemptId }, { evidenceId: 'lighthouse', budgetRef })
-                ),
+                metrics: summary.metrics.map(metric => decorateLighthouseLabMetric(metric, attemptId, budgetRef, formFactor)),
                 capabilities: { lighthouse: true, chromium: true },
                 limitations: [
                     'Lighthouse is a separate Chromium navigation experiment and does not measure sustained hover, drag, or GPU timer queries.',
@@ -597,7 +596,7 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
             }
         }
         const endedAt = new Date()
-        const aggregateMetrics = aggregateMeasuredAttempts(attempts)
+        const aggregateMetrics = [...aggregateMeasuredAttempts(attempts), ...projectDiagnosticAttemptMetrics(attempts)]
         const browserDescriptor = session.descriptor
         const semantics = buildAnimationLabSemantics({
             scenario,

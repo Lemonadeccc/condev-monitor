@@ -80,7 +80,7 @@ export function resolveLabBudgetRule(
     if (
         ref.catalogVersion !== 1 ||
         ref.budgetId !== 'condev.animation.default' ||
-        (ref.budgetVersion !== 1 && ref.budgetVersion !== 2) ||
+        (ref.budgetVersion !== 1 && ref.budgetVersion !== 2 && ref.budgetVersion !== 3) ||
         !contract ||
         contract.budgetRef.catalogVersion !== ref.catalogVersion ||
         contract.budgetRef.budgetId !== ref.budgetId ||
@@ -122,8 +122,8 @@ export function resolveLabBudgetRule(
                 metricId: 'main.long-task.count',
                 target: 0,
                 unit: 'count',
-                minimumSamples: ref.budgetVersion === 2 ? 0 : 1,
-                zeroEventCountIsComplete: ref.budgetVersion === 2,
+                minimumSamples: ref.budgetVersion >= 2 ? 0 : 1,
+                zeroEventCountIsComplete: ref.budgetVersion >= 2,
             }
         case 'input-delay':
             return {
@@ -134,15 +134,80 @@ export function resolveLabBudgetRule(
                 minimumSamples: 3,
                 zeroEventCountIsComplete: false,
             }
+        case 'loaf-count':
+            return {
+                comparator: '<=',
+                metricId: 'main.loaf.count',
+                target: 0,
+                unit: 'count',
+                minimumSamples: 0,
+                zeroEventCountIsComplete: true,
+            }
+        case 'interaction-processing-tail':
+            return {
+                comparator: '<=',
+                metricId: 'interaction.processing.p95',
+                target: 50,
+                unit: 'ms',
+                minimumSamples: 3,
+                zeroEventCountIsComplete: false,
+            }
+        case 'interaction-presentation-tail':
+            return {
+                comparator: '<=',
+                metricId: 'interaction.presentation.p95',
+                target: 100,
+                unit: 'ms',
+                minimumSamples: 3,
+                zeroEventCountIsComplete: false,
+            }
+        case 'page-lcp':
+            return {
+                comparator: '<=',
+                metricId: 'vital.lcp.latest',
+                target: 2_500,
+                unit: 'ms',
+                minimumSamples: 1,
+                zeroEventCountIsComplete: false,
+            }
+        case 'page-cls':
+            return {
+                comparator: '<=',
+                metricId: 'vital.cls.latest',
+                target: 0.1,
+                unit: 'score',
+                minimumSamples: 1,
+                zeroEventCountIsComplete: false,
+            }
+        case 'lighthouse-first-contentful-paint':
+            return {
+                comparator: '<=',
+                metricId: 'lighthouse.fcp.latest',
+                target: 1_800,
+                unit: 'ms',
+                minimumSamples: 1,
+                zeroEventCountIsComplete: false,
+            }
+        case 'lighthouse-total-blocking-time':
+            return {
+                comparator: '<=',
+                metricId: 'lighthouse.total-blocking-time.latest',
+                target: 200,
+                unit: 'ms',
+                minimumSamples: 1,
+                zeroEventCountIsComplete: false,
+            }
         default:
             return null
     }
 }
 
 export function getLabBudgetRuleEvidenceRequirement(rule: LabResolvedBudgetRule): string {
-    return rule.zeroEventCountIsComplete
-        ? '完整 measured 观察允许 0 个 Long Task / Complete measured observation accepts zero Long Tasks'
-        : `最少 ${rule.minimumSamples.toLocaleString()} 个样本 / At least ${rule.minimumSamples.toLocaleString()} samples`
+    if (rule.zeroEventCountIsComplete) {
+        const eventName = rule.metricId === 'main.loaf.count' ? 'LoAF' : 'Long Task'
+        return `完整 measured 观察允许 0 个 ${eventName} / Complete measured observation accepts zero ${eventName} events`
+    }
+    return `最少 ${rule.minimumSamples.toLocaleString()} 个样本 / At least ${rule.minimumSamples.toLocaleString()} samples`
 }
 
 /** Mirrors the closed runner budget evaluator for evidence already accepted by the platform. */

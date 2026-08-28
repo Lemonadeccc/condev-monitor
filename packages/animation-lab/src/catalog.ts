@@ -248,6 +248,12 @@ export const DEFAULT_ANIMATION_LAB_BUDGET_REF_V2: Readonly<LabBudgetRefV1> = Obj
     budgetVersion: 2,
 })
 
+export const DEFAULT_ANIMATION_LAB_BUDGET_REF_V3: Readonly<LabBudgetRefV1> = Object.freeze({
+    catalogVersion: ANIMATION_LAB_BUDGET_CATALOG_VERSION,
+    budgetId: 'condev.animation.default',
+    budgetVersion: 3,
+})
+
 /** Unchanged budget v1 diagnostic defaults, not universal UX grades. */
 export const DEFAULT_ANIMATION_LAB_BUDGET_V1: Readonly<LabBudgetDefinitionV1> = Object.freeze({
     ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
@@ -304,9 +310,72 @@ export const DEFAULT_ANIMATION_LAB_BUDGET_V2: Readonly<LabBudgetDefinitionV1> = 
     ),
 })
 
+/**
+ * Explicit opt-in diagnostic budget v3. It retains every v2 rule and adds
+ * evidence-gated animation, interaction, loading and Lighthouse investigation
+ * triggers. These thresholds are not a replacement for field percentiles or a
+ * claim that one controlled run represents production users.
+ */
+export const DEFAULT_ANIMATION_LAB_BUDGET_V3: Readonly<LabBudgetDefinitionV1> = Object.freeze({
+    ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V3,
+    rules: Object.freeze([
+        ...DEFAULT_ANIMATION_LAB_BUDGET_V2.rules.map(rule => Object.freeze({ ...rule })),
+        Object.freeze({
+            ruleId: 'loaf-count',
+            metricId: 'main.loaf.count',
+            comparator: '<=',
+            target: Object.freeze({ kind: 'absolute', value: 0, unit: 'count' }),
+            minimumSamples: 0,
+        }),
+        Object.freeze({
+            ruleId: 'interaction-processing-tail',
+            metricId: 'interaction.processing.p95',
+            comparator: '<=',
+            target: Object.freeze({ kind: 'absolute', value: 50, unit: 'ms' }),
+            minimumSamples: 3,
+        }),
+        Object.freeze({
+            ruleId: 'interaction-presentation-tail',
+            metricId: 'interaction.presentation.p95',
+            comparator: '<=',
+            target: Object.freeze({ kind: 'absolute', value: 100, unit: 'ms' }),
+            minimumSamples: 3,
+        }),
+        Object.freeze({
+            ruleId: 'page-lcp',
+            metricId: 'vital.lcp.latest',
+            comparator: '<=',
+            target: Object.freeze({ kind: 'absolute', value: 2_500, unit: 'ms' }),
+            minimumSamples: 1,
+        }),
+        Object.freeze({
+            ruleId: 'page-cls',
+            metricId: 'vital.cls.latest',
+            comparator: '<=',
+            target: Object.freeze({ kind: 'absolute', value: 0.1, unit: 'score' }),
+            minimumSamples: 1,
+        }),
+        Object.freeze({
+            ruleId: 'lighthouse-first-contentful-paint',
+            metricId: 'lighthouse.fcp.latest',
+            comparator: '<=',
+            target: Object.freeze({ kind: 'absolute', value: 1_800, unit: 'ms' }),
+            minimumSamples: 1,
+        }),
+        Object.freeze({
+            ruleId: 'lighthouse-total-blocking-time',
+            metricId: 'lighthouse.total-blocking-time.latest',
+            comparator: '<=',
+            target: Object.freeze({ kind: 'absolute', value: 200, unit: 'ms' }),
+            minimumSamples: 1,
+        }),
+    ]),
+})
+
 export const ANIMATION_LAB_BUDGET_CATALOG_V1: readonly Readonly<LabBudgetDefinitionV1>[] = Object.freeze([
     DEFAULT_ANIMATION_LAB_BUDGET_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_V2,
+    DEFAULT_ANIMATION_LAB_BUDGET_V3,
 ])
 
 export function getAnimationLabBudgetV1(budgetId: string, budgetVersion: number): Readonly<LabBudgetDefinitionV1> | undefined {

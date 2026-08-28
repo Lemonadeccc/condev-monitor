@@ -87,3 +87,30 @@ export function aggregateMeasuredAttempts(attempts: readonly LabAttemptSummary[]
         }
     })
 }
+
+/**
+ * Promotes the single isolated Trace/Lighthouse observations into run scope so
+ * the canonical report, budget evaluator and platform can use the same closed
+ * metrics that remain available in their detailed attempt artifacts.
+ */
+export function projectDiagnosticAttemptMetrics(attempts: readonly LabAttemptSummary[]): AnimationLabMetric[] {
+    const output: AnimationLabMetric[] = []
+    const retainedMetricIds = new Set<string>()
+    for (const attempt of attempts) {
+        if (attempt.phase !== 'diagnostic-trace' && attempt.phase !== 'lighthouse') continue
+        for (const metric of attempt.metrics) {
+            if (!metric.metricId || !metric.aggregation) continue
+            if (retainedMetricIds.has(metric.metricId)) {
+                throw new TypeError(`Duplicate diagnostic metric identity: ${metric.metricId}`)
+            }
+            retainedMetricIds.add(metric.metricId)
+            output.push({
+                ...metric,
+                scope: { level: 'run' },
+                evidenceRefs: [...new Set(metric.evidenceRefs ?? [])],
+                limitations: [...new Set(metric.limitations ?? [])],
+            })
+        }
+    }
+    return output
+}

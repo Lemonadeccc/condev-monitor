@@ -528,6 +528,12 @@ function metricValue(value: unknown, unit: AnimationLabMetric['unit'], label: st
 
 function metricLimitations(metricId: string): string[] {
     if (metricId === 'frame.refresh.inferred') return ['observed-page-raf-cadence-not-display-refresh-rate']
+    if (metricId.startsWith('main.loaf.')) return ['loaf-only-over-50ms']
+    if (metricId === 'vital.lcp.latest') return ['single-controlled-run-not-field-p75', 'lcp-soft-navigation-not-modeled']
+    if (metricId === 'vital.cls.latest') {
+        return ['single-controlled-run-not-field-p75', 'lab-cls-window-may-understate-full-session']
+    }
+    if (metricId.startsWith('lighthouse.')) return ['separate-navigation-experiment']
     if (metricId === 'media.video-dropped-frame-rate') {
         return [
             'video-playback-quality-cumulative-snapshot-not-measurement-window-delta',

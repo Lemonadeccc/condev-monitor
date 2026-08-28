@@ -78,10 +78,7 @@ export function decorateLabMetric(
     const budget = getAnimationLabBudgetV1(budgetRef.budgetId, budgetRef.budgetVersion)
     const budgetRefs =
         budget?.catalogVersion === budgetRef.catalogVersion
-            ? entry.defaultBudgetRuleIds.flatMap(ruleId => {
-                  const rule = budget.rules.find(candidate => candidate.ruleId === ruleId)
-                  return rule?.metricId === entry.metricId ? [{ ...budgetRef, ruleId }] : []
-              })
+            ? budget.rules.filter(rule => rule.metricId === entry.metricId).map(rule => ({ ...budgetRef, ruleId: rule.ruleId }))
             : []
     return {
         ...metric,
@@ -92,6 +89,28 @@ export function decorateLabMetric(
         evidenceRefs: [options.evidenceId ?? BROWSER_EVIDENCE_ID],
         limitations: metric.limitations ?? [],
     }
+}
+
+export function decorateLighthouseLabMetric(
+    metric: AnimationLabMetric,
+    attemptId: string,
+    budgetRef: LabBudgetRefV1,
+    formFactor: 'desktop' | 'mobile'
+): AnimationLabMetric {
+    return decorateLabMetric(
+        {
+            ...metric,
+            limitations: [
+                ...new Set([
+                    ...(metric.limitations ?? []),
+                    `lighthouse-form-factor-${formFactor}`,
+                    'lighthouse-isolated-process-does-not-inherit-measured-cache',
+                ]),
+            ],
+        },
+        { level: 'attempt', attemptId },
+        { evidenceId: 'lighthouse', budgetRef }
+    )
 }
 
 export function measurementContractForReport(scenario: AnimationLabScenario): LabMeasurementContractV2 {

@@ -434,9 +434,97 @@ function aggregateCapabilityForMetric(
     return undefined
 }
 
+type DiagnosticPhase = 'diagnostic-trace' | 'lighthouse'
+
+function diagnosticPhaseForMetric(metricId: string): DiagnosticPhase | null {
+    if (metricId.startsWith('trace.')) return 'diagnostic-trace'
+    if (LIGHTHOUSE_METRIC_IDS.has(metricId)) return 'lighthouse'
+    return null
+}
+
+function diagnosticCapability(phase: DiagnosticPhase): 'cdpTrace' | 'lighthouse' {
+    return phase === 'diagnostic-trace' ? 'cdpTrace' : 'lighthouse'
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+    return left.length === right.length && left.every((item, index) => item === right[index])
+}
+
+function sameBudgetRefs(
+    left: readonly AnimationLabMetricV2Projection['budgetRefs'][number][],
+    right: readonly AnimationLabMetricV2Projection['budgetRefs'][number][]
+): boolean {
+    return (
+        left.length === right.length &&
+        left.every((item, index) => {
+            const other = right[index]
+            return (
+                other !== undefined &&
+                item.catalogVersion === other.catalogVersion &&
+                item.budgetId === other.budgetId &&
+                item.budgetVersion === other.budgetVersion &&
+                item.ruleId === other.ruleId
+            )
+        })
+    )
+}
+
+function assertDiagnosticAggregateMetric(
+    metricValue: AnimationLabMetricV2Projection,
+    phase: DiagnosticPhase,
+    attemptsValue: readonly {
+        attemptId: string
+        phase: 'warmup' | 'measured' | DiagnosticPhase
+        metrics: readonly ParsedMetric[]
+        capabilities: Readonly<Record<string, boolean | null>>
+    }[]
+): void {
+    if (metricValue.scope.level !== 'run') {
+        throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} diagnostic projection must use run scope`)
+    }
+    const capability = diagnosticCapability(phase)
+    const successfulAttempts = attemptsValue.filter(item => item.phase === phase && item.capabilities[capability] === true)
+    if (successfulAttempts.length !== 1) {
+        throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} requires one successful ${phase} attempt`)
+    }
+    const sourceAttempt = successfulAttempts[0]!
+    const sourceMetrics = sourceAttempt.metrics.filter(
+        (item): item is AnimationLabMetricV2Projection => expandedMetric(item) && item.metricId === metricValue.metricId
+    )
+    if (sourceMetrics.length !== 1) {
+        throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} requires one matching ${phase} metric`)
+    }
+    const source = sourceMetrics[0]!
+    const sourceScopeMatches = source.scope.level === 'attempt' && source.scope.attemptId === sourceAttempt.attemptId
+    const expectedAggregation =
+        phase === 'diagnostic-trace' ? { population: 'events', method: 'sum' } : { population: 'latest', method: 'latest' }
+    const aggregationMatches =
+        source.aggregation.population === metricValue.aggregation.population &&
+        source.aggregation.method === metricValue.aggregation.method &&
+        metricValue.aggregation.population === expectedAggregation.population &&
+        metricValue.aggregation.method === expectedAggregation.method
+    const projectionMatches =
+        source.family === metricValue.family &&
+        source.name === metricValue.name &&
+        source.stat === metricValue.stat &&
+        source.unit === metricValue.unit &&
+        source.value === metricValue.value &&
+        source.samples === metricValue.samples &&
+        source.status === metricValue.status &&
+        source.evidenceLevel === metricValue.evidenceLevel &&
+        aggregationMatches &&
+        sameBudgetRefs(source.budgetRefs, metricValue.budgetRefs) &&
+        sameStringArray(source.evidenceRefs, metricValue.evidenceRefs) &&
+        sameStringArray(source.limitations, metricValue.limitations)
+    if (!sourceScopeMatches || !projectionMatches) {
+        throw new BadRequestException(`animation-report.aggregateMetrics ${metricValue.metricId} conflicts with its ${phase} attempt`)
+    }
+}
+
 function assertV2AggregateMetrics(
     aggregateMetrics: readonly ParsedMetric[],
     attemptsValue: readonly {
+        attemptId: string
         phase: 'warmup' | 'measured' | 'diagnostic-trace' | 'lighthouse'
         metrics: readonly ParsedMetric[]
         capabilities: Readonly<Record<string, boolean | null>>
@@ -451,7 +539,11 @@ function assertV2AggregateMetrics(
         if (metricValue.scope.level === 'attempt' || metricValue.scope.attemptId !== undefined) {
             throw new BadRequestException('animation-report.aggregateMetrics cannot use attempt scope')
         }
-        if (metricValue.aggregation.population !== 'attempts' || metricValue.aggregation.method !== 'median-of-attempts') {
+        const diagnosticPhase = diagnosticPhaseForMetric(metricValue.metricId)
+        if (
+            diagnosticPhase === null &&
+            (metricValue.aggregation.population !== 'attempts' || metricValue.aggregation.method !== 'median-of-attempts')
+        ) {
             throw new BadRequestException('animation-report.aggregateMetrics must declare median-of-attempts aggregation')
         }
         const identity = aggregateScopeIdentity(metricValue)
@@ -480,6 +572,11 @@ function assertV2AggregateMetrics(
     }
 
     for (const metricValue of aggregates) {
+        const diagnosticPhase = diagnosticPhaseForMetric(metricValue.metricId)
+        if (diagnosticPhase !== null) {
+            assertDiagnosticAggregateMetric(metricValue, diagnosticPhase, attemptsValue)
+            continue
+        }
         const identity = aggregateScopeIdentity(metricValue)
         const sourceMetrics = sources.get(identity) ?? []
         const capabilityBacked = CAPABILITY_BACKED_METRIC_IDS_V2.has(metricValue.metricId)

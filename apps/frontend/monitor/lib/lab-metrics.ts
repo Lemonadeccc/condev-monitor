@@ -135,6 +135,18 @@ const LIMITATION_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
         zhCN: '仅覆盖超过 50 ms 的 LoAF，不代表全部帧。',
         en: 'Covers LoAF entries over 50 ms only, not every frame.',
     },
+    'single-controlled-run-not-field-p75': {
+        zhCN: '这是受控 Lab 运行的结果，不是按设备类型划分的真实用户第 75 百分位。',
+        en: 'This is a controlled Lab result, not a device-segmented field p75 over real users.',
+    },
+    'lcp-soft-navigation-not-modeled': {
+        zhCN: '该 LCP 不会自动建立 SPA 软导航边界；路由切换需要显式 Scenario 或适配器。',
+        en: 'This LCP does not automatically model SPA soft-navigation boundaries; route changes require an explicit Scenario or adapter.',
+    },
+    'lab-cls-window-may-understate-full-session': {
+        zhCN: 'Lab 测量窗口可能短于完整页面会话，因此可能低估后续出现的布局偏移。',
+        en: 'The Lab window may be shorter than the full page session and can understate later layout shifts.',
+    },
     'presentation-time-implementation-dependent': {
         zhCN: 'Presentation 时间由浏览器实现决定，可能不可用。',
         en: 'Presentation timing is implementation-dependent and may be unavailable.',
@@ -274,6 +286,18 @@ const LIMITATION_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
     'separate-navigation-experiment': {
         zhCN: 'Lighthouse 属于独立导航实验，不等同于场景动作的持续测量。',
         en: 'Lighthouse is a separate navigation experiment, not a sustained measurement of scenario actions.',
+    },
+    'lighthouse-form-factor-desktop': {
+        zhCN: '该 Lighthouse 结果使用 desktop form factor；阈值仍是跨设备的保守调查触发线。',
+        en: 'This Lighthouse result used the desktop form factor; the threshold remains a conservative cross-device investigation trigger.',
+    },
+    'lighthouse-form-factor-mobile': {
+        zhCN: '该 Lighthouse 结果使用 mobile form factor。',
+        en: 'This Lighthouse result used the mobile form factor.',
+    },
+    'lighthouse-isolated-process-does-not-inherit-measured-cache': {
+        zhCN: 'Lighthouse 使用独立 Chrome 进程，不继承页面测量尝试的浏览器上下文或热身缓存。',
+        en: 'Lighthouse uses an isolated Chrome process and does not inherit the page-measurement browser context or warm-up cache.',
     },
     'surface-observation-does-not-prove-renderer-cost': {
         zhCN: '观察到渲染表面只能证明其存在，不能证明渲染器成本或根因。',

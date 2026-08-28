@@ -2,7 +2,7 @@ export { LAB_RUNNER_CONTRACT_VERSION, RemoteLabClient, remoteFailureCode } from 
 export type { RemoteLabConnectionOptions } from './remote'
 export { runScenarioActions, scenarioActionId } from './actions'
 export type { RunScenarioActionsOptions } from './actions'
-export { aggregateMeasuredAttempts } from './aggregate'
+export { aggregateMeasuredAttempts, projectDiagnosticAttemptMetrics } from './aggregate'
 export { createBrowserDriver, validateBrowserDriverScenario } from './browser-driver'
 export type {
     BrowserDriver,
@@ -41,6 +41,7 @@ export {
     actionWindowFromProbe,
     buildAnimationLabSemantics,
     decorateLabMetric,
+    decorateLighthouseLabMetric,
     measurementContractForReport,
     probeFrameContract,
     projectAttemptsForReport,

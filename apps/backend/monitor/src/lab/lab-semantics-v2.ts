@@ -13,18 +13,38 @@ const MAX_LIMITATIONS = 32
 const MAX_WINDOW_MS = 60 * 60 * 1000
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,159}$/
 const EXPANDED_METRIC_KEYS = ['metricId', 'scope', 'aggregation', 'budgetRefs', 'evidenceRefs', 'limitations'] as const
-const DEFAULT_BUDGET_RULE_METRICS: Readonly<Record<string, string>> = {
+const DEFAULT_BUDGET_RULE_METRICS_V1: Readonly<Record<string, string>> = Object.freeze({
     'frame-tail': 'frame.duration.p95',
     'slow-frame-rate': 'frame.slow-rate',
     'jank-bursts': 'frame.jank-bursts',
     'long-task-count': 'main.long-task.count',
     'input-delay': 'interaction.input-delay.p95',
-}
+})
+const DEFAULT_BUDGET_RULE_METRICS_BY_VERSION = new Map<number, Readonly<Record<string, string>>>([
+    [1, DEFAULT_BUDGET_RULE_METRICS_V1],
+    [2, DEFAULT_BUDGET_RULE_METRICS_V1],
+    [
+        3,
+        Object.freeze({
+            ...DEFAULT_BUDGET_RULE_METRICS_V1,
+            'loaf-count': 'main.loaf.count',
+            'interaction-processing-tail': 'interaction.processing.p95',
+            'interaction-presentation-tail': 'interaction.presentation.p95',
+            'page-lcp': 'vital.lcp.latest',
+            'page-cls': 'vital.cls.latest',
+            'lighthouse-first-contentful-paint': 'lighthouse.fcp.latest',
+            'lighthouse-total-blocking-time': 'lighthouse.total-blocking-time.latest',
+        }),
+    ],
+])
 const DEFAULT_BUDGET_ID = 'condev.animation.default'
-const DEFAULT_BUDGET_VERSIONS = new Set([1, 2])
+
+function defaultBudgetRules(ref: { budgetId: string; budgetVersion: number }): Readonly<Record<string, string>> | undefined {
+    return ref.budgetId === DEFAULT_BUDGET_ID ? DEFAULT_BUDGET_RULE_METRICS_BY_VERSION.get(ref.budgetVersion) : undefined
+}
 
 function isKnownDefaultBudget(ref: { budgetId: string; budgetVersion: number }): boolean {
-    return ref.budgetId === DEFAULT_BUDGET_ID && DEFAULT_BUDGET_VERSIONS.has(ref.budgetVersion)
+    return defaultBudgetRules(ref) !== undefined
 }
 
 const ACTION_KINDS = ['wait', 'click', 'hover', 'pointer-path', 'scroll', 'resize', 'drag', 'press'] as const
@@ -377,7 +397,7 @@ function budgetRef(value: unknown, label: string, requireRule: boolean): LabBudg
     }
     if (!requireRule) return parsed
     const ruleId = stringToken(raw.ruleId, `${label}.ruleId`, 120)
-    if (isKnownDefaultBudget(parsed) && !DEFAULT_BUDGET_RULE_METRICS[ruleId]) {
+    if (isKnownDefaultBudget(parsed) && !defaultBudgetRules(parsed)?.[ruleId]) {
         throw new BadRequestException(`${label} references an unknown canonical budget rule`)
     }
     return { ...parsed, ruleId }
@@ -586,7 +606,7 @@ export function parseAnimationLabMetricV2(
         budgetRef(item, `${label}.budgetRefs[${index}]`, true)
     )
     for (const ref of budgetRefs) {
-        if (isKnownDefaultBudget(ref) && DEFAULT_BUDGET_RULE_METRICS[ref.ruleId] !== metricId) {
+        if (isKnownDefaultBudget(ref) && defaultBudgetRules(ref)?.[ref.ruleId] !== metricId) {
             throw new BadRequestException(`${label} budget rule does not apply to metricId`)
         }
     }
@@ -896,7 +916,7 @@ export function parseAnimationLabSemanticsV2FromReport(reportValue: RecordValue)
             if (item.ruleId !== ref.ruleId) {
                 throw new BadRequestException(`animation-report finding ${item.findingId} ruleId conflicts with budgetRef`)
             }
-            const expectedMetricId = DEFAULT_BUDGET_RULE_METRICS[ref.ruleId]
+            const expectedMetricId = defaultBudgetRules(ref)?.[ref.ruleId]
             if (isKnownDefaultBudget(ref) && (!expectedMetricId || !item.metricIds.includes(expectedMetricId))) {
                 throw new BadRequestException(`animation-report finding ${item.findingId} budget rule does not apply to metricIds`)
             }

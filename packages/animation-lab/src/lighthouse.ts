@@ -64,6 +64,7 @@ export function normalizeLighthouseResult(value: unknown, routeKey: string): Lab
             status: finite(category.score) === null ? 'not-observed' : 'measured',
             evidenceLevel: 'controlled-lab-measurement',
             ...(CATEGORY_METRIC_IDS[token] ? { metricId: CATEGORY_METRIC_IDS[token] } : {}),
+            limitations: ['separate-navigation-experiment'],
         })
     }
     for (const [auditId, contract] of Object.entries(METRIC_AUDITS)) {
@@ -79,6 +80,7 @@ export function normalizeLighthouseResult(value: unknown, routeKey: string): Lab
             status: metricValue === null ? 'not-observed' : 'measured',
             evidenceLevel: 'controlled-lab-measurement',
             metricId: contract.metricId,
+            limitations: ['separate-navigation-experiment'],
         })
     }
 
