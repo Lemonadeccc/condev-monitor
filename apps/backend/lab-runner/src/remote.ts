@@ -11,6 +11,8 @@ import {
     sanitizeTraceSource,
 } from '@condev-monitor/animation-lab'
 
+import { LabOutcomeAssertionError } from './actions'
+
 const REQUEST_TIMEOUT_MS = 30_000
 const MAX_PLATFORM_REPORT_BYTES = 2 * 1024 * 1024
 const MAX_PLATFORM_ATTEMPT_METRICS = 256
@@ -701,6 +703,7 @@ export class RemoteLabClient {
 }
 
 export function remoteFailureCode(error: unknown): string {
+    if (error instanceof LabOutcomeAssertionError) return error.timedOut ? 'LAB_OUTCOME_TIMEOUT' : 'LAB_OUTCOME_FAILED'
     const message = safeErrorMessage(error)
     if (/abort|timeout/iu.test(message)) return 'LAB_RUN_TIMEOUT'
     if (/scenario|selector|target|navigation/iu.test(message)) return 'LAB_SCENARIO_FAILED'

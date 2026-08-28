@@ -1,6 +1,6 @@
 export { LAB_RUNNER_CONTRACT_VERSION, RemoteLabClient, remoteFailureCode } from './remote'
 export type { RemoteLabConnectionOptions } from './remote'
-export { runScenarioActions, scenarioActionId } from './actions'
+export { LabActionTimeoutError, LabOutcomeAssertionError, runScenarioActions, scenarioActionId } from './actions'
 export type { RunScenarioActionsOptions } from './actions'
 export { aggregateMeasuredAttempts, projectDiagnosticAttemptMetrics } from './aggregate'
 export { createBrowserDriver, validateBrowserDriverScenario } from './browser-driver'
@@ -27,6 +27,7 @@ export {
 } from './local-display'
 export type {
     LabLocalDisplayActionEvent,
+    LabLocalDisplayActionFailureKind,
     LabLocalDisplayAttempt,
     LabLocalDisplayBudgetEvent,
     LabLocalDisplayBudgetSummary,

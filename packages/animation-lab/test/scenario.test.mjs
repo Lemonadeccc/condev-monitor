@@ -55,6 +55,43 @@ test('accepts privacy-safe v2 semantics without changing the v1 scenario version
     assert.equal(result.value.actions[0].technologies[0].technologyKey, 'react')
 })
 
+test('accepts bounded local-only outcome expectations on existing action kinds', () => {
+    const input = scenario()
+    input.actions[0].expect = [
+        { kind: 'element-state', selector: '[data-lab="panel"]', state: 'visible', timeoutMs: 2_000 },
+        {
+            kind: 'attribute-token',
+            selector: '[data-lab="toggle"]',
+            attribute: 'aria-expanded',
+            value: 'true',
+            timeoutMs: 2_000,
+        },
+        { kind: 'animations-settled', selector: '[data-lab="panel"]', idleMs: 100, timeoutMs: 3_000 },
+    ]
+
+    const result = validateAnimationLabScenario(input)
+    assert.equal(result.ok, true)
+    assert.equal(result.value.schemaVersion, 1)
+    assert.equal(result.value.actions[0].expect.length, 3)
+})
+
+test('rejects unbounded, unsafe, or open-ended outcome expectations without echoing private input', () => {
+    const input = scenario()
+    input.actions[0].expect = [
+        { kind: 'element-state', selector: '[data-private="customer-name"]', state: 'opaque' },
+        { kind: 'attribute-token', selector: '#private-user', attribute: 'class', value: 'customer name' },
+        { kind: 'animations-settled', selector: '#private-animation', idleMs: 0, timeoutMs: 120_001 },
+        { kind: 'text', selector: '#private-copy', value: 'private customer text' },
+        { kind: 'element-state', selector: '#too-many', state: 'visible' },
+    ]
+
+    const result = validateAnimationLabScenario(input)
+    assert.equal(result.ok, false)
+    assert.ok(result.errors.includes('actions[0].expect:invalid-count'))
+    assert.equal(JSON.stringify(result.errors).includes('customer-name'), false)
+    assert.equal(JSON.stringify(result.errors).includes('private customer text'), false)
+})
+
 test('accepts metric catalog v2 as an explicit additive measurement contract', () => {
     const input = scenario()
     input.measurementContract = {

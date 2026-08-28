@@ -22,6 +22,7 @@ const TRIGGER_SOURCES = [
 const SUBJECT_SCOPES = ['page', 'route', 'frame', 'subject', 'renderer-surface', 'media'] as const
 const SUBJECT_SURFACES = ['dom', 'svg', 'canvas2d', 'webgl', 'webgl2', 'webgpu', 'video', 'audio', 'unknown'] as const
 const ACTION_OUTCOMES = ['completed', 'cancelled', 'failed', 'timed-out', 'unknown'] as const
+const ACTION_FAILURE_KINDS = ['outcome-assertion'] as const
 const ATTEMPT_PHASES = ['warmup', 'measured', 'diagnostic-trace', 'lighthouse', 'processing'] as const
 const ACTION_PHASES = ['started', 'finished'] as const
 const BUDGET_STATUSES = ['attention', 'no-breach-observed', 'insufficient-evidence'] as const
@@ -31,6 +32,7 @@ const SAFE_SEMANTIC_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:+-]*$/u
 export type LabLocalDisplayAttemptPhase = (typeof ATTEMPT_PHASES)[number]
 export type LabLocalDisplayActionPhase = (typeof ACTION_PHASES)[number]
 export type LabLocalDisplayBudgetStatus = (typeof BUDGET_STATUSES)[number]
+export type LabLocalDisplayActionFailureKind = (typeof ACTION_FAILURE_KINDS)[number]
 
 export interface LabLocalDisplayAttempt {
     readonly phase: LabLocalDisplayAttemptPhase
@@ -68,7 +70,10 @@ export type LabLocalDisplayActionEvent =
           readonly type: 'action'
           readonly phase: 'finished'
           readonly attempt: LabLocalDisplayAttempt
-          readonly action: LabLocalDisplayAction & { readonly outcome: LabActionOutcomeStatus }
+          readonly action: LabLocalDisplayAction & {
+              readonly outcome: LabActionOutcomeStatus
+              readonly failureKind?: LabLocalDisplayActionFailureKind
+          }
       }
 
 export interface LabLocalDisplayBudgetSummary {
@@ -242,12 +247,15 @@ function projectActionEvent(value: Record<string, unknown>): Readonly<LabLocalDi
 
     const outcome = projectOutcome(source.outcome)
     if (!outcome) return null
+    const failureKind = closedValue(source.failureKind, ACTION_FAILURE_KINDS)
+    if (source.failureKind !== undefined && !failureKind) return null
+    if (failureKind && outcome !== 'failed') return null
     return Object.freeze({
         schemaVersion: 1,
         type: 'action',
         phase,
         attempt,
-        action: Object.freeze({ ...actionBase, outcome }),
+        action: Object.freeze({ ...actionBase, outcome, ...(failureKind ? { failureKind } : {}) }),
     })
 }
 
@@ -344,8 +352,9 @@ export function createTerminalLabLocalDisplaySink(options: TerminalLabLocalDispl
                 const attempt = `${event.attempt.phase} ${event.attempt.current}/${event.attempt.total}`
                 const action = `${event.action.order + 1}/${event.action.total}`
                 const outcome = event.phase === 'finished' ? ` outcome=${event.action.outcome}` : ''
+                const failureKind = event.phase === 'finished' && event.action.failureKind ? ` failure=${event.action.failureKind}` : ''
                 stream.write(
-                    `[condev-lab] ${attempt} action=${event.phase} ${action} kind=${event.action.kind} trigger=${event.action.trigger} ${terminalSubject(event.action.subject)}${outcome}\n`
+                    `[condev-lab] ${attempt} action=${event.phase} ${action} kind=${event.action.kind} trigger=${event.action.trigger} ${terminalSubject(event.action.subject)}${outcome}${failureKind}\n`
                 )
                 return
             }

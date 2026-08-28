@@ -4,7 +4,7 @@ Shared contracts for controlled animation-performance lab runs. This package val
 
 It is intentionally not imported by the Browser SDK. A lab runner controls a disposable browser process. Raw trace and full Lighthouse artifacts stay local; the platform accepts only the derived redacted report and a bounded trace index by default.
 
-The page probe enables every standards-based, privacy-safe signal it can observe: frame cadence and slow tails, Long Tasks, Long Animation Frames, Event Timing phases, LCP/CLS, resources, Web Animations inventory, renderer surface/context families, Canvas backing pixels, video dropped-frame quality, reduced-motion candidates, and Chromium heap availability. Unsupported signals stay `unsupported`; an exposed capability without a valid sample stays `not-observed`, and an optional field that cannot yet be capability-detected stays `unknown`. GPU time, draw calls, framework ownership, business completion, and authored-source attribution are never guessed.
+The page probe enables every standards-based, privacy-safe signal it can observe: frame cadence and slow tails, Long Tasks, Long Animation Frames, Event Timing phases, LCP/CLS, resources, Web Animations inventory, renderer surface/context families, Canvas backing pixels, video dropped-frame quality, reduced-motion candidates, and Chromium heap availability. Unsupported signals stay `unsupported`; an exposed capability without a valid sample stays `not-observed`, and an optional field that cannot yet be capability-detected stays `unknown`. GPU time, draw calls, framework ownership, business completion, and authored-source attribution are never guessed. A reviewed local Scenario may add an explicit outcome gate, but that is caller-supplied test evidence rather than an inferred performance metric.
 
 `frame.refresh.inferred` keeps its catalog-v1 identity for compatibility, but its measured value is specifically the observed visible-page rAF callback cadence derived as `1000 / frame-interval p50`. It is not a physical display refresh-rate measurement, compositor presentation FPS, or GPU FPS. Every decoded instance carries `observed-page-raf-cadence-not-display-refresh-rate`; use the explicit measurement-contract `expectedHz` and `targetFrameMs` for budgets rather than letting this observation relax the target.
 
@@ -26,13 +26,36 @@ The tested application is separated by an HTTP(S) URL. npm, yarn, pnpm, Bun, Den
 
 The v1 scenario and report shape remains valid. Semantics v2 is an additive, strict subset shared by the local runner, Monitor backend, and UI:
 
-- scenario actions may add caller-owned `actionId`, `subject`, `trigger`, and up to four action-level `technologies` declarations; selectors remain local execution inputs, and declared technologies never become observed evidence merely because they were named;
+- scenario actions may add caller-owned `actionId`, `subject`, `trigger`, up to four action-level `technologies` declarations, and up to four local-only `expect` outcome gates; selectors and expected values remain local execution inputs, and declared technologies never become observed evidence merely because they were named;
 - `resolveLabActionId()` generates a stable order-plus-label identity when `actionId` is omitted;
 - `measurementContract` records explicit `expectedHz`, the matching `targetFrameMs`, provenance/confidence, and versioned budget/catalog references;
 - reports may add `scenario.actions`, a lowercase SHA-256 `scenario.protocolHash`, per-attempt and top-level aggregate `actionWindows`, metric scope/aggregation/budget/evidence metadata, multi-axis `technologyEvidence`, and reference-only `findings`;
 - `validateAnimationLabSemanticsV2()` rejects unknown fields, broken references, catalog tuple drift, inconsistent clocks, selectors, DOM fields, URLs, and free-text channels.
 
 `ANIMATION_LAB_METRIC_CATALOG_V1` and `DEFAULT_ANIMATION_LAB_BUDGET_V1` are centralized, versioned defaults. When a scenario omits `measurementContract`, the runner materializes the unchanged package default of 60 Hz, `targetFrameMs = 16.666667`, metric catalog v1, and `condev.animation.default@1`; it does not silently turn the observed display cadence into a more permissive budget or change an existing consumer's metric tuple set. A different expected cadence, metric catalog, or budget version must be declared in the scenario.
+
+### Local outcome gates
+
+Each existing action may optionally declare up to four `expect` entries. The closed set is `element-state` (`visible`, `hidden`, `attached`, or `detached`), exact `attribute-token` checks for `aria-expanded`, `aria-pressed`, or `data-state`, and `animations-settled` for the current document or one DOM subtree. Every check is bounded by the action deadline and may also declare its own shorter timeout. `animations-settled` requires a quiet window with no pending/running CSS or Web Animations API animations; it does not prove GSAP timelines, Canvas/WebGL/WebGPU work, video presentation, GPU completion, or an application-specific asynchronous task has finished.
+
+```json
+{
+    "kind": "click",
+    "label": "open-gallery",
+    "selector": "[data-lab='gallery-toggle']",
+    "expect": [
+        {
+            "kind": "attribute-token",
+            "selector": "[data-lab='gallery-toggle']",
+            "attribute": "aria-expanded",
+            "value": "true"
+        },
+        { "kind": "animations-settled", "selector": "[data-lab='gallery-panel']", "idleMs": 100 }
+    ]
+}
+```
+
+Selector presence/mode and expected tokens affect the local scenario protocol digest, but raw selector values do not. None of those private assertion inputs are copied into `scenario.actions`, action windows, findings, platform errors, or uploads. A failed gate uses the stable `LabOutcomeAssertionError` category and closes the page-probe action window as failed. Action automation failures and outcome assertion failures therefore remain distinguishable without exposing the private assertion input.
 
 ### Additive scheduling and LoAF diagnostic catalog
 

@@ -117,6 +117,38 @@ test('keeps started actions outcome-free and rejects invalid closed values', () 
     )
 })
 
+test('projects only the closed local outcome assertion failure category', () => {
+    const event = projectLabLocalDisplayEvent({
+        type: 'action',
+        phase: 'finished',
+        attempt: { phase: 'measured', current: 1, total: 3 },
+        action: {
+            order: 0,
+            total: 1,
+            kind: 'click',
+            trigger: 'scenario',
+            outcome: 'failed',
+            failureKind: 'outcome-assertion',
+            selector: forbiddenValues.selector,
+            expected: forbiddenValues.text,
+        },
+    })
+    assert.deepEqual(event.action, {
+        order: 0,
+        total: 1,
+        kind: 'click',
+        trigger: 'scenario',
+        outcome: 'failed',
+        failureKind: 'outcome-assertion',
+    })
+    assert.equal(JSON.stringify(event).includes(forbiddenValues.selector), false)
+    assert.equal(JSON.stringify(event).includes(forbiddenValues.text), false)
+
+    const invalid = structuredClone(event)
+    invalid.action.outcome = 'completed'
+    assert.equal(projectLabLocalDisplayEvent(invalid), null)
+})
+
 test('projects only internally consistent budget summaries', () => {
     const event = projectLabLocalDisplayEvent({
         type: 'budget-summary',

@@ -1,5 +1,6 @@
 import {
     type AnimationLabScenario,
+    type LabActionExpectation,
     type LabActionKind,
     type LabActionOutcomeStatus,
     type LabActionSubject,
@@ -37,6 +38,7 @@ export type ScenarioActionLifecycleEvent =
           trigger: LabActionTriggerSource
           subject?: LabActionSubject
           outcome: LabActionOutcomeStatus
+          failureKind?: 'outcome-assertion'
       }
 
 export interface ProbeCommandState {
@@ -54,6 +56,7 @@ export interface ScenarioActionExecution {
     durationMs: number
     crossDocument: boolean
     limitations: readonly string[]
+    failureKind?: 'outcome-assertion'
 }
 
 export function scenarioActionId(action: LabScenarioAction, index: number): string {
@@ -117,18 +120,44 @@ function documentChanged(start: number | null, end: number | null): boolean {
     return start !== null && end !== null && Math.abs(end - start) > 0.01
 }
 
-class LabActionTimeoutError extends Error {
+export class LabActionTimeoutError extends Error {
     constructor(kind: LabActionKind, order: number, timeoutMs: number) {
         super(`${kind} action at order ${order} exceeded its ${timeoutMs} ms timeout`)
         this.name = 'LabActionTimeoutError'
     }
 }
 
-async function withinActionDeadline(action: LabScenarioAction, order: number, operation: () => Promise<void>): Promise<void> {
+export class LabOutcomeAssertionError extends Error {
+    readonly expectationKind: LabActionExpectation['kind']
+    readonly actionOrder: number
+    readonly timedOut: boolean
+
+    constructor(expectationKind: LabActionExpectation['kind'], actionOrder: number, timedOut = false) {
+        super(`Outcome expectation ${expectationKind} at action order ${actionOrder} ${timedOut ? 'timed out' : 'was not satisfied'}`)
+        this.name = 'LabOutcomeAssertionError'
+        this.expectationKind = expectationKind
+        this.actionOrder = actionOrder
+        this.timedOut = timedOut
+    }
+}
+
+async function withinActionDeadline(
+    action: LabScenarioAction,
+    order: number,
+    activeExpectationKind: () => LabActionExpectation['kind'] | null,
+    operation: () => Promise<void>
+): Promise<void> {
     const timeoutMs = action.timeoutMs ?? 30_000
     let timer: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(new LabActionTimeoutError(action.kind, order, timeoutMs)), timeoutMs)
+        timer = setTimeout(() => {
+            const expectationKind = activeExpectationKind()
+            reject(
+                expectationKind
+                    ? new LabOutcomeAssertionError(expectationKind, order, true)
+                    : new LabActionTimeoutError(action.kind, order, timeoutMs)
+            )
+        }, timeoutMs)
     })
     try {
         await Promise.race([Promise.resolve().then(operation), timeout])
@@ -249,16 +278,35 @@ export async function runScenarioActions(
         let timeOriginAtStart: number | null = null
         let outcome: 'completed' | 'failed' | 'unknown' = 'completed'
         let timedOut = false
+        let activeExpectationKind: LabActionExpectation['kind'] | null = null
+        let outcomeAssertionFailed = false
         try {
-            await withinActionDeadline(action, index, async () => {
-                timeOriginAtStart = await documentTimeOrigin(page)
-                await mark(page, action, 'start')
-                await notifyProbe(page, options.probeKey, options.probeCapability, options.probeCommandState, actionId, 'start')
-                await execute(page, action)
-            })
+            await withinActionDeadline(
+                action,
+                index,
+                () => activeExpectationKind,
+                async () => {
+                    timeOriginAtStart = await documentTimeOrigin(page)
+                    await mark(page, action, 'start')
+                    await notifyProbe(page, options.probeKey, options.probeCapability, options.probeCommandState, actionId, 'start')
+                    await execute(page, action)
+                    for (const expectation of action.expect ?? []) {
+                        activeExpectationKind = expectation.kind
+                        try {
+                            await page.assertOutcome(expectation)
+                        } catch (error) {
+                            if (error instanceof LabOutcomeAssertionError) throw error
+                            throw new LabOutcomeAssertionError(expectation.kind, index)
+                        } finally {
+                            activeExpectationKind = null
+                        }
+                    }
+                }
+            )
         } catch (error) {
             outcome = 'failed'
-            timedOut = error instanceof LabActionTimeoutError
+            outcomeAssertionFailed = error instanceof LabOutcomeAssertionError
+            timedOut = error instanceof LabActionTimeoutError || (error instanceof LabOutcomeAssertionError && error.timedOut)
             if (timedOut) page.abort('lab-action-timeout')
             throw error
         } finally {
@@ -301,16 +349,24 @@ export async function runScenarioActions(
                 endedAtMs,
                 durationMs: endedAtMs - startedAtMs,
                 crossDocument,
+                ...(outcomeAssertionFailed ? { failureKind: 'outcome-assertion' as const } : {}),
                 limitations: timedOut
-                    ? ['action-timeout-page-terminated']
-                    : crossDocument
-                      ? ['cross-document-measurement-partial']
-                      : continuityUnknown
-                        ? ['document-continuity-unknown']
-                        : [],
+                    ? [outcomeAssertionFailed ? 'outcome-assertion-timeout-page-terminated' : 'action-timeout-page-terminated']
+                    : outcomeAssertionFailed
+                      ? ['outcome-assertion-failed']
+                      : crossDocument
+                        ? ['cross-document-measurement-partial']
+                        : continuityUnknown
+                          ? ['document-continuity-unknown']
+                          : [],
             }
             results.push(execution)
-            publishActionLifecycle(options, { phase: 'finished', ...lifecycleBase, outcome })
+            publishActionLifecycle(options, {
+                phase: 'finished',
+                ...lifecycleBase,
+                outcome,
+                ...(outcomeAssertionFailed ? { failureKind: 'outcome-assertion' as const } : {}),
+            })
         }
     }
     return results

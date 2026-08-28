@@ -44,6 +44,9 @@ const TRIGGER_SOURCES = new Set([
 ])
 const DECLARED_TECHNOLOGY_AXES = new Set(['ui-framework', 'meta-runtime', 'motion-engine', 'renderer', 'graphics-api', 'media'])
 const MAX_DECLARED_TECHNOLOGIES_PER_ACTION = 4
+const MAX_EXPECTATIONS_PER_ACTION = 4
+const EXPECTATION_ATTRIBUTES = new Set(['aria-expanded', 'aria-pressed', 'data-state'])
+const ELEMENT_STATES = new Set(['visible', 'hidden', 'attached', 'detached'])
 
 function record(value: unknown): value is Record<string, unknown> {
     return Boolean(value && typeof value === 'object' && !Array.isArray(value))
@@ -126,6 +129,51 @@ function validateTechnologies(value: unknown, errors: string[], index: number): 
     })
 }
 
+function validateExpectations(value: unknown, errors: string[], index: number): void {
+    const label = `actions[${index}].expect`
+    if (!Array.isArray(value) || value.length === 0 || value.length > MAX_EXPECTATIONS_PER_ACTION) {
+        errors.push(`${label}:invalid-count`)
+        return
+    }
+    value.forEach((item, expectationIndex) => {
+        const itemLabel = `${label}[${expectationIndex}]`
+        if (!record(item) || typeof item.kind !== 'string') {
+            errors.push(`${itemLabel}:invalid`)
+            return
+        }
+        const timeout = (): void => {
+            if (item.timeoutMs !== undefined && !integer(item.timeoutMs, 50, 120_000)) {
+                errors.push(`${itemLabel}:invalid-timeout`)
+            }
+        }
+        switch (item.kind) {
+            case 'element-state':
+                unknownKeys(item, new Set(['kind', 'selector', 'state', 'timeoutMs']), itemLabel, errors)
+                if (!selector(item.selector)) errors.push(`${itemLabel}:invalid-selector`)
+                if (typeof item.state !== 'string' || !ELEMENT_STATES.has(item.state)) errors.push(`${itemLabel}:invalid-state`)
+                timeout()
+                break
+            case 'attribute-token':
+                unknownKeys(item, new Set(['kind', 'selector', 'attribute', 'value', 'timeoutMs']), itemLabel, errors)
+                if (!selector(item.selector)) errors.push(`${itemLabel}:invalid-selector`)
+                if (typeof item.attribute !== 'string' || !EXPECTATION_ATTRIBUTES.has(item.attribute)) {
+                    errors.push(`${itemLabel}:invalid-attribute`)
+                }
+                if (safeToken(item.value, '', 80) !== item.value) errors.push(`${itemLabel}:invalid-value`)
+                timeout()
+                break
+            case 'animations-settled':
+                unknownKeys(item, new Set(['kind', 'selector', 'idleMs', 'timeoutMs']), itemLabel, errors)
+                if (item.selector !== undefined && !selector(item.selector)) errors.push(`${itemLabel}:invalid-selector`)
+                if (item.idleMs !== undefined && !integer(item.idleMs, 16, 5_000)) errors.push(`${itemLabel}:invalid-idle`)
+                timeout()
+                break
+            default:
+                errors.push(`${itemLabel}:unsupported-kind`)
+        }
+    })
+}
+
 /** Stable local/report correlation identity when a scenario omits an explicit actionId. */
 export function resolveLabActionId(action: Pick<LabScenarioAction, 'actionId' | 'label'>, order: number): string {
     return action.actionId ?? `action-${String(order).padStart(3, '0')}-${safeToken(action.label, 'action', 80)}`
@@ -142,12 +190,13 @@ function validateAction(value: unknown, errors: string[], index: number): value 
     if (value.subject !== undefined) validateSubject(value.subject, errors, index)
     if (value.trigger !== undefined) validateTrigger(value.trigger, errors, index)
     if (value.technologies !== undefined) validateTechnologies(value.technologies, errors, index)
+    if (value.expect !== undefined) validateExpectations(value.expect, errors, index)
     if (value.timeoutMs !== undefined && !integer(value.timeoutMs, 50, 120_000)) errors.push(`actions[${index}]:invalid-timeout`)
     const duration = (minimum = 0, maximum = 120_000): boolean => finite(value.durationMs, minimum, maximum)
     const allowed = (specific: readonly string[]): void =>
         unknownKeys(
             value,
-            new Set(['kind', 'label', 'timeoutMs', 'actionId', 'subject', 'trigger', 'technologies', ...specific]),
+            new Set(['kind', 'label', 'timeoutMs', 'actionId', 'subject', 'trigger', 'technologies', 'expect', ...specific]),
             `actions[${index}]`,
             errors
         )

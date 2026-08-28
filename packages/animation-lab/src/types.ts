@@ -50,6 +50,31 @@ export interface LabActionTrigger {
     source?: LabActionTriggerSource
 }
 
+/**
+ * Local-only outcome gates evaluated after an action. Selectors and expected
+ * values are deliberately absent from reports and platform payloads.
+ */
+export type LabActionExpectation =
+    | {
+          kind: 'element-state'
+          selector: string
+          state: 'visible' | 'hidden' | 'attached' | 'detached'
+          timeoutMs?: number
+      }
+    | {
+          kind: 'attribute-token'
+          selector: string
+          attribute: 'aria-expanded' | 'aria-pressed' | 'data-state'
+          value: string
+          timeoutMs?: number
+      }
+    | {
+          kind: 'animations-settled'
+          selector?: string
+          idleMs?: number
+          timeoutMs?: number
+      }
+
 export interface LabActionBase {
     kind: LabActionKind
     /** Static, caller-owned token. It is the only action identity retained in reports. */
@@ -60,6 +85,8 @@ export interface LabActionBase {
     subject?: LabActionSubject
     trigger?: LabActionTrigger
     technologies?: readonly LabActionTechnologyDeclaration[]
+    /** Optional local-only result checks; never retained in Lab reports. */
+    expect?: readonly LabActionExpectation[]
 }
 
 export type LabScenarioAction =

@@ -350,6 +350,34 @@ test('accepts only standard CSS and capability-sequenced probe commands in a rea
         await page.navigate(`data:text/html,${attack}`, 10_000)
 
         await page.click('#valid', 1_000)
+        await page.assertOutcome({ kind: 'element-state', selector: '#valid', state: 'visible', timeoutMs: 1_000 })
+        await page.assertOutcome({ kind: 'element-state', selector: '#missing', state: 'detached', timeoutMs: 1_000 })
+        await page.rawPage.evaluate(() => {
+            document.querySelector('#valid').setAttribute('aria-expanded', 'true')
+        })
+        await page.assertOutcome({
+            kind: 'attribute-token',
+            selector: '#valid',
+            attribute: 'aria-expanded',
+            value: 'true',
+            timeoutMs: 1_000,
+        })
+        await page.assertOutcome({ kind: 'animations-settled', selector: '#valid', idleMs: 20, timeoutMs: 1_000 })
+        await page.rawPage.evaluate(() => {
+            document.querySelector('#valid').animate([{ transform: 'translateX(0)' }, { transform: 'translateX(10px)' }], {
+                duration: 1_000,
+                iterations: Infinity,
+            })
+        })
+        await assert.rejects(page.assertOutcome({ kind: 'animations-settled', selector: '#valid', idleMs: 20, timeoutMs: 50 }))
+        await page.rawPage.evaluate(() => document.getAnimations().forEach(animation => animation.cancel()))
+        await assert.rejects(
+            page.assertOutcome({ kind: 'element-state', selector: '#missing', state: 'visible', timeoutMs: 50 }),
+            error => {
+                assert.equal(error.message.includes('#missing'), false)
+                return true
+            }
+        )
         await assert.rejects(page.click('text=valid', 1_000), /standards-compatible CSS selector/)
         assert.equal(await page.notifyProbe(key, capability, 0, 'secure-action', 'start', 'completed'), true)
         assert.equal(await page.notifyProbe(key, capability, 0, 'secure-action', 'start', 'completed'), false)

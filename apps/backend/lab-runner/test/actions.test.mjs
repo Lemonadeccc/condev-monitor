@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { runScenarioActions, scenarioActionId } from '../build/index.js'
+import { LabOutcomeAssertionError, runScenarioActions, scenarioActionId } from '../build/index.js'
 
 function fakePage() {
     const calls = []
@@ -27,6 +27,7 @@ function fakePage() {
         pointerDown: async () => calls.push(['down']),
         pointerUp: async () => calls.push(['up']),
         pressKey: async key => calls.push(['press', key]),
+        assertOutcome: async expectation => calls.push(['expect', expectation.kind]),
         abort: reason => calls.push(['abort', reason]),
         close: async () => {},
     }
@@ -118,6 +119,144 @@ test('closes a failed action window before rethrowing', async () => {
             ['probe', 'action-000-broken', 'end', 'failed', 1],
         ]
     )
+})
+
+test('evaluates local-only outcome expectations before closing the probe window', async () => {
+    const page = fakePage()
+    const privateExpectation = {
+        kind: 'attribute-token',
+        selector: '[data-private="customer-panel"]',
+        attribute: 'aria-expanded',
+        value: 'true',
+        timeoutMs: 500,
+    }
+    const events = []
+
+    const windows = await runScenarioActions(
+        page,
+        scenario([{ kind: 'click', label: 'open', selector: '#open', expect: [privateExpectation] }]),
+        {
+            ...probeOptions(),
+            onActionLifecycle(event) {
+                events.push(event)
+            },
+        }
+    )
+
+    const actionCall = page.calls.findIndex(call => call[0] === 'click')
+    const expectationCall = page.calls.findIndex(call => call[0] === 'expect')
+    const probeEndCall = page.calls.findIndex(call => call[0] === 'probe' && call[2] === 'end')
+    assert.ok(actionCall >= 0 && expectationCall > actionCall && probeEndCall > expectationCall)
+    assert.equal(windows[0].outcome, 'completed')
+    assert.equal(JSON.stringify(events).includes('customer-panel'), false)
+    assert.equal(JSON.stringify(events).includes('aria-expanded'), false)
+})
+
+test('classifies an outcome mismatch separately without leaking selector or expected value', async () => {
+    const page = fakePage()
+    page.assertOutcome = async () => {
+        throw new Error('driver message with [data-private="customer"] and secret-token')
+    }
+    const events = []
+
+    await assert.rejects(
+        runScenarioActions(
+            page,
+            scenario([
+                {
+                    kind: 'click',
+                    label: 'open',
+                    selector: '#open',
+                    expect: [
+                        {
+                            kind: 'attribute-token',
+                            selector: '[data-private="customer"]',
+                            attribute: 'data-state',
+                            value: 'secret-token',
+                            timeoutMs: 500,
+                        },
+                    ],
+                },
+            ]),
+            {
+                ...probeOptions(),
+                onActionLifecycle(event) {
+                    events.push(event)
+                },
+            }
+        ),
+        error => {
+            assert.ok(error instanceof LabOutcomeAssertionError)
+            assert.equal(error.name, 'LabOutcomeAssertionError')
+            assert.equal(error.expectationKind, 'attribute-token')
+            assert.equal(error.actionOrder, 0)
+            assert.equal(error.message.includes('customer'), false)
+            assert.equal(error.message.includes('secret-token'), false)
+            return true
+        }
+    )
+    assert.deepEqual(
+        page.calls.filter(call => call[0] === 'probe'),
+        [
+            ['probe', 'action-000-open', 'start', 'completed', 0],
+            ['probe', 'action-000-open', 'end', 'failed', 1],
+        ]
+    )
+    assert.deepEqual(events.at(-1), {
+        phase: 'finished',
+        order: 0,
+        total: 1,
+        kind: 'click',
+        trigger: 'scenario',
+        outcome: 'failed',
+        failureKind: 'outcome-assertion',
+    })
+    assert.equal(JSON.stringify(events).includes('customer'), false)
+    assert.equal(JSON.stringify(events).includes('secret-token'), false)
+})
+
+test('classifies a whole-action deadline reached during an outcome gate as an outcome timeout', async () => {
+    const page = fakePage()
+    let releaseExpectation
+    page.assertOutcome = async () =>
+        new Promise(resolve => {
+            releaseExpectation = resolve
+        })
+    const events = []
+
+    await assert.rejects(
+        runScenarioActions(
+            page,
+            scenario([
+                {
+                    kind: 'click',
+                    label: 'open',
+                    selector: '#open',
+                    timeoutMs: 50,
+                    expect: [{ kind: 'element-state', selector: '#private-panel', state: 'visible', timeoutMs: 500 }],
+                },
+            ]),
+            {
+                ...probeOptions(),
+                onActionLifecycle(event) {
+                    events.push(event)
+                },
+            }
+        ),
+        error => {
+            assert.ok(error instanceof LabOutcomeAssertionError)
+            assert.equal(error.expectationKind, 'element-state')
+            assert.equal(error.timedOut, true)
+            assert.equal(error.message.includes('private-panel'), false)
+            return true
+        }
+    )
+    releaseExpectation?.()
+    assert.deepEqual(
+        page.calls.filter(call => call[0] === 'abort'),
+        [['abort', 'lab-action-timeout']]
+    )
+    assert.equal(events.at(-1).failureKind, 'outcome-assertion')
 })
 
 test('fails closed at the whole-action deadline without querying a stuck page during cleanup', async () => {

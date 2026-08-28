@@ -5,7 +5,7 @@ import test from 'node:test'
 
 import { validateAnimationLabSemanticsV2 } from '@condev-monitor/animation-lab'
 
-import { LAB_RUNNER_CONTRACT_VERSION, RemoteLabClient, remoteFailureCode } from '../build/index.js'
+import { LAB_RUNNER_CONTRACT_VERSION, LabOutcomeAssertionError, RemoteLabClient, remoteFailureCode } from '../build/index.js'
 
 const runId = '123e4567-e89b-12d3-a456-426614174000'
 const token = `labg_${'a'.repeat(43)}`
@@ -983,4 +983,6 @@ test('rejects malformed remote authority and maps local failures to bounded code
     assert.throws(() => new RemoteLabClient({ server: 'http://localhost:3000', runId: 'not-a-uuid', token }), /UUID/u)
     assert.equal(remoteFailureCode(new Error('Chrome tracing failed')), 'LAB_TRACE_FAILED')
     assert.equal(remoteFailureCode(new Error('selector was not visible')), 'LAB_SCENARIO_FAILED')
+    assert.equal(remoteFailureCode(new LabOutcomeAssertionError('element-state', 0)), 'LAB_OUTCOME_FAILED')
+    assert.equal(remoteFailureCode(new LabOutcomeAssertionError('animations-settled', 0, true)), 'LAB_OUTCOME_TIMEOUT')
 })

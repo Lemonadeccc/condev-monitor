@@ -67,6 +67,28 @@ test('changes the protocol hash when reviewed actions or measurement conditions 
     assert.notEqual(createScenarioProtocolHash(changedContract), baseline)
 })
 
+test('treats outcome expectation changes as protocol drift without hashing raw selector changes', () => {
+    const baseline = scenario()
+    baseline.actions[0].expect = [
+        {
+            kind: 'attribute-token',
+            selector: '[data-private="before"]',
+            attribute: 'aria-expanded',
+            value: 'true',
+        },
+    ]
+    const selectorOnly = structuredClone(baseline)
+    selectorOnly.actions[0].expect[0].selector = '[data-private="after"]'
+    const changedValue = structuredClone(baseline)
+    changedValue.actions[0].expect[0].value = 'false'
+    const changedKind = structuredClone(baseline)
+    changedKind.actions[0].expect = [{ kind: 'animations-settled', idleMs: 100 }]
+
+    assert.equal(createScenarioProtocolHash(selectorOnly), createScenarioProtocolHash(baseline))
+    assert.notEqual(createScenarioProtocolHash(changedValue), createScenarioProtocolHash(baseline))
+    assert.notEqual(createScenarioProtocolHash(changedKind), createScenarioProtocolHash(baseline))
+})
+
 test('treats a budget version change as protocol drift', () => {
     const v1 = scenario()
     v1.measurementContract = {

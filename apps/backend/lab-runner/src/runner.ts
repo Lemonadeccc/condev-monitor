@@ -172,7 +172,12 @@ async function measuredAttempt(
                         kind: event.kind,
                         trigger: event.trigger,
                         ...(event.subject ? { subject: event.subject } : {}),
-                        ...(event.phase === 'finished' ? { outcome: event.outcome } : {}),
+                        ...(event.phase === 'finished'
+                            ? {
+                                  outcome: event.outcome,
+                                  ...(event.failureKind ? { failureKind: event.failureKind } : {}),
+                              }
+                            : {}),
                     },
                 })
             },
@@ -305,7 +310,12 @@ async function traceAttempt(
                         kind: event.kind,
                         trigger: event.trigger,
                         ...(event.subject ? { subject: event.subject } : {}),
-                        ...(event.phase === 'finished' ? { outcome: event.outcome } : {}),
+                        ...(event.phase === 'finished'
+                            ? {
+                                  outcome: event.outcome,
+                                  ...(event.failureKind ? { failureKind: event.failureKind } : {}),
+                              }
+                            : {}),
                     },
                 })
             },

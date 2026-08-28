@@ -20,6 +20,31 @@ function stableJson(value: unknown): string {
 }
 
 function actionProtocol(action: AnimationLabScenario['actions'][number], order: number): unknown {
+    const expectations = action.expect?.map(expectation => {
+        if (expectation.kind === 'element-state') {
+            return {
+                kind: expectation.kind,
+                selectorMode: 'targeted',
+                state: expectation.state,
+                timeoutMs: expectation.timeoutMs ?? null,
+            }
+        }
+        if (expectation.kind === 'attribute-token') {
+            return {
+                kind: expectation.kind,
+                selectorMode: 'targeted',
+                attribute: expectation.attribute,
+                value: expectation.value,
+                timeoutMs: expectation.timeoutMs ?? null,
+            }
+        }
+        return {
+            kind: expectation.kind,
+            selectorMode: expectation.selector === undefined ? 'page' : 'targeted',
+            idleMs: expectation.idleMs ?? 100,
+            timeoutMs: expectation.timeoutMs ?? null,
+        }
+    })
     const base = {
         actionId: resolveLabActionId(action, order),
         order,
@@ -29,6 +54,7 @@ function actionProtocol(action: AnimationLabScenario['actions'][number], order: 
         subject: action.subject ?? null,
         trigger: { source: action.trigger?.source ?? 'scenario' },
         technologies: action.technologies ?? [],
+        ...(expectations && expectations.length > 0 ? { expectations } : {}),
     }
 
     switch (action.kind) {

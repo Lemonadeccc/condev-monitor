@@ -1,4 +1,4 @@
-import type { AnimationLabScenario, RawTraceEvent } from '@condev-monitor/animation-lab'
+import type { AnimationLabScenario, LabActionExpectation, RawTraceEvent } from '@condev-monitor/animation-lab'
 import * as chromeLauncher from 'chrome-launcher'
 import { type Browser, type BrowserContext, type BrowserType, chromium, firefox, type Page, webkit } from 'playwright-core'
 
@@ -63,6 +63,8 @@ export interface LabAutomationPage {
     pointerUp(): Promise<void>
     pressKey(key: string): Promise<void>
     setViewportSize(width: number, height: number): Promise<void>
+    /** Evaluates one local-only outcome gate without retaining its selector or expected value. */
+    assertOutcome(expectation: LabActionExpectation): Promise<void>
     /**
      * Fail-closed termination for a page whose automation channel exceeded a
      * runner-owned deadline. This must initiate disposal without waiting for
@@ -282,6 +284,76 @@ class PlaywrightAutomationPage implements LabAutomationPage {
 
     async setViewportSize(width: number, height: number): Promise<void> {
         await this.rawPage.setViewportSize({ width, height })
+    }
+
+    async assertOutcome(expectation: LabActionExpectation): Promise<void> {
+        const timeoutMs = expectation.timeoutMs ?? 5_000
+        if (expectation.selector) await this.assertStandardCssSelector(expectation.selector)
+        try {
+            if (expectation.kind === 'element-state') {
+                await this.rawPage.waitForFunction(
+                    ({ selector, state }) => {
+                        const element = document.querySelector(selector)
+                        if (state === 'attached') return element !== null
+                        if (state === 'detached') return element === null
+                        if (!element) return false
+                        const style = getComputedStyle(element)
+                        const rectangle = element.getBoundingClientRect()
+                        const visible =
+                            style.visibility !== 'hidden' && style.visibility !== 'collapse' && rectangle.width > 0 && rectangle.height > 0
+                        return state === 'visible' ? visible : !visible
+                    },
+                    { selector: expectation.selector, state: expectation.state },
+                    { timeout: timeoutMs }
+                )
+                return
+            }
+            if (expectation.kind === 'attribute-token') {
+                await this.rawPage.waitForFunction(
+                    ({ selector, attribute, value }) => document.querySelector(selector)?.getAttribute(attribute) === value,
+                    {
+                        selector: expectation.selector,
+                        attribute: expectation.attribute,
+                        value: expectation.value,
+                    },
+                    { timeout: timeoutMs }
+                )
+                return
+            }
+            const settled = await this.rawPage.evaluate(
+                ({ selector, idleMs, timeoutMs }) =>
+                    new Promise<boolean>(resolve => {
+                        const startedAt = performance.now()
+                        let idleStartedAt: number | null = null
+                        const check = (): void => {
+                            const root = selector ? document.querySelector(selector) : document
+                            if (!root) {
+                                resolve(false)
+                                return
+                            }
+                            const active = root
+                                .getAnimations({ subtree: true })
+                                .some(animation => animation.pending || animation.playState === 'running')
+                            const now = performance.now()
+                            idleStartedAt = active ? null : (idleStartedAt ?? now)
+                            if (idleStartedAt !== null && now - idleStartedAt >= idleMs) {
+                                resolve(true)
+                                return
+                            }
+                            if (now - startedAt >= timeoutMs) {
+                                resolve(false)
+                                return
+                            }
+                            setTimeout(check, Math.min(16, idleMs))
+                        }
+                        check()
+                    }),
+                { selector: expectation.selector, idleMs: expectation.idleMs ?? 100, timeoutMs }
+            )
+            if (!settled) throw new Error('Outcome expectation was not satisfied')
+        } catch {
+            throw new Error(`Outcome expectation ${expectation.kind} was not satisfied`)
+        }
     }
 
     abort(reason: 'lab-action-timeout'): void {
