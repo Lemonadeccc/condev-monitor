@@ -11,6 +11,7 @@ export {
 export type { AnimationRumProjectionOptions } from './integration'
 export { createAnimationElementPicker } from './element-picker'
 export * from './host-adapters'
+export * from './motion-semantics'
 export type { AnimationOverlaySource } from './overlay'
 export { recommendAnimationImprovements } from './recommendations'
 export { createBrowserAnimationRuntime } from './runtime'

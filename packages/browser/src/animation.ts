@@ -6,6 +6,7 @@ import {
     createGsapLifecycleProbe,
     createGsapTickerObserver,
     createLenisScrollObserver,
+    createMotionSemanticCheckpointRecorder,
     createRendererHostProbe,
     createScrollTriggerObserver,
     createThreeRendererProbe,
@@ -41,6 +42,8 @@ import {
     type InputFrameSchedulingMarker,
     type LenisScrollObserver,
     type LenisScrollObserverOptions,
+    type MotionSemanticCheckpointRecorder,
+    type MotionSemanticCheckpointRecorderOptions,
     type RendererHostProbe,
     type RendererHostProbeOptions,
     type ScrollTriggerObserver,
@@ -234,6 +237,10 @@ export interface AnimationClientHandle {
     createGsapTickerObserver(options: GsapTickerObserverOptions): GsapTickerObserver
     /** Local-only public Lenis scroll evidence with Browser-owned teardown. */
     createLenisScrollObserver(options: LenisScrollObserverOptions): LenisScrollObserver
+    /** Explicit local business-interaction checkpoints across optional public motion observers. */
+    createMotionSemanticCheckpointRecorder(
+        options?: Omit<MotionSemanticCheckpointRecorderOptions, 'beginInteraction'>
+    ): MotionSemanticCheckpointRecorder
     createRendererProbe(options: Omit<RendererHostProbeOptions, 'sink'>): RendererHostProbe
     /** Local-only public ScrollTrigger state with Browser-owned teardown. */
     createScrollTriggerObserver(options: ScrollTriggerObserverOptions): ScrollTriggerObserver
@@ -1033,6 +1040,17 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         return this.trackObserver(createLenisScrollObserver(options))
     }
 
+    createMotionSemanticCheckpointRecorder(
+        options: Omit<MotionSemanticCheckpointRecorderOptions, 'beginInteraction'> = {}
+    ): MotionSemanticCheckpointRecorder {
+        return this.trackObserver(
+            createMotionSemanticCheckpointRecorder({
+                ...options,
+                beginInteraction: (kind, label) => this.beginInteraction(kind, label),
+            })
+        )
+    }
+
     createRendererProbe(options: Omit<RendererHostProbeOptions, 'sink'>): RendererHostProbe {
         return this.trackProbe(createRendererHostProbe({ ...options, sink: this }))
     }
@@ -1096,12 +1114,13 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
             throw new Error('Cannot create an animation probe after the client was destroyed')
         }
         const originalDispose = probe.dispose.bind(probe)
+        const registry = new WeakRef(this.probes)
         let active = true
         const ownedProbe = {
             dispose: (): void => {
                 if (!active) return
                 active = false
-                this.probes.delete(ownedProbe)
+                registry.deref()?.delete(ownedProbe)
                 originalDispose()
             },
         }
