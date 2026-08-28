@@ -8,6 +8,7 @@ import {
     Database,
     DollarSign,
     FlaskConical,
+    Gauge,
     Home,
     MessagesSquare,
     Microscope,
@@ -58,6 +59,11 @@ const items = [
         title: 'Animations',
         url: '/animations',
         icon: Activity,
+    },
+    {
+        title: 'Soft Navigation',
+        url: '/animations/soft-navigation',
+        icon: Gauge,
     },
     {
         title: 'Labs',
@@ -147,7 +153,12 @@ const AppSidebar = () => {
                     <SidebarGroupContent>
                         <SidebarMenu>
                             {items.map(item => {
-                                const active = item.url === '/' ? pathname === '/' : pathname.startsWith(item.url)
+                                const active =
+                                    item.url === '/'
+                                        ? pathname === '/'
+                                        : item.url === '/animations'
+                                          ? pathname.startsWith('/animations') && !pathname.startsWith('/animations/soft-navigation')
+                                          : pathname.startsWith(item.url)
                                 const href = item.url === '/' ? item.url : buildMonitorScopeHref(item.url, searchParams)
                                 return (
                                     <SidebarMenuItem key={item.title}>
