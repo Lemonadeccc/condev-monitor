@@ -74,6 +74,7 @@ const client = init({
 import {
     AnimationCollector,
     createFrameworkCommitProbe,
+    createGsapLifecycleCycleAnalyzer,
     createGsapLifecycleProbe,
     createRendererHostProbe,
     createThreeRendererProbe,
@@ -124,9 +125,12 @@ function renderFrame() {
 }
 
 const gsapLifecycle = createGsapLifecycleProbe({ sink: animation, gsap, scrollTrigger: ScrollTrigger })
-gsapLifecycle.capture('mount')
-gsapLifecycle.capture('after-interaction')
-gsapLifecycle.capture('unmount')
+const gsapCycles = createGsapLifecycleCycleAnalyzer({ minimumCycles: 3 })
+gsapCycles.record(gsapLifecycle.capture('mount'))
+gsapCycles.record(gsapLifecycle.capture('after-interaction'))
+gsapCycles.record(gsapLifecycle.capture('unmount'))
+// 在相同 route/build/input/waits/cleanup 下至少重复三次，再读取：
+const gsapGrowthCandidate = gsapCycles.snapshot()
 
 const videoFrames = createVideoFrameProbe({ sink: animation, video })
 videoFrames.start()
@@ -140,7 +144,7 @@ videoFrames.start()
 
 `createRendererHostProbe()` 是 Canvas2D、原生 WebGL/WebGPU、R3F、Pixi、Babylon 等宿主的通用显式入口。宿主只把 public counter 映射到闭集的 `drawCalls/triangles/lines/points/geometries/textures/programs`，接口不接收引擎名、scene object、selector、URL、shader、texture identity 或任意 metadata。显式 `gpuTimerCapability` 把“已支持但结果尚未 resolve”与 `unsupported`、`disabled`、`unknown` 分开；旧调用缺字段时继续由既有 GPU status 保守推导。调用方明确提供的 counter 必须是有界非负整数；无效字段、能力与结果矛盾或 context 状态会让该次读取整体失败，不能静默伪装为“未观测”。抛错 getter、嵌套 GPU accessor 和 revoked Proxy 都被隔离，GPU 读取异常只能成为 `error`，不能成为 measured。Canvas2D 可以提供 counter，但浏览器没有通用 Canvas2D GPU timer，因此 `supported` 能力和任何 Canvas2D GPU duration 都被拒绝。探针只在调用方执行 `capture()` 时读一次，不启动 rAF、不 monkey-patch draw API、不调用 `gl.finish()`、不扫描私有字段。Browser 单入口也提供 `client.animation.createRendererProbe()` 并在销毁 client 时统一清理。
 
-`createGsapLifecycleProbe()` 只使用 `globalTimeline.getChildren()` 和 `ScrollTrigger.getAll()` 公共 API，不读 private ticker，也不会在 `dispose()` 中调用 `kill()`。单次 total/active count 只是 inventory，不是泄漏结论，`growthCandidate` 因此固定为 `null`。至少运行三次等价的 mount → 同一代表交互 → 应用自行 cleanup/unmount 循环（推荐五次），在相同 route/build/输入/等待条件下比较 post-cleanup plateau，才有资格提出增长候选；没有 heap/post-GC 证据时仍不能断言内存泄漏。
+`createGsapLifecycleProbe()` 只使用 `globalTimeline.getChildren()` 和 `ScrollTrigger.getAll()` 公共 API，不读 private ticker，也不会在 `dispose()` 中调用 `kill()`。单次 total/active count 只是 inventory，不是泄漏结论。`createGsapLifecycleCycleAnalyzer()` 只接受显式、有序的 mount → 同一代表交互 → 应用自行 cleanup/unmount 序列；乱序会作废当前半循环，新 mount 才能重新同步。它默认最多保留 10 次 cleanup 快照，并要求至少三次由调用方声明为等价的循环。只有某类 post-unmount public inventory 在尾部窗口中逐次严格增长时才返回 `growth-candidate`；公开证据不完整是 `inconclusive`，`no-strict-growth-candidate` 也只表示这个严格谓词未触发，不能解释为中间或长期完全没有增长。它不保存 route/cycle 标识、不进入 host/RUM projection，也绝不输出 leak；仍须保证相同 route/build/输入/等待/cleanup，并结合 heap/post-GC plateau 才能讨论内存泄漏。
 
 `createVideoFrameProbe()` 只调度/取消 `requestVideoFrameCallback` 观察，不调用 `play()`/`pause()`，也不改 `src/currentSrc`。第一条 RVFC callback 只建 baseline，不产生 delta；时钟、presented counter 或 playback-quality counter 回退后同样重建 baseline，避免把 seek/source reset 误报成负值或巨量掉帧。页面从 hidden/offscreen 恢复到 visible 时，宿主必须调用 `resetBaseline()`；它只重置测量基线，不控制视频播放，可避免把后台暂停期间误记成一条巨大的 callback/media delta。`getVideoPlaybackQuality().totalVideoFrames` 是浏览器的累计 playback-quality total，探针只使用相邻 callback 的 delta；它不是 decoded-frame count。RVFC metadata 的 `presentedFrames` 是另一条展示计数，不能与前者互换。
 
@@ -457,7 +461,7 @@ Chrome 扩展落地时按官方边界拆分：DevTools page 创建 panel，conte
 | Angular                      | `packages/angular` + core component check-window                               | 显式接 `ngDoCheck` → `ngAfterViewChecked` 组件检查窗口；`afterEveryRender({ read })` 仅做 application-wide post-render target 同步；decorator-free helper 可供应用自己的 AOT directive 绑定匿名元素，不冒充 DOM update/render/commit/paint/GPU   |
 | Svelte                       | `packages/svelte` + core lifecycle update-window                               | `@condev-monitor/svelte/animation` 使用显式 `$effect.pre` + public `tick()` 采追踪依赖窗口，并用 action 注册匿名真实元素；不冒充全组件更新、DOM mutation、render/commit/paint/GPU                                                                |
 | Solid                        | `packages/solid` + core host-work sink                                         | `@condev-monitor/solid/animation` 通过 element-owned directive 注册匿名真实元素并随条件元素 owner 清理；显式 `measureReactiveWork()` 只记录调用方 callback 的 host `script` self-time，不把 effect 间隔冒充 render/update/check/commit/paint/GPU |
-| GSAP / Lenis / ScrollTrigger | 当前 core GSAP/ScrollTrigger inventory helper；后续 `packages/animation-gsap`  | 由宿主传入实例，使用 public API；后续补 Lenis/ticker、自动 checkpoint 和等价循环 analyzer，不重复捆绑 GSAP                                                                                                                                       |
+| GSAP / Lenis / ScrollTrigger | core GSAP/ScrollTrigger inventory + 显式等价循环 analyzer；后续 motion package | 由宿主传入实例并只读 public API；已能提出有界 post-cleanup 增长候选但不判 leak，后续补 Lenis/ticker 与自动 checkpoint，不重复捆绑 GSAP                                                                                                           |
 | Three / R3F / WebGL / WebGPU | core 通用 renderer-host + Three counter helper + `packages/animation-renderer` | 已接 public counters/context loss、WebGL1/2 async GPU frame timer、WebGPU 单/多 pass timestamp query，以及显式本地 scheduled-upload/readback-ready recorder；后续补 per-family composite/RUM、跨 command buffer、薄引擎资源与内部 target         |
 | Canvas / media               | Canvas direct + `packages/animation-renderer` Canvas2D recorder + Video RVFC   | 已有 backing geometry、显式 logical-frame/command/sync readback-upload/context 证据和 RVFC/drop delta；后续补 Worker/内部对象、decode/upload/first-visible/visibility                                                                            |
 | Chrome F12 UI                | 后续 `apps/frontend/animation-devtools-extension`                              | 只消费 collector/schema，不再实现一套指标                                                                                                                                                                                                        |
@@ -569,7 +573,7 @@ Kafka 是追加日志，门禁不会也不能从共享 topic 中删除已经发�
 
 当前的 `not-instrumented`/`unsupported` 不是遗漏的 0。下列能力还需要单独实现和验证：
 
-1. 完整 framework/motion adapters：React/Next owner/why-update/真实 commit、Vue/Angular/Svelte 深层 owner/why-update、Solid 深层 computation/why-update、Angular partial-compiled directive/APF 与 20/21/22 AOT consumer 矩阵，以及 GSAP/Lenis/ScrollTrigger ticker/自动 checkpoint/等价循环 analyzer；当前 React 只接显式 public Profiler，Vue 只接显式 public lifecycle update-window，Angular 已接显式 public component check-window、application-wide post-render target 同步和供 app-local directive 使用的 decorator-free target binding，但没有发布未经 partial compilation 的装饰器产物，Svelte 只接显式 tracked-dependency `tick()` window，Solid 只接匿名 owner 与调用方显式同步 work self-time，它们都没有私有全树归因；
+1. 完整 framework/motion adapters：React/Next owner/why-update/真实 commit、Vue/Angular/Svelte 深层 owner/why-update、Solid 深层 computation/why-update、Angular partial-compiled directive/APF 与 20/21/22 AOT consumer 矩阵，以及 GSAP/Lenis/ScrollTrigger ticker/自动 checkpoint；GSAP/ScrollTrigger 当前已有公开 inventory 和不上传任何 cycle 标识的显式等价循环 analyzer，但增长候选不是 leak 结论；React 只接显式 public Profiler，Vue 只接显式 public lifecycle update-window，Angular 已接显式 public component check-window、application-wide post-render target 同步和供 app-local directive 使用的 decorator-free target binding，但没有发布未经 partial compilation 的装饰器产物，Svelte 只接显式 tracked-dependency `tick()` window，Solid 只接匿名 owner 与调用方显式同步 work self-time，它们都没有私有全树归因；
 2. 完整 renderer/media adapters：Three/R3F/Pixi/Babylon 的薄公开映射，WebGL/WebGPU 的跨 command buffer、upload/readback/context/device 数据，Canvas2D 的 OffscreenCanvas Worker 时钟桥接、内部命中、异步编码/transfer 与完整业务资源归因，以及 media decode/upload/first-visible/visibility；当前 Canvas2D recorder 已接宿主显式完整逻辑帧、闭集 command、同步 readback/upload、backing/context 证据，WebGL timer 已接 whole-canvas Target query window，通用 renderer-host/Three/Video helper 也已接公开状态，但引擎资源、内部对象与生命周期语义仍不完整；
 3. GPU query 后续：WebGL1/2 已有可选的异步、稀疏、非阻塞 frame timer，并验证 availability、disjoint、context loss、独占 ownership、队列、一次性 host 消费和有界 Target window；WebGPU 已有 feature-gated 单完整 pass、同一 command buffer 首/末 pass 区间、submit 后异步 map、device-loss 终态和乱序 sample 防回流的 timestamp timer；仍缺 WebGPU 跨 command buffer/submit 与引擎私有 encoder 协调、跨重复 bundle 的强制仲裁、真实设备 capability/开销矩阵与引擎自带 profiler 协调；
 4. CDP/trace 深层归因：首版 Labs 已有有界 JS、style/layout、paint/composite、raster/GPU 类别时间线与脱敏生成源码栈；仍缺 source map 到 authored source、逐帧 layer/CPU profile 专门视图和跨浏览器等价实现。浏览器 SDK 的 LoAF tail 和可选 PaintTimingMixin 只覆盖长帧，不能替代全帧 trace、源码归因或真实 GPU timer；
