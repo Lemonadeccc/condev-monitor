@@ -801,6 +801,8 @@ test('explicit host evidence is bounded, capture-clocked, coverage-aware, and ex
     assert.equal(frameworkProbe.recordCommit({ phase: 'update', renderMs: 2, commitMs: 1 }), true)
     runtime.advance(10)
     assert.equal(frameworkProbe.recordCommit({ phase: 'update', renderMs: 3 }), true)
+    runtime.advance(10)
+    assert.equal(frameworkProbe.recordUpdateWindow({ updateWindowMs: 8 }), true)
     assert.equal(
         collector.recordFrameworkStats({
             source: 'manual',
@@ -811,6 +813,70 @@ test('explicit host evidence is bounded, capture-clocked, coverage-aware, and ex
         }),
         false
     )
+    for (const invalidFrameworkSample of [
+        {
+            source: 'framework-lifecycle',
+            framework: 'react',
+            phase: 'update',
+            updateWindowMs: 7,
+            renderMs: 1,
+            timestampMs: 0,
+        },
+        {
+            source: 'framework-lifecycle',
+            framework: 'react',
+            phase: 'update',
+            updateWindowMs: 7,
+            commitMs: 1,
+            timestampMs: 0,
+        },
+        {
+            source: 'framework-lifecycle',
+            framework: 'react',
+            phase: 'update',
+            updateWindowMs: 7,
+            baseRenderMs: 1,
+            timestampMs: 0,
+        },
+        {
+            source: 'framework-lifecycle',
+            framework: 'react',
+            phase: 'mount',
+            updateWindowMs: 7,
+            timestampMs: 0,
+        },
+        {
+            source: 'framework-lifecycle',
+            framework: 'react',
+            phase: 'update',
+            timestampMs: 0,
+        },
+        {
+            source: 'framework-lifecycle',
+            framework: 'react',
+            phase: 'update',
+            updateWindowMs: 600_001,
+            timestampMs: 0,
+        },
+        {
+            source: 'manual',
+            framework: 'react',
+            phase: 'update',
+            renderMs: 1,
+            updateWindowMs: 7,
+            timestampMs: 0,
+        },
+        {
+            source: 'react-profiler',
+            framework: 'react',
+            phase: 'update',
+            renderMs: 1,
+            updateWindowMs: 7,
+            timestampMs: 0,
+        },
+    ]) {
+        assert.equal(collector.recordFrameworkStats(invalidFrameworkSample), false)
+    }
     assert.equal(
         collector.recordRenderStats({
             source: 'three-renderer-info',
@@ -892,15 +958,16 @@ test('explicit host evidence is bounded, capture-clocked, coverage-aware, and ex
             snapshot.hostEvidence.framework.droppedSampleCount,
             snapshot.hostEvidence.framework.rejectedSampleCount,
         ],
-        [3, 2, 1, 1]
+        [4, 2, 2, 9]
     )
     assert.equal(snapshot.hostEvidence.framework.detailScope, 'retained-samples')
     assert.equal(snapshot.hostEvidence.framework.retainedEvidenceSampleCount, 2)
     assert.equal(snapshot.hostEvidence.framework.acceptedWindow.startedAt, 0)
-    assert.equal(snapshot.hostEvidence.framework.acceptedWindow.endedAt, 20)
-    assert.equal(snapshot.hostEvidence.framework.window.startedAt, 10)
-    assert.equal(snapshot.hostEvidence.framework.window.endedAt, 20)
-    assert.equal(snapshot.hostEvidence.framework.renderMs.p95, 2.95)
+    assert.equal(snapshot.hostEvidence.framework.acceptedWindow.endedAt, 30)
+    assert.equal(snapshot.hostEvidence.framework.window.startedAt, 20)
+    assert.equal(snapshot.hostEvidence.framework.window.endedAt, 30)
+    assert.equal(snapshot.hostEvidence.framework.renderMs.p95, 3)
+    assert.equal(snapshot.hostEvidence.framework.updateWindowMs.p95, 8)
     assert.equal(snapshot.hostEvidence.renderer.gpuFrameMs.p95, 2.5)
     assert.equal(snapshot.hostEvidence.renderer.gpuTimerCapability, 'supported')
     assert.equal(snapshot.hostEvidence.lifecycle.latestAnimationTotal, 2)
@@ -3515,6 +3582,7 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
         frameworks: ['react'],
         renderMs: statistics(3.2, 6),
         commitMs: statistics(1.4, 6),
+        updateWindowMs: statistics(8.5, 4),
     })
     Object.assign(snapshot.hostEvidence.work, {
         ...hostFamily({ accepted: 7, retained: 7, evidence: 7 }),
@@ -3775,6 +3843,7 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     const workHostMetric = id => findFakeNodes(workHostDetail, node => node.getAttribute('data-host-evidence-metric') === id)[0]
     assert.match(fakeNodeText(workHostMetric('framework-render-p95')), /Framework render p95 3\.20 ms/)
     assert.match(fakeNodeText(workHostMetric('framework-commit-p95')), /Framework commit p95 1\.40 ms/)
+    assert.match(fakeNodeText(workHostMetric('framework-update-window-p95')), /Framework update window p95 8\.50 ms/)
     assert.match(fakeNodeText(workHostMetric('total-work-samples')), /Total work samples 7/)
     assert.match(fakeNodeText(workHostMetric('work-categories')), /Work categories script 2 · layout 2 · paint 1 · composite 1 · other 1/)
 
@@ -3829,6 +3898,10 @@ test('dev overlay ranks every measured finding and exposes workbench, interactio
     assert.doesNotMatch(fakeNodeText(chineseActiveMetric), /\b0(?:\.0+)?\b/)
     assert.match(fakeNodeText(chineseLifecycleHostDetail), /仅凭检查点尚不能判断泄漏/)
     assert.match(fakeNodeText(chineseLifecycleHostDetail), /不属于 animation_rum v1/)
+    const chineseWorkCoverage = findFakeNodes(chinesePanel, node => node.getAttribute('data-coverage-family') === 'workAvoidance')[0]
+    chineseWorkCoverage.click()
+    const chineseWorkHostDetail = findFakeNodes(chinesePanel, node => node.getAttribute('data-host-evidence') === 'work')[0]
+    assert.match(fakeNodeText(chineseWorkHostDetail), /框架更新窗口 p95 8\.50 ms/)
     const chineseInteractionsTab = findFakeNodes(chinesePanel, node => node.getAttribute('data-overlay-tab') === 'interactions')[0]
     chineseInteractionsTab.click()
     assert.match(fakeNodeText(chinesePanel), /连续交互质量/)

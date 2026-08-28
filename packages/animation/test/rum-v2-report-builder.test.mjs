@@ -750,6 +750,22 @@ test('target builder requires an explicit semantic target key and keeps direct, 
     assertAvailableMetricsHaveEvidence(report)
     assert.doesNotMatch(JSON.stringify(report), /private\.example|PrivateProductCard|ProductCard\.tsx|private-renderer|selectionId/)
 
+    const vueTarget = targetSnapshot()
+    vueTarget.inventory.uiFrameworks = ['vue']
+    vueTarget.owners = [{ relation: 'framework-owner', framework: 'vue' }]
+    const vueReport = toAnimationRumV2TargetReport(
+        snapshot,
+        vueTarget,
+        projectionOptions(runtime, {
+            eventId: 'event_target_vue_12345678',
+            captureId: 'capture_target_vue_12345678',
+            targetKey: 'hero-vue',
+        })
+    )
+    assert.equal(vueReport.context.runtime.framework, 'vue')
+    assert.equal(vueReport.capabilities['framework-adapter'], 'supported')
+    assert.doesNotMatch(JSON.stringify(vueReport), /framework-owner|component|selector|private/)
+
     const page = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime))
     const supportedIds = new Set([...page.metrics, ...report.metrics].map(item => item.metricId))
     assert.equal(supportedIds.size, 69)
