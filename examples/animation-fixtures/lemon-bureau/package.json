@@ -22,6 +22,7 @@
   "description": "",
   "dependencies": {
     "@condev-monitor/monitor-sdk-browser": "workspace:*",
+    "@condev-monitor/monitor-sdk-animation-renderer": "workspace:*",
     "@dimforge/rapier3d": "^0.19.3",
     "cannon-es": "^0.20.0",
     "gsap": "^3.15.0",

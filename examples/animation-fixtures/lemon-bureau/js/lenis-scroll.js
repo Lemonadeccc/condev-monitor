@@ -5,7 +5,7 @@ import { ScrollTrigger } from "gsap/ScrollTrigger";
 
 const dsn = import.meta.env.VITE_MONITOR_DSN?.trim();
 
-init({
+const monitorClient = init({
   dsn,
   animation: {
     autoStart: import.meta.env.DEV || Boolean(dsn),
@@ -58,4 +58,4 @@ function initLenisScroll() {
   window.addEventListener("load", () => ScrollTrigger.refresh(), { once: true });
 }
 
-export { lenis };
+export { lenis, monitorClient };

@@ -12,6 +12,11 @@ import * as THREE from "three";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 import { LineMaterial } from "three/addons/lines/LineMaterial.js";
+import {
+  createThreeRendererAdapter,
+  createWebGlGpuTimer,
+} from "@condev-monitor/monitor-sdk-animation-renderer";
+import { monitorClient } from "./lenis-scroll.js";
 
 // ── ⚙️ Config — edit these ──────────────────────────────────────────────────
 
@@ -61,6 +66,22 @@ const renderer = new THREE.WebGLRenderer({
 });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setClearColor(0x000000, 0);
+
+const threeMonitor = createThreeRendererAdapter({
+  animation: monitorClient.animation,
+  renderer,
+  backend: "webgl2",
+  gpuTimer: {
+    timer: createWebGlGpuTimer({
+      gl: renderer.getContext(),
+      backend: "webgl2",
+      disjointQueryOwnership: "exclusive",
+      sampleEvery: 60,
+    }),
+    ownership: "adapter",
+  },
+  target: { element: canvas },
+});
 
 const scene = new THREE.Scene();
 const cam = new THREE.PerspectiveCamera(FOV, 1, 0.01, 100);
@@ -390,7 +411,7 @@ function tick(ts) {
 
   for (let i = 0; i < BALL_COUNT; i++) meshes[i].position.copy(pos[i]);
 
-  renderer.render(scene, cam);
+  threeMonitor.render(scene, cam);
   requestAnimationFrame(tick);
 }
 
@@ -398,3 +419,11 @@ requestAnimationFrame((ts) => {
   last = ts;
   requestAnimationFrame(tick);
 });
+
+window.addEventListener("pagehide", (event) => {
+  if (!event.persisted) threeMonitor.dispose();
+});
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => threeMonitor.dispose());
+}
