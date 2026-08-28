@@ -1,0 +1,177 @@
+import { INestApplication, Injectable } from '@nestjs/common'
+import { JwtService } from '@nestjs/jwt'
+import { PassportModule, PassportStrategy } from '@nestjs/passport'
+import { Test } from '@nestjs/testing'
+import { ExtractJwt, Strategy } from 'passport-jwt'
+import * as request from 'supertest'
+
+import { createMonitorValidationPipe } from '../common/validation/monitor-validation.pipe'
+import { AnimationRumV2JwtGuard } from './animation-rum-v2-jwt.guard'
+import { AnimationRumV2ReadThrottleGuard } from './animation-rum-v2-read-throttle.guard'
+import { AnimationRumV2ReadThrottleService } from './animation-rum-v2-read-throttle.service'
+import { AnimationRumV3SoftNavigationPipelineService } from './animation-rum-v3-pipeline.service'
+import { AnimationRumV3SoftNavigationQueryController } from './animation-rum-v3-query.controller'
+import { AnimationRumV3SoftNavigationQueryService } from './animation-rum-v3-query.service'
+
+const JWT_SECRET = 'animation-rum-v3-query-http-fixture-secret'
+
+@Injectable()
+class FixtureJwtStrategy extends PassportStrategy(Strategy) {
+    constructor() {
+        super({
+            jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+            ignoreExpiration: false,
+            secretOrKey: JWT_SECRET,
+        })
+    }
+
+    validate(payload: { sub: number }) {
+        return { id: payload.sub }
+    }
+}
+
+describe('Animation RUM v3 soft-navigation query HTTP boundary', () => {
+    let app: INestApplication
+    const queries = {
+        summary: jest.fn(),
+        captures: jest.fn(),
+        capture: jest.fn(),
+    }
+    const pipelineDiagnostics = {
+        read: jest.fn(),
+    }
+    const throttle = {
+        consume: jest.fn(),
+    }
+
+    beforeAll(async () => {
+        const module = await Test.createTestingModule({
+            imports: [PassportModule.register({ defaultStrategy: 'jwt' })],
+            controllers: [AnimationRumV3SoftNavigationQueryController],
+            providers: [
+                AnimationRumV2JwtGuard,
+                AnimationRumV2ReadThrottleGuard,
+                FixtureJwtStrategy,
+                { provide: AnimationRumV2ReadThrottleService, useValue: throttle },
+                { provide: AnimationRumV3SoftNavigationQueryService, useValue: queries },
+                { provide: AnimationRumV3SoftNavigationPipelineService, useValue: pipelineDiagnostics },
+            ],
+        }).compile()
+        app = module.createNestApplication()
+        app.useGlobalPipes(createMonitorValidationPipe())
+        app.setGlobalPrefix('api')
+        await app.init()
+    })
+
+    beforeEach(() => {
+        queries.summary.mockReset().mockResolvedValue({ captures: { observed: 0 } })
+        queries.captures.mockReset().mockResolvedValue({ captures: [] })
+        queries.capture.mockReset().mockResolvedValue({ capture: { captureId: 'capture_12345678' } })
+        pipelineDiagnostics.read.mockReset().mockResolvedValue({ status: 'idle' })
+        throttle.consume.mockReset().mockReturnValue({ allowed: true, remaining: 59, retryAfterSeconds: 0 })
+    })
+
+    afterAll(async () => {
+        await app.close()
+    })
+
+    const auth = () => `Bearer ${new JwtService({ secret: JWT_SECRET }).sign({ sub: 41 })}`
+
+    it.each([
+        '/api/animation/rum-v3/soft-navigation/summary?appId=vanillaFixture1',
+        '/api/animation/rum-v3/soft-navigation/pipeline?appId=vanillaFixture1',
+    ])('rejects unauthenticated reads and marks them non-cacheable: %s', async endpoint => {
+        await request(app.getHttpServer())
+            .get(endpoint)
+            .expect(401)
+            .expect('Cache-Control', 'private, no-store')
+            .expect('Pragma', 'no-cache')
+        expect(queries.summary).not.toHaveBeenCalled()
+        expect(pipelineDiagnostics.read).not.toHaveBeenCalled()
+        expect(throttle.consume).not.toHaveBeenCalled()
+    })
+
+    it('returns the bounded pipeline diagnostic for the authenticated actor', async () => {
+        await request(app.getHttpServer())
+            .get('/api/animation/rum-v3/soft-navigation/pipeline?appId=vanillaFixture1')
+            .set('Authorization', auth())
+            .expect(200)
+            .expect('RateLimit-Remaining', '59')
+            .expect('Cache-Control', 'private, no-store')
+            .expect('Pragma', 'no-cache')
+            .expect({ success: true, data: { status: 'idle' } })
+
+        expect(pipelineDiagnostics.read).toHaveBeenCalledWith(41, 'vanillaFixture1')
+    })
+
+    it.each([
+        '/api/animation/rum-v3/soft-navigation/summary?appId=vanillaFixture1&unexpected=value',
+        '/api/animation/rum-v3/soft-navigation/pipeline?appId=vanillaFixture1&unexpected=value',
+        '/api/animation/rum-v3/soft-navigation/pipeline',
+        '/api/animation/rum-v3/soft-navigation/summary?appId=vanillaFixture1&from=2026-08-26',
+        '/api/animation/rum-v3/soft-navigation/captures?appId=vanillaFixture1&limit=101',
+        `/api/animation/rum-v3/soft-navigation/captures/${encodeURIComponent('../events')}?appId=vanillaFixture1`,
+    ])('rejects invalid query input before the service: %s', async endpoint => {
+        await request(app.getHttpServer())
+            .get(endpoint)
+            .set('Authorization', auth())
+            .expect(400)
+            .expect('Cache-Control', 'private, no-store')
+            .expect('Pragma', 'no-cache')
+        expect(queries.summary).not.toHaveBeenCalled()
+        expect(queries.captures).not.toHaveBeenCalled()
+        expect(queries.capture).not.toHaveBeenCalled()
+        expect(pipelineDiagnostics.read).not.toHaveBeenCalled()
+    })
+
+    it('uses the JWT actor and typed pagination for a valid request', async () => {
+        await request(app.getHttpServer())
+            .get('/api/animation/rum-v3/soft-navigation/captures?appId=vanillaFixture1&runtimeFramework=react&limit=20&offset=40')
+            .set('Authorization', auth())
+            .expect(200)
+            .expect('RateLimit-Remaining', '59')
+            .expect('Cache-Control', 'private, no-store')
+            .expect('Pragma', 'no-cache')
+            .expect({ success: true, data: { captures: [] } })
+
+        expect(queries.captures).toHaveBeenCalledWith(
+            41,
+            expect.objectContaining({ appId: 'vanillaFixture1', runtimeFramework: 'react', limit: 20, offset: 40 })
+        )
+    })
+
+    it('keeps capture identity and application ownership context separate', async () => {
+        await request(app.getHttpServer())
+            .get('/api/animation/rum-v3/soft-navigation/captures/capture_12345678?appId=vanillaFixture1')
+            .set('Authorization', auth())
+            .expect(200)
+            .expect('Cache-Control', 'private, no-store')
+
+        expect(queries.capture).toHaveBeenCalledWith(41, 'vanillaFixture1', 'capture_12345678')
+    })
+
+    it.each([
+        ['/api/animation/rum-v3/soft-navigation/summary?appId=vanillaFixture1', 'vanillaFixture1'],
+        ['/api/animation/rum-v3/soft-navigation/pipeline?appId=vanillaFixture1', 'vanillaFixture1'],
+        ['/api/animation/rum-v3/soft-navigation/captures?appId=unknownFixture1', 'unknownFixture1'],
+        ['/api/animation/rum-v3/soft-navigation/captures/capture_12345678?appId=unknownFixture1', 'unknownFixture1'],
+    ])('rate-limits every read route without revealing app ownership: %s', async (endpoint, appId) => {
+        throttle.consume.mockReturnValue({ allowed: false, remaining: 0, retryAfterSeconds: 17 })
+
+        await request(app.getHttpServer())
+            .get(endpoint)
+            .set('Authorization', auth())
+            .expect(429)
+            .expect('Retry-After', '17')
+            .expect('RateLimit-Remaining', '0')
+            .expect('Cache-Control', 'private, no-store')
+            .expect('Pragma', 'no-cache')
+            .expect({ statusCode: 429, message: 'Animation RUM v2 read rate limit exceeded' })
+
+        expect(throttle.consume).toHaveBeenCalledWith(41, appId)
+        expect(queries.summary).not.toHaveBeenCalled()
+        expect(queries.captures).not.toHaveBeenCalled()
+        expect(queries.capture).not.toHaveBeenCalled()
+        expect(pipelineDiagnostics.read).not.toHaveBeenCalled()
+    })
+})

@@ -11,10 +11,21 @@ import { AnimationRumV2QueryController } from './animation-rum-v2-query.controll
 import { AnimationRumV2QueryService } from './animation-rum-v2-query.service'
 import { AnimationRumV2ReadThrottleGuard } from './animation-rum-v2-read-throttle.guard'
 import { AnimationRumV2ReadThrottleService } from './animation-rum-v2-read-throttle.service'
+import { AnimationRumV3SoftNavigationControlController } from './animation-rum-v3-control.controller'
+import { AnimationRumV3SoftNavigationControlService } from './animation-rum-v3-control.service'
+import { AnimationRumV3SoftNavigationPipelineService } from './animation-rum-v3-pipeline.service'
+import { AnimationRumV3SoftNavigationQueryController } from './animation-rum-v3-query.controller'
+import { AnimationRumV3SoftNavigationQueryService } from './animation-rum-v3-query.service'
 
 @Module({
     imports: [ApplicationModule],
-    controllers: [AnimationController, AnimationRumV2ControlController, AnimationRumV2QueryController],
+    controllers: [
+        AnimationController,
+        AnimationRumV2ControlController,
+        AnimationRumV2QueryController,
+        AnimationRumV3SoftNavigationControlController,
+        AnimationRumV3SoftNavigationQueryController,
+    ],
     providers: [
         AnimationService,
         AnimationRumV2ControlService,
@@ -23,6 +34,9 @@ import { AnimationRumV2ReadThrottleService } from './animation-rum-v2-read-throt
         AnimationRumV2JwtGuard,
         AnimationRumV2ReadThrottleGuard,
         AnimationRumV2ReadThrottleService,
+        AnimationRumV3SoftNavigationControlService,
+        AnimationRumV3SoftNavigationPipelineService,
+        AnimationRumV3SoftNavigationQueryService,
     ],
 })
 export class AnimationModule {}

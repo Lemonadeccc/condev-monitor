@@ -1,0 +1,37 @@
+import { GUARDS_METADATA } from '@nestjs/common/constants'
+
+import { AnimationRumV2JwtGuard } from './animation-rum-v2-jwt.guard'
+import { AnimationRumV2ReadThrottleGuard } from './animation-rum-v2-read-throttle.guard'
+import { AnimationRumV3SoftNavigationQueryController } from './animation-rum-v3-query.controller'
+
+describe('AnimationRumV3SoftNavigationQueryController', () => {
+    const request = { user: { id: 41 } }
+
+    it('uses the authenticated non-cacheable read guards', () => {
+        const guards = Reflect.getMetadata(GUARDS_METADATA, AnimationRumV3SoftNavigationQueryController) as unknown[]
+        expect(guards).toEqual([AnimationRumV2JwtGuard, AnimationRumV2ReadThrottleGuard])
+    })
+
+    it.each([
+        ['pipeline', [{ appId: 'vanillaFixture1' }, request], [41, 'vanillaFixture1']],
+        ['summary', [{ appId: 'vanillaFixture1' }, request], [41, { appId: 'vanillaFixture1' }]],
+        ['captures', [{ appId: 'vanillaFixture1', limit: 20 }, request], [41, { appId: 'vanillaFixture1', limit: 20 }]],
+        [
+            'capture',
+            [{ captureId: 'capture_12345678' }, { appId: 'vanillaFixture1' }, request],
+            [41, 'vanillaFixture1', 'capture_12345678'],
+        ],
+    ] as const)('%s passes only the authenticated actor and validated identity to its read service', async (method, args, expected) => {
+        const queries = {
+            summary: jest.fn().mockResolvedValue({ kind: 'summary' }),
+            captures: jest.fn().mockResolvedValue({ kind: 'captures' }),
+            capture: jest.fn().mockResolvedValue({ kind: 'capture' }),
+        }
+        const pipelineDiagnostics = { read: jest.fn().mockResolvedValue({ kind: 'pipeline' }) }
+        const controller = new AnimationRumV3SoftNavigationQueryController(queries as any, pipelineDiagnostics as any)
+
+        await expect((controller[method] as any)(...args)).resolves.toEqual({ success: true, data: { kind: method } })
+        if (method === 'pipeline') expect(pipelineDiagnostics.read).toHaveBeenCalledWith(...expected)
+        else expect(queries[method]).toHaveBeenCalledWith(...expected)
+    })
+})
