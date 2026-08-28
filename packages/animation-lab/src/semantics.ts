@@ -95,6 +95,14 @@ const FORBIDDEN_REPORT_KEYS = new Set([
     'attributes',
     'keyframes',
     'inputvalue',
+    'scene',
+    'scenes',
+    'shader',
+    'shaders',
+    'texture',
+    'textures',
+    'mesh',
+    'meshes',
 ])
 
 export type LabContractValidationResult<T> = { ok: true; value: T } | { ok: false; errors: readonly string[] }
@@ -261,7 +269,12 @@ function parseMeasurementContract(value: unknown, label: string, errors: string[
     if (typeof value.confidence !== 'string' || !CONFIDENCES.has(value.confidence)) add(errors, `${label}:invalid-confidence`)
     if (value.source === 'explicit' && value.confidence !== 'explicit') add(errors, `${label}:explicit-source-needs-explicit-confidence`)
     validateBudgetRef(value.budgetRef, `${label}.budgetRef`, errors, false)
-    if (value.metricCatalogVersion !== 1 && value.metricCatalogVersion !== 2 && value.metricCatalogVersion !== 3) {
+    if (
+        value.metricCatalogVersion !== 1 &&
+        value.metricCatalogVersion !== 2 &&
+        value.metricCatalogVersion !== 3 &&
+        value.metricCatalogVersion !== 4
+    ) {
         add(errors, `${label}:invalid-metric-catalog-version`)
     }
     if (finite(value.expectedHz, 1, 1_000) && finite(value.targetFrameMs, 1, 1_000)) {
@@ -543,7 +556,9 @@ export function validateAnimationLabSemanticsV2(value: unknown): LabContractVali
     parseMeasurementContract(value.measurementContract, 'measurementContract', errors)
     const metricCatalogVersion: LabMetricCatalogVersion =
         record(value.measurementContract) &&
-        (value.measurementContract.metricCatalogVersion === 2 || value.measurementContract.metricCatalogVersion === 3)
+        (value.measurementContract.metricCatalogVersion === 2 ||
+            value.measurementContract.metricCatalogVersion === 3 ||
+            value.measurementContract.metricCatalogVersion === 4)
             ? value.measurementContract.metricCatalogVersion
             : ANIMATION_LAB_METRIC_CATALOG_VERSION
 

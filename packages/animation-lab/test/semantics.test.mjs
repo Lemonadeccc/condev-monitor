@@ -5,12 +5,15 @@ import {
     ANIMATION_LAB_METRIC_CATALOG_V1,
     ANIMATION_LAB_METRIC_CATALOG_V2,
     ANIMATION_LAB_METRIC_CATALOG_V3,
+    ANIMATION_LAB_METRIC_CATALOG_V4,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V3,
+    DEFAULT_ANIMATION_LAB_BUDGET_REF_V4,
     DEFAULT_ANIMATION_LAB_BUDGET_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_V3,
+    DEFAULT_ANIMATION_LAB_BUDGET_V4,
     evaluateAnimationLabBudgetRule,
     getAnimationLabBudgetV1,
     getAnimationLabMetricCatalogEntry,
@@ -179,7 +182,7 @@ test('rejects unknown report fields and selector or DOM-text channels', () => {
     assert.ok(selectorResult.errors.includes('scenarioActions[0].subject:invalid-subject-key'))
 
     const metricInput = semantics()
-    metricInput.metrics[0].details = { text: 'private DOM copy' }
+    metricInput.metrics[0].details = { text: 'private DOM copy', scene: 'private-scene', shader: 'private-shader' }
     const metricResult = validateAnimationLabSemanticsV2(metricInput)
     assert.equal(metricResult.ok, false)
     assert.ok(metricResult.errors.includes('metrics[0]:unsupported-details'))
@@ -229,12 +232,76 @@ test('adds explicit budget versions without changing earlier rule tuples', () =>
     assert.equal(getAnimationLabBudgetV1('condev.animation.default', 1), DEFAULT_ANIMATION_LAB_BUDGET_V1)
     assert.equal(getAnimationLabBudgetV1('condev.animation.default', 2), DEFAULT_ANIMATION_LAB_BUDGET_V2)
     assert.equal(getAnimationLabBudgetV1('condev.animation.default', 3), DEFAULT_ANIMATION_LAB_BUDGET_V3)
+    assert.equal(getAnimationLabBudgetV1('condev.animation.default', 4), DEFAULT_ANIMATION_LAB_BUDGET_V4)
     assert.deepEqual(
         DEFAULT_ANIMATION_LAB_BUDGET_V3.rules.slice(0, DEFAULT_ANIMATION_LAB_BUDGET_V2.rules.length),
         DEFAULT_ANIMATION_LAB_BUDGET_V2.rules
     )
     assert.equal(DEFAULT_ANIMATION_LAB_BUDGET_V3.rules.length, DEFAULT_ANIMATION_LAB_BUDGET_V2.rules.length + 7)
-    assert.equal(getAnimationLabBudgetV1('condev.animation.default', 4), undefined)
+    assert.deepEqual(
+        DEFAULT_ANIMATION_LAB_BUDGET_V4.rules.slice(0, DEFAULT_ANIMATION_LAB_BUDGET_V3.rules.length),
+        DEFAULT_ANIMATION_LAB_BUDGET_V3.rules
+    )
+    assert.equal(DEFAULT_ANIMATION_LAB_BUDGET_V4.rules.length, DEFAULT_ANIMATION_LAB_BUDGET_V3.rules.length + 1)
+    assert.equal(getAnimationLabBudgetV1('condev.animation.default', 5), undefined)
+})
+
+test('adds renderer evidence only in catalog v4 and gates GPU budget evaluation', () => {
+    assert.deepEqual(ANIMATION_LAB_METRIC_CATALOG_V4.slice(0, ANIMATION_LAB_METRIC_CATALOG_V3.length), ANIMATION_LAB_METRIC_CATALOG_V3)
+    assert.equal(ANIMATION_LAB_METRIC_CATALOG_V4.length, ANIMATION_LAB_METRIC_CATALOG_V3.length + 3)
+
+    const expected = [
+        ['renderer.draw-calls.p95', 'drawCalls', 'count', []],
+        ['renderer.triangles.p95', 'triangles', 'count', []],
+        ['renderer.gpu-frame.p95', 'gpuFrameMs', 'ms', ['renderer-gpu-frame-tail']],
+    ]
+    for (const [metricId, name, unit, defaultBudgetRuleIds] of expected) {
+        assert.equal(getAnimationLabMetricCatalogEntry(metricId, 3), undefined)
+        assert.deepEqual(getAnimationLabMetricCatalogEntry(metricId, 4), {
+            metricId,
+            family: 'renderer',
+            name,
+            stat: 'p95',
+            unit,
+            defaultScope: 'attempt',
+            defaultAggregation: { population: 'samples', method: 'nearest-rank' },
+            defaultBudgetRuleIds,
+        })
+    }
+
+    const rule = DEFAULT_ANIMATION_LAB_BUDGET_V4.rules.find(candidate => candidate.ruleId === 'renderer-gpu-frame-tail')
+    assert.deepEqual(rule, {
+        ruleId: 'renderer-gpu-frame-tail',
+        metricId: 'renderer.gpu-frame.p95',
+        comparator: '<=',
+        target: { kind: 'target-frame-multiple', value: 0.8, unit: 'ratio' },
+        minimumSamples: 30,
+    })
+    const contract = { targetFrameMs: 16.666667 }
+    assert.equal(
+        evaluateAnimationLabBudgetRule(
+            rule,
+            { metricId: rule.metricId, value: 13, samples: 30, status: 'measured' },
+            contract
+        ).status,
+        'within-budget'
+    )
+    assert.equal(
+        evaluateAnimationLabBudgetRule(
+            rule,
+            { metricId: rule.metricId, value: 17, samples: 30, status: 'partial' },
+            contract
+        ).status,
+        'candidate-breach'
+    )
+    assert.equal(
+        evaluateAnimationLabBudgetRule(
+            rule,
+            { metricId: rule.metricId, value: 17, samples: 29, status: 'measured' },
+            contract
+        ).status,
+        'insufficient-evidence'
+    )
 })
 
 test('evaluates expanded v3 diagnostics only from sufficient measured evidence', () => {
@@ -394,7 +461,7 @@ test('keeps catalog v2 unchanged while catalog v3 adds windowed video playback q
         defaultAggregation: { population: 'media-frames', method: 'ratio' },
         defaultBudgetRuleIds: [],
     })
-    assert.throws(() => getAnimationLabMetricCatalogEntry('frame.duration.p95', 4), RangeError)
+    assert.throws(() => getAnimationLabMetricCatalogEntry('frame.duration.p95', 5), RangeError)
 })
 
 test('accepts additive v2 metrics only when the measurement contract selects catalog v2', () => {
@@ -489,7 +556,7 @@ test('rejects a budget reference that the local runner cannot execute', () => {
     assert.equal(validateLabMeasurementContract(value).ok, true)
     value.budgetRef = DEFAULT_ANIMATION_LAB_BUDGET_REF_V3
     assert.equal(validateLabMeasurementContract(value).ok, true)
-    value.budgetRef = { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 4 }
+    value.budgetRef = { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 5 }
     const unknownVersion = validateLabMeasurementContract(value)
     assert.equal(unknownVersion.ok, false)
     assert.ok(unknownVersion.errors.includes('measurementContract.budgetRef:unknown-local-budget'))

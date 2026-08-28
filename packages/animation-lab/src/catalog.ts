@@ -237,14 +237,38 @@ export const ANIMATION_LAB_METRIC_CATALOG_V3: readonly LabMetricCatalogEntryV1[]
     ...ANIMATION_LAB_METRIC_CATALOG_V3_ADDITIONS,
 ])
 
+const ANIMATION_LAB_METRIC_CATALOG_V4_ADDITIONS: readonly LabMetricCatalogEntryV1[] = Object.freeze([
+    metric('renderer.draw-calls.p95', 'renderer', 'drawCalls', 'p95', 'count', 'samples', 'nearest-rank'),
+    metric('renderer.triangles.p95', 'renderer', 'triangles', 'p95', 'count', 'samples', 'nearest-rank'),
+    metric(
+        'renderer.gpu-frame.p95',
+        'renderer',
+        'gpuFrameMs',
+        'p95',
+        'ms',
+        'samples',
+        'nearest-rank',
+        'attempt',
+        ['renderer-gpu-frame-tail']
+    ),
+])
+
+/** Additive catalog: v4 preserves v3 and adds explicit renderer-adapter evidence. */
+export const ANIMATION_LAB_METRIC_CATALOG_V4: readonly LabMetricCatalogEntryV1[] = Object.freeze([
+    ...ANIMATION_LAB_METRIC_CATALOG_V3,
+    ...ANIMATION_LAB_METRIC_CATALOG_V4_ADDITIONS,
+])
+
 const METRIC_BY_ID_V1 = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [entry.metricId, entry] as const))
 const METRIC_BY_ID_V2 = new Map(ANIMATION_LAB_METRIC_CATALOG_V2.map(entry => [entry.metricId, entry] as const))
 const METRIC_BY_ID_V3 = new Map(ANIMATION_LAB_METRIC_CATALOG_V3.map(entry => [entry.metricId, entry] as const))
+const METRIC_BY_ID_V4 = new Map(ANIMATION_LAB_METRIC_CATALOG_V4.map(entry => [entry.metricId, entry] as const))
 
 export function getAnimationLabMetricCatalog(version: LabMetricCatalogVersion): readonly LabMetricCatalogEntryV1[] {
     if (version === 1) return ANIMATION_LAB_METRIC_CATALOG_V1
     if (version === 2) return ANIMATION_LAB_METRIC_CATALOG_V2
     if (version === 3) return ANIMATION_LAB_METRIC_CATALOG_V3
+    if (version === 4) return ANIMATION_LAB_METRIC_CATALOG_V4
     throw new RangeError(`Unsupported animation lab metric catalog version: ${String(version)}`)
 }
 
@@ -255,6 +279,7 @@ export function getAnimationLabMetricCatalogEntry(
     if (version === 1) return METRIC_BY_ID_V1.get(metricId)
     if (version === 2) return METRIC_BY_ID_V2.get(metricId)
     if (version === 3) return METRIC_BY_ID_V3.get(metricId)
+    if (version === 4) return METRIC_BY_ID_V4.get(metricId)
     throw new RangeError(`Unsupported animation lab metric catalog version: ${String(version)}`)
 }
 
@@ -274,6 +299,12 @@ export const DEFAULT_ANIMATION_LAB_BUDGET_REF_V3: Readonly<LabBudgetRefV1> = Obj
     catalogVersion: ANIMATION_LAB_BUDGET_CATALOG_VERSION,
     budgetId: 'condev.animation.default',
     budgetVersion: 3,
+})
+
+export const DEFAULT_ANIMATION_LAB_BUDGET_REF_V4: Readonly<LabBudgetRefV1> = Object.freeze({
+    catalogVersion: ANIMATION_LAB_BUDGET_CATALOG_VERSION,
+    budgetId: 'condev.animation.default',
+    budgetVersion: 4,
 })
 
 /** Unchanged budget v1 diagnostic defaults, not universal UX grades. */
@@ -394,10 +425,31 @@ export const DEFAULT_ANIMATION_LAB_BUDGET_V3: Readonly<LabBudgetDefinitionV1> = 
     ]),
 })
 
+/**
+ * Explicit opt-in diagnostic budget v4. Renderer GPU timing is evaluated only
+ * when a renderer adapter supplies enough measured samples. Draw-call and
+ * triangle evidence remain baseline/comparison signals without universal
+ * absolute thresholds.
+ */
+export const DEFAULT_ANIMATION_LAB_BUDGET_V4: Readonly<LabBudgetDefinitionV1> = Object.freeze({
+    ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V4,
+    rules: Object.freeze([
+        ...DEFAULT_ANIMATION_LAB_BUDGET_V3.rules.map(rule => Object.freeze({ ...rule })),
+        Object.freeze({
+            ruleId: 'renderer-gpu-frame-tail',
+            metricId: 'renderer.gpu-frame.p95',
+            comparator: '<=',
+            target: Object.freeze({ kind: 'target-frame-multiple', value: 0.8, unit: 'ratio' }),
+            minimumSamples: 30,
+        }),
+    ]),
+})
+
 export const ANIMATION_LAB_BUDGET_CATALOG_V1: readonly Readonly<LabBudgetDefinitionV1>[] = Object.freeze([
     DEFAULT_ANIMATION_LAB_BUDGET_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_V3,
+    DEFAULT_ANIMATION_LAB_BUDGET_V4,
 ])
 
 export function getAnimationLabBudgetV1(budgetId: string, budgetVersion: number): Readonly<LabBudgetDefinitionV1> | undefined {
