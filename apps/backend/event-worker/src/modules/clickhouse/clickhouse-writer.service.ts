@@ -1,5 +1,10 @@
 import { ClickHouseClient, createClient } from '@clickhouse/client'
-import { type AnimationRumV2KafkaEnvelope, createAnimationRumV2ClickHouseInsertPlan } from '@condev-monitor/animation-rum-ingest'
+import {
+    type AnimationRumV2KafkaEnvelope,
+    type AnimationRumV3KafkaEnvelope,
+    createAnimationRumV2ClickHouseInsertPlan,
+    createAnimationRumV3ClickHouseInsertPlan,
+} from '@condev-monitor/animation-rum-ingest'
 import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 
@@ -129,6 +134,20 @@ export class ClickhouseWriterService implements OnModuleDestroy {
 
         // The shared plan is already fully projected and validated before the
         // first insert. Execute sequentially so the completion marker stays last.
+        for (const step of plan) {
+            await this.client.insert<unknown>({
+                table: `${this.database}.${step.table}`,
+                format: 'JSONEachRow',
+                values: step.rows,
+            })
+        }
+    }
+
+    async insertAnimationRumV3(envelope: AnimationRumV3KafkaEnvelope): Promise<void> {
+        const plan = createAnimationRumV3ClickHouseInsertPlan(envelope)
+
+        // Provider and metric rows are retry-safe children. The capture row is
+        // the completion marker and must remain the final successful insert.
         for (const step of plan) {
             await this.client.insert<unknown>({
                 table: `${this.database}.${step.table}`,

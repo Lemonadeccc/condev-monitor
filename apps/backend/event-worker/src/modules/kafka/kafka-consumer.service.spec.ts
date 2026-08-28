@@ -1,11 +1,11 @@
 import type { EventRow, KafkaEventEnvelope } from '../../shared/ingest-types'
 import { AnimationRumValidationError } from '../animation-rum/animation-rum-projector.service'
-import { KafkaConsumerService } from './kafka-consumer.service'
+import { animationRumV3Subscription, KafkaConsumerService } from './kafka-consumer.service'
 
 // cspell:ignore misroute
 
 describe('KafkaConsumerService', () => {
-    const makeService = () => {
+    const makeService = (configValues: Record<string, string> = {}) => {
         const clickhouseWriter = {
             queryJson: jest.fn(),
             upsertIssues: jest.fn().mockResolvedValue(undefined),
@@ -45,10 +45,14 @@ describe('KafkaConsumerService', () => {
         const animationRumProjector = {
             handleEnvelope: jest.fn().mockResolvedValue(undefined),
         }
+        const animationRumV3Projector = {
+            handleEnvelope: jest.fn().mockResolvedValue(undefined),
+        }
 
         const service = new KafkaConsumerService(
             {
                 get: (key: string) => {
+                    if (key in configValues) return configValues[key]
                     if (key === 'CLICKHOUSE_DATABASE') return 'lemonade'
                     return undefined
                 },
@@ -60,7 +64,8 @@ describe('KafkaConsumerService', () => {
             tfidfService as any,
             bufferManager as any,
             aiProjector as any,
-            animationRumProjector as any
+            animationRumProjector as any,
+            animationRumV3Projector as any
         )
 
         return {
@@ -70,6 +75,7 @@ describe('KafkaConsumerService', () => {
             bufferManager,
             aiProjector,
             animationRumProjector,
+            animationRumV3Projector,
         }
     }
 
@@ -120,6 +126,23 @@ describe('KafkaConsumerService', () => {
             },
         }
     }
+
+    const v3Batch = (body: unknown, offset = '41') => {
+        const result = singleMessageBatch(body, offset)
+        result.payload.batch.topic = 'monitor.sdk.animation-rum.soft-navigation.v3'
+        result.payload.batch.messages[0]!.key = Buffer.from('app-12345678')
+        return result
+    }
+
+    it('starts the dedicated v3 topic at the earliest uncommitted offset and rejects topic collisions', () => {
+        expect(animationRumV3Subscription('monitor.sdk.animation-rum.soft-navigation.v3')).toEqual({
+            topic: 'monitor.sdk.animation-rum.soft-navigation.v3',
+            fromBeginning: true,
+        })
+        expect(() => makeService({ KAFKA_ANIMATION_RUM_V3_TOPIC: 'monitor.sdk.events.v1' })).toThrow(
+            'Kafka event topics must be configured with distinct names'
+        )
+    })
 
     it('builds a deterministic issue id for the same appId + fingerprint pair', async () => {
         const { service, clickhouseWriter } = makeService()
@@ -539,6 +562,151 @@ describe('KafkaConsumerService', () => {
         expect(resolveOffset).toHaveBeenCalledWith('rum-v2')
         expect(bufferManager.route).not.toHaveBeenCalled()
         expect(dlqProducer.publish).not.toHaveBeenCalled()
+    })
+
+    it('routes only the dedicated v3 topic through the independent v3 projector', async () => {
+        const { service, dlqProducer, bufferManager, animationRumProjector, animationRumV3Projector } = makeService()
+        const body = {
+            schemaVersion: 1,
+            eventId: 'event_soft_navigation_1234',
+            appId: 'app-12345678',
+            eventType: 'animation_soft_navigation_rum',
+            message: '',
+            info: { animationSoftNavigationRum: { contractVersion: 3, captureKind: 'soft-navigation' } },
+            sdkVersion: '0.1.0',
+            environment: 'production',
+            release: 'web-1.0.0',
+            receivedAt: new Date().toISOString(),
+            source: 'animation-rum-v3-soft-navigation',
+        }
+        const { payload, resolveOffset } = v3Batch(body)
+
+        await (service as any).handleBatch(payload)
+
+        expect(animationRumV3Projector.handleEnvelope).toHaveBeenCalledWith(body, 'app-12345678')
+        expect(animationRumProjector.handleEnvelope).not.toHaveBeenCalled()
+        expect(bufferManager.route).not.toHaveBeenCalled()
+        expect(dlqProducer.publish).not.toHaveBeenCalled()
+        expect(resolveOffset).toHaveBeenCalledWith('41')
+        expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledWith({
+            topics: [{ topic: 'monitor.sdk.animation-rum.soft-navigation.v3', partitions: [{ partition: 0, offset: '42' }] }],
+        })
+    })
+
+    it('redacts a v3 envelope placed on the generic events topic', async () => {
+        const { service, dlqProducer, bufferManager, animationRumProjector, animationRumV3Projector } = makeService()
+        const { payload, resolveOffset } = singleMessageBatch(
+            {
+                schemaVersion: 1,
+                eventId: 'event_soft_navigation_1234',
+                appId: 'app-12345678',
+                eventType: 'animation_soft_navigation_rum',
+                message: '',
+                info: { animationSoftNavigationRum: { contractVersion: 3 } },
+                receivedAt: new Date().toISOString(),
+                source: 'animation-rum-v3-soft-navigation',
+            },
+            'rum-v3-wrong-topic'
+        )
+
+        await (service as any).handleBatch(payload)
+
+        expect(dlqProducer.publish).toHaveBeenCalledWith(
+            expect.objectContaining({ reason: 'ANIMATION_RUM_V3_WRONG_TOPIC', key: null, rawValue: null })
+        )
+        expect(resolveOffset).toHaveBeenCalledWith('rum-v3-wrong-topic')
+        expect(animationRumProjector.handleEnvelope).not.toHaveBeenCalled()
+        expect(animationRumV3Projector.handleEnvelope).not.toHaveBeenCalled()
+        expect(bufferManager.route).not.toHaveBeenCalled()
+    })
+
+    it.each([
+        ['v2 source', { source: 'animation-rum-v2', eventType: 'animation_rum', info: { animationRum: { contractVersion: 2 } } }],
+        ['unknown source', { source: 'animation-rum-v9' }],
+        ['mixed info', { info: { animationRum: {}, animationSoftNavigationRum: {} } }],
+    ])('redacts %s on the dedicated v3 topic', async (_name, mutation) => {
+        const { service, dlqProducer, bufferManager, animationRumV3Projector } = makeService()
+        animationRumV3Projector.handleEnvelope.mockRejectedValue(new AnimationRumValidationError(['unsupported_animation_rum_source']))
+        const { payload, resolveOffset } = v3Batch({
+            schemaVersion: 1,
+            eventId: 'event_soft_navigation_1234',
+            appId: 'app-12345678',
+            eventType: 'animation_soft_navigation_rum',
+            message: '',
+            info: { animationSoftNavigationRum: { contractVersion: 3 } },
+            receivedAt: new Date().toISOString(),
+            source: 'animation-rum-v3-soft-navigation',
+            ...mutation,
+        })
+
+        await (service as any).handleBatch(payload)
+
+        expect(dlqProducer.publish).toHaveBeenCalledWith(
+            expect.objectContaining({
+                originalTopic: 'monitor.sdk.animation-rum.soft-navigation.v3',
+                reason: expect.stringContaining('INVALID_ANIMATION_RUM_V3'),
+                key: null,
+                rawValue: null,
+            })
+        )
+        expect(resolveOffset).toHaveBeenCalledWith('41')
+        expect(bufferManager.route).not.toHaveBeenCalled()
+    })
+
+    it('redacts malformed JSON on the dedicated v3 topic without retaining its key or body', async () => {
+        const { service, dlqProducer, animationRumV3Projector } = makeService()
+        const { payload, resolveOffset } = v3Batch('{"private":"must-not-copy"')
+
+        await (service as any).handleBatch(payload)
+
+        expect(animationRumV3Projector.handleEnvelope).not.toHaveBeenCalled()
+        expect(dlqProducer.publish).toHaveBeenCalledWith(
+            expect.objectContaining({ reason: 'INVALID_ANIMATION_RUM_V3:invalid_envelope', key: null, rawValue: null })
+        )
+        expect(resolveOffset).toHaveBeenCalledWith('41')
+    })
+
+    it('leaves a v3 offset unresolved when ClickHouse projection fails', async () => {
+        const { service, dlqProducer, bufferManager, animationRumV3Projector } = makeService()
+        animationRumV3Projector.handleEnvelope.mockRejectedValue(new Error('clickhouse unavailable'))
+        const { payload, resolveOffset } = v3Batch({ source: 'animation-rum-v3-soft-navigation' })
+
+        await expect((service as any).handleBatch(payload)).rejects.toThrow('clickhouse unavailable')
+        expect(resolveOffset).not.toHaveBeenCalled()
+        expect(dlqProducer.publish).not.toHaveBeenCalled()
+        expect(bufferManager.route).not.toHaveBeenCalled()
+        expect(payload.commitOffsetsIfNecessary).not.toHaveBeenCalled()
+    })
+
+    it('commits only the successful prefix when a later v3 projection fails', async () => {
+        const { service, animationRumV3Projector } = makeService()
+        const body = { source: 'animation-rum-v3-soft-navigation' }
+        animationRumV3Projector.handleEnvelope.mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('clickhouse unavailable'))
+        const { payload, resolveOffset } = v3Batch(body)
+        payload.batch.messages = [
+            { offset: '41', key: Buffer.from('app-12345678'), value: Buffer.from(JSON.stringify(body)) },
+            { offset: '42', key: Buffer.from('app-12345678'), value: Buffer.from(JSON.stringify(body)) },
+        ]
+
+        await expect((service as any).handleBatch(payload)).rejects.toThrow('clickhouse unavailable')
+
+        expect(resolveOffset).toHaveBeenCalledTimes(1)
+        expect(resolveOffset).toHaveBeenCalledWith('41')
+        expect(payload.commitOffsetsIfNecessary).toHaveBeenCalledWith({
+            topics: [{ topic: 'monitor.sdk.animation-rum.soft-navigation.v3', partitions: [{ partition: 0, offset: '42' }] }],
+        })
+    })
+
+    it('leaves an invalid v3 offset unresolved when redacted DLQ publication fails', async () => {
+        const { service, dlqProducer, animationRumV3Projector } = makeService()
+        animationRumV3Projector.handleEnvelope.mockRejectedValue(new AnimationRumValidationError(['invalid_info']))
+        dlqProducer.publish.mockRejectedValue(new Error('dlq unavailable'))
+        const { payload, resolveOffset } = v3Batch({ source: 'animation-rum-v3-soft-navigation' })
+
+        await (service as any).handleBatch(payload)
+
+        expect(resolveOffset).not.toHaveBeenCalled()
+        expect(payload.commitOffsetsIfNecessary).not.toHaveBeenCalled()
     })
 
     it('passes original missing v2 fields to the strict projector before legacy defaults', async () => {

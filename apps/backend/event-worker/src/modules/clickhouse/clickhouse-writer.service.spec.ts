@@ -1,7 +1,9 @@
-import { createAnimationRumV2GoldenReport } from '@condev-monitor/animation-rum-contract/testing'
-import { buildAnimationRumV2KafkaEnvelope } from '@condev-monitor/animation-rum-ingest'
+import { createAnimationRumV2GoldenReport, createAnimationRumV3GoldenReport } from '@condev-monitor/animation-rum-contract/testing'
+import { buildAnimationRumV2KafkaEnvelope, buildAnimationRumV3KafkaEnvelope } from '@condev-monitor/animation-rum-ingest'
 
 import { ClickhouseWriterService } from './clickhouse-writer.service'
+
+// cspell:ignore noncanonical
 
 function serviceWithInsert(insert: jest.Mock) {
     const service = new ClickhouseWriterService({
@@ -44,6 +46,17 @@ function unsupportedGpuEnvelope() {
         ]
         report.coverage.frameCadence = { status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' }
         report.coverage.renderer = { status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' }
+    })
+}
+
+function v3EnvelopeFor() {
+    const report = createAnimationRumV3GoldenReport()
+    const receivedAt = new Date()
+    report.capturedAt = new Date(receivedAt.getTime() - 1_000).toISOString()
+    return buildAnimationRumV3KafkaEnvelope({
+        appId: 'app-12345678',
+        report,
+        receivedAt: receivedAt.toISOString(),
     })
 }
 
@@ -133,5 +146,45 @@ describe('ClickhouseWriterService Animation RUM v2', () => {
             'renderer-adapter': 'supported',
             'gpu-timer-query': 'unsupported',
         })
+    })
+})
+
+describe('ClickhouseWriterService Animation RUM v3', () => {
+    it('writes v3 children before the capture completion marker', async () => {
+        const insert = jest.fn().mockResolvedValue(undefined)
+        const service = serviceWithInsert(insert)
+
+        await service.insertAnimationRumV3(v3EnvelopeFor())
+
+        expect(insert.mock.calls.map(call => call[0].table)).toEqual([
+            'lemonade.animation_rum_soft_navigation_provider_evidence_v3',
+            'lemonade.animation_rum_soft_navigation_metrics_v3',
+            'lemonade.animation_rum_soft_navigation_captures_v3',
+        ])
+        expect(insert.mock.calls[1]![0].values).toHaveLength(3)
+    })
+
+    it('does not write the completion marker after a v3 child insert fails', async () => {
+        const insert = jest.fn().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('metric insert failed'))
+        const service = serviceWithInsert(insert)
+
+        await expect(service.insertAnimationRumV3(v3EnvelopeFor())).rejects.toThrow('metric insert failed')
+
+        expect(insert.mock.calls.map(call => call[0].table)).toEqual([
+            'lemonade.animation_rum_soft_navigation_provider_evidence_v3',
+            'lemonade.animation_rum_soft_navigation_metrics_v3',
+        ])
+    })
+
+    it('validates the complete v3 plan before the first insert', async () => {
+        const insert = jest.fn().mockResolvedValue(undefined)
+        const service = serviceWithInsert(insert)
+        const envelope = v3EnvelopeFor()
+        envelope.info.animationSoftNavigationRum.metrics[0]!.metricId = 'vital.frame.p95' as any
+
+        await expect(service.insertAnimationRumV3(envelope)).rejects.toMatchObject({
+            codes: expect.arrayContaining(['noncanonical_metric_set']),
+        })
+        expect(insert).not.toHaveBeenCalled()
     })
 })

@@ -1,15 +1,17 @@
 import { createHash } from 'node:crypto'
 
+import { ANIMATION_RUM_V3_KAFKA_SOURCE, ANIMATION_RUM_V3_TRACKING_EVENT_TYPE } from '@condev-monitor/animation-rum-ingest'
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config'
 import { Consumer, EachBatchPayload, Kafka } from 'kafkajs'
 
-// cspell:ignore animationrum contractversion snapshotschemaversion
+// cspell:ignore animationrum animationsoftnavigationrum contractversion snapshotschemaversion
 import { resolveClickhouseDatabase } from '../../shared/clickhouse-utils'
 import { EventRow, KafkaEventEnvelope } from '../../shared/ingest-types'
 import { formatDateTimeForCH } from '../../utils/datetime'
 import { AiEventPayload, AiProjectorService } from '../ai-observability/ai-projector.service'
 import { AnimationRumProjectorService, AnimationRumValidationError } from '../animation-rum/animation-rum-projector.service'
+import { AnimationRumV3ProjectorService } from '../animation-rum/animation-rum-v3-projector.service'
 import { ClickhouseWriterService, IssueRow } from '../clickhouse/clickhouse-writer.service'
 import { DlqProducerService } from '../dlq/dlq-producer.service'
 import { EmbeddingService } from '../fingerprint/embedding.service'
@@ -40,11 +42,26 @@ function shouldRedactInvalidEnvelope(value: Buffer | null): boolean {
     if (!value) return false
     const unicodeDecoded = decodeJsonUnicode(value.toString())
     const normalized = unicodeDecoded.toLowerCase()
-    return normalized.includes('animation_rum') || normalized.includes('animation-rum') || normalized.includes('animationrum')
+    return (
+        normalized.includes('animation_rum') ||
+        normalized.includes('animation-rum') ||
+        normalized.includes('animationrum') ||
+        normalized.includes('animation_soft_navigation_rum') ||
+        normalized.includes('animationsoftnavigationrum')
+    )
 }
 
 function decodeJsonUnicode(raw: string): string {
     return raw.replace(/\\u([0-9a-fA-F]{4})/gu, (_match, hex: string) => String.fromCharCode(Number.parseInt(hex, 16)))
+}
+
+function nextKafkaOffset(offset: string): string {
+    if (!/^\d+$/u.test(offset)) throw new Error('Invalid Kafka message offset')
+    return (BigInt(offset) + 1n).toString()
+}
+
+export function animationRumV3Subscription(topic: string) {
+    return { topic, fromBeginning: true as const }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -59,7 +76,11 @@ type AnimationRumCandidate = Partial<KafkaEventEnvelope> & { event_type?: unknow
 
 function isAnimationRumEnvelopeCandidate(value: AnimationRumCandidate, raw?: string): boolean {
     if (hasReservedAnimationRumSource(value.source)) return true
-    const isAnimationEvent = value.eventType === 'animation_rum' || value.event_type === 'animation_rum'
+    const isAnimationEvent =
+        value.eventType === 'animation_rum' ||
+        value.event_type === 'animation_rum' ||
+        value.eventType === 'animation_soft_navigation_rum' ||
+        value.event_type === 'animation_soft_navigation_rum'
     const hasRootVersionMarker =
         Object.prototype.hasOwnProperty.call(value, 'contractVersion') ||
         Object.prototype.hasOwnProperty.call(value, 'snapshotSchemaVersion')
@@ -67,6 +88,7 @@ function isAnimationRumEnvelopeCandidate(value: AnimationRumCandidate, raw?: str
     if (isRecord(value.info)) {
         const hasDirectMarker =
             Object.prototype.hasOwnProperty.call(value.info, 'animationRum') ||
+            Object.prototype.hasOwnProperty.call(value.info, 'animationSoftNavigationRum') ||
             (isAnimationEvent &&
                 (Object.prototype.hasOwnProperty.call(value.info, 'contractVersion') ||
                     Object.prototype.hasOwnProperty.call(value.info, 'snapshotSchemaVersion')))
@@ -78,9 +100,18 @@ function isAnimationRumEnvelopeCandidate(value: AnimationRumCandidate, raw?: str
     // report several levels below info. Scan only closed marker keys/source
     // values in the already-bounded Kafka body; never inspect or retain values.
     const normalized = decodeJsonUnicode(raw).toLowerCase()
-    if (/"animationrum"\s*:/u.test(normalized)) return true
+    if (/"(?:animationrum|animationsoftnavigationrum)"\s*:/u.test(normalized)) return true
     if (/"source"\s*:\s*"animation-rum(?:-|")/u.test(normalized)) return true
     return isAnimationEvent && /"(?:contractversion|snapshotschemaversion)"\s*:/u.test(normalized)
+}
+
+function isAnimationRumV3EnvelopeCandidate(value: AnimationRumCandidate): boolean {
+    return (
+        value.source === ANIMATION_RUM_V3_KAFKA_SOURCE ||
+        value.eventType === ANIMATION_RUM_V3_TRACKING_EVENT_TYPE ||
+        value.event_type === ANIMATION_RUM_V3_TRACKING_EVENT_TYPE ||
+        (isRecord(value.info) && Object.prototype.hasOwnProperty.call(value.info, 'animationSoftNavigationRum'))
+    )
 }
 
 @Injectable()
@@ -92,6 +123,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
     private readonly eventsTopic: string
     private readonly replaysTopic: string
     private readonly aiEventsTopic: string
+    private readonly animationRumV3Topic: string
     private readonly lanePolicies: Record<LaneName, LaneRetryPolicy>
     private readonly clickhouseDatabase: string
 
@@ -108,11 +140,15 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
         private readonly tfidfService: TfIdfService,
         private readonly bufferManager: BatchBufferManager,
         private readonly aiProjector: AiProjectorService,
-        private readonly animationRumProjector: AnimationRumProjectorService
+        private readonly animationRumProjector: AnimationRumProjectorService,
+        private readonly animationRumV3Projector: AnimationRumV3ProjectorService
     ) {
         this.eventsTopic = this.config.get<string>('KAFKA_EVENTS_TOPIC') ?? 'monitor.sdk.events.v1'
         this.replaysTopic = this.config.get<string>('KAFKA_REPLAYS_TOPIC') ?? 'monitor.sdk.replays.v1'
         this.aiEventsTopic = this.config.get<string>('KAFKA_AI_TOPIC') ?? 'condev.ai.events'
+        this.animationRumV3Topic = this.config.get<string>('KAFKA_ANIMATION_RUM_V3_TOPIC') ?? 'monitor.sdk.animation-rum.soft-navigation.v3'
+        const topics = [this.eventsTopic, this.replaysTopic, this.aiEventsTopic, this.animationRumV3Topic]
+        if (new Set(topics).size !== topics.length) throw new Error('Kafka event topics must be configured with distinct names')
         this.clickhouseDatabase = resolveClickhouseDatabase(this.config)
 
         this.lanePolicies = {
@@ -160,6 +196,7 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
         await this.consumer.subscribe({ topic: this.eventsTopic, fromBeginning: false })
         await this.consumer.subscribe({ topic: this.replaysTopic, fromBeginning: false })
         await this.consumer.subscribe({ topic: this.aiEventsTopic, fromBeginning: false })
+        await this.consumer.subscribe(animationRumV3Subscription(this.animationRumV3Topic))
 
         this.bufferManager.configure({
             critical: rows => this.insertWithRetry(rows, 'critical'),
@@ -173,7 +210,9 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
             eachBatch: async (payload: EachBatchPayload) => this.handleBatch(payload),
         })
 
-        this.logger.log(`Subscribed to topics: ${this.eventsTopic}, ${this.replaysTopic}, ${this.aiEventsTopic}`)
+        this.logger.log(
+            `Subscribed to topics: ${this.eventsTopic}, ${this.replaysTopic}, ${this.aiEventsTopic}, ${this.animationRumV3Topic}`
+        )
     }
 
     async onModuleDestroy() {
@@ -346,7 +385,86 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
         await heartbeat()
     }
 
+    private async handleAnimationRumV3Batch(payload: EachBatchPayload): Promise<void> {
+        const { batch, resolveOffset, heartbeat, commitOffsetsIfNecessary, isRunning, isStale } = payload
+        let processedSinceHeartbeat = 0
+        const markProcessed = async () => {
+            processedSinceHeartbeat += 1
+            if (processedSinceHeartbeat >= 100) {
+                await heartbeat()
+                processedSinceHeartbeat = 0
+            }
+        }
+
+        let lastCompletedNextOffset: string | null = null
+        let processingError: unknown = null
+        try {
+            for (const message of batch.messages) {
+                if (!isRunning() || isStale()) break
+
+                let rawEnvelope: unknown = null
+                let validationErrors: string[] | null = null
+                try {
+                    rawEnvelope = message.value ? (JSON.parse(message.value.toString()) as unknown) : null
+                } catch {
+                    validationErrors = ['invalid_envelope']
+                }
+
+                if (!validationErrors) {
+                    try {
+                        await this.animationRumV3Projector.handleEnvelope(rawEnvelope, message.key?.toString() ?? null)
+                    } catch (err) {
+                        if (!(err instanceof AnimationRumValidationError)) throw err
+                        validationErrors = err.codes
+                    }
+                }
+
+                if (!validationErrors) {
+                    resolveOffset(message.offset)
+                } else {
+                    try {
+                        await this.dlqProducer.publish({
+                            originalTopic: batch.topic,
+                            originalOffset: message.offset,
+                            key: null,
+                            reason: `INVALID_ANIMATION_RUM_V3:${validationErrors.join(',')}`.slice(0, 240),
+                            rawValue: null,
+                        })
+                        resolveOffset(message.offset)
+                    } catch (dlqErr) {
+                        this.logger.error(
+                            `DLQ publish failed for invalid Animation RUM v3 at offset=${message.offset}, stopping batch`,
+                            dlqErr instanceof Error ? dlqErr.stack : String(dlqErr)
+                        )
+                        break
+                    }
+                }
+                lastCompletedNextOffset = nextKafkaOffset(message.offset)
+                await markProcessed()
+            }
+        } catch (error) {
+            processingError = error
+        }
+
+        if (lastCompletedNextOffset !== null) {
+            try {
+                await commitOffsetsIfNecessary({
+                    topics: [{ topic: batch.topic, partitions: [{ partition: batch.partition, offset: lastCompletedNextOffset }] }],
+                })
+            } catch (commitError) {
+                if (processingError)
+                    throw new AggregateError([processingError, commitError], 'Animation RUM v3 processing and offset commit failed')
+                throw commitError
+            }
+        }
+        await heartbeat()
+        if (processingError) throw processingError
+    }
+
     private async handleBatch(payload: EachBatchPayload) {
+        if (payload.batch.topic === this.animationRumV3Topic) {
+            return this.handleAnimationRumV3Batch(payload)
+        }
         if (payload.batch.topic === this.aiEventsTopic) {
             return this.handleAiBatch(payload)
         }
@@ -390,6 +508,27 @@ export class KafkaConsumerService implements OnModuleInit, OnModuleDestroy {
                 } catch (dlqErr) {
                     this.logger.error(
                         `DLQ publish failed, stopping batch to let Kafka redeliver offset=${message.offset}`,
+                        dlqErr instanceof Error ? dlqErr.stack : String(dlqErr)
+                    )
+                    break
+                }
+                continue
+            }
+
+            if (isAnimationRumV3EnvelopeCandidate(parsed.rawEnvelope as AnimationRumCandidate)) {
+                try {
+                    await this.dlqProducer.publish({
+                        originalTopic: batch.topic,
+                        originalOffset: message.offset,
+                        key: null,
+                        reason: 'ANIMATION_RUM_V3_WRONG_TOPIC',
+                        rawValue: null,
+                    })
+                    resolveOffset(message.offset)
+                    await markProcessed()
+                } catch (dlqErr) {
+                    this.logger.error(
+                        `DLQ publish failed for misplaced Animation RUM v3 at offset=${message.offset}, stopping batch`,
                         dlqErr instanceof Error ? dlqErr.stack : String(dlqErr)
                     )
                     break

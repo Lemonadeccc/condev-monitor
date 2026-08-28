@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common'
 
 import { AiObservabilityModule } from '../ai-observability/ai-observability.module'
 import { AnimationRumProjectorService } from '../animation-rum/animation-rum-projector.service'
+import { AnimationRumV3ProjectorService } from '../animation-rum/animation-rum-v3-projector.service'
 import { ClickhouseWriterModule } from '../clickhouse/clickhouse-writer.module'
 import { DlqProducerService } from '../dlq/dlq-producer.service'
 import { FingerprintModule } from '../fingerprint/fingerprint.module'
@@ -11,6 +12,6 @@ import { KafkaConsumerService } from './kafka-consumer.service'
 
 @Module({
     imports: [AiObservabilityModule, ClickhouseWriterModule, FingerprintModule, LlmModule],
-    providers: [KafkaConsumerService, DlqProducerService, BatchBufferManager, AnimationRumProjectorService],
+    providers: [KafkaConsumerService, DlqProducerService, BatchBufferManager, AnimationRumProjectorService, AnimationRumV3ProjectorService],
 })
 export class KafkaConsumerModule {}
