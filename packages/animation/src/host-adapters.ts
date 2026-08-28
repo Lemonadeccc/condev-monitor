@@ -760,6 +760,167 @@ export function createGsapLifecycleProbe(options: GsapLifecycleProbeOptions): Gs
     }
 }
 
+export interface GsapLifecycleCycleAnalyzerOptions {
+    /** At least three equivalent completed cycles are required. Defaults to 3. */
+    minimumCycles?: number
+    /** Bounded retained cleanup tail. Defaults to 10 and cannot be lower than `minimumCycles`. */
+    capacity?: number
+}
+
+export type GsapLifecycleCycleAnalysisStatus = 'insufficient-cycles' | 'inconclusive' | 'no-strict-growth-candidate' | 'growth-candidate'
+
+export interface GsapLifecycleCycleAnalysis {
+    status: GsapLifecycleCycleAnalysisStatus
+    /** Never a leak verdict. Null means insufficient or incomplete evidence. */
+    growthCandidate: boolean | null
+    animationGrowthCandidate: boolean | null
+    scrollTriggerGrowthCandidate: boolean | null
+    completedCycleCount: number
+    retainedCycleCount: number
+    minimumCycles: number
+    capacity: number
+    droppedCycleCount: number
+    rejectedCheckpointCount: number
+    truncated: boolean
+    postUnmountAnimationTotals: readonly (number | null)[]
+    postUnmountScrollTriggerTotals: readonly (number | null)[]
+}
+
+export interface GsapLifecycleCycleAnalyzer {
+    /** Accepts only an ordered mount → after-interaction → unmount sequence. */
+    record(sample: AnimationLifecycleStatsSample | null | undefined): boolean
+    snapshot(): GsapLifecycleCycleAnalysis
+    reset(): void
+    dispose(): void
+}
+
+interface GsapLifecycleCompletedCycle {
+    animations: number | null
+    scrollTriggers: number | null
+}
+
+function boundedCycleInteger(value: unknown, fallback: number, minimum: number, maximum: number): number {
+    const normalized = finiteCount(value)
+    if (normalized === undefined) return fallback
+    return Math.min(maximum, Math.max(minimum, normalized))
+}
+
+function lifecycleCleanupTotal(evidence: AnimationLifecycleCountEvidence): number | null {
+    if (evidence?.status !== 'measured') return null
+    return finiteCount(evidence.total) ?? null
+}
+
+function trailingGrowthCandidate(values: readonly (number | null)[], minimumCycles: number): boolean | null {
+    if (values.length < minimumCycles) return null
+    const tail = values.slice(-minimumCycles)
+    if (tail.some(value => value === null)) return null
+    return tail.slice(1).every((value, index) => (value as number) > (tail[index] as number))
+}
+
+/**
+ * Compares explicit, caller-declared equivalent lifecycle cycles.
+ *
+ * It never creates or controls animations and cannot prove a memory leak. A
+ * candidate means only that a retained post-unmount public inventory increased
+ * strictly across the configured trailing cycle window.
+ */
+export function createGsapLifecycleCycleAnalyzer(options: GsapLifecycleCycleAnalyzerOptions = {}): GsapLifecycleCycleAnalyzer {
+    const minimumCycles = boundedCycleInteger(options.minimumCycles, 3, 3, 20)
+    const capacity = boundedCycleInteger(options.capacity, Math.max(10, minimumCycles), minimumCycles, 100)
+    const cycles: GsapLifecycleCompletedCycle[] = []
+    let phase: 'idle' | 'mounted' | 'interacted' = 'idle'
+    let completedCycleCount = 0
+    let droppedCycleCount = 0
+    let rejectedCheckpointCount = 0
+    let disposed = false
+
+    const reset = (): void => {
+        if (disposed) return
+        cycles.length = 0
+        phase = 'idle'
+        completedCycleCount = 0
+        droppedCycleCount = 0
+        rejectedCheckpointCount = 0
+    }
+
+    return {
+        record(sample): boolean {
+            if (disposed) return false
+            if (!sample || sample.source !== 'gsap-public-api') {
+                rejectedCheckpointCount += 1
+                phase = 'idle'
+                return false
+            }
+            if (sample.checkpoint === 'mount') {
+                if (phase !== 'idle') rejectedCheckpointCount += 1
+                phase = 'mounted'
+                return true
+            }
+            if (sample.checkpoint === 'after-interaction' && phase === 'mounted') {
+                phase = 'interacted'
+                return true
+            }
+            if (sample.checkpoint !== 'unmount' || phase !== 'interacted') {
+                rejectedCheckpointCount += 1
+                phase = 'idle'
+                return false
+            }
+
+            phase = 'idle'
+            completedCycleCount += 1
+            cycles.push({
+                animations: lifecycleCleanupTotal(sample.animations),
+                scrollTriggers: lifecycleCleanupTotal(sample.scrollTriggers),
+            })
+            if (cycles.length > capacity) {
+                cycles.shift()
+                droppedCycleCount += 1
+            }
+            return true
+        },
+        snapshot(): GsapLifecycleCycleAnalysis {
+            const postUnmountAnimationTotals = cycles.map(cycle => cycle.animations)
+            const postUnmountScrollTriggerTotals = cycles.map(cycle => cycle.scrollTriggers)
+            const animationGrowthCandidate = trailingGrowthCandidate(postUnmountAnimationTotals, minimumCycles)
+            const scrollTriggerGrowthCandidate = trailingGrowthCandidate(postUnmountScrollTriggerTotals, minimumCycles)
+            const growthCandidate =
+                animationGrowthCandidate === true || scrollTriggerGrowthCandidate === true
+                    ? true
+                    : animationGrowthCandidate === false && scrollTriggerGrowthCandidate === false
+                      ? false
+                      : null
+            const status: GsapLifecycleCycleAnalysisStatus =
+                cycles.length < minimumCycles
+                    ? 'insufficient-cycles'
+                    : growthCandidate === true
+                      ? 'growth-candidate'
+                      : growthCandidate === false
+                        ? 'no-strict-growth-candidate'
+                        : 'inconclusive'
+            return {
+                status,
+                growthCandidate,
+                animationGrowthCandidate,
+                scrollTriggerGrowthCandidate,
+                completedCycleCount,
+                retainedCycleCount: cycles.length,
+                minimumCycles,
+                capacity,
+                droppedCycleCount,
+                rejectedCheckpointCount,
+                truncated: droppedCycleCount > 0,
+                postUnmountAnimationTotals: Object.freeze(postUnmountAnimationTotals),
+                postUnmountScrollTriggerTotals: Object.freeze(postUnmountScrollTriggerTotals),
+            }
+        },
+        reset,
+        dispose(): void {
+            disposed = true
+            phase = 'idle'
+        },
+    }
+}
+
 export interface VideoPlaybackQualityLike {
     totalVideoFrames: number
     droppedVideoFrames: number
