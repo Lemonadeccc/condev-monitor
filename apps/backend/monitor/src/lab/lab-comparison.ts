@@ -287,7 +287,7 @@ function metricScopeIdentity(metric: AnimationLabMetricV2Projection): string {
     return JSON.stringify([metric.metricId, comparisonScope(metric.scope)])
 }
 
-function validMetric(metric: AnimationLabMetricV2Projection, attemptId: string, metricCatalogVersion: 1 | 2 | 3): boolean {
+function validMetric(metric: AnimationLabMetricV2Projection, attemptId: string, metricCatalogVersion: 1 | 2 | 3 | 4): boolean {
     if (!token(metric.metricId) || !token(metric.name)) return false
     try {
         assertAnimationLabMetricCatalogTupleV2(metric, 'lab-comparison.metric', metricCatalogVersion)
@@ -369,7 +369,10 @@ function validateContext(context: LabComparisonCandidate['comparisonContext']): 
         token(contract.budgetRef.budgetId, 120) &&
         contract.budgetRef.catalogVersion === 1 &&
         integer(contract.budgetRef.budgetVersion, 1, 10_000) &&
-        (contract.metricCatalogVersion === 1 || contract.metricCatalogVersion === 2 || contract.metricCatalogVersion === 3)
+        (contract.metricCatalogVersion === 1 ||
+            contract.metricCatalogVersion === 2 ||
+            contract.metricCatalogVersion === 3 ||
+            contract.metricCatalogVersion === 4)
     )
 }
 

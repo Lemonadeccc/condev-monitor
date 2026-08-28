@@ -172,6 +172,58 @@ describe('animation Lab Before/After comparison core', () => {
         expect(JSON.stringify(result)).not.toMatch(/improved|regressed|"trust":"verified"/iu)
     })
 
+    it('compares catalog v4 renderer samples without treating page-level evidence as action attribution', () => {
+        const rendererCandidate = (runId: string, values: readonly number[]): LabComparisonCandidate => {
+            const value = candidate(runId, values)
+            value.comparisonContext.measurementContract.metricCatalogVersion = 4
+            value.comparisonContext.measurementContract.budgetRef.budgetVersion = 4
+            value.measuredAttempts.forEach((attempt, index) => {
+                attempt.capabilities = { rendererEvidenceBridge: true }
+                attempt.metrics = [
+                    metric(attempt.attemptId, values[index] ?? null, {
+                        metricId: 'renderer.gpu-frame.p95',
+                        family: 'renderer',
+                        name: 'gpuFrameMs',
+                        unit: 'ms',
+                        samples: 30,
+                        aggregation: { population: 'samples', method: 'nearest-rank' },
+                        budgetRefs: [
+                            {
+                                catalogVersion: 1,
+                                budgetId: 'condev.animation.default',
+                                budgetVersion: 4,
+                                ruleId: 'renderer-gpu-frame-tail',
+                            },
+                        ],
+                        evidenceRefs: ['lab-renderer-adapter'],
+                        limitations: [
+                            'renderer-host-gpu-query-p95',
+                            'renderer-multiple-producers-not-distinguished',
+                            'renderer-gpu-action-window-not-proven',
+                        ],
+                    }),
+                ]
+            })
+            return value
+        }
+
+        const result = compareAnimationLabCandidates(
+            rendererCandidate('renderer-before', [18, 20, 22]),
+            rendererCandidate('renderer-after', [12, 14, 16])
+        )
+
+        expect(result.comparable).toBe(true)
+        if (!result.comparable) throw new Error('expected a comparable result')
+        expect(result.metrics).toEqual([
+            expect.objectContaining({
+                metricId: 'renderer.gpu-frame.p95',
+                before: expect.objectContaining({ median: 20 }),
+                after: expect.objectContaining({ median: 14 }),
+                delta: -6,
+            }),
+        ])
+    })
+
     it('does not emit a formal delta when any attempt is partial, unavailable, or missing', () => {
         const cases: Array<{
             mutate: (value: LabComparisonCandidate) => void

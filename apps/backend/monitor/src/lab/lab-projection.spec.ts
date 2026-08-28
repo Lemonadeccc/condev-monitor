@@ -157,6 +157,42 @@ function videoWindowMetric(overrides: Record<string, unknown> = {}) {
     })
 }
 
+type RendererMetricId = 'renderer.draw-calls.p95' | 'renderer.triangles.p95' | 'renderer.gpu-frame.p95'
+
+function rendererMetric(metricId: RendererMetricId, overrides: Record<string, unknown> = {}) {
+    const gpu = metricId === 'renderer.gpu-frame.p95'
+    const triangles = metricId === 'renderer.triangles.p95'
+    return expandedMetric({
+        family: 'renderer',
+        name: gpu ? 'gpuFrameMs' : triangles ? 'triangles' : 'drawCalls',
+        stat: 'p95',
+        unit: gpu ? 'ms' : 'count',
+        value: gpu ? 20 : triangles ? 10_000 : 50,
+        samples: 30,
+        metricId,
+        aggregation: { population: 'attempts', method: 'median-of-attempts' },
+        budgetRefs: gpu
+            ? [
+                  {
+                      catalogVersion: 1,
+                      budgetId: 'condev.animation.default',
+                      budgetVersion: 4,
+                      ruleId: 'renderer-gpu-frame-tail',
+                  },
+              ]
+            : [],
+        evidenceRefs: ['lab-renderer-adapter'],
+        limitations: [
+            gpu ? 'renderer-host-gpu-query-p95' : 'renderer-host-sample-p95',
+            'renderer-multiple-producers-not-distinguished',
+            ...(gpu ? ['renderer-gpu-action-window-not-proven'] : []),
+            'eligible-attempts-3',
+            'total-attempts-3',
+        ],
+        ...overrides,
+    })
+}
+
 const ADDITIONAL_CATALOG_V2_METRICS = [
     {
         metricId: 'main.input-capture-to-next-raf-callback.count',
@@ -1121,7 +1157,7 @@ describe('lab platform artifact projections', () => {
         omittedObserved.findings = []
         expect(() => parseAnimationReportArtifact(omittedObserved)).toThrow('canonical budget evaluation')
 
-        const unknownBudgetFinding = setReportBudgetVersion(candidateFrameTailReportV2(), 4)
+        const unknownBudgetFinding = setReportBudgetVersion(candidateFrameTailReportV2(), 5)
         expect(() => parseAnimationReportArtifact(unknownBudgetFinding)).toThrow('canonical budget evaluation')
 
         const actionCandidate = candidateFrameTailReportV2()
@@ -1388,6 +1424,99 @@ describe('lab platform artifact projections', () => {
         forgedV2.aggregateMetrics = [videoWindowMetric()]
         forgedV2.findings = []
         expect(() => parseAnimationReportArtifact(forgedV2)).toThrow('requires metric catalog v3')
+    })
+
+    it('accepts catalog v4 renderer evidence and evaluates the canonical GPU budget', () => {
+        const report = animationReportV2()
+        report.measurementContract.metricCatalogVersion = 4
+        report.measurementContract.budgetRef.budgetVersion = 4
+        const sourceAttempt = report.attempts[0]!
+        report.attempts = Array.from({ length: 3 }, (_, index) => {
+            const attemptId = `attempt_${index + 1}`
+            return {
+                ...sourceAttempt,
+                attemptId,
+                index,
+                capabilities: { ...sourceAttempt.capabilities, rendererEvidenceBridge: true },
+                metrics: (['renderer.draw-calls.p95', 'renderer.triangles.p95', 'renderer.gpu-frame.p95'] as const).map(metricId =>
+                    rendererMetric(metricId, {
+                        scope: { level: 'attempt', attemptId },
+                        aggregation: { population: 'samples', method: 'nearest-rank' },
+                        status: 'measured',
+                        limitations: [
+                            metricId === 'renderer.gpu-frame.p95' ? 'renderer-host-gpu-query-p95' : 'renderer-host-sample-p95',
+                            'renderer-multiple-producers-not-distinguished',
+                            ...(metricId === 'renderer.gpu-frame.p95' ? ['renderer-gpu-action-window-not-proven'] : []),
+                        ],
+                    })
+                ),
+                actionWindows: [actionWindow()],
+            }
+        })
+        report.aggregateMetrics = (['renderer.draw-calls.p95', 'renderer.triangles.p95', 'renderer.gpu-frame.p95'] as const).map(metricId =>
+            rendererMetric(metricId, { status: 'measured', samples: 90 })
+        )
+        report.technologyEvidence.push({
+            evidenceId: 'lab-renderer-adapter',
+            axis: 'renderer',
+            technologyKey: 'condev-lab-renderer-evidence',
+            source: 'host-adapter',
+            confidence: 'high',
+            status: 'observed',
+            scope: { level: 'run' },
+            limitations: [
+                'renderer-adapter-identity-not-retained',
+                'renderer-multiple-producers-not-distinguished',
+                'renderer-evidence-is-page-level',
+            ],
+        } as unknown as (typeof report.technologyEvidence)[number])
+        report.findings = [
+            {
+                findingId: 'finding-renderer-gpu-frame-tail-run-all',
+                ruleId: 'renderer-gpu-frame-tail',
+                severity: 'warning',
+                status: 'observed',
+                scope: { level: 'run' },
+                metricIds: ['renderer.gpu-frame.p95'],
+                evidenceRefs: ['lab-renderer-adapter'],
+                budgetRefs: [
+                    {
+                        catalogVersion: 1,
+                        budgetId: 'condev.animation.default',
+                        budgetVersion: 4,
+                        ruleId: 'renderer-gpu-frame-tail',
+                    },
+                ],
+                actionIds: [],
+                limitations: [
+                    'renderer-host-gpu-query-p95',
+                    'renderer-multiple-producers-not-distinguished',
+                    'renderer-gpu-action-window-not-proven',
+                    'eligible-attempts-3',
+                    'total-attempts-3',
+                    'diagnostic-project-budget-not-web-standard',
+                ],
+            },
+        ]
+
+        const parsed = parseAnimationReportArtifact(report)
+        expect(parsed.analysis?.measurementContract.metricCatalogVersion).toBe(4)
+        expect(parsed.analysis?.metrics.map(item => item.metricId)).toEqual([
+            'renderer.draw-calls.p95',
+            'renderer.triangles.p95',
+            'renderer.gpu-frame.p95',
+        ])
+        expect(parsed.analysis?.findings).toEqual([expect.objectContaining({ ruleId: 'renderer-gpu-frame-tail', status: 'observed' })])
+
+        const forgedV3 = JSON.parse(JSON.stringify(report)) as typeof report
+        forgedV3.measurementContract.metricCatalogVersion = 3
+        expect(() => parseAnimationReportArtifact(forgedV3)).toThrow('requires metric catalog v4')
+
+        const actionGpu = JSON.parse(JSON.stringify(report)) as typeof report
+        Object.assign(actionGpu.attempts[0]!.metrics[2]!, {
+            scope: { level: 'action', attemptId: 'attempt_1', actionId: 'hero-hover-01' },
+        })
+        expect(() => parseAnimationReportArtifact(actionGpu)).toThrow('cannot attribute GPU timing to an action window')
     })
 
     it('binds catalog v3 video-window evidence to every measured attempt capability', () => {

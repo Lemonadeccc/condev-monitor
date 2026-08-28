@@ -113,10 +113,21 @@ const DEFAULT_BUDGET_RULES_V3: readonly DefaultBudgetRuleDefinition[] = [
         minimumSamples: 1,
     },
 ]
+const DEFAULT_BUDGET_RULES_V4: readonly DefaultBudgetRuleDefinition[] = [
+    ...DEFAULT_BUDGET_RULES_V3,
+    {
+        ruleId: 'renderer-gpu-frame-tail',
+        metricId: 'renderer.gpu-frame.p95',
+        comparator: '<=',
+        target: { kind: 'target-frame-multiple', value: 0.8 },
+        minimumSamples: 30,
+    },
+]
 const DEFAULT_BUDGET_RULES_BY_VERSION = new Map<number, readonly DefaultBudgetRuleDefinition[]>([
     [1, DEFAULT_BUDGET_RULES_V1],
     [2, DEFAULT_BUDGET_RULES_V2],
     [3, DEFAULT_BUDGET_RULES_V3],
+    [4, DEFAULT_BUDGET_RULES_V4],
 ])
 const DEFAULT_BUDGET_RULE_METRICS_BY_VERSION = new Map<number, Readonly<Record<string, string>>>(
     [...DEFAULT_BUDGET_RULES_BY_VERSION].map(([version, rules]) => [
@@ -251,7 +262,7 @@ type MetricStat = (typeof METRIC_STATS)[number]
 type MetricUnit = (typeof METRIC_UNITS)[number]
 type MetricStatus = (typeof METRIC_STATUSES)[number]
 type EvidenceLevel = (typeof EVIDENCE_LEVELS)[number]
-type MetricCatalogVersion = 1 | 2 | 3
+type MetricCatalogVersion = 1 | 2 | 3 | 4
 
 export type LabMetricScopeV2Projection = {
     level: MetricScopeLevel
@@ -511,7 +522,12 @@ function measurementContract(value: unknown): AnimationLabSemanticsV2['measureme
     const confidence = enumeration(raw.confidence, `${label}.confidence`, CONFIDENCES)
     if (source === 'explicit' && confidence !== 'explicit')
         throw new BadRequestException(`${label} explicit source requires explicit confidence`)
-    if (raw.metricCatalogVersion !== 1 && raw.metricCatalogVersion !== 2 && raw.metricCatalogVersion !== 3) {
+    if (
+        raw.metricCatalogVersion !== 1 &&
+        raw.metricCatalogVersion !== 2 &&
+        raw.metricCatalogVersion !== 3 &&
+        raw.metricCatalogVersion !== 4
+    ) {
         throw new BadRequestException(`Invalid ${label}.metricCatalogVersion`)
     }
     return {
@@ -609,6 +625,9 @@ const METRIC_CATALOG = new Map<string, readonly [MetricFamily, string, MetricSta
         'pipeline.loaf-attributed-forced-style-layout.p95',
         ['renderingPipeline', 'longAnimationFrameAttributedForcedStyleAndLayoutMs', 'p95', 'ms'],
     ],
+    ['renderer.draw-calls.p95', ['renderer', 'drawCalls', 'p95', 'count']],
+    ['renderer.triangles.p95', ['renderer', 'triangles', 'p95', 'count']],
+    ['renderer.gpu-frame.p95', ['renderer', 'gpuFrameMs', 'p95', 'ms']],
 ])
 
 const METRIC_CATALOG_V2_ONLY = new Set([
@@ -625,6 +644,7 @@ const METRIC_CATALOG_V2_ONLY = new Set([
 ])
 
 const METRIC_CATALOG_V3_ONLY = new Set(['media.video-window-dropped-frame-rate'])
+const METRIC_CATALOG_V4_ONLY = new Set(['renderer.draw-calls.p95', 'renderer.triangles.p95', 'renderer.gpu-frame.p95'])
 
 export function assertAnimationLabMetricCatalogTupleV2(
     value: { metricId: string; family: string; name: string; stat: string; unit: string },
@@ -638,6 +658,9 @@ export function assertAnimationLabMetricCatalogTupleV2(
     }
     if (metricCatalogVersion < 3 && METRIC_CATALOG_V3_ONLY.has(value.metricId)) {
         throw new BadRequestException(`${label} requires metric catalog v3`)
+    }
+    if (metricCatalogVersion < 4 && METRIC_CATALOG_V4_ONLY.has(value.metricId)) {
+        throw new BadRequestException(`${label} requires metric catalog v4`)
     }
     if (value.family !== catalog[0] || value.name !== catalog[1] || value.stat !== catalog[2] || value.unit !== catalog[3]) {
         throw new BadRequestException(`${label} does not match the canonical metric catalog`)
@@ -747,6 +770,18 @@ export function parseAnimationLabMetricV2(
             throw new BadRequestException(`${label} unsupported video window evidence must disclose API support`)
         }
     }
+    if (METRIC_CATALOG_V4_ONLY.has(metricId)) {
+        const required =
+            metricId === 'renderer.gpu-frame.p95'
+                ? ['renderer-host-gpu-query-p95', 'renderer-multiple-producers-not-distinguished', 'renderer-gpu-action-window-not-proven']
+                : ['renderer-host-sample-p95', 'renderer-multiple-producers-not-distinguished']
+        if (!evidenceRefs.includes('lab-renderer-adapter') || required.some(limitation => !limitations.includes(limitation))) {
+            throw new BadRequestException(`${label} has an invalid renderer evidence contract`)
+        }
+        if (metricId === 'renderer.gpu-frame.p95' && scope.level === 'action') {
+            throw new BadRequestException(`${label} cannot attribute GPU timing to an action window`)
+        }
+    }
     return {
         family,
         name,
@@ -819,7 +854,7 @@ function technologyEvidence(value: unknown, index: number): TechnologyEvidence {
         ['evidenceId', 'axis', 'technologyKey', 'version', 'source', 'confidence', 'status', 'scope', 'actionId', 'limitations'],
         label
     )
-    return {
+    const parsed: TechnologyEvidence = {
         evidenceId: stringToken(raw.evidenceId, `${label}.evidenceId`),
         axis: enumeration(raw.axis, `${label}.axis`, TECHNOLOGY_AXES),
         technologyKey: stringToken(raw.technologyKey, `${label}.technologyKey`, 120),
@@ -831,6 +866,24 @@ function technologyEvidence(value: unknown, index: number): TechnologyEvidence {
         ...(raw.actionId === undefined ? {} : { actionId: stringToken(raw.actionId, `${label}.actionId`, 120) }),
         limitations: tokenArray(raw.limitations, `${label}.limitations`, MAX_LIMITATIONS),
     }
+    if (parsed.evidenceId === 'lab-renderer-adapter') {
+        const requiredLimitations = [
+            'renderer-adapter-identity-not-retained',
+            'renderer-multiple-producers-not-distinguished',
+            'renderer-evidence-is-page-level',
+        ]
+        if (
+            parsed.axis !== 'renderer' ||
+            parsed.technologyKey !== 'condev-lab-renderer-evidence' ||
+            parsed.source !== 'host-adapter' ||
+            parsed.scope.level !== 'run' ||
+            parsed.actionId !== undefined ||
+            requiredLimitations.some(limitation => !parsed.limitations.includes(limitation))
+        ) {
+            throw new BadRequestException(`${label} has an invalid renderer adapter evidence contract`)
+        }
+    }
+    return parsed
 }
 
 function finding(value: unknown, index: number): Finding {
