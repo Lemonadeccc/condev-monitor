@@ -6,6 +6,6 @@
         "emitDeclarationOnly": true,
         "outDir": "build/types"
     },
-    "include": ["src/index.ts", "src/animation.ts"],
+    "include": ["src/index.ts", "src/animation.ts", "src/animation-r3f.tsx"],
     "exclude": ["src/**/*.spec.ts"]
 }

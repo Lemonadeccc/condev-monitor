@@ -3,6 +3,7 @@ import { defineConfig } from 'tsup'
 const entry = {
     index: 'src/index.ts',
     animation: 'src/animation.ts',
+    'animation-r3f': 'src/animation-r3f.tsx',
 }
 
 const banner = { js: '"use client";' }
