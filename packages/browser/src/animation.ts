@@ -80,6 +80,11 @@ import {
     type BrowserAnimationPageEvidenceSnapshot,
 } from './animation-page-evidence'
 import { BrowserAnimationLocalEvidenceRegistry } from './animation-local-evidence'
+import {
+    isPublishingAnimationLabRendererSample,
+    publishAcceptedAnimationLabRendererSample,
+    snapshotAnimationLabRendererSample,
+} from './animation-lab-renderer-bridge'
 
 export type {
     BrowserAnimationAutoPageEvidenceOptions,
@@ -913,6 +918,7 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     private automaticPageEvidence: BrowserAnimationPageEvidenceController | null = null
     private finalPageEvidence: BrowserAnimationPageEvidenceSnapshot | null = null
     private rumV2: BrowserAnimationRumV2Controller | null = null
+    private recordingRendererStats = false
     private disposed = false
 
     constructor(
@@ -1028,7 +1034,17 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     }
 
     recordRenderStats(sample: AnimationRenderStatsSample): boolean {
-        return this.integration.recordRenderStats(sample)
+        if (this.recordingRendererStats || isPublishingAnimationLabRendererSample()) return false
+        this.recordingRendererStats = true
+        try {
+            const snapshot = snapshotAnimationLabRendererSample(sample)
+            if (!snapshot) return false
+            const accepted = this.integration.recordRenderStats(snapshot)
+            if (accepted) publishAcceptedAnimationLabRendererSample(snapshot)
+            return accepted
+        } finally {
+            this.recordingRendererStats = false
+        }
     }
 
     recordLifecycleStats(sample: AnimationLifecycleStatsSample): boolean {

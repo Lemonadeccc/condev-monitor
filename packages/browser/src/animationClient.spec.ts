@@ -55,6 +55,7 @@ jest.mock('@condev-monitor/monitor-sdk-browser-utils', () => ({
 }))
 
 const ACTIVE_CLIENT_KEY = Symbol.for('@condev-monitor/browser-animation/client/v1')
+const LAB_RENDERER_BRIDGE_KEY = Symbol.for('@condev-monitor/animation-lab/renderer-evidence/v1')
 
 function runtime(): AnimationRuntime {
     let now = 1_000
@@ -214,6 +215,7 @@ describe('browser animation single-init entry', () => {
         mockRumV2DeliveryConstructor.mockClear()
         mockRumV2DeliveryInstances.length = 0
         delete (globalThis as typeof globalThis & Record<PropertyKey, unknown>)[ACTIVE_CLIENT_KEY]
+        delete (globalThis as typeof globalThis & Record<PropertyKey, unknown>)[LAB_RENDERER_BRIDGE_KEY]
     })
 
     it('starts a transport-free local client without a DSN and stays SSR-safe', async () => {
@@ -562,6 +564,268 @@ describe('browser animation single-init entry', () => {
         expect(frameworkRecord).toHaveBeenCalledTimes(1)
         expect(lifecycleRecord).toHaveBeenCalledTimes(1)
         expect(rendererRecord).toHaveBeenCalledTimes(2)
+        await client.destroy()
+    })
+
+    it('publishes only accepted redacted renderer evidence to the optional local Lab bridge', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const sink = jest.fn()
+        ;(globalThis as typeof globalThis & Record<PropertyKey, unknown>)[LAB_RENDERER_BRIDGE_KEY] = sink
+
+        const accepted = client.animation.recordRenderStats({
+            source: 'renderer-host',
+            backend: 'webgl2',
+            timestampMs: 123_456,
+            gpuTimerCapability: 'supported',
+            drawCalls: 0,
+            triangles: 12,
+            lines: 4,
+            textures: 8,
+            gpu: {
+                status: 'measured',
+                timeMs: 0,
+                source: 'webgl-disjoint-timer-query',
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+            },
+        })
+
+        expect(accepted).toBe(true)
+        expect(sink).toHaveBeenCalledTimes(1)
+        expect(sink).toHaveBeenCalledWith({
+            contractVersion: 1,
+            backend: 'webgl2',
+            gpuTimerCapability: 'supported',
+            drawCalls: 0,
+            triangles: 12,
+            gpu: {
+                status: 'measured',
+                timeMs: 0,
+                source: 'webgl-disjoint-timer-query',
+                valid: true,
+                disjoint: false,
+                contextLost: false,
+            },
+        })
+        const payload = sink.mock.calls[0]?.[0]
+        expect(Object.isFrozen(payload)).toBe(true)
+        expect(Object.isFrozen(payload.gpu)).toBe(true)
+        expect(payload).not.toHaveProperty('timestampMs')
+        expect(payload).not.toHaveProperty('source')
+        expect(payload).not.toHaveProperty('lines')
+        expect(payload).not.toHaveProperty('textures')
+
+        const callsBeforeRejection = sink.mock.calls.length
+        expect(
+            client.animation.recordRenderStats({
+                source: 'renderer-host',
+                backend: 'canvas2d',
+                timestampMs: 123_457,
+                gpuTimerCapability: 'supported',
+                drawCalls: 1,
+                gpu: { status: 'not-provided' },
+            })
+        ).toBe(false)
+        expect(sink).toHaveBeenCalledTimes(callsBeforeRejection)
+        await client.destroy()
+    })
+
+    it('keeps Lab bridge failures and reentry from affecting renderer collection', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const sample = {
+            source: 'renderer-host' as const,
+            backend: 'webgpu' as const,
+            timestampMs: 1,
+            drawCalls: 1,
+            gpuTimerCapability: 'disabled' as const,
+            gpu: { status: 'not-provided' as const },
+        }
+        const sink = jest.fn(() => {
+            expect(client.animation.recordRenderStats(sample)).toBe(false)
+            throw new Error('hostile Lab bridge')
+        })
+        ;(globalThis as typeof globalThis & Record<PropertyKey, unknown>)[LAB_RENDERER_BRIDGE_KEY] = sink
+
+        expect(client.animation.recordRenderStats(sample)).toBe(true)
+        expect(sink).toHaveBeenCalledTimes(1)
+        expect(client.animation.snapshot().hostEvidence.renderer.acceptedSampleCount).toBe(1)
+        await client.destroy()
+    })
+
+    it('snapshots stateful renderer getters once before core and Lab validation', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const sink = jest.fn()
+        ;(globalThis as typeof globalThis & Record<PropertyKey, unknown>)[LAB_RENDERER_BRIDGE_KEY] = sink
+        let backendReads = 0
+        let gpuSourceReads = 0
+        const gpu = {
+            status: 'measured',
+            timeMs: 4,
+            get source() {
+                gpuSourceReads += 1
+                return gpuSourceReads === 1 ? 'webgl-disjoint-timer-query' : 'private-shader-identity'
+            },
+            valid: true,
+            disjoint: false,
+            contextLost: false,
+        }
+        const sample = {
+            source: 'renderer-host',
+            get backend() {
+                backendReads += 1
+                return backendReads === 1 ? 'webgl2' : 'webgpu'
+            },
+            timestampMs: 1,
+            gpuTimerCapability: 'supported',
+            drawCalls: 2,
+            gpu,
+        }
+
+        expect(client.animation.recordRenderStats(sample as Parameters<typeof client.animation.recordRenderStats>[0])).toBe(true)
+        expect(backendReads).toBe(1)
+        expect(gpuSourceReads).toBe(1)
+        expect(sink).toHaveBeenCalledWith(
+            expect.objectContaining({
+                backend: 'webgl2',
+                gpu: expect.objectContaining({ source: 'webgl-disjoint-timer-query' }),
+            })
+        )
+        expect(JSON.stringify(sink.mock.calls)).not.toContain('private-shader-identity')
+        await client.destroy()
+    })
+
+    it('rejects renderer getter reentry before another sample can be inspected', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const nestedSample = {
+            source: 'renderer-host' as const,
+            backend: 'webgpu' as const,
+            timestampMs: 2,
+            drawCalls: 99,
+            gpuTimerCapability: 'disabled' as const,
+            gpu: { status: 'not-provided' as const },
+        }
+        let reentryResult: boolean | undefined
+        let backendReads = 0
+        const sample = {
+            source: 'renderer-host' as const,
+            get backend() {
+                backendReads += 1
+                reentryResult = client.animation.recordRenderStats(nestedSample)
+                return 'webgl2' as const
+            },
+            timestampMs: 1,
+            drawCalls: 1,
+            gpuTimerCapability: 'disabled' as const,
+            gpu: { status: 'not-provided' as const },
+        }
+
+        expect(client.animation.recordRenderStats(sample)).toBe(true)
+        expect(reentryResult).toBe(false)
+        expect(backendReads).toBe(1)
+        expect(client.animation.snapshot().hostEvidence.renderer.acceptedSampleCount).toBe(1)
+        await client.destroy()
+    })
+
+    it('preserves accepted custom and null prototype renderer samples without a Lab bridge', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+
+        class CustomRendererSample {
+            readonly source = 'renderer-host' as const
+            readonly backend = 'webgl2' as const
+            readonly timestampMs = 1
+            readonly drawCalls = 1
+            readonly gpuTimerCapability = 'disabled' as const
+            readonly gpu = { status: 'not-provided' as const }
+        }
+
+        const nullPrototypeSample = Object.assign(Object.create(null) as Record<string, unknown>, {
+            source: 'renderer-host',
+            backend: 'webgpu',
+            timestampMs: 2,
+            triangles: 2,
+            gpuTimerCapability: 'disabled',
+            gpu: Object.assign(Object.create(null) as Record<string, unknown>, { status: 'not-provided' }),
+        })
+
+        expect(client.animation.recordRenderStats(new CustomRendererSample())).toBe(true)
+        expect(client.animation.recordRenderStats(nullPrototypeSample as Parameters<typeof client.animation.recordRenderStats>[0])).toBe(
+            true
+        )
+        expect(client.animation.snapshot().hostEvidence.renderer.acceptedSampleCount).toBe(2)
+        await client.destroy()
+    })
+
+    it('contains symbol getter reentry, rejecting async sinks, and hostile thenable values', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const sample = {
+            source: 'renderer-host' as const,
+            backend: 'webgpu' as const,
+            timestampMs: 1,
+            drawCalls: 1,
+            gpuTimerCapability: 'disabled' as const,
+            gpu: { status: 'not-provided' as const },
+        }
+        const sink = jest.fn(async () => {
+            throw new Error('async Lab bridge rejection')
+        })
+        Object.defineProperty(globalThis, LAB_RENDERER_BRIDGE_KEY, {
+            configurable: true,
+            get: () => {
+                expect(client.animation.recordRenderStats(sample)).toBe(false)
+                return sink
+            },
+        })
+
+        expect(client.animation.recordRenderStats(sample)).toBe(true)
+        await Promise.resolve()
+        expect(sink).toHaveBeenCalledTimes(1)
+        expect(client.animation.snapshot().hostEvidence.renderer.acceptedSampleCount).toBe(1)
+
+        const hostileThenGetter = jest.fn(() => {
+            throw new Error('hostile then getter')
+        })
+        const hostileThenableSink = jest.fn(() => Object.defineProperty({}, 'then', { get: hostileThenGetter }))
+        Object.defineProperty(globalThis, LAB_RENDERER_BRIDGE_KEY, {
+            configurable: true,
+            value: hostileThenableSink,
+        })
+        expect(client.animation.recordRenderStats(sample)).toBe(true)
+        expect(hostileThenableSink).toHaveBeenCalledTimes(1)
+        expect(hostileThenGetter).not.toHaveBeenCalled()
+        expect(client.animation.snapshot().hostEvidence.renderer.acceptedSampleCount).toBe(2)
+
+        const syncThen = jest.fn(() => {
+            throw new Error('hostile sync then method')
+        })
+        const syncThenableSink = jest.fn(() => ({ then: syncThen }))
+        Object.defineProperty(globalThis, LAB_RENDERER_BRIDGE_KEY, {
+            configurable: true,
+            value: syncThenableSink,
+        })
+        expect(client.animation.recordRenderStats(sample)).toBe(true)
+        expect(syncThenableSink).toHaveBeenCalledTimes(1)
+        expect(syncThen).not.toHaveBeenCalled()
+
+        const asyncThen = jest.fn(async () => {
+            throw new Error('hostile async then method')
+        })
+        const asyncThenableSink = jest.fn(() => ({ then: asyncThen }))
+        Object.defineProperty(globalThis, LAB_RENDERER_BRIDGE_KEY, {
+            configurable: true,
+            value: asyncThenableSink,
+        })
+        expect(client.animation.recordRenderStats(sample)).toBe(true)
+        await Promise.resolve()
+        expect(asyncThenableSink).toHaveBeenCalledTimes(1)
+        expect(asyncThen).not.toHaveBeenCalled()
+        expect(client.animation.snapshot().hostEvidence.renderer.acceptedSampleCount).toBe(4)
         await client.destroy()
     })
 
