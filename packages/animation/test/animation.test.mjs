@@ -18,7 +18,7 @@ import {
     recommendAnimationImprovements,
     toAnimationRumSummary,
 } from '../build/esm/index.mjs'
-import { createAnimationDevOverlay } from '../build/esm/devtools.mjs'
+import { createAnimationDevOverlay, projectAnimationOverlayPageEvidenceSnapshot } from '../build/esm/devtools.mjs'
 
 class FakeRuntime {
     constructor({
@@ -3555,6 +3555,320 @@ test('dev overlay renders bounded local semantic evidence separately, preserves 
     const emptyEvidence = findFakeNodes(emptyPanel, node => node.getAttribute('data-overlay-local-evidence') !== null)[0]
     assert.equal(emptyEvidence.hidden, true)
     emptyOverlay.destroy()
+    collector.destroy()
+})
+
+test('dev overlay renders projected automatic page evidence, preserves scroll, and never polls it while collapsed', () => {
+    const pageEvidenceFixture = (enabled = true) => ({
+        schemaVersion: 1,
+        scope: 'capture-window-local',
+        enabled,
+        elapsedMs: 2_000,
+        sampleCount: enabled ? 4 : 0,
+        privateUrl: 'https://private.example/animation',
+        documentScopes: {
+            capability: { state: enabled ? 'supported' : 'unknown', observed: enabled, buffered: false, reason: 'private reason' },
+            retainedCount: enabled ? 2 : 0,
+            capacity: 64,
+            truncated: false,
+        },
+        animations: {
+            capability: { state: enabled ? 'supported' : 'unknown', observed: enabled, buffered: false },
+            status: enabled ? 'partial' : 'not-observed',
+            sampleCount: enabled ? 4 : 0,
+            current: {
+                total: enabled ? 8 : 0,
+                inspected: enabled ? 7 : 0,
+                dropped: enabled ? 1 : 0,
+                running: enabled ? 3 : 0,
+                paused: 0,
+                finished: enabled ? 4 : 0,
+                idle: 0,
+                unknownState: 0,
+                pending: 0,
+                cssAnimations: enabled ? 2 : 0,
+                cssTransitions: enabled ? 3 : 0,
+                webAnimationsOrUnclassified: enabled ? 2 : 0,
+                infinite: enabled ? 1 : 0,
+            },
+            peakTotal: enabled ? 9 : 0,
+            peakRunning: enabled ? 4 : 0,
+            lifecycle: {
+                animationStartCount: enabled ? 5 : 0,
+                animationEndCount: enabled ? 4 : 0,
+                animationCancelCount: enabled ? 1 : 0,
+                transitionRunCount: enabled ? 6 : 0,
+                transitionEndCount: enabled ? 5 : 0,
+                transitionCancelCount: enabled ? 1 : 0,
+            },
+            entries: [{ id: 'private-animation-id', name: 'private animation name' }],
+        },
+        media: {
+            capability: { state: enabled ? 'supported' : 'unknown', observed: enabled, buffered: false },
+            status: enabled ? 'partial' : 'not-observed',
+            currentVideoCount: enabled ? 3 : 0,
+            retainedVideoCount: enabled ? 2 : 0,
+            droppedVideoCount: enabled ? 1 : 0,
+            distinctRetainedVideoCount: enabled ? 2 : 0,
+            activeProbeCount: enabled ? 2 : 0,
+            rvfcSupportedVideoCount: enabled ? 1 : 0,
+            rvfcUnsupportedVideoCount: enabled ? 1 : 0,
+            playingVideoCount: enabled ? 2 : 0,
+            mediaUrl: 'https://private.example/video.mp4',
+        },
+        rendererSurfaces: {
+            discoveryCapability: { state: enabled ? 'supported' : 'unknown', observed: enabled, buffered: false },
+            contextObservationCapability: { state: enabled ? 'supported' : 'unknown', observed: enabled, buffered: false },
+            status: enabled ? 'measured' : 'not-observed',
+            sampleCount: enabled ? 4 : 0,
+            current: {
+                total: enabled ? 6 : 0,
+                retained: enabled ? 6 : 0,
+                dropped: 0,
+                svg: enabled ? 1 : 0,
+                canvasUnknown: enabled ? 1 : 0,
+                canvas2d: enabled ? 1 : 0,
+                webgl: enabled ? 1 : 0,
+                webgl2: enabled ? 1 : 0,
+                webgpu: enabled ? 1 : 0,
+            },
+            peakTotal: enabled ? 6 : 0,
+            distinctRetainedSurfaceCount: enabled ? 6 : 0,
+            addedAfterStartCount: enabled ? 1 : 0,
+            removedCount: 0,
+            successfulContextObservationCount: enabled ? 4 : 0,
+            webglContextLostCount: enabled ? 1 : 0,
+            webglContextRestoredCount: enabled ? 1 : 0,
+            rendererWorkCapability: { state: 'unsupported', observed: false, buffered: false },
+            gpuTimingCapability: { state: 'unsupported', observed: false, buffered: false, reason: 'private gpu reason' },
+        },
+        workAvoidance: {
+            visibilityCapability: { state: enabled ? 'supported' : 'unknown', observed: enabled, buffered: false },
+            intersectionCapability: { state: enabled ? 'supported' : 'unknown', observed: enabled, buffered: false },
+            status: enabled ? 'measured' : 'not-observed',
+            visibilityState: enabled ? 'hidden' : 'unknown',
+            sampleCount: enabled ? 4 : 0,
+            hiddenSampleCount: enabled ? 1 : 0,
+            trackedIntersectionTargetCount: enabled ? 4 : 0,
+            knownIntersectionTargetCount: enabled ? 4 : 0,
+            hiddenRunningAnimationReviewSampleCount: enabled ? 2 : 0,
+            hiddenPlayingVideoReviewSampleCount: enabled ? 1 : 0,
+            offscreenRunningAnimationReviewSampleCount: enabled ? 3 : 0,
+            offscreenPlayingVideoReviewSampleCount: enabled ? 1 : 0,
+            current: {
+                hiddenRunningAnimations: enabled ? 2 : 0,
+                hiddenPlayingVideos: enabled ? 1 : 0,
+                offscreenRunningAnimations: enabled ? 3 : 0,
+                offscreenPlayingVideos: enabled ? 1 : 0,
+            },
+            workDurationCapability: { state: 'unsupported', observed: false, buffered: false },
+        },
+        reducedMotion: {
+            capability: { state: enabled ? 'supported' : 'unknown', observed: enabled, buffered: false },
+            status: enabled ? 'measured' : 'not-observed',
+            preference: enabled ? true : null,
+            preferenceChangeCount: 0,
+            reducedMotionSampleCount: enabled ? 2 : 0,
+            reviewCandidateSampleCount: enabled ? 2 : 0,
+            current: {
+                runningAnimationCandidates: enabled ? 2 : 0,
+                infiniteAnimationCandidates: enabled ? 1 : 0,
+                playingVideoCandidates: enabled ? 1 : 0,
+            },
+            violationCapability: { state: 'unsupported', observed: false, buffered: false },
+        },
+    })
+
+    const projected = projectAnimationOverlayPageEvidenceSnapshot(pageEvidenceFixture())
+    assert.ok(projected)
+    assert.equal(projected.animations.current.total, 8)
+    assert.equal(projected.rendererSurfaces.current.webgpu, 1)
+    assert.doesNotMatch(JSON.stringify(projected), /private|example|animation-id/)
+
+    for (const mutate of [
+        evidence => {
+            evidence.animations.current.running = 8
+        },
+        evidence => {
+            evidence.animations.peakTotal = 7
+        },
+        evidence => {
+            evidence.media.retainedVideoCount = 1
+        },
+        evidence => {
+            evidence.rendererSurfaces.current.webgpu = 2
+        },
+        evidence => {
+            evidence.animations.capability = { state: 'unsupported', observed: true, buffered: false }
+        },
+        evidence => {
+            evidence.workAvoidance.hiddenRunningAnimationReviewSampleCount = 5
+        },
+        evidence => {
+            evidence.reducedMotion.current.infiniteAnimationCandidates = 3
+        },
+        evidence => {
+            evidence.reducedMotion.preference = false
+            evidence.reducedMotion.status = 'not-applicable'
+        },
+        evidence => {
+            evidence.rendererSurfaces.contextObservationCapability = { state: 'unsupported', observed: false, buffered: false }
+        },
+        evidence => {
+            evidence.animations.status = 'measured'
+            evidence.animations.sampleCount = 0
+            evidence.animations.current.total = 7
+            evidence.animations.current.dropped = 0
+        },
+        evidence => {
+            evidence.rendererSurfaces.sampleCount = 0
+        },
+        evidence => {
+            evidence.media.status = 'measured'
+            evidence.media.currentVideoCount = 0
+            evidence.media.retainedVideoCount = 0
+            evidence.media.droppedVideoCount = 0
+            evidence.media.activeProbeCount = 0
+            evidence.media.rvfcSupportedVideoCount = 0
+            evidence.media.rvfcUnsupportedVideoCount = 0
+            evidence.media.playingVideoCount = 0
+        },
+        evidence => {
+            evidence.workAvoidance.intersectionCapability = { state: 'unsupported', observed: false, buffered: false }
+        },
+        evidence => {
+            evidence.workAvoidance.intersectionCapability = { state: 'supported', observed: false, buffered: false }
+        },
+    ]) {
+        const contradictory = structuredClone(pageEvidenceFixture())
+        mutate(contradictory)
+        assert.equal(projectAnimationOverlayPageEvidenceSnapshot(contradictory), null)
+    }
+
+    const incompleteScopeWithoutMedia = structuredClone(pageEvidenceFixture())
+    incompleteScopeWithoutMedia.documentScopes.truncated = true
+    incompleteScopeWithoutMedia.media.status = 'partial'
+    incompleteScopeWithoutMedia.media.currentVideoCount = 0
+    incompleteScopeWithoutMedia.media.retainedVideoCount = 0
+    incompleteScopeWithoutMedia.media.droppedVideoCount = 0
+    incompleteScopeWithoutMedia.media.activeProbeCount = 0
+    incompleteScopeWithoutMedia.media.rvfcSupportedVideoCount = 0
+    incompleteScopeWithoutMedia.media.rvfcUnsupportedVideoCount = 0
+    incompleteScopeWithoutMedia.media.playingVideoCount = 0
+    incompleteScopeWithoutMedia.rendererSurfaces.status = 'partial'
+    incompleteScopeWithoutMedia.workAvoidance.status = 'partial'
+    incompleteScopeWithoutMedia.workAvoidance.current.hiddenPlayingVideos = 0
+    incompleteScopeWithoutMedia.workAvoidance.current.offscreenPlayingVideos = 0
+    incompleteScopeWithoutMedia.reducedMotion.current.playingVideoCandidates = 0
+    assert.ok(projectAnimationOverlayPageEvidenceSnapshot(incompleteScopeWithoutMedia))
+
+    const unknownVisibilityWithMeasuredWork = structuredClone(pageEvidenceFixture())
+    unknownVisibilityWithMeasuredWork.workAvoidance.visibilityCapability = {
+        state: 'unknown',
+        observed: false,
+        buffered: false,
+    }
+    unknownVisibilityWithMeasuredWork.workAvoidance.visibilityState = 'unknown'
+    unknownVisibilityWithMeasuredWork.workAvoidance.current.hiddenRunningAnimations = 0
+    unknownVisibilityWithMeasuredWork.workAvoidance.current.hiddenPlayingVideos = 0
+    assert.ok(projectAnimationOverlayPageEvidenceSnapshot(unknownVisibilityWithMeasuredWork))
+
+    const historicalOffscreenWithoutCurrentTargets = structuredClone(pageEvidenceFixture())
+    historicalOffscreenWithoutCurrentTargets.workAvoidance.trackedIntersectionTargetCount = 0
+    historicalOffscreenWithoutCurrentTargets.workAvoidance.knownIntersectionTargetCount = 0
+    historicalOffscreenWithoutCurrentTargets.workAvoidance.current.offscreenRunningAnimations = 0
+    historicalOffscreenWithoutCurrentTargets.workAvoidance.current.offscreenPlayingVideos = 0
+    assert.ok(projectAnimationOverlayPageEvidenceSnapshot(historicalOffscreenWithoutCurrentTargets))
+
+    const runtime = new FakeRuntime()
+    const collector = new AnimationCollector({ runtime }).start()
+    collectFrames(runtime, [16, 17, 18])
+    const document = new FakeDocument()
+    let pageEvidenceReads = 0
+    const source = {
+        state: 'running',
+        snapshot: () => collector.snapshot(),
+        pageEvidenceSnapshot() {
+            pageEvidenceReads += 1
+            return pageEvidenceFixture()
+        },
+    }
+    const overlay = createAnimationDevOverlay(source, { document, production: false })
+    const panel = document.body.children[0].shadowRoot.children[1].children[1]
+    const evidencePanel = findFakeNodes(panel, node => node.getAttribute('data-overlay-page-evidence') !== null)[0]
+    assert.ok(evidencePanel)
+    assert.equal(evidencePanel.hidden, false)
+    assert.equal(evidencePanel.parent.hidden, true)
+    assert.equal(pageEvidenceReads, 0)
+
+    overlay.setExpanded(true)
+    assert.equal(pageEvidenceReads, 1)
+    assert.equal(evidencePanel.hidden, false)
+    assert.equal(evidencePanel.parent.className, 'tab-panel page-evidence-tab')
+    assert.equal(evidencePanel.parent.hidden, true)
+    const pageEvidenceTab = findFakeNodes(panel, node => node.getAttribute('data-overlay-tab') === 'pageEvidence')[0]
+    const overviewTabPanel = findFakeNodes(panel, node => node.className.includes('overview-panel'))[0]
+    pageEvidenceTab.click()
+    assert.equal(evidencePanel.parent.hidden, false)
+    assert.equal(overviewTabPanel.hidden, true)
+    assert.match(fakeNodeText(evidencePanel), /Automatic page evidence/)
+    assert.match(fakeNodeText(evidencePanel), /CSS \/ Web Animations · partial/)
+    assert.match(fakeNodeText(evidencePanel), /current 8 · running 3 · infinite 1/)
+    assert.match(fakeNodeText(evidencePanel), /WebGPU 1/)
+    assert.match(fakeNodeText(evidencePanel), /candidate signals hidden animation\/video 2\/1 · offscreen animation\/video 3\/1/)
+    assert.match(fakeNodeText(evidencePanel), /preference reduce/)
+    assert.doesNotMatch(fakeNodeText(evidencePanel), /private|example|animation-id/)
+
+    evidencePanel.scrollTop = 83
+    evidencePanel.scrollLeft = 5
+    overlay.refresh()
+    assert.equal(pageEvidenceReads, 2)
+    assert.equal(evidencePanel.scrollTop, 83)
+    assert.equal(evidencePanel.scrollLeft, 5)
+
+    const localeButton = findFakeNodes(panel, node => node.getAttribute('data-overlay-locale-toggle') !== null)[0]
+    localeButton.click()
+    assert.match(fakeNodeText(evidencePanel), /自动页面证据/)
+    assert.match(fakeNodeText(evidencePanel), /候选信号：后台动画\/视频 2\/1 · 离屏动画\/视频 3\/1/)
+    assert.equal(evidencePanel.scrollTop, 83)
+
+    overlay.setExpanded(false)
+    overlay.refresh()
+    assert.equal(pageEvidenceReads, 2)
+    overlay.destroy()
+
+    const hostileDocument = new FakeDocument()
+    const hostileOverlay = createAnimationDevOverlay(
+        {
+            state: 'running',
+            snapshot: () => collector.snapshot(),
+            get pageEvidenceSnapshot() {
+                throw new Error('private hostile provider error')
+            },
+        },
+        { document: hostileDocument, production: false, initiallyOpen: true }
+    )
+    const hostilePanel = hostileDocument.body.children[0].shadowRoot.children[1].children[1]
+    const unavailableEvidence = findFakeNodes(hostilePanel, node => node.getAttribute('data-overlay-page-evidence') !== null)[0]
+    assert.equal(unavailableEvidence.hidden, false)
+    assert.match(fakeNodeText(unavailableEvidence), /provider returned invalid data/)
+    assert.doesNotMatch(fakeNodeText(unavailableEvidence), /private hostile/)
+    hostileOverlay.destroy()
+
+    const disabledDocument = new FakeDocument()
+    const disabledOverlay = createAnimationDevOverlay(
+        {
+            state: 'running',
+            snapshot: () => collector.snapshot(),
+            pageEvidenceSnapshot: () => pageEvidenceFixture(false),
+        },
+        { document: disabledDocument, production: false, initiallyOpen: true }
+    )
+    const disabledPanel = disabledDocument.body.children[0].shadowRoot.children[1].children[1]
+    const disabledEvidence = findFakeNodes(disabledPanel, node => node.getAttribute('data-overlay-page-evidence') !== null)[0]
+    assert.equal(disabledEvidence.hidden, false)
+    assert.match(fakeNodeText(disabledEvidence), /disabled for this client/)
+    disabledOverlay.destroy()
     collector.destroy()
 })
 

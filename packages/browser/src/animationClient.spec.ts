@@ -1187,14 +1187,22 @@ describe('browser animation single-init entry', () => {
         const globals = installInteractiveBrowserGlobals()
         const { init } = require('./animation') as typeof import('./animation')
         const automatic = init({ animation: { runtime: runtime() } })
+        const automaticSource = (automatic.animation.devtools as unknown as { source: AnimationOverlaySource }).source
 
         expect(automatic.animation.snapshot().pageEvidence.enabled).toBe(true)
         expect(automatic.animation.snapshot().pageEvidence.rendererSurfaces.gpuTimingCapability.state).toBe('unsupported')
+        expect(automaticSource.pageEvidenceSnapshot?.()).toMatchObject({
+            schemaVersion: 1,
+            scope: 'capture-window-local',
+            enabled: true,
+        })
         await automatic.destroy()
 
         const disabled = init({ animation: { runtime: runtime(), autoPageEvidence: false } })
+        const disabledSource = (disabled.animation.devtools as unknown as { source: AnimationOverlaySource }).source
         expect(disabled.animation.snapshot().pageEvidence.enabled).toBe(false)
         expect(disabled.animation.snapshot().pageEvidence.sampleCount).toBe(0)
+        expect(disabledSource.pageEvidenceSnapshot?.()).toMatchObject({ enabled: false, sampleCount: 0 })
         await disabled.destroy()
         globals.restore()
         jest.useRealTimers()
