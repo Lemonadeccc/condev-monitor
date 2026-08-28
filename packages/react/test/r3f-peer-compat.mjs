@@ -92,7 +92,7 @@ try {
     )
     writeFileSync(
         resolve(consumerDirectory, 'consumer.tsx'),
-        `import { Canvas } from '@react-three/fiber'\nimport { init } from '@condev-monitor/react/animation'\nimport { CondevR3FObserver } from '@condev-monitor/react/animation/r3f'\n\nconst client = init({ animation: { autoStart: false, devtools: false, rum: false } })\n\nexport const scene = (\n    <Canvas>\n        <CondevR3FObserver client={client} backend="webgl2" />\n    </Canvas>\n)\n`
+        `import { Canvas } from '@react-three/fiber'\nimport { init } from '@condev-monitor/react/animation'\nimport { CondevR3FObserver } from '@condev-monitor/react/animation/r3f'\n\nconst client = init({ animation: { autoStart: false, devtools: false, rum: false } })\n\nexport const scene = (\n    <Canvas>\n        <CondevR3FObserver\n            client={client}\n            backend="webgl2"\n            gpuTiming={{ disjointQueryOwnership: 'exclusive', sampleEvery: 60 }}\n        />\n    </Canvas>\n)\n`
     )
     writeFileSync(
         resolve(consumerDirectory, 'consumer.mjs'),
