@@ -116,6 +116,19 @@ test('accepts a fully referenced selector-free v2 semantic bundle', () => {
     assert.equal(result.value.metrics[0].aggregation.method, 'median-of-attempts')
 })
 
+test('accepts touch and pen action kinds in scenario and action-window semantics', () => {
+    for (const kind of ['touch-tap', 'touch-swipe', 'touch-pinch', 'pen-path']) {
+        const input = semantics()
+        input.scenarioActions[0].kind = kind
+        input.actionWindows[0].kind = kind
+
+        const result = validateAnimationLabSemanticsV2(input)
+        assert.equal(result.ok, true, kind)
+        assert.equal(result.value.scenarioActions[0].kind, kind)
+        assert.equal(result.value.actionWindows[0].kind, kind)
+    }
+})
+
 test('requires unsupported-or-unknown evidence exactly for unsupported or unknown metric statuses', () => {
     const mismatches = [
         { status: 'unsupported', evidenceLevel: 'controlled-lab-measurement', value: null, samples: null },

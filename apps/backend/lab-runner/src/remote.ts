@@ -25,7 +25,7 @@ const WARMUP_DETAIL_OMITTED_LIMITATION = 'warmup-detail-omitted-from-report'
 const ATTEMPT_METRIC_PROJECTION_LIMITATION = 'attempt-metric-projection-truncated'
 const REPORT_BYTE_BUDGET_LIMITATION = 'report-upload-byte-budget-truncated-attempt-detail'
 const ACTION_SCOPED_COMPACT_SUMMARY_LIMITATION = 'action-scoped-metrics-retained-only-in-animation-report'
-export const LAB_RUNNER_CONTRACT_VERSION = 5 as const
+export const LAB_RUNNER_CONTRACT_VERSION = 6 as const
 
 export interface RemoteLabConnectionOptions {
     server: string

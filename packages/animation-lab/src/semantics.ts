@@ -27,7 +27,20 @@ const MAX_LIMITATIONS = 32
 const MAX_WINDOW_MS = 3_600_000
 const AGGREGATE_SAMPLE_OVERFLOW_LIMITATION = 'aggregate-sample-count-exceeds-contract-bound'
 
-const ACTION_KINDS = new Set(['wait', 'click', 'hover', 'pointer-path', 'scroll', 'resize', 'drag', 'press'])
+const ACTION_KINDS = new Set([
+    'wait',
+    'click',
+    'hover',
+    'pointer-path',
+    'touch-tap',
+    'touch-swipe',
+    'touch-pinch',
+    'pen-path',
+    'scroll',
+    'resize',
+    'drag',
+    'press',
+])
 const SUBJECT_SCOPES = new Set(['page', 'route', 'frame', 'subject', 'renderer-surface', 'media'])
 const SUBJECT_SURFACES = new Set(['dom', 'svg', 'canvas2d', 'webgl', 'webgl2', 'webgpu', 'video', 'audio', 'unknown'])
 const TRIGGER_SOURCES = new Set([

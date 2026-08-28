@@ -8,9 +8,20 @@ import { type AnimationLabMetricV2Projection, parseAnimationLabMetricV2 } from '
 export const LAB_RUN_CONFIG_MAX_BYTES = 16 * 1024
 export const LAB_RUN_SUMMARY_MAX_BYTES = 64 * 1024
 export const LAB_RUN_ARTIFACT_TOTAL_MAX_BYTES = 128 * 1024 * 1024
-export const LAB_RUNNER_CONTRACT_VERSION = 5 as const
-export const LAB_RUNNER_CONTRACT_VERSIONS = [4, LAB_RUNNER_CONTRACT_VERSION] as const
+export const LAB_RUNNER_CONTRACT_VERSION = 6 as const
+export const LAB_RUNNER_CONTRACT_VERSIONS = [4, 5, LAB_RUNNER_CONTRACT_VERSION] as const
 export type LabRunnerContractVersion = (typeof LAB_RUNNER_CONTRACT_VERSIONS)[number]
+
+const LAB_RUNNER_V5_ACTION_KINDS: ReadonlySet<string> = new Set([
+    'wait',
+    'click',
+    'hover',
+    'pointer-path',
+    'scroll',
+    'resize',
+    'drag',
+    'press',
+])
 
 export const LAB_RUN_STATUSES = ['created', 'running', 'completed', 'failed', 'cancelled', 'expired'] as const
 export type LabRunStatus = (typeof LAB_RUN_STATUSES)[number]
@@ -115,6 +126,20 @@ export function assertLabRunnerSupportsMeasurementContract(
     if (measurementContract.metricCatalogVersion > maximumVersion || measurementContract.budgetRef.budgetVersion > maximumVersion) {
         throw new HttpException(
             `Animation Lab Runner contract ${runnerContractVersion} cannot execute metric catalog ${measurementContract.metricCatalogVersion} and budget ${measurementContract.budgetRef.budgetVersion}`,
+            426
+        )
+    }
+}
+
+export function assertLabRunnerSupportsReportActionKinds(
+    runnerContractVersion: LabRunnerContractVersion,
+    actionKinds: Iterable<string>
+): void {
+    if (runnerContractVersion >= 6) return
+    const unsupported = Array.from(actionKinds).find(kind => !LAB_RUNNER_V5_ACTION_KINDS.has(kind))
+    if (unsupported) {
+        throw new HttpException(
+            `Animation Lab Runner contract ${runnerContractVersion} cannot upload ${unsupported} action evidence; Runner contract 6 is required`,
             426
         )
     }

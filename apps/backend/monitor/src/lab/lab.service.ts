@@ -21,6 +21,7 @@ import { LabRunEntity } from './entity/lab-run.entity'
 import { LabRunnerGrantEntity } from './entity/lab-runner-grant.entity'
 import {
     assertLabRunnerSupportsMeasurementContract,
+    assertLabRunnerSupportsReportActionKinds,
     type CompareLabRunsInput,
     createHash,
     type CreateLabRunInput,
@@ -321,7 +322,7 @@ export class LabService {
             return {
                 runId: run.id,
                 runnerContractVersion,
-                ...(runnerContractVersion === 5 ? { requiredCapabilities: labRunnerRequiredCapabilities(config.measurementContract) } : {}),
+                ...(runnerContractVersion >= 5 ? { requiredCapabilities: labRunnerRequiredCapabilities(config.measurementContract) } : {}),
             }
         })
     }
@@ -387,6 +388,10 @@ export class LabService {
                     LAB_ANIMATION_REPORT_DECODED_MAX_BYTES
                 )
                 derivedReport = parseAnimationReportArtifact(json)
+                assertLabRunnerSupportsReportActionKinds(params.runnerContractVersion, [
+                    ...(derivedReport.analysis?.scenarioActions.map(action => action.kind) ?? []),
+                    ...(derivedReport.analysis?.actionWindows.map(action => action.kind) ?? []),
+                ])
             } else if (params.metadata.kind === 'trace-index') {
                 const json = await this.storage.readTemporaryJson(
                     temporary.path,
@@ -644,7 +649,7 @@ export class LabService {
             targetUrl: run.targetOrigin,
             config,
             runnerContractVersion,
-            ...(runnerContractVersion === 5 ? { requiredCapabilities: labRunnerRequiredCapabilities(config.measurementContract) } : {}),
+            ...(runnerContractVersion >= 5 ? { requiredCapabilities: labRunnerRequiredCapabilities(config.measurementContract) } : {}),
         }
     }
 

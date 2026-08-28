@@ -152,7 +152,20 @@ function isKnownDefaultBudget(ref: { budgetId: string; budgetVersion: number }):
     return defaultBudgetRules(ref) !== undefined
 }
 
-const ACTION_KINDS = ['wait', 'click', 'hover', 'pointer-path', 'scroll', 'resize', 'drag', 'press'] as const
+const ACTION_KINDS = [
+    'wait',
+    'click',
+    'hover',
+    'pointer-path',
+    'touch-tap',
+    'touch-swipe',
+    'touch-pinch',
+    'pen-path',
+    'scroll',
+    'resize',
+    'drag',
+    'press',
+] as const
 const SUBJECT_SCOPES = ['page', 'route', 'frame', 'subject', 'renderer-surface', 'media'] as const
 const SUBJECT_SURFACES = ['dom', 'svg', 'canvas2d', 'webgl', 'webgl2', 'webgpu', 'video', 'audio', 'unknown'] as const
 const TRIGGER_SOURCES = [

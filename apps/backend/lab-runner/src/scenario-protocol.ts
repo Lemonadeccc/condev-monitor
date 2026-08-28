@@ -91,6 +91,35 @@ function actionProtocol(action: AnimationLabScenario['actions'][number], order: 
             }
         case 'press':
             return { ...base, key: action.key }
+        case 'touch-tap':
+            return { ...base, selectorMode: 'targeted', durationMs: action.durationMs ?? null }
+        case 'touch-swipe':
+            return {
+                ...base,
+                selectorMode: action.selector === undefined ? 'page' : 'targeted',
+                durationMs: action.durationMs,
+                points: action.points,
+            }
+        case 'touch-pinch':
+            return {
+                ...base,
+                selectorMode: action.selector === undefined ? 'page' : 'targeted',
+                durationMs: action.durationMs,
+                startPoints: action.startPoints,
+                endPoints: action.endPoints,
+            }
+        case 'pen-path':
+            return {
+                ...base,
+                selectorMode: action.selector === undefined ? 'page' : 'targeted',
+                durationMs: action.durationMs,
+                mode: action.mode,
+                points: action.points,
+                pressure: action.pressure ?? null,
+                tiltX: action.tiltX ?? null,
+                tiltY: action.tiltY ?? null,
+                twist: action.twist ?? null,
+            }
     }
 }
 

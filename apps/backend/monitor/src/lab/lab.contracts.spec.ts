@@ -2,6 +2,7 @@ import { BadRequestException, HttpException } from '@nestjs/common'
 
 import {
     assertLabRunnerSupportsMeasurementContract,
+    assertLabRunnerSupportsReportActionKinds,
     createHash,
     LAB_RUNNER_CONTRACT_VERSION,
     LAB_RUNNER_CONTRACT_VERSIONS,
@@ -234,7 +235,7 @@ describe('animation lab contracts', () => {
         expect(parsed.config.measurementContract.metricCatalogVersion).toBe(3)
     })
 
-    it('accepts the explicit catalog v4 renderer contract and gates it to Runner v5', () => {
+    it('accepts the explicit catalog v4 renderer contract and gates it to Runner v5 or newer', () => {
         const measurementContract = parseCreateLabRunInput({
             appId: 'app-123',
             scenarioKey: 'renderer.evidence.v4',
@@ -259,6 +260,15 @@ describe('animation lab contracts', () => {
         )
         expect(() => assertLabRunnerSupportsMeasurementContract(4, measurementContract)).toThrow(HttpException)
         expect(() => assertLabRunnerSupportsMeasurementContract(5, measurementContract)).not.toThrow()
+        expect(() => assertLabRunnerSupportsMeasurementContract(6, measurementContract)).not.toThrow()
+    })
+
+    it('keeps legacy report actions on Runner v4/v5 and gates touch or pen evidence to v6', () => {
+        const legacyKinds = ['wait', 'click', 'hover', 'pointer-path', 'scroll', 'resize', 'drag', 'press']
+        expect(() => assertLabRunnerSupportsReportActionKinds(4, legacyKinds)).not.toThrow()
+        expect(() => assertLabRunnerSupportsReportActionKinds(5, legacyKinds)).not.toThrow()
+        expect(() => assertLabRunnerSupportsReportActionKinds(6, [...legacyKinds, 'touch-swipe', 'pen-path'])).not.toThrow()
+        expect(() => assertLabRunnerSupportsReportActionKinds(5, [...legacyKinds, 'touch-tap'])).toThrow('Runner contract 6 is required')
     })
 
     it('rejects unknown fields, URL credentials/query/path and under-sampled runs', () => {
@@ -289,7 +299,7 @@ describe('animation lab contracts', () => {
             } catch (error) {
                 expect(error).toBeInstanceOf(HttpException)
                 expect((error as HttpException).getStatus()).toBe(426)
-                expect((error as Error).message).toMatch(/contract 4 or 5 is required/u)
+                expect((error as Error).message).toMatch(/contract 4 or 5 or 6 is required/u)
             }
         }
     })

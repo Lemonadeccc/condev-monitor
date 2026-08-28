@@ -92,6 +92,106 @@ test('rejects unbounded, unsafe, or open-ended outcome expectations without echo
     assert.equal(JSON.stringify(result.errors).includes('private customer text'), false)
 })
 
+test('accepts bounded touch and pen gesture actions without exposing raw coordinates to reports', () => {
+    const input = scenario()
+    input.actions = [
+        { kind: 'touch-tap', label: 'tap-card', selector: '[data-lab="card"]' },
+        {
+            kind: 'touch-swipe',
+            label: 'swipe-gallery',
+            selector: '[data-lab="gallery"]',
+            durationMs: 240,
+            points: [
+                { xRatio: 0.8, yRatio: 0.5 },
+                { xRatio: 0.2, yRatio: 0.5 },
+            ],
+        },
+        {
+            kind: 'touch-pinch',
+            label: 'pinch-scene',
+            selector: '[data-lab="scene"]',
+            durationMs: 320,
+            startPoints: [
+                { xRatio: 0.2, yRatio: 0.5 },
+                { xRatio: 0.8, yRatio: 0.5 },
+            ],
+            endPoints: [
+                { xRatio: 0.4, yRatio: 0.5 },
+                { xRatio: 0.6, yRatio: 0.5 },
+            ],
+        },
+        {
+            kind: 'pen-path',
+            label: 'draw-stroke',
+            selector: '[data-lab="canvas"]',
+            durationMs: 300,
+            mode: 'draw',
+            pressure: 0.6,
+            tiltX: 15,
+            tiltY: -10,
+            twist: 45,
+            points: [
+                { xRatio: 0.1, yRatio: 0.1 },
+                { xRatio: 0.9, yRatio: 0.9 },
+            ],
+        },
+    ]
+
+    const result = validateAnimationLabScenario(input)
+    assert.equal(result.ok, true)
+    assert.deepEqual(
+        result.value.actions.map(action => action.kind),
+        ['touch-tap', 'touch-swipe', 'touch-pinch', 'pen-path']
+    )
+})
+
+test('rejects malformed or unbounded touch and pen gestures without echoing private selectors', () => {
+    const input = scenario()
+    input.actions = [
+        { kind: 'touch-tap', label: 'tap', selector: '' },
+        {
+            kind: 'touch-swipe',
+            label: 'swipe',
+            selector: '[data-private="gesture-target"]',
+            durationMs: 0,
+            points: [{ xRatio: 2, yRatio: 0 }],
+        },
+        {
+            kind: 'touch-pinch',
+            label: 'pinch',
+            durationMs: 100,
+            startPoints: [
+                { xRatio: 0.5, yRatio: 0.5 },
+                { xRatio: 0.5, yRatio: 0.5 },
+            ],
+            endPoints: [{ xRatio: 0.2, yRatio: 0.5 }],
+        },
+        {
+            kind: 'pen-path',
+            label: 'pen',
+            durationMs: 100,
+            mode: 'hover',
+            pressure: 0.5,
+            tiltX: 91,
+            twist: 360,
+            points: [
+                { xRatio: 0, yRatio: 0 },
+                { xRatio: 1, yRatio: 1 },
+            ],
+        },
+    ]
+
+    const result = validateAnimationLabScenario(input)
+    assert.equal(result.ok, false)
+    assert.ok(result.errors.includes('actions[0]:invalid-selector'))
+    assert.ok(result.errors.includes('actions[1]:invalid-touch-points'))
+    assert.ok(result.errors.includes('actions[2]:invalid-pinch-points'))
+    assert.ok(result.errors.includes('actions[3]:hover-pen-pressure'))
+    assert.ok(result.errors.includes('actions[3]:invalid-pen-tilt-x'))
+    assert.ok(result.errors.includes('actions[3]:invalid-pen-twist'))
+    assert.equal(JSON.stringify(result.errors).includes('gesture-target'), false)
+})
+
 test('accepts metric catalog v2 as an explicit additive measurement contract', () => {
     const input = scenario()
     input.measurementContract = {

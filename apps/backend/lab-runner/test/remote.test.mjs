@@ -536,7 +536,7 @@ test('fails before claim when Monitor contract negotiation is missing, old, or f
     })
     const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
 
-    for (const runnerContractVersion of [undefined, 1, 2, LAB_RUNNER_CONTRACT_VERSION + 1]) {
+    for (const runnerContractVersion of [undefined, 1, 2, LAB_RUNNER_CONTRACT_VERSION - 1, LAB_RUNNER_CONTRACT_VERSION + 1]) {
         const requests = []
         globalThis.fetch = async (url, init = {}) => {
             requests.push({ url: String(url), init })

@@ -14,6 +14,8 @@ export type {
     LabAutomationPage,
     LabBoundingBox,
     LabBrowserEngine,
+    LabInputPoint,
+    LabPenInputPoint,
 } from './browser-driver'
 export { createDiscoveredAnimationProposal, discoverAnimationCandidates } from './explorer'
 export type { DiscoverAnimationCandidatesOptions, DiscoveredAnimationProposal } from './explorer'

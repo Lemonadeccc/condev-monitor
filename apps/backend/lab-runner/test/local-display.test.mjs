@@ -76,6 +76,15 @@ test('projects action display data through a fresh semantic allowlist', () => {
     }
 })
 
+test('projects touch and pen action kinds through the local display allowlist', () => {
+    for (const kind of ['touch-tap', 'touch-swipe', 'touch-pinch', 'pen-path']) {
+        const raw = rawFinishedAction()
+        raw.action.kind = kind
+
+        assert.equal(projectLabLocalDisplayEvent(raw)?.action.kind, kind)
+    }
+})
+
 test('keeps started actions outcome-free and rejects invalid closed values', () => {
     const started = projectLabLocalDisplayEvent({
         type: 'action',

@@ -152,6 +152,14 @@ describe('LabService runner grants and ownership', () => {
             runId: run.id,
             runnerContractVersion: 4,
         })
+        await expect(service.negotiateRunnerContract(run.id, rawToken, 5)).resolves.toEqual({
+            runId: run.id,
+            runnerContractVersion: 5,
+            requiredCapabilities: {
+                metricCatalogVersion: 1,
+                budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 1 },
+            },
+        })
         const negotiated = await service.negotiateRunnerContract(run.id, rawToken, LAB_RUNNER_CONTRACT_VERSION)
         expect(negotiated).toEqual({
             runId: run.id,

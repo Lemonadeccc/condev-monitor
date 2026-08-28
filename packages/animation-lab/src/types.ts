@@ -7,7 +7,19 @@ export const ANIMATION_LAB_LATEST_METRIC_CATALOG_VERSION = 4 as const
 
 export type LabMetricCatalogVersion = 1 | 2 | 3 | 4
 
-export type LabActionKind = 'wait' | 'click' | 'hover' | 'pointer-path' | 'scroll' | 'resize' | 'drag' | 'press'
+export type LabActionKind =
+    | 'wait'
+    | 'click'
+    | 'hover'
+    | 'pointer-path'
+    | 'scroll'
+    | 'resize'
+    | 'drag'
+    | 'press'
+    | 'touch-tap'
+    | 'touch-swipe'
+    | 'touch-pinch'
+    | 'pen-path'
 
 export type LabSubjectScope = 'page' | 'route' | 'frame' | 'subject' | 'renderer-surface' | 'media'
 export type LabSubjectSurface = 'dom' | 'svg' | 'canvas2d' | 'webgl' | 'webgl2' | 'webgpu' | 'video' | 'audio' | 'unknown'
@@ -89,6 +101,11 @@ export interface LabActionBase {
     expect?: readonly LabActionExpectation[]
 }
 
+export interface LabRelativePoint {
+    xRatio: number
+    yRatio: number
+}
+
 export type LabScenarioAction =
     | (LabActionBase & { kind: 'wait'; durationMs: number })
     | (LabActionBase & { kind: 'click' | 'hover'; selector: string; durationMs?: number })
@@ -102,6 +119,31 @@ export type LabScenarioAction =
     | (LabActionBase & { kind: 'resize'; width: number; height: number })
     | (LabActionBase & { kind: 'drag'; fromSelector: string; toSelector?: string; deltaX?: number; deltaY?: number; durationMs: number })
     | (LabActionBase & { kind: 'press'; key: 'Enter' | 'Space' | 'Tab' | 'ArrowUp' | 'ArrowDown' | 'ArrowLeft' | 'ArrowRight' | 'Escape' })
+    | (LabActionBase & { kind: 'touch-tap'; selector: string; durationMs?: number })
+    | (LabActionBase & {
+          kind: 'touch-swipe'
+          selector?: string
+          durationMs: number
+          points: readonly LabRelativePoint[]
+      })
+    | (LabActionBase & {
+          kind: 'touch-pinch'
+          selector?: string
+          durationMs: number
+          startPoints: readonly [LabRelativePoint, LabRelativePoint]
+          endPoints: readonly [LabRelativePoint, LabRelativePoint]
+      })
+    | (LabActionBase & {
+          kind: 'pen-path'
+          selector?: string
+          durationMs: number
+          mode: 'hover' | 'draw'
+          points: readonly LabRelativePoint[]
+          pressure?: number
+          tiltX?: number
+          tiltY?: number
+          twist?: number
+      })
 
 export interface AnimationLabScenario {
     schemaVersion: 1

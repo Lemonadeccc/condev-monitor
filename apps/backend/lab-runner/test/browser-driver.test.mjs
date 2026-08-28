@@ -35,6 +35,9 @@ test('exposes a closed browser-driver capability matrix without changing the sce
         cacheClear: true,
         cdpTrace: true,
         lighthouse: true,
+        touchTap: true,
+        trustedTouchGestures: true,
+        penPointer: true,
     })
     for (const driver of [firefox, webkit]) {
         assert.equal(driver.capabilities.pageProbe, true)
@@ -45,6 +48,9 @@ test('exposes a closed browser-driver capability matrix without changing the sce
         assert.equal(driver.capabilities.cacheClear, false)
         assert.equal(driver.capabilities.cdpTrace, false)
         assert.equal(driver.capabilities.lighthouse, false)
+        assert.equal(driver.capabilities.touchTap, true)
+        assert.equal(driver.capabilities.trustedTouchGestures, false)
+        assert.equal(driver.capabilities.penPointer, false)
     }
 })
 
@@ -315,7 +321,137 @@ test('fails closed for unsupported controlled conditions and discloses context-o
     )
     assert.deepEqual(validateBrowserDriverScenario('webkit', scenario({ cacheMode: 'cold' })), ['cold-cache-context-isolation-only'])
     assert.deepEqual(validateBrowserDriverScenario('firefox', scenario({ network: { offline: true } })), [])
+    assert.deepEqual(
+        validateBrowserDriverScenario('webkit', scenario({ actions: [{ kind: 'touch-tap', label: 'tap', selector: '#target' }] })),
+        []
+    )
+    assert.throws(
+        () =>
+            validateBrowserDriverScenario(
+                'firefox',
+                scenario({
+                    actions: [
+                        {
+                            kind: 'touch-swipe',
+                            label: 'swipe',
+                            durationMs: 100,
+                            points: [
+                                { xRatio: 0, yRatio: 0 },
+                                { xRatio: 1, yRatio: 1 },
+                            ],
+                        },
+                    ],
+                })
+            ),
+        /trusted touch gestures are unavailable/
+    )
+    assert.throws(
+        () =>
+            validateBrowserDriverScenario(
+                'webkit',
+                scenario({
+                    actions: [
+                        {
+                            kind: 'pen-path',
+                            label: 'pen',
+                            durationMs: 100,
+                            mode: 'hover',
+                            points: [
+                                { xRatio: 0, yRatio: 0 },
+                                { xRatio: 1, yRatio: 1 },
+                            ],
+                        },
+                    ],
+                })
+            ),
+        /pen pointer input is unavailable/
+    )
     assert.deepEqual(validateBrowserDriverScenario('chromium', scenario({ cpuThrottleRate: 4, network: { latencyMs: 100 } })), [])
+})
+
+test('injects trusted touch and pen input in Chromium without mouse emulation', async () => {
+    const driver = createBrowserDriver('chromium')
+    const session = await driver.launch()
+    const context = await session.createContext(scenario({ actions: [{ kind: 'touch-tap', label: 'tap', selector: '#target' }] }))
+    try {
+        const page = await context.newPage()
+        const fixture = encodeURIComponent(`<!doctype html><style>
+          html, body { margin: 0; width: 100%; height: 100%; touch-action: none; }
+          #target { width: 320px; height: 240px; touch-action: none; }
+        </style><div id="target"></div><script>
+          window.__inputEvents = [];
+          for (const type of ['touchstart', 'touchmove', 'touchend', 'touchcancel', 'pointerdown', 'pointermove', 'pointerup']) {
+            addEventListener(type, event => window.__inputEvents.push({
+              type,
+              trusted: event.isTrusted,
+              pointerType: event.pointerType || null,
+              pressure: Number.isFinite(event.pressure) ? event.pressure : null,
+              touches: event.touches ? event.touches.length : null,
+            }), { passive: false });
+          }
+        </script>`)
+        await page.navigate(`data:text/html,${fixture}`, 10_000)
+
+        await page.touchTap(80, 80)
+        await page.touchStart([{ x: 40, y: 80 }])
+        await page.touchMove([{ x: 180, y: 80 }])
+        await page.touchEnd()
+        await page.touchStart([
+            { x: 60, y: 120 },
+            { x: 220, y: 120 },
+        ])
+        await page.touchMove([
+            { x: 100, y: 120 },
+            { x: 180, y: 120 },
+        ])
+        await page.touchEnd()
+        await page.touchStart([{ x: 120, y: 80 }])
+        await page.touchCancel()
+        await page.penMove({ x: 50, y: 160, pressure: 0.65, tiltX: 12 }, false)
+        await page.penDown({ x: 50, y: 160, pressure: 0.65, tiltX: 12 })
+        await page.penMove({ x: 180, y: 180, pressure: 0.65, tiltX: 12 }, true)
+        await page.penUp({ x: 180, y: 180, pressure: 0.65, tiltX: 12 })
+
+        const events = await page.rawPage.evaluate(() => window.__inputEvents)
+        assert.ok(events.some(event => event.type === 'touchstart' && event.trusted === true && event.touches === 1))
+        assert.ok(events.some(event => event.type === 'touchstart' && event.trusted === true && event.touches === 2))
+        assert.ok(events.some(event => event.type === 'touchmove' && event.trusted === true))
+        assert.ok(events.some(event => event.type === 'touchend' && event.trusted === true))
+        assert.ok(events.some(event => event.type === 'touchcancel' && event.trusted === true))
+        assert.ok(events.some(event => event.type === 'pointerdown' && event.trusted === true && event.pointerType === 'pen'))
+        assert.ok(events.some(event => event.type === 'pointermove' && event.trusted === true && event.pointerType === 'pen'))
+        assert.ok(events.some(event => event.type === 'pointerup' && event.trusted === true && event.pointerType === 'pen'))
+    } finally {
+        await context.close().catch(() => undefined)
+        await session.close().catch(() => undefined)
+    }
+})
+
+test('uses the public touchscreen tap surface in all three browser engines', async () => {
+    for (const engine of ['chromium', 'firefox', 'webkit']) {
+        const driver = createBrowserDriver(engine)
+        const session = await driver.launch()
+        const context = await session.createContext(scenario({ actions: [{ kind: 'touch-tap', label: 'tap', selector: '#target' }] }))
+        try {
+            const page = await context.newPage()
+            const fixture = encodeURIComponent(`<!doctype html><style>
+              html, body { margin: 0; width: 100%; height: 100%; }
+              #target { width: 200px; height: 200px; touch-action: none; }
+            </style><div id="target"></div><script>
+              window.__touchTap = null;
+              document.querySelector('#target').addEventListener('touchstart', event => {
+                window.__touchTap = { trusted: event.isTrusted, touches: event.touches.length };
+              });
+            </script>`)
+            await page.navigate(`data:text/html,${fixture}`, 10_000)
+            await page.touchTap(100, 100)
+            const observed = await page.rawPage.evaluate(() => window.__touchTap)
+            assert.deepEqual(observed, { trusted: true, touches: 1 }, `${engine} touch tap`)
+        } finally {
+            await context.close().catch(() => undefined)
+            await session.close().catch(() => undefined)
+        }
+    }
 })
 
 test('rejects unknown runtime browser driver names', () => {

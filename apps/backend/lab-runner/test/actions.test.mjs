@@ -26,6 +26,14 @@ function fakePage() {
         pointerWheel: async (x, y) => calls.push(['wheel', x, y]),
         pointerDown: async () => calls.push(['down']),
         pointerUp: async () => calls.push(['up']),
+        touchTap: async (x, y) => calls.push(['touch-tap', x, y]),
+        touchStart: async points => calls.push(['touch-start', points]),
+        touchMove: async points => calls.push(['touch-move', points]),
+        touchEnd: async () => calls.push(['touch-end']),
+        touchCancel: async () => calls.push(['touch-cancel']),
+        penMove: async (point, contact) => calls.push(['pen-move', point, contact]),
+        penDown: async point => calls.push(['pen-down', point]),
+        penUp: async point => calls.push(['pen-up', point]),
         pressKey: async key => calls.push(['press', key]),
         assertOutcome: async expectation => calls.push(['expect', expectation.kind]),
         abort: reason => calls.push(['abort', reason]),
@@ -118,6 +126,255 @@ test('closes a failed action window before rethrowing', async () => {
             ['probe', 'action-000-broken', 'start', 'completed', 0],
             ['probe', 'action-000-broken', 'end', 'failed', 1],
         ]
+    )
+})
+
+test('runs touch and pen actions through device-specific primitives without mouse fallbacks', async () => {
+    const page = fakePage()
+    const actions = [
+        { kind: 'touch-tap', label: 'tap', selector: '#surface' },
+        {
+            kind: 'touch-swipe',
+            label: 'swipe',
+            selector: '#surface',
+            durationMs: 16,
+            points: [
+                { xRatio: 0, yRatio: 0 },
+                { xRatio: 1, yRatio: 1 },
+            ],
+        },
+        {
+            kind: 'touch-pinch',
+            label: 'pinch',
+            selector: '#surface',
+            durationMs: 16,
+            startPoints: [
+                { xRatio: 0.2, yRatio: 0.5 },
+                { xRatio: 0.8, yRatio: 0.5 },
+            ],
+            endPoints: [
+                { xRatio: 0.4, yRatio: 0.5 },
+                { xRatio: 0.6, yRatio: 0.5 },
+            ],
+        },
+        {
+            kind: 'pen-path',
+            label: 'pen',
+            selector: '#surface',
+            durationMs: 16,
+            mode: 'draw',
+            pressure: 0.75,
+            tiltX: 10,
+            points: [
+                { xRatio: 0, yRatio: 0 },
+                { xRatio: 1, yRatio: 1 },
+            ],
+        },
+    ]
+
+    const windows = await runScenarioActions(page, scenario(actions), probeOptions())
+
+    assert.ok(page.calls.some(call => call[0] === 'touch-tap' && call[1] === 60 && call[2] === 45))
+    assert.ok(page.calls.some(call => call[0] === 'touch-start' && call[1].length === 1))
+    assert.ok(page.calls.some(call => call[0] === 'touch-start' && call[1].length === 2))
+    assert.equal(page.calls.filter(call => call[0] === 'touch-end').length, 2)
+    assert.ok(page.calls.some(call => call[0] === 'pen-down' && call[1].pressure === 0.75 && call[1].tiltX === 10))
+    assert.ok(page.calls.some(call => call[0] === 'pen-move' && call[2] === true))
+    assert.ok(page.calls.some(call => call[0] === 'pen-up'))
+    assert.equal(
+        page.calls.some(call => ['click', 'down', 'move', 'up'].includes(call[0])),
+        false
+    )
+    assert.deepEqual(
+        windows.map(window => window.kind),
+        ['touch-tap', 'touch-swipe', 'touch-pinch', 'pen-path']
+    )
+})
+
+test('cancels an incomplete touch gesture instead of committing it with touchend', async () => {
+    const page = fakePage()
+    page.touchMove = async points => {
+        page.calls.push(['touch-move-failed', points])
+        throw new Error('fixture touch move failed')
+    }
+
+    await assert.rejects(
+        runScenarioActions(
+            page,
+            scenario([
+                {
+                    kind: 'touch-swipe',
+                    label: 'swipe',
+                    durationMs: 16,
+                    points: [
+                        { xRatio: 0, yRatio: 0 },
+                        { xRatio: 1, yRatio: 1 },
+                    ],
+                },
+            ]),
+            probeOptions()
+        ),
+        /fixture touch move failed/
+    )
+
+    assert.equal(page.calls.filter(call => call[0] === 'touch-cancel').length, 1)
+    assert.equal(
+        page.calls.some(call => call[0] === 'touch-end'),
+        false
+    )
+})
+
+test('preserves both the touch input failure and a secondary cancellation failure', async () => {
+    const page = fakePage()
+    const moveFailure = new Error('fixture touch move failed')
+    const cancelFailure = new Error('fixture touch cancel failed')
+    page.touchMove = async () => {
+        throw moveFailure
+    }
+    page.touchCancel = async () => {
+        throw cancelFailure
+    }
+
+    await assert.rejects(
+        runScenarioActions(
+            page,
+            scenario([
+                {
+                    kind: 'touch-swipe',
+                    label: 'swipe',
+                    durationMs: 16,
+                    points: [
+                        { xRatio: 0, yRatio: 0 },
+                        { xRatio: 1, yRatio: 1 },
+                    ],
+                },
+            ]),
+            probeOptions()
+        ),
+        error => {
+            assert.ok(error instanceof AggregateError)
+            assert.deepEqual(error.errors, [moveFailure, cancelFailure])
+            return true
+        }
+    )
+})
+
+test('does not issue touch completion or cancellation after the action deadline aborts the page', async () => {
+    const page = fakePage()
+    let rejectMove = () => {}
+    page.touchMove = async points => {
+        page.calls.push(['touch-move-pending', points])
+        await new Promise((_resolve, reject) => {
+            rejectMove = reject
+        })
+    }
+    page.abort = reason => {
+        page.calls.push(['abort', reason])
+        rejectMove(new Error('page aborted'))
+    }
+
+    await assert.rejects(
+        runScenarioActions(
+            page,
+            scenario([
+                {
+                    kind: 'touch-swipe',
+                    label: 'swipe',
+                    timeoutMs: 50,
+                    durationMs: 1,
+                    points: [
+                        { xRatio: 0, yRatio: 0 },
+                        { xRatio: 1, yRatio: 1 },
+                    ],
+                },
+            ]),
+            probeOptions()
+        ),
+        /touch-swipe action at order 0 exceeded its 50 ms timeout/
+    )
+    await new Promise(resolve => setImmediate(resolve))
+
+    assert.ok(page.calls.some(call => call[0] === 'abort'))
+    assert.equal(
+        page.calls.some(call => call[0] === 'touch-end' || call[0] === 'touch-cancel'),
+        false
+    )
+})
+
+test('does not commit an incomplete pen draw with pointerup', async () => {
+    const page = fakePage()
+    page.penMove = async (point, contact) => {
+        page.calls.push(['pen-move-failed', point, contact])
+        if (contact) throw new Error('fixture pen move failed')
+    }
+
+    await assert.rejects(
+        runScenarioActions(
+            page,
+            scenario([
+                {
+                    kind: 'pen-path',
+                    label: 'pen',
+                    durationMs: 16,
+                    mode: 'draw',
+                    points: [
+                        { xRatio: 0, yRatio: 0 },
+                        { xRatio: 1, yRatio: 1 },
+                    ],
+                },
+            ]),
+            probeOptions()
+        ),
+        /fixture pen move failed/
+    )
+
+    assert.equal(
+        page.calls.some(call => call[0] === 'pen-up'),
+        false
+    )
+})
+
+test('does not issue pen completion after the action deadline aborts the page', async () => {
+    const page = fakePage()
+    let rejectMove = () => {}
+    page.penMove = async (point, contact) => {
+        page.calls.push(['pen-move-pending', point, contact])
+        if (!contact) return
+        await new Promise((_resolve, reject) => {
+            rejectMove = reject
+        })
+    }
+    page.abort = reason => {
+        page.calls.push(['abort', reason])
+        rejectMove(new Error('page aborted'))
+    }
+
+    await assert.rejects(
+        runScenarioActions(
+            page,
+            scenario([
+                {
+                    kind: 'pen-path',
+                    label: 'pen',
+                    timeoutMs: 50,
+                    durationMs: 1,
+                    mode: 'draw',
+                    points: [
+                        { xRatio: 0, yRatio: 0 },
+                        { xRatio: 1, yRatio: 1 },
+                    ],
+                },
+            ]),
+            probeOptions()
+        ),
+        /pen-path action at order 0 exceeded its 50 ms timeout/
+    )
+    await new Promise(resolve => setImmediate(resolve))
+
+    assert.ok(page.calls.some(call => call[0] === 'abort'))
+    assert.equal(
+        page.calls.some(call => call[0] === 'pen-up'),
+        false
     )
 })
 

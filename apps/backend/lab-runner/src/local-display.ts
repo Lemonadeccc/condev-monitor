@@ -8,7 +8,20 @@ import type {
 } from '@condev-monitor/animation-lab'
 import { evaluateAnimationLabBudgetRule, getAnimationLabBudgetV1 } from '@condev-monitor/animation-lab'
 
-const ACTION_KINDS = ['wait', 'click', 'hover', 'pointer-path', 'scroll', 'resize', 'drag', 'press'] as const
+const ACTION_KINDS = [
+    'wait',
+    'click',
+    'hover',
+    'pointer-path',
+    'touch-tap',
+    'touch-swipe',
+    'touch-pinch',
+    'pen-path',
+    'scroll',
+    'resize',
+    'drag',
+    'press',
+] as const
 const TRIGGER_SOURCES = [
     'scenario',
     'manual',

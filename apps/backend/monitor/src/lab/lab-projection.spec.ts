@@ -1964,6 +1964,21 @@ describe('lab platform artifact projections', () => {
         })
     })
 
+    it.each(['touch-tap', 'touch-swipe', 'touch-pinch', 'pen-path'] as const)(
+        'accepts %s in the canonical scenario and action-window closed sets',
+        kind => {
+            const report = animationReportV2()
+            report.scenario.actions[0]!.kind = kind
+            report.actionWindows[0]!.kind = kind
+            report.attempts[0]!.actionWindows[0]!.kind = kind
+
+            const parsed = parseAnimationReportArtifact(report)
+            expect(parsed.analysis).not.toBeNull()
+            expect(parsed.analysis?.scenarioActions[0]?.kind).toBe(kind)
+            expect(parsed.analysis?.actionWindows[0]?.kind).toBe(kind)
+        }
+    )
+
     it('accepts honest partial aggregate coverage across measured attempts', () => {
         const report = animationReportV2()
         const baseAttempt = report.attempts[0]!

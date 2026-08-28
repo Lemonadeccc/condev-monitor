@@ -107,6 +107,17 @@ async function targetBox(
     return box
 }
 
+function absolutePoint(
+    box: { x: number; y: number; width: number; height: number },
+    point: { xRatio: number; yRatio: number }
+): { x: number; y: number } {
+    return { x: box.x + box.width * point.xRatio, y: box.y + box.height * point.yRatio }
+}
+
+function interpolatePoint(start: { x: number; y: number }, end: { x: number; y: number }, progress: number): { x: number; y: number } {
+    return { x: start.x + (end.x - start.x) * progress, y: start.y + (end.y - start.y) * progress }
+}
+
 async function waitForDeadline(page: LabAutomationPage, deadlineMs: number): Promise<void> {
     const remaining = deadlineMs - performance.now()
     if (remaining > 0) await page.wait(remaining)
@@ -145,12 +156,14 @@ async function withinActionDeadline(
     action: LabScenarioAction,
     order: number,
     activeExpectationKind: () => LabActionExpectation['kind'] | null,
+    onTimeout: () => void,
     operation: () => Promise<void>
 ): Promise<void> {
     const timeoutMs = action.timeoutMs ?? 30_000
     let timer: ReturnType<typeof setTimeout> | undefined
     const timeout = new Promise<never>((_resolve, reject) => {
         timer = setTimeout(() => {
+            onTimeout()
             const expectationKind = activeExpectationKind()
             reject(
                 expectationKind
@@ -166,7 +179,7 @@ async function withinActionDeadline(
     }
 }
 
-async function execute(page: LabAutomationPage, action: LabScenarioAction): Promise<void> {
+async function execute(page: LabAutomationPage, action: LabScenarioAction, cleanupAllowed: () => boolean): Promise<void> {
     const timeout = action.timeoutMs ?? 30_000
     switch (action.kind) {
         case 'wait':
@@ -241,6 +254,109 @@ async function execute(page: LabAutomationPage, action: LabScenarioAction): Prom
         }
         case 'press':
             await page.pressKey(action.key === 'Space' ? ' ' : action.key)
+            return
+        case 'touch-tap': {
+            const box = await targetBox(page, action.selector)
+            await page.touchTap(box.x + box.width / 2, box.y + box.height / 2)
+            if (action.durationMs) await page.wait(action.durationMs)
+            return
+        }
+        case 'touch-swipe': {
+            const box = await targetBox(page, action.selector)
+            const [first, ...remaining] = action.points.map(point => absolutePoint(box, point))
+            if (!first) return
+            await page.touchStart([first])
+            const motionStartedAt = performance.now()
+            let completed = false
+            let failure: unknown
+            try {
+                for (const [index, point] of remaining.entries()) {
+                    await waitForDeadline(page, motionStartedAt + (action.durationMs * (index + 1)) / remaining.length)
+                    await page.touchMove([point])
+                }
+                completed = true
+            } catch (error) {
+                failure = error
+            }
+            if (cleanupAllowed()) {
+                try {
+                    await (completed ? page.touchEnd() : page.touchCancel())
+                } catch (cleanupError) {
+                    if (failure !== undefined) {
+                        throw new AggregateError(
+                            [failure, cleanupError],
+                            failure instanceof Error ? failure.message : 'Touch gesture and cleanup both failed'
+                        )
+                    }
+                    throw cleanupError
+                }
+            }
+            if (failure !== undefined) throw failure
+            return
+        }
+        case 'touch-pinch': {
+            const box = await targetBox(page, action.selector)
+            const starts = action.startPoints.map(point => absolutePoint(box, point))
+            const ends = action.endPoints.map(point => absolutePoint(box, point))
+            await page.touchStart(starts)
+            const steps = Math.max(2, Math.min(120, Math.ceil(action.durationMs / 16)))
+            const motionStartedAt = performance.now()
+            let completed = false
+            let failure: unknown
+            try {
+                for (let step = 1; step <= steps; step += 1) {
+                    await waitForDeadline(page, motionStartedAt + (action.durationMs * step) / steps)
+                    const progress = step / steps
+                    await page.touchMove(starts.map((point, index) => interpolatePoint(point, ends[index] ?? point, progress)))
+                }
+                completed = true
+            } catch (error) {
+                failure = error
+            }
+            if (cleanupAllowed()) {
+                try {
+                    await (completed ? page.touchEnd() : page.touchCancel())
+                } catch (cleanupError) {
+                    if (failure !== undefined) {
+                        throw new AggregateError(
+                            [failure, cleanupError],
+                            failure instanceof Error ? failure.message : 'Touch gesture and cleanup both failed'
+                        )
+                    }
+                    throw cleanupError
+                }
+            }
+            if (failure !== undefined) throw failure
+            return
+        }
+        case 'pen-path': {
+            const box = await targetBox(page, action.selector)
+            const input = action.points.map(point => ({
+                ...absolutePoint(box, point),
+                ...(action.mode === 'draw' ? { pressure: action.pressure ?? 0.5 } : {}),
+                ...(action.tiltX === undefined ? {} : { tiltX: action.tiltX }),
+                ...(action.tiltY === undefined ? {} : { tiltY: action.tiltY }),
+                ...(action.twist === undefined ? {} : { twist: action.twist }),
+            }))
+            const [first, ...remaining] = input
+            if (!first) return
+            await page.penMove(first, false)
+            let current = first
+            if (action.mode === 'draw') await page.penDown(first)
+            const motionStartedAt = performance.now()
+            let completed = false
+            try {
+                for (const [index, point] of remaining.entries()) {
+                    await waitForDeadline(page, motionStartedAt + (action.durationMs * (index + 1)) / remaining.length)
+                    await page.penMove(point, action.mode === 'draw')
+                    current = point
+                }
+                completed = true
+            } finally {
+                if (action.mode === 'draw' && completed && cleanupAllowed()) await page.penUp(current)
+            }
+            return
+        }
     }
 }
 
@@ -280,16 +396,20 @@ export async function runScenarioActions(
         let timedOut = false
         let activeExpectationKind: LabActionExpectation['kind'] | null = null
         let outcomeAssertionFailed = false
+        let actionDeadlineExpired = false
         try {
             await withinActionDeadline(
                 action,
                 index,
                 () => activeExpectationKind,
+                () => {
+                    actionDeadlineExpired = true
+                },
                 async () => {
                     timeOriginAtStart = await documentTimeOrigin(page)
                     await mark(page, action, 'start')
                     await notifyProbe(page, options.probeKey, options.probeCapability, options.probeCommandState, actionId, 'start')
-                    await execute(page, action)
+                    await execute(page, action, () => !actionDeadlineExpired)
                     for (const expectation of action.expect ?? []) {
                         activeExpectationKind = expectation.kind
                         try {

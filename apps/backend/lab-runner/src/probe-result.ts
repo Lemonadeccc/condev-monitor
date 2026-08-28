@@ -18,7 +18,20 @@ const MAX_LIMITATION_INPUTS = 32
 const MAX_SAFE_SCALAR = Number.MAX_SAFE_INTEGER
 const SAFE_TOKEN = /^[A-Za-z0-9][A-Za-z0-9._:+-]{0,159}$/u
 
-const ACTION_KINDS = new Set<LabActionKind>(['wait', 'click', 'hover', 'pointer-path', 'scroll', 'resize', 'drag', 'press'])
+const ACTION_KINDS = new Set<LabActionKind>([
+    'wait',
+    'click',
+    'hover',
+    'pointer-path',
+    'touch-tap',
+    'touch-swipe',
+    'touch-pinch',
+    'pen-path',
+    'scroll',
+    'resize',
+    'drag',
+    'press',
+])
 const METRIC_STATUSES = new Set(['measured', 'partial', 'not-observed', 'unsupported', 'unknown'])
 const ACTION_OUTCOMES = new Set(['completed', 'failed', 'cancelled'])
 const CAPABILITY_KEYS_V1 = new Set([

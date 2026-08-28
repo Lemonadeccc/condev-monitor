@@ -1,6 +1,6 @@
 import type { AnimationLabScenario, LabActionExpectation, RawTraceEvent } from '@condev-monitor/animation-lab'
 import * as chromeLauncher from 'chrome-launcher'
-import { type Browser, type BrowserContext, type BrowserType, chromium, firefox, type Page, webkit } from 'playwright-core'
+import { type Browser, type BrowserContext, type BrowserType, type CDPSession, chromium, firefox, type Page, webkit } from 'playwright-core'
 
 import { startTrace } from './trace'
 
@@ -15,6 +15,9 @@ export interface BrowserDriverCapabilities {
     cacheClear: boolean
     cdpTrace: boolean
     lighthouse: boolean
+    touchTap: boolean
+    trustedTouchGestures: boolean
+    penPointer: boolean
 }
 
 export interface BrowserDriverLaunchOptions {
@@ -32,6 +35,18 @@ export interface LabBoundingBox {
     y: number
     width: number
     height: number
+}
+
+export interface LabInputPoint {
+    x: number
+    y: number
+}
+
+export interface LabPenInputPoint extends LabInputPoint {
+    pressure?: number
+    tiltX?: number
+    tiltY?: number
+    twist?: number
 }
 
 /**
@@ -61,6 +76,14 @@ export interface LabAutomationPage {
     pointerWheel(deltaX: number, deltaY: number): Promise<void>
     pointerDown(): Promise<void>
     pointerUp(): Promise<void>
+    touchTap(x: number, y: number): Promise<void>
+    touchStart(points: readonly LabInputPoint[]): Promise<void>
+    touchMove(points: readonly LabInputPoint[]): Promise<void>
+    touchEnd(): Promise<void>
+    touchCancel(): Promise<void>
+    penMove(point: LabPenInputPoint, contact: boolean): Promise<void>
+    penDown(point: LabPenInputPoint): Promise<void>
+    penUp(point: LabPenInputPoint): Promise<void>
     pressKey(key: string): Promise<void>
     setViewportSize(width: number, height: number): Promise<void>
     /** Evaluates one local-only outcome gate without retaining its selector or expected value. */
@@ -106,6 +129,9 @@ const CHROMIUM_CAPABILITIES: Readonly<BrowserDriverCapabilities> = Object.freeze
     cacheClear: true,
     cdpTrace: true,
     lighthouse: true,
+    touchTap: true,
+    trustedTouchGestures: true,
+    penPointer: true,
 })
 
 const GENERIC_CAPABILITIES: Readonly<BrowserDriverCapabilities> = Object.freeze({
@@ -117,6 +143,9 @@ const GENERIC_CAPABILITIES: Readonly<BrowserDriverCapabilities> = Object.freeze(
     cacheClear: false,
     cdpTrace: false,
     lighthouse: false,
+    touchTap: true,
+    trustedTouchGestures: false,
+    penPointer: false,
 })
 
 function capabilitiesFor(engine: LabBrowserEngine): Readonly<BrowserDriverCapabilities> {
@@ -140,13 +169,29 @@ export function validateBrowserDriverScenario(engine: LabBrowserEngine, scenario
     if (requestsNetworkThrottle(scenario) && !capabilities.networkThrottle) {
         throw new Error(`Scenario network latency or throughput throttling is unavailable for ${engine}`)
     }
+    if (scenario.actions.some(action => ['touch-swipe', 'touch-pinch'].includes(action.kind)) && !capabilities.trustedTouchGestures) {
+        throw new Error(`Scenario trusted touch gestures are unavailable for ${engine}`)
+    }
+    if (scenario.actions.some(action => action.kind === 'pen-path') && !capabilities.penPointer) {
+        throw new Error(`Scenario pen pointer input is unavailable for ${engine}`)
+    }
     return scenario.cacheMode === 'cold' && !capabilities.cacheClear ? ['cold-cache-context-isolation-only'] : []
 }
 
 class PlaywrightAutomationPage implements LabAutomationPage {
     private terminationRequested = false
+    private chromiumInputSession: Promise<CDPSession> | null = null
 
-    constructor(readonly rawPage: Page) {}
+    constructor(
+        readonly rawPage: Page,
+        private readonly engine: LabBrowserEngine
+    ) {}
+
+    private chromiumInput(): Promise<CDPSession> {
+        if (this.engine !== 'chromium') throw new Error(`Trusted input injection is unavailable for ${this.engine}`)
+        this.chromiumInputSession ??= this.rawPage.context().newCDPSession(this.rawPage)
+        return this.chromiumInputSession
+    }
 
     async addInitScript(content: string): Promise<void> {
         await this.rawPage.addInitScript({ content })
@@ -278,6 +323,69 @@ class PlaywrightAutomationPage implements LabAutomationPage {
         await this.rawPage.mouse.up()
     }
 
+    async touchTap(x: number, y: number): Promise<void> {
+        await this.rawPage.touchscreen.tap(x, y)
+    }
+
+    async touchStart(points: readonly LabInputPoint[]): Promise<void> {
+        const client = await this.chromiumInput()
+        await client.send('Input.dispatchTouchEvent', {
+            type: 'touchStart',
+            touchPoints: points.map((point, id) => ({ ...point, id, force: 1 })),
+        })
+    }
+
+    async touchMove(points: readonly LabInputPoint[]): Promise<void> {
+        const client = await this.chromiumInput()
+        await client.send('Input.dispatchTouchEvent', {
+            type: 'touchMove',
+            touchPoints: points.map((point, id) => ({ ...point, id, force: 1 })),
+        })
+    }
+
+    async touchEnd(): Promise<void> {
+        const client = await this.chromiumInput()
+        await client.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
+    }
+
+    async touchCancel(): Promise<void> {
+        const client = await this.chromiumInput()
+        await client.send('Input.dispatchTouchEvent', { type: 'touchCancel', touchPoints: [] })
+    }
+
+    private async dispatchPen(
+        type: 'mouseMoved' | 'mousePressed' | 'mouseReleased',
+        point: LabPenInputPoint,
+        contact: boolean
+    ): Promise<void> {
+        const client = await this.chromiumInput()
+        await client.send('Input.dispatchMouseEvent', {
+            type,
+            x: point.x,
+            y: point.y,
+            pointerType: 'pen',
+            button: type === 'mouseMoved' && !contact ? 'none' : 'left',
+            buttons: contact ? 1 : 0,
+            clickCount: type === 'mouseMoved' ? 0 : 1,
+            force: contact ? (point.pressure ?? 0.5) : 0,
+            tiltX: point.tiltX ?? 0,
+            tiltY: point.tiltY ?? 0,
+            twist: point.twist ?? 0,
+        })
+    }
+
+    async penMove(point: LabPenInputPoint, contact: boolean): Promise<void> {
+        await this.dispatchPen('mouseMoved', point, contact)
+    }
+
+    async penDown(point: LabPenInputPoint): Promise<void> {
+        await this.dispatchPen('mousePressed', point, true)
+    }
+
+    async penUp(point: LabPenInputPoint): Promise<void> {
+        await this.dispatchPen('mouseReleased', point, false)
+    }
+
     async pressKey(key: string): Promise<void> {
         await this.rawPage.keyboard.press(key)
     }
@@ -370,10 +478,13 @@ class PlaywrightAutomationPage implements LabAutomationPage {
 }
 
 class PlaywrightAutomationContext implements LabAutomationContext {
-    constructor(private readonly rawContext: BrowserContext) {}
+    constructor(
+        private readonly engine: LabBrowserEngine,
+        private readonly rawContext: BrowserContext
+    ) {}
 
     async newPage(): Promise<LabAutomationPage> {
-        return new PlaywrightAutomationPage(await this.rawContext.newPage())
+        return new PlaywrightAutomationPage(await this.rawContext.newPage(), this.engine)
     }
 
     async close(): Promise<void> {
@@ -408,6 +519,7 @@ class PlaywrightBrowserDriverSession implements BrowserDriverSession {
     }
 
     async createContext(scenario: AnimationLabScenario, options: BrowserDriverContextOptions = {}): Promise<LabAutomationContext> {
+        const hasTouch = scenario.actions.some(action => ['touch-tap', 'touch-swipe', 'touch-pinch'].includes(action.kind))
         const context = await this.rawBrowser.newContext({
             viewport: { width: scenario.viewport.width, height: scenario.viewport.height },
             deviceScaleFactor: scenario.viewport.deviceScaleFactor ?? 1,
@@ -415,10 +527,11 @@ class PlaywrightBrowserDriverSession implements BrowserDriverSession {
             colorScheme: scenario.colorScheme ?? 'light',
             serviceWorkers: 'block',
             offline: scenario.network?.offline ?? false,
+            hasTouch,
             ...(options.storageState ? { storageState: options.storageState } : {}),
             ...(options.ignoreHTTPSErrors ? { ignoreHTTPSErrors: true } : {}),
         })
-        return new PlaywrightAutomationContext(context)
+        return new PlaywrightAutomationContext(this.engine, context)
     }
 
     async configurePage(page: LabAutomationPage, scenario: AnimationLabScenario): Promise<void> {

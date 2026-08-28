@@ -37,7 +37,7 @@ describe('LabRunnerController contract negotiation', () => {
         }
     )
 
-    it.each([4, LAB_RUNNER_CONTRACT_VERSION] as const)(
+    it.each([4, 5, LAB_RUNNER_CONTRACT_VERSION] as const)(
         'passes Runner contract %s through every control-plane operation',
         async runnerContractVersion => {
             const negotiated = { runId, runnerContractVersion }

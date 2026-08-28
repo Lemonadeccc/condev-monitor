@@ -45,6 +45,7 @@ const TRIGGER_SOURCES = new Set([
 const DECLARED_TECHNOLOGY_AXES = new Set(['ui-framework', 'meta-runtime', 'motion-engine', 'renderer', 'graphics-api', 'media'])
 const MAX_DECLARED_TECHNOLOGIES_PER_ACTION = 4
 const MAX_EXPECTATIONS_PER_ACTION = 4
+const MAX_GESTURE_POINTS = 240
 const EXPECTATION_ATTRIBUTES = new Set(['aria-expanded', 'aria-pressed', 'data-state'])
 const ELEMENT_STATES = new Set(['visible', 'hidden', 'attached', 'detached'])
 
@@ -63,6 +64,29 @@ function integer(value: unknown, minimum: number, maximum: number): value is num
 function selector(value: unknown): value is string {
     // eslint-disable-next-line no-control-regex -- JSON selectors must reject every C0/DEL code point.
     return typeof value === 'string' && value.length > 0 && value.length <= MAX_SELECTOR_LENGTH && !/[\u0000-\u001f\u007f]/u.test(value)
+}
+
+function relativePoint(value: unknown): value is { xRatio: number; yRatio: number } {
+    return (
+        record(value) &&
+        Object.keys(value).every(key => key === 'xRatio' || key === 'yRatio') &&
+        finite(value.xRatio, 0, 1) &&
+        finite(value.yRatio, 0, 1)
+    )
+}
+
+function relativePoints(
+    value: unknown,
+    minimum: number,
+    maximum = MAX_GESTURE_POINTS
+): value is readonly { xRatio: number; yRatio: number }[] {
+    return Array.isArray(value) && value.length >= minimum && value.length <= maximum && value.every(relativePoint)
+}
+
+function distinctPointPair(value: unknown): boolean {
+    if (!relativePoints(value, 2, 2)) return false
+    const [first, second] = value
+    return first !== undefined && second !== undefined && Math.hypot(first.xRatio - second.xRatio, first.yRatio - second.yRatio) >= 0.001
 }
 
 function unknownKeys(value: Record<string, unknown>, allowed: ReadonlySet<string>, label: string, errors: string[]): void {
@@ -249,6 +273,37 @@ function validateAction(value: unknown, errors: string[], index: number): value 
             if (!['Enter', 'Space', 'Tab', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Escape'].includes(String(value.key))) {
                 errors.push(`actions[${index}]:invalid-key`)
             }
+            break
+        case 'touch-tap':
+            allowed(['selector', 'durationMs'])
+            if (!selector(value.selector)) errors.push(`actions[${index}]:invalid-selector`)
+            if (value.durationMs !== undefined && !duration(0, 120_000)) errors.push(`actions[${index}]:invalid-duration`)
+            break
+        case 'touch-swipe':
+            allowed(['selector', 'durationMs', 'points'])
+            if (value.selector !== undefined && !selector(value.selector)) errors.push(`actions[${index}]:invalid-selector`)
+            if (!duration(1, 120_000)) errors.push(`actions[${index}]:invalid-duration`)
+            if (!relativePoints(value.points, 2)) errors.push(`actions[${index}]:invalid-touch-points`)
+            break
+        case 'touch-pinch':
+            allowed(['selector', 'durationMs', 'startPoints', 'endPoints'])
+            if (value.selector !== undefined && !selector(value.selector)) errors.push(`actions[${index}]:invalid-selector`)
+            if (!duration(1, 120_000)) errors.push(`actions[${index}]:invalid-duration`)
+            if (!distinctPointPair(value.startPoints) || !distinctPointPair(value.endPoints)) {
+                errors.push(`actions[${index}]:invalid-pinch-points`)
+            }
+            break
+        case 'pen-path':
+            allowed(['selector', 'durationMs', 'mode', 'points', 'pressure', 'tiltX', 'tiltY', 'twist'])
+            if (value.selector !== undefined && !selector(value.selector)) errors.push(`actions[${index}]:invalid-selector`)
+            if (!duration(1, 120_000)) errors.push(`actions[${index}]:invalid-duration`)
+            if (!relativePoints(value.points, 2)) errors.push(`actions[${index}]:invalid-pen-points`)
+            if (!['hover', 'draw'].includes(String(value.mode))) errors.push(`actions[${index}]:invalid-pen-mode`)
+            if (value.pressure !== undefined && !finite(value.pressure, 0.01, 1)) errors.push(`actions[${index}]:invalid-pen-pressure`)
+            if (value.mode === 'hover' && value.pressure !== undefined) errors.push(`actions[${index}]:hover-pen-pressure`)
+            if (value.tiltX !== undefined && !finite(value.tiltX, -90, 90)) errors.push(`actions[${index}]:invalid-pen-tilt-x`)
+            if (value.tiltY !== undefined && !finite(value.tiltY, -90, 90)) errors.push(`actions[${index}]:invalid-pen-tilt-y`)
+            if (value.twist !== undefined && !finite(value.twist, 0, 359)) errors.push(`actions[${index}]:invalid-pen-twist`)
             break
         default:
             errors.push(`actions[${index}]:unsupported-kind`)

@@ -89,6 +89,43 @@ test('treats outcome expectation changes as protocol drift without hashing raw s
     assert.notEqual(createScenarioProtocolHash(changedKind), createScenarioProtocolHash(baseline))
 })
 
+test('hashes gesture semantics without retaining raw gesture selectors', () => {
+    const touch = scenario()
+    touch.actions = [
+        {
+            kind: 'touch-swipe',
+            label: 'gallery-swipe',
+            selector: '[data-private="before"]',
+            durationMs: 200,
+            points: [
+                { xRatio: 0.8, yRatio: 0.5 },
+                { xRatio: 0.2, yRatio: 0.5 },
+            ],
+        },
+    ]
+    const selectorOnly = structuredClone(touch)
+    selectorOnly.actions[0].selector = '[data-private="after"]'
+    const changedInput = structuredClone(touch)
+    changedInput.actions[0].points[1].xRatio = 0.3
+    const pen = structuredClone(touch)
+    pen.actions = [
+        {
+            kind: 'pen-path',
+            label: 'gallery-swipe',
+            selector: '[data-private="before"]',
+            durationMs: 200,
+            mode: 'draw',
+            pressure: 0.5,
+            points: touch.actions[0].points,
+        },
+    ]
+
+    assert.equal(createScenarioProtocolHash(selectorOnly), createScenarioProtocolHash(touch))
+    assert.notEqual(createScenarioProtocolHash(changedInput), createScenarioProtocolHash(touch))
+    assert.notEqual(createScenarioProtocolHash(pen), createScenarioProtocolHash(touch))
+    assert.equal(createScenarioProtocolHash(touch).includes('private'), false)
+})
+
 test('treats a budget version change as protocol drift', () => {
     const v1 = scenario()
     v1.measurementContract = {

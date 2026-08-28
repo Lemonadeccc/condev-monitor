@@ -941,6 +941,16 @@ test('requires a one-to-one scenario action match and bounded monotonic clocks',
     assert.throws(() => decodePageProbeResult(duplicate, expectedActions), TypeError)
 })
 
+test('decodes touch and pen action result kinds through the closed action contract', () => {
+    for (const kind of ['touch-tap', 'touch-swipe', 'touch-pinch', 'pen-path']) {
+        const raw = rawResult()
+        raw.actionResults[0].kind = kind
+        const expected = [{ ...expectedActions[0], kind }]
+
+        assert.equal(decodePageProbeResult(raw, expected).actionResults[0].kind, kind)
+    }
+})
+
 test('rejects oversized page-controlled collections before decoding entries', () => {
     const tooManyMetrics = rawResult()
     tooManyMetrics.metrics = Array.from({ length: 257 }, () => metric())
