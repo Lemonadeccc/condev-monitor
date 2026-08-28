@@ -927,6 +927,8 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
                 return collector.state
             },
             snapshot: () => collector.snapshot(),
+            pageEvidenceSnapshot: () =>
+                this.finalPageEvidence ?? this.automaticPageEvidence?.snapshot() ?? disabledAnimationPageEvidenceSnapshot(),
             selectElement: (element, selectionOptions) => collector.selectElement(element, selectionOptions),
             localEvidenceSnapshot: () => this.localEvidence.snapshot(),
         }

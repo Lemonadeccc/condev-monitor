@@ -16,6 +16,11 @@ import {
     type OverlayIssueHistoryEntry,
     updateOverlayIssueHistory,
 } from './overlay-model'
+import {
+    type AnimationOverlayPageEvidenceSnapshot,
+    type AnimationOverlayPageEvidenceStatus,
+    projectAnimationOverlayPageEvidenceSnapshot,
+} from './overlay-page-evidence'
 import { createRendererSurfaceInspector, type RendererSurfaceInspectorSnapshot } from './renderer-surfaces'
 import type {
     AnimationElementSelectionHandle,
@@ -31,7 +36,7 @@ import type {
     InteractionPerformanceSummary,
 } from './types'
 
-// cspell:ignore describedby keyshortcuts Menlo Segoe
+// cspell:ignore describedby keyshortcuts Menlo rvfc Segoe
 
 declare const process: { env?: { NODE_ENV?: string } } | undefined
 
@@ -43,7 +48,7 @@ const OVERLAY_POSITION_VERSION = 1
 const OVERLAY_VIEWPORT_MARGIN_PX = 14
 const OVERLAY_DRAG_THRESHOLD_PX = 5
 const OVERLAY_KEYBOARD_MOVE_PX = 10
-const OVERLAY_TABS = ['overview', 'interactions', 'coverage', 'target'] as const
+const OVERLAY_TABS = ['overview', 'pageEvidence', 'interactions', 'coverage', 'target'] as const
 const RESOURCE_CATEGORY_LABEL_KEYS = {
     script: 'resourceCategoryScript',
     image: 'resourceCategoryImage',
@@ -131,6 +136,8 @@ function clamp(value: number, minimum: number, maximum: number): number {
 export interface AnimationOverlaySource {
     readonly state?: CollectorState
     snapshot(): AnimationSnapshot
+    /** Optional whole-page aggregate evidence. Arbitrary provider detail is discarded before local rendering. */
+    pageEvidenceSnapshot?(): unknown
     /** Optional bounded, local-only semantic evidence. It is never added to an AnimationSnapshot or RUM payload. */
     localEvidenceSnapshot?(): AnimationLocalEvidenceSnapshot
     selectElement?(element: Element, options?: AnimationElementSelectionOptions): AnimationElementSelectionHandle
@@ -171,7 +178,9 @@ function appendList(documentValue: Document, parent: Node, items: readonly strin
 }
 
 function overlayTabText(locale: AnimationOverlayLocale, tab: OverlayTab): string {
-    return overlayText(locale, tab === 'target' ? 'targetView' : tab)
+    if (tab === 'target') return overlayText(locale, 'targetView')
+    if (tab === 'pageEvidence') return overlayText(locale, 'pageEvidenceView')
+    return overlayText(locale, tab)
 }
 
 function readCollectorState(source: AnimationOverlaySource): CollectorState | undefined {
@@ -186,6 +195,39 @@ type LocalEvidenceRead =
     | { readonly status: 'absent' }
     | { readonly status: 'unavailable' }
     | { readonly status: 'available'; readonly snapshot: AnimationLocalEvidenceSnapshot }
+
+type PageEvidenceRead =
+    | { readonly status: 'absent' }
+    | { readonly status: 'unavailable' }
+    | { readonly status: 'available'; readonly snapshot: AnimationOverlayPageEvidenceSnapshot }
+
+function readPageEvidenceSnapshot(source: AnimationOverlaySource): PageEvidenceRead {
+    try {
+        const provider = source.pageEvidenceSnapshot
+        if (typeof provider !== 'function') return { status: 'absent' }
+        const snapshot = projectAnimationOverlayPageEvidenceSnapshot(provider.call(source))
+        return snapshot ? { status: 'available', snapshot } : { status: 'unavailable' }
+    } catch {
+        return { status: 'unavailable' }
+    }
+}
+
+function pageEvidenceStatusText(locale: AnimationOverlayLocale, status: AnimationOverlayPageEvidenceStatus): string {
+    switch (status) {
+        case 'measured':
+            return overlayText(locale, 'pageEvidenceStatusMeasured')
+        case 'partial':
+            return overlayText(locale, 'pageEvidenceStatusPartial')
+        case 'not-observed':
+            return overlayText(locale, 'pageEvidenceStatusNotObserved')
+        case 'not-applicable':
+            return overlayText(locale, 'pageEvidenceStatusNotApplicable')
+        case 'unsupported':
+            return overlayText(locale, 'pageEvidenceStatusUnsupported')
+        case 'unknown':
+            return overlayText(locale, 'pageEvidenceStatusUnknown')
+    }
+}
 
 function readLocalEvidenceSnapshot(source: AnimationOverlaySource): LocalEvidenceRead {
     try {
@@ -343,7 +385,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         .metric[data-tone='unknown'] .metric-value { color: var(--text-3); }
         .metric-context { margin-top: 2px; color: var(--text-3); font-size: 8.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .tabs { height: 49px; padding: 2px 8px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 3px; }
-        .tab { min-height: 44px; padding: 0 10px; border: 0; border-radius: 8px; color: var(--text-3); background: transparent; cursor: pointer; font-size: 10.5px; font-weight: 630; transition: color 120ms ease-out, background-color 120ms ease-out, transform 120ms ease-out; }
+        .tab { flex: 1 1 0; min-width: 0; min-height: 44px; padding: 0 6px; border: 0; border-radius: 8px; color: var(--text-3); background: transparent; cursor: pointer; font-size: 10.5px; font-weight: 630; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transition: color 120ms ease-out, background-color 120ms ease-out, transform 120ms ease-out; }
         .tab[aria-selected='true'] { color: var(--text); background: var(--selected); }
         .content { min-height: 0; overflow: hidden; }
         .tab-panel { height: 100%; min-height: 0; }
@@ -377,6 +419,21 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         .local-evidence-record strong { display: block; color: var(--text); font-size: 9px; font-weight: 620; }
         .local-evidence-record span { display: block; margin-top: 2px; color: var(--text-3); font: 8px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap: anywhere; }
         .local-evidence-empty { color: var(--text-3); font-size: 8.5px; }
+        .page-evidence-tab { min-height: 0; overflow: hidden; }
+        .page-evidence-panel { height: 100%; min-height: 0; padding: 11px; overflow: auto; overscroll-behavior: contain; background: rgba(80,178,255,.045); scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+        .page-evidence-panel[hidden] { display: none; }
+        .page-evidence-panel::-webkit-scrollbar { width: 6px; height: 6px; }
+        .page-evidence-panel::-webkit-scrollbar-thumb { border-radius: 999px; background: var(--border-strong); }
+        .page-evidence-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+        .page-evidence-header strong { color: var(--accent-2); font-size: 9.5px; font-weight: 690; }
+        .page-evidence-header span { color: var(--text-3); font: 8.5px/1.3 ui-monospace,SFMono-Regular,Menlo,monospace; }
+        .page-evidence-boundary { margin: 4px 0 7px; color: var(--text-3); font-size: 8.5px; line-height: 1.4; }
+        .page-evidence-groups { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 7px; }
+        .dock[data-layout='compact'] .page-evidence-groups { grid-template-columns: minmax(0,1fr); }
+        .page-evidence-group { min-width: 0; padding: 7px 8px; border: 1px solid rgba(80,178,255,.2); border-radius: 8px; background: var(--raised); }
+        .page-evidence-group h4 { margin: 0 0 5px; color: var(--text-2); font-size: 9px; font-weight: 670; }
+        .page-evidence-group p { margin: 3px 0 0; color: var(--text-3); font: 8px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap: anywhere; }
+        .page-evidence-group [data-review-candidate='true'] { color: var(--warning); }
         .workspace { height: 100%; min-height: 0; display: grid; grid-template-rows: minmax(140px,.8fr) minmax(190px,1.2fr); }
         .dock[data-layout='wide'] .workspace { grid-template-columns: minmax(250px,.78fr) minmax(360px,1.22fr); grid-template-rows: minmax(0,1fr); }
         .list-pane, .detail-pane { min-width: 0; min-height: 0; overflow: auto; overscroll-behavior: contain; }
@@ -641,6 +698,17 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     overviewWorkspace.append(issuePane, issueDetail)
     overviewPanel.append(overviewEvidence, localEvidencePanel, overviewWorkspace)
 
+    const pageEvidenceTabPanel = documentValue.createElement('section')
+    pageEvidenceTabPanel.className = 'tab-panel page-evidence-tab'
+    const pageEvidenceTabPanelId = `${panelId}-page-evidence`
+    pageEvidenceTabPanel.setAttribute('id', pageEvidenceTabPanelId)
+    pageEvidenceTabPanel.setAttribute('role', 'tabpanel')
+    const pageEvidencePanel = documentValue.createElement('section')
+    pageEvidencePanel.className = 'page-evidence-panel'
+    pageEvidencePanel.setAttribute('data-overlay-page-evidence', '')
+    pageEvidencePanel.hidden = true
+    pageEvidenceTabPanel.appendChild(pageEvidencePanel)
+
     const interactionsPanel = documentValue.createElement('section')
     interactionsPanel.className = 'tab-panel'
     const interactionsPanelId = `${panelId}-interactions`
@@ -779,6 +847,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
 
     for (const [tab, tabPanel, tabPanelId] of [
         ['overview', overviewPanel, overviewPanelId],
+        ['pageEvidence', pageEvidenceTabPanel, pageEvidenceTabPanelId],
         ['interactions', interactionsPanel, interactionsPanelId],
         ['coverage', coveragePanel, coveragePanelId],
         ['target', targetPanel, targetPanelId],
@@ -825,6 +894,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
     let renderedCoverageFamily: AnimationRumFamily | undefined
     let previousFrameRateSnapshot: AnimationSnapshot | undefined
     let lastSnapshot: AnimationSnapshot | undefined
+    let currentPageEvidence: PageEvidenceRead = { status: 'absent' }
     let currentLocalEvidence: LocalEvidenceRead = { status: 'absent' }
     let lastLiveFrameRate: LiveFrameRateResult = { status: 'collecting' }
     let lastPanelSelfTime = overlayText(locale, 'unavailable')
@@ -1155,6 +1225,228 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         }
         vitalsCard.appendChild(vitalsGrid)
         overviewEvidence.append(captureCard, vitalsCard)
+    }
+
+    const renderPageEvidence = (read: PageEvidenceRead): void => {
+        const wasVisible = !pageEvidencePanel.hidden
+        const scrollTop = pageEvidencePanel.scrollTop
+        const scrollLeft = pageEvidencePanel.scrollLeft
+        pageEvidencePanel.replaceChildren()
+        currentPageEvidence = read
+        pageEvidencePanel.hidden = false
+        const header = documentValue.createElement('div')
+        header.className = 'page-evidence-header'
+        appendTextElement(documentValue, header, 'strong', '', overlayText(locale, 'automaticPageEvidence'))
+        pageEvidencePanel.appendChild(header)
+
+        if (read.status === 'absent') {
+            appendTextElement(
+                documentValue,
+                pageEvidencePanel,
+                'p',
+                'page-evidence-boundary',
+                overlayText(locale, 'pageEvidenceNotConnected')
+            )
+            if (wasVisible) {
+                pageEvidencePanel.scrollTop = scrollTop
+                pageEvidencePanel.scrollLeft = scrollLeft
+            }
+            return
+        }
+
+        if (read.status === 'unavailable') {
+            appendTextElement(
+                documentValue,
+                pageEvidencePanel,
+                'p',
+                'page-evidence-boundary',
+                overlayText(locale, 'pageEvidenceUnavailable')
+            )
+            if (wasVisible) {
+                pageEvidencePanel.scrollTop = scrollTop
+                pageEvidencePanel.scrollLeft = scrollLeft
+            }
+            return
+        }
+
+        const evidence = read.snapshot
+        appendTextElement(
+            documentValue,
+            header,
+            'span',
+            '',
+            overlayText(locale, 'pageEvidenceSummary', {
+                samples: evidence.sampleCount,
+                scopes: evidence.documentScopes.retainedCount,
+            })
+        )
+        if (!evidence.enabled) {
+            appendTextElement(documentValue, pageEvidencePanel, 'p', 'page-evidence-boundary', overlayText(locale, 'pageEvidenceDisabled'))
+            if (wasVisible) {
+                pageEvidencePanel.scrollTop = scrollTop
+                pageEvidencePanel.scrollLeft = scrollLeft
+            }
+            return
+        }
+
+        appendTextElement(documentValue, pageEvidencePanel, 'p', 'page-evidence-boundary', overlayText(locale, 'pageEvidenceBoundary'))
+        if (evidence.documentScopes.truncated) {
+            appendTextElement(
+                documentValue,
+                pageEvidencePanel,
+                'p',
+                'page-evidence-boundary',
+                overlayText(locale, 'pageEvidenceScopesTruncated')
+            )
+        }
+
+        const groups = documentValue.createElement('div')
+        groups.className = 'page-evidence-groups'
+        const group = (heading: string, lines: readonly { text: string; reviewCandidate?: boolean }[]): HTMLElement => {
+            const element = documentValue.createElement('section')
+            element.className = 'page-evidence-group'
+            appendTextElement(documentValue, element, 'h4', '', heading)
+            for (const line of lines) {
+                const paragraph = appendTextElement(documentValue, element, 'p', '', line.text)
+                if (line.reviewCandidate) paragraph.setAttribute('data-review-candidate', 'true')
+            }
+            return element
+        }
+
+        const animations = evidence.animations
+        groups.appendChild(
+            group(
+                overlayText(locale, 'pageEvidenceAnimationsHeading', {
+                    status: pageEvidenceStatusText(locale, animations.status),
+                }),
+                [
+                    {
+                        text: overlayText(locale, 'pageEvidenceAnimationSummary', {
+                            total: animations.current.total,
+                            running: animations.current.running,
+                            infinite: animations.current.infinite,
+                            peak: animations.peakTotal,
+                            dropped: animations.current.dropped,
+                        }),
+                    },
+                    {
+                        text: overlayText(locale, 'pageEvidenceLifecycleSummary', {
+                            start: animations.lifecycle.animationStartCount,
+                            end: animations.lifecycle.animationEndCount,
+                            cancel: animations.lifecycle.animationCancelCount,
+                            run: animations.lifecycle.transitionRunCount,
+                            transitionEnd: animations.lifecycle.transitionEndCount,
+                            transitionCancel: animations.lifecycle.transitionCancelCount,
+                        }),
+                    },
+                ]
+            )
+        )
+
+        const media = evidence.media
+        groups.appendChild(
+            group(overlayText(locale, 'pageEvidenceMediaHeading', { status: pageEvidenceStatusText(locale, media.status) }), [
+                {
+                    text: overlayText(locale, 'pageEvidenceMediaSummary', {
+                        current: media.currentVideoCount,
+                        playing: media.playingVideoCount,
+                        probes: media.activeProbeCount,
+                        supported: media.rvfcSupportedVideoCount,
+                        unsupported: media.rvfcUnsupportedVideoCount,
+                        dropped: media.droppedVideoCount,
+                    }),
+                },
+            ])
+        )
+
+        const renderer = evidence.rendererSurfaces
+        groups.appendChild(
+            group(
+                overlayText(locale, 'pageEvidenceRendererHeading', {
+                    status: pageEvidenceStatusText(locale, renderer.status),
+                }),
+                [
+                    {
+                        text: overlayText(locale, 'pageEvidenceRendererSummary', {
+                            svg: renderer.current.svg,
+                            unknown: renderer.current.canvasUnknown,
+                            canvas2d: renderer.current.canvas2d,
+                            webgl: renderer.current.webgl,
+                            webgl2: renderer.current.webgl2,
+                            webgpu: renderer.current.webgpu,
+                        }),
+                    },
+                    {
+                        text: overlayText(locale, 'pageEvidenceRendererContextSummary', {
+                            contexts: renderer.successfulContextObservationCount,
+                            lost: renderer.webglContextLostCount,
+                            restored: renderer.webglContextRestoredCount,
+                            gpu: gpuTimerCapabilityText(locale, renderer.gpuTimingCapability.state),
+                        }),
+                    },
+                ]
+            )
+        )
+
+        const work = evidence.workAvoidance
+        const hasWorkReviewCandidates =
+            work.hiddenRunningAnimationReviewSampleCount > 0 ||
+            work.hiddenPlayingVideoReviewSampleCount > 0 ||
+            work.offscreenRunningAnimationReviewSampleCount > 0 ||
+            work.offscreenPlayingVideoReviewSampleCount > 0
+        groups.appendChild(
+            group(overlayText(locale, 'pageEvidenceWorkHeading', { status: pageEvidenceStatusText(locale, work.status) }), [
+                {
+                    text: overlayText(locale, 'pageEvidenceWorkSummary', {
+                        hiddenAnimations: work.current.hiddenRunningAnimations,
+                        hiddenVideos: work.current.hiddenPlayingVideos,
+                        offscreenAnimations: work.current.offscreenRunningAnimations,
+                        offscreenVideos: work.current.offscreenPlayingVideos,
+                    }),
+                },
+                {
+                    text: overlayText(locale, 'pageEvidenceWorkCandidateSummary', {
+                        hiddenAnimations: work.hiddenRunningAnimationReviewSampleCount,
+                        hiddenVideos: work.hiddenPlayingVideoReviewSampleCount,
+                        offscreenAnimations: work.offscreenRunningAnimationReviewSampleCount,
+                        offscreenVideos: work.offscreenPlayingVideoReviewSampleCount,
+                        duration: gpuTimerCapabilityText(locale, work.workDurationCapability.state),
+                    }),
+                    reviewCandidate: hasWorkReviewCandidates,
+                },
+            ])
+        )
+
+        const reduced = evidence.reducedMotion
+        const preference =
+            reduced.preference === null
+                ? overlayText(locale, 'pageEvidencePreferenceUnknown')
+                : overlayText(locale, reduced.preference ? 'pageEvidencePreferenceReduce' : 'pageEvidencePreferenceNoPreference')
+        groups.appendChild(
+            group(
+                overlayText(locale, 'pageEvidenceReducedHeading', {
+                    status: pageEvidenceStatusText(locale, reduced.status),
+                }),
+                [
+                    {
+                        text: overlayText(locale, 'pageEvidenceReducedSummary', {
+                            preference,
+                            running: reduced.current.runningAnimationCandidates,
+                            infinite: reduced.current.infiniteAnimationCandidates,
+                            videos: reduced.current.playingVideoCandidates,
+                            samples: reduced.reviewCandidateSampleCount,
+                        }),
+                        reviewCandidate: reduced.reviewCandidateSampleCount > 0,
+                    },
+                ]
+            )
+        )
+
+        pageEvidencePanel.appendChild(groups)
+        if (wasVisible) {
+            pageEvidencePanel.scrollTop = scrollTop
+            pageEvidencePanel.scrollLeft = scrollLeft
+        }
     }
 
     const localEvidenceValue = (value: number | null, unit: 'ms' | 'bytes' | 'count'): string =>
@@ -2597,6 +2889,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             metricGrid.appendChild(card)
         }
         renderOverviewEvidence(viewModel)
+        renderPageEvidence(currentPageEvidence)
         renderLocalEvidence(currentLocalEvidence)
         if (recordHistory) issueHistory = updateOverlayIssueHistory(issueHistory, viewModel.issues, snapshot.capturedAt)
         const activeIssueCount = issueHistory.filter(issue => issue.active).length
@@ -2638,6 +2931,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             metricGrid.appendChild(card)
         }
         renderOverviewEvidence()
+        renderPageEvidence({ status: 'absent' })
         renderLocalEvidence({ status: 'absent' })
         renderIssueHistory()
         renderInteractions([])
@@ -2653,11 +2947,13 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         const startedAt = safeNow(timerOwner)
         try {
             const snapshot = source.snapshot()
+            currentPageEvidence = readPageEvidenceSnapshot(source)
             currentLocalEvidence = readLocalEvidenceSnapshot(source)
             lastLiveFrameRate = measureLiveFrameRate(previousFrameRateSnapshot, snapshot)
             previousFrameRateSnapshot = snapshot
             renderViewModel(snapshot, buildAnimationOverlayViewModel(snapshot, locale, lastLiveFrameRate))
         } catch {
+            currentPageEvidence = { status: 'absent' }
             currentLocalEvidence = { status: 'absent' }
             previousFrameRateSnapshot = undefined
             lastLiveFrameRate = { status: 'not-observed' }
@@ -2740,6 +3036,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             interactionCount.textContent = overlayText(locale, 'retained', { count: 0 })
             coverageCount.textContent = overlayText(locale, 'coverageCount', { count: 0 })
             renderOverviewEvidence()
+            renderPageEvidence({ status: 'absent' })
             renderLocalEvidence({ status: 'absent' })
             renderIssueHistory()
             renderInteractions([])
