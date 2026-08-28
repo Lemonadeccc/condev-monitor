@@ -71,6 +71,13 @@ function budgetRuleRef() {
 }
 
 function expandedMetric(overrides: Record<string, unknown> = {}) {
+    const scope = overrides.scope as { attemptId?: unknown } | undefined
+    const attemptScoped = typeof scope?.attemptId === 'string'
+    const eligibleAttempts = overrides.value === null ? 0 : 1
+    const overrideLimitations = Array.isArray(overrides.limitations) ? (overrides.limitations as string[]) : []
+    const hasAttemptCoverage = overrideLimitations.some(
+        limitation => limitation.startsWith('eligible-attempts-') || limitation.startsWith('total-attempts-')
+    )
     return {
         ...metric(),
         metricId: 'frame.duration.p95',
@@ -78,8 +85,12 @@ function expandedMetric(overrides: Record<string, unknown> = {}) {
         aggregation: { population: 'attempts', method: 'median-of-attempts' },
         budgetRefs: [budgetRuleRef()],
         evidenceRefs: ['runtime-browser'],
-        limitations: ['eligible-attempts-3'],
+        status: attemptScoped ? 'measured' : 'partial',
         ...overrides,
+        limitations:
+            attemptScoped || hasAttemptCoverage
+                ? overrideLimitations
+                : [...overrideLimitations, `eligible-attempts-${eligibleAttempts}`, 'total-attempts-1'],
     }
 }
 
@@ -340,7 +351,7 @@ function animationReportV2() {
 function completeZeroLongTaskReportV2() {
     const report = animationReportV2()
     const budgetRef = { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 2, ruleId: 'long-task-count' }
-    const metricFor = (scope: Record<string, unknown>, aggregation: Record<string, unknown>) =>
+    const metricFor = (scope: Record<string, unknown>, aggregation: Record<string, unknown>, overrides: Record<string, unknown> = {}) =>
         expandedMetric({
             family: 'mainThread',
             name: 'longTaskCount',
@@ -353,6 +364,7 @@ function completeZeroLongTaskReportV2() {
             aggregation,
             budgetRefs: [budgetRef],
             limitations: [],
+            ...overrides,
         })
     const source = report.attempts[0]!
     report.measurementContract.budgetRef.budgetVersion = 2
@@ -368,7 +380,13 @@ function completeZeroLongTaskReportV2() {
             actionWindows: [actionWindow()],
         }
     })
-    report.aggregateMetrics = [metricFor({ level: 'run' }, { population: 'attempts', method: 'median-of-attempts' })]
+    report.aggregateMetrics = [
+        metricFor(
+            { level: 'run' },
+            { population: 'attempts', method: 'median-of-attempts' },
+            { status: 'measured', limitations: ['eligible-attempts-3', 'total-attempts-3'] }
+        ),
+    ]
     report.findings = []
     return report
 }
@@ -552,18 +570,19 @@ function realisticLargeAnimationReportV2() {
         evidenceRefs: ['runtime-browser'],
         limitations: [],
     }))
-    const actionLimitations = ['eligible-attempts-1', 'total-attempts-1', 'action-window-overlap-is-correlative']
+    const actionEvidenceLimitations = ['action-window-overlap-is-correlative']
+    const actionLimitations = [...actionEvidenceLimitations, 'eligible-attempts-1', 'total-attempts-1']
     const attemptActionMetrics = actions.flatMap(action => [
         expandedMetric({
             scope: { level: 'action', attemptId: 'attempt_1', actionId: action.actionId },
             aggregation: { population: 'frames', method: 'nearest-rank' },
             budgetRefs: [],
-            limitations: [],
+            limitations: actionEvidenceLimitations,
         }),
         slowFrameMetric({
             scope: { level: 'action', attemptId: 'attempt_1', actionId: action.actionId },
             aggregation: { population: 'frames', method: 'ratio' },
-            limitations: [],
+            limitations: actionEvidenceLimitations,
         }),
     ])
     const aggregateActionMetrics = actions.flatMap(action => [
@@ -897,7 +916,7 @@ describe('lab platform artifact projections', () => {
             unit: 'ms',
             value: 18.4,
             samples: 120,
-            status: 'measured',
+            status: 'partial',
             evidenceLevel: 'controlled-lab-measurement',
         })
         expect(parsed.compactSummary.metrics?.[0]).not.toHaveProperty('metricId')
@@ -1213,7 +1232,7 @@ describe('lab platform artifact projections', () => {
         unavailable.aggregateMetrics = ADDITIONAL_CATALOG_V2_METRICS.map(definition =>
             additionalCatalogV2Metric(definition, {
                 value: null,
-                samples: null,
+                samples: 0,
                 status: definition.capability === 'loafFirstUIEventTimestamp' ? 'unknown' : 'unsupported',
                 evidenceLevel: 'unsupported-or-unknown',
                 limitations: ['capability-unavailable'],
@@ -1374,9 +1393,10 @@ describe('lab platform artifact projections', () => {
         report.attempts[0]!.metrics[0]!.evidenceLevel = 'unsupported-or-unknown'
         Object.assign(report.aggregateMetrics[0] as Record<string, unknown>, {
             value: null,
-            samples: null,
+            samples: 0,
             status: 'unsupported',
             evidenceLevel: 'unsupported-or-unknown',
+            limitations: ['eligible-attempts-0', 'total-attempts-1'],
         })
         expect(parseAnimationReportArtifact(report).analysis?.measurementContract.metricCatalogVersion).toBe(2)
     })
@@ -1448,7 +1468,118 @@ describe('lab platform artifact projections', () => {
         ]
         forged.aggregateMetrics = [additionalCatalogV2Metric(ADDITIONAL_CATALOG_V2_METRICS[0])]
         forged.findings = []
-        expect(() => parseAnimationReportArtifact(forged)).toThrow('conflicts with unsupported capabilities')
+        expect(() => parseAnimationReportArtifact(forged)).toThrow('invalid attempt coverage')
+    })
+
+    it('rejects low-run measured aggregates and accepts only recomputed partial evidence', () => {
+        const forged = animationReportV2()
+        forged.aggregateMetrics[0]!.status = 'measured'
+        forged.aggregateMetrics[0]!.limitations = ['eligible-attempts-1', 'total-attempts-1']
+        forged.findings = []
+        expect(() => parseAnimationReportArtifact(forged)).toThrow('conflicts with measured attempts')
+
+        const honest = animationReportV2()
+        honest.findings = []
+        expect(parseAnimationReportArtifact(honest).analysis?.metrics[0]).toEqual(
+            expect.objectContaining({ value: 18.4, samples: 120, status: 'partial' })
+        )
+
+        honest.aggregateMetrics[0]!.limitations = ['eligible-attempts-01', 'total-attempts-1']
+        expect(() => parseAnimationReportArtifact(honest)).toThrow('attempt coverage')
+    })
+
+    it.each([
+        ['missing total count', ['eligible-attempts-1'], 'invalid attempt coverage'],
+        ['duplicate eligible count', ['eligible-attempts-1', 'eligible-attempts-1', 'total-attempts-1'], 'duplicate entries'],
+        ['wrong eligible count', ['eligible-attempts-0', 'total-attempts-1'], 'invalid attempt coverage'],
+        ['wrong total count', ['eligible-attempts-1', 'total-attempts-2'], 'invalid attempt coverage'],
+    ])('rejects %s in aggregate attempt coverage', (_caseName, limitations, expectedMessage) => {
+        const report = animationReportV2()
+        report.aggregateMetrics[0]!.limitations = limitations
+        report.findings = []
+
+        expect(() => parseAnimationReportArtifact(report)).toThrow(expectedMessage)
+    })
+
+    it('rejects aggregate coverage claims on measured-attempt metrics', () => {
+        const report = animationReportV2()
+        report.attempts[0]!.metrics[0]!.limitations = ['eligible-attempts-1']
+        report.findings = []
+
+        expect(() => parseAnimationReportArtifact(report)).toThrow('cannot claim aggregate attempt coverage')
+    })
+
+    it('rejects ordinary aggregates when the report has no measured attempts', () => {
+        const report = animationReportV2()
+        report.attempts[0]!.phase = 'warmup'
+        report.findings = []
+
+        expect(() => parseAnimationReportArtifact(report)).toThrow('is missing measured-attempt evidence')
+    })
+
+    it('rejects aggregate provenance that was not derived from measured attempts', () => {
+        const expectConflict = (mutate: (report: ReturnType<typeof animationReportV2>) => void) => {
+            const report = animationReportV2()
+            report.findings = []
+            mutate(report)
+            expect(() => parseAnimationReportArtifact(report)).toThrow('conflicts with measured attempts')
+        }
+
+        expectConflict(report => {
+            report.aggregateMetrics[0]!.evidenceLevel = 'runtime-observation'
+        })
+        expectConflict(report => {
+            report.aggregateMetrics[0]!.evidenceRefs = []
+        })
+        expectConflict(report => {
+            report.aggregateMetrics[0]!.budgetRefs = []
+        })
+        expectConflict(report => {
+            report.aggregateMetrics[0]!.limitations.push('aggregate-authored-claim')
+        })
+        expectConflict(report => {
+            report.attempts[0]!.metrics[0]!.limitations = ['bounded-frame-samples']
+        })
+    })
+
+    it('accepts honest partial aggregate coverage across measured attempts', () => {
+        const report = animationReportV2()
+        const baseAttempt = report.attempts[0]!
+        report.attempts = Array.from({ length: 3 }, (_, index) => {
+            const attemptId = `attempt_${index + 1}`
+            return {
+                ...baseAttempt,
+                attemptId,
+                index,
+                capabilities: { ...baseAttempt.capabilities },
+                actionWindows: [actionWindow()],
+                metrics:
+                    index < 2
+                        ? [
+                              expandedMetric({
+                                  value: index === 0 ? 18 : 22,
+                                  samples: 120,
+                                  scope: { level: 'attempt', attemptId },
+                                  aggregation: { population: 'frames', method: 'nearest-rank' },
+                                  limitations: [],
+                              }),
+                          ]
+                        : [],
+            }
+        })
+        report.aggregateMetrics = [
+            expandedMetric({
+                value: 20,
+                samples: 240,
+                status: 'partial',
+                limitations: ['eligible-attempts-2', 'total-attempts-3'],
+            }),
+        ]
+        report.findings = []
+
+        expect(parseAnimationReportArtifact(report).analysis?.metrics[0]).toEqual(
+            expect.objectContaining({ value: 20, samples: 240, status: 'partial' })
+        )
     })
 
     it('accepts only disclosed aggregate sample overflow without manufacturing a capped count', () => {
@@ -1478,6 +1609,7 @@ describe('lab platform artifact projections', () => {
             expandedMetric({
                 value: 0.2,
                 samples: null,
+                status: 'measured',
                 limitations: ['eligible-attempts-3', 'total-attempts-3', 'aggregate-sample-count-exceeds-contract-bound'],
             }),
         ]
@@ -1539,6 +1671,8 @@ describe('lab platform artifact projections', () => {
             ...attemptMetric,
             scope: { level: 'action', actionId: 'hero-hover-01' },
             aggregation: { population: 'attempts', method: 'median-of-attempts' },
+            status: 'partial',
+            limitations: ['eligible-attempts-1', 'total-attempts-1'],
         }
         report.aggregateMetrics = [aggregateMetric]
         report.findings = []
@@ -1571,6 +1705,7 @@ describe('lab platform artifact projections', () => {
                 ...unknownMetric,
                 scope: { level: 'run' },
                 aggregation: { population: 'attempts', method: 'median-of-attempts' },
+                limitations: ['cross-document-sampling-partial', 'eligible-attempts-0', 'total-attempts-1'],
             },
         ]
         report.findings = []
