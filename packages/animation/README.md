@@ -231,6 +231,7 @@ import {
     createFrameworkCommitProbe,
     createGsapLifecycleCycleAnalyzer,
     createGsapLifecycleProbe,
+    createGsapTickerObserver,
     createRendererHostProbe,
     createThreeRendererProbe,
     createVideoFrameProbe,
@@ -283,6 +284,15 @@ lifecycleCycles.record(lifecycle.capture('unmount'))
 // Repeat the same route, input, waits, and cleanup at least three times.
 const lifecycleTrend = lifecycleCycles.snapshot()
 
+const tickerCadence = createGsapTickerObserver({
+    ticker: gsap.ticker,
+    // Optional application-owned threshold; the SDK does not invent one.
+    slowTickThresholdMs: 1000 / 30,
+})
+tickerCadence.start()
+// Later, read a bounded local-only cadence distribution:
+const tickerTrend = tickerCadence.snapshot()
+
 const videoFrames = createVideoFrameProbe({ sink: animation, video })
 videoFrames.start()
 ```
@@ -314,6 +324,8 @@ The same optional renderer package now also provides `createWebGpuTransferRecord
 RUM v2 keeps GPU query rejection distinct from pending: supported with no resolved result is `not-observed`, while any retained `invalid`/`disjoint` result makes `renderer.gpu-frame.p95` `unknown`. A mixed valid/rejected subset is also conservatively `unknown` because the current wire contract has no GPU-specific partial limitation; it is never promoted to a false measured result.
 
 `createGsapLifecycleProbe()` uses only public `globalTimeline.getChildren()` and `ScrollTrigger.getAll()` access. It does not inspect private ticker state, create animations, or call `kill()` during `dispose()`. A count at one checkpoint is inventory, not a leak verdict. `createGsapLifecycleCycleAnalyzer()` accepts only explicit ordered mount → representative interaction → application-owned cleanup/unmount sequences, invalidates an interrupted partial sequence, retains at most 10 cleanup snapshots by default, and requires at least three caller-declared equivalent cycles. It reports `growth-candidate` only when a public post-unmount inventory grows strictly across the configured trailing window; incomplete public evidence stays `inconclusive`, and `no-strict-growth-candidate` means only that this exact predicate did not fire—it does not claim that no intermediate or long-term growth occurred. The analyzer never reports a leak, does not retain route or cycle identifiers, stays outside host/RUM projection, and still needs matching route/build/input/waits plus separate heap/post-GC evidence before a leak conclusion.
+
+`createGsapTickerObserver()` subscribes only through public `gsap.ticker.add(listener)` and removes that exact listener identity. It uses the default post-core-update ordering and never calls `fps()`, `lagSmoothing()`, `timeScale()`, or another control API. Its bounded `deltaTimeMs` result describes elapsed time between GSAP ticker callbacks. GSAP time can be lag-smoothed and callbacks are background-throttled, so this evidence is not page FPS, display refresh, presented-frame time, or GPU time. There is no default “slow” threshold; `slowTickTotalObservedCount` exists only when the application supplies `slowTickThresholdMs`. The observer is standalone local evidence and is not written to the host-evidence sink or RUM contracts. `stop()` returns `false` when listener removal throws, immediately disables further sampling, and preserves `cleanupFailed` so an uncertain attached no-op listener is not hidden.
 
 `createVideoFrameProbe()` observes `requestVideoFrameCallback` without calling `play()`, `pause()`, changing `src`, or otherwise controlling playback. The first callback—and the first callback after a timestamp or counter reset—establishes a baseline and emits no delta sample. Call `resetBaseline()` across hidden/offscreen → visible boundaries so a paused callback interval is not reported as one giant media sample; this resets measurement state without changing playback. `getVideoPlaybackQuality().totalVideoFrames` is the browser's cumulative playback-quality total used to derive interval deltas; it is not a decoded-frame count. `presentedFrames` from RVFC metadata remains a separate presentation counter. Stopping or disposing the probe cancels its pending callback when possible and clears the baseline.
 
