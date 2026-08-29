@@ -167,6 +167,12 @@ function Conditions({ result }: { result: ComparableAnimationLabResult }) {
         ['视口 / Viewport', `${conditions.viewport.width} × ${conditions.viewport.height} @ ${conditions.viewport.dpr}x`],
         ['动画偏好 / Motion', conditions.reducedMotion],
         ['缓存 / Cache', conditions.cacheMode],
+        ['执行目标 / Target', `${conditions.execution.targetKind} · ${conditions.execution.driverId}`],
+        [
+            '认证 / 跨域',
+            `${conditions.execution.authenticated === null ? 'unknown' : conditions.execution.authenticated ? 'authenticated' : 'anonymous'} · ${conditions.execution.crossOriginMode}`,
+        ],
+        ['功耗 / 热状态', `${conditions.execution.powerSampling} · ${conditions.execution.thermalSampling}`],
         ['热身 / 测量', `${conditions.execution.warmupRuns} / ${conditions.execution.measuredRuns}`],
         ['观测窗口 / Duration', formatLabDuration(conditions.execution.durationMs)],
         ['颜色模式 / Color', conditions.execution.colorScheme ?? '—'],

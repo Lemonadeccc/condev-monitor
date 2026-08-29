@@ -255,6 +255,7 @@ export default function LabRunPage() {
                                                 }
                                                 truncated={timeline.truncated}
                                                 authoredSource={timeline.authoredSource}
+                                                mainThreadFrameWindows={timeline.mainThreadFrameWindows}
                                             />
                                         </AIPanelCard>
                                     </>

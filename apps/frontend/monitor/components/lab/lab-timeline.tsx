@@ -6,7 +6,13 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
 import { boundTimelineEvents, formatLabDuration } from '@/lib/lab'
 import { formatLabTimelineStackFrame, labAuthoredSourceStatusLabel } from '@/lib/lab-trace-display'
-import type { LabTimelineAuthoredSource, LabTimelineCategory, LabTimelineEvent } from '@/types/lab'
+import type {
+    LabMainThreadFrameWindowSummary,
+    LabTimelineAuthoredSource,
+    LabTimelineCategory,
+    LabTimelineEvent,
+    LabTraceActionPhase,
+} from '@/types/lab'
 
 const CATEGORY_COLORS: Record<LabTimelineCategory, string> = {
     frame: '#0ea5e9',
@@ -57,6 +63,104 @@ type TimelineRecommendation = {
     durationContext: string
     nextStep: string
     sourceContext: string
+}
+
+const FRAME_PHASE_LABELS: Record<LabTraceActionPhase, string> = {
+    script: 'JS',
+    'style-layout': 'Style / Layout',
+    paint: 'Paint',
+    composite: 'Composite',
+    'raster-gpu': 'Raster / GPU 分类',
+    animation: 'Animation callback',
+    gc: 'GC',
+    other: 'Other',
+}
+
+function MainThreadFrameWindowEvidence({ summary }: { summary: LabMainThreadFrameWindowSummary }) {
+    const completeWindows = summary.windows.filter(window => window.durationMs !== null && window.phases !== null)
+    const slowestDuration = completeWindows.reduce<number | null>(
+        (maximum, window) => (window.durationMs === null ? maximum : Math.max(maximum ?? 0, window.durationMs)),
+        null
+    )
+    const phaseTotals = completeWindows.reduce(
+        (totals, window) => {
+            if (!window.phases) return totals
+            for (const phase of Object.keys(FRAME_PHASE_LABELS) as LabTraceActionPhase[]) totals[phase] += window.phases[phase]
+            return totals
+        },
+        {
+            script: 0,
+            'style-layout': 0,
+            paint: 0,
+            composite: 0,
+            'raster-gpu': 0,
+            animation: 0,
+            gc: 0,
+            other: 0,
+        } satisfies Record<LabTraceActionPhase, number>
+    )
+    const correlatedCrossThreadMs = completeWindows.reduce(
+        (total, window) => total + (window.correlatedCrossThread?.classifiedTimeMs ?? 0),
+        0
+    )
+
+    return (
+        <section className="border-b bg-sky-500/[0.035] px-4 py-4" aria-labelledby="main-thread-frame-window-title">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                    <h3 id="main-thread-frame-window-title" className="text-sm font-semibold">
+                        主线程动画帧窗口
+                    </h3>
+                    <p className="mt-1 max-w-4xl text-xs leading-5 text-muted-foreground">
+                        由相邻 BeginMainThreadFrame 边界形成，只分解窗口内主线程 Trace 阶段；它不是 compositor frame、display frame，
+                        也不能证明 GPU 已完成呈现。
+                    </p>
+                </div>
+                <Badge variant={summary.status === 'measured' ? 'default' : 'secondary'}>
+                    {summary.status === 'measured' ? '完整观测' : summary.status === 'partial' ? '部分观测' : '未观察到边界'}
+                </Badge>
+            </div>
+            <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-4">
+                <div className="rounded-md border bg-background/70 p-3">
+                    <dt className="text-muted-foreground">保留窗口</dt>
+                    <dd className="mt-1 font-mono font-medium tabular-nums">
+                        {summary.retainedWindows.toLocaleString()} / {summary.totalWindows.toLocaleString()}
+                    </dd>
+                </div>
+                <div className="rounded-md border bg-background/70 p-3">
+                    <dt className="text-muted-foreground">裁剪窗口</dt>
+                    <dd className="mt-1 font-mono font-medium tabular-nums">{summary.droppedWindows.toLocaleString()}</dd>
+                </div>
+                <div className="rounded-md border bg-background/70 p-3">
+                    <dt className="text-muted-foreground">最长完整主线程窗口</dt>
+                    <dd className="mt-1 font-mono font-medium tabular-nums">{formatLabDuration(slowestDuration)}</dd>
+                </div>
+                <div className="rounded-md border bg-background/70 p-3">
+                    <dt className="text-muted-foreground">跨线程相关分类时间</dt>
+                    <dd className="mt-1 font-mono font-medium tabular-nums">{formatLabDuration(correlatedCrossThreadMs)}</dd>
+                </div>
+            </dl>
+            {completeWindows.length ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                    {(Object.keys(FRAME_PHASE_LABELS) as LabTraceActionPhase[])
+                        .filter(phase => phaseTotals[phase] > 0)
+                        .map(phase => (
+                            <span
+                                key={phase}
+                                className="rounded-full border bg-background/70 px-2.5 py-1 text-[11px] text-muted-foreground"
+                            >
+                                {FRAME_PHASE_LABELS[phase]} <span className="font-mono">{formatLabDuration(phaseTotals[phase])}</span>
+                            </span>
+                        ))}
+                </div>
+            ) : null}
+            {correlatedCrossThreadMs > 0 ? (
+                <p className="mt-3 text-xs leading-5 text-amber-700 dark:text-amber-300">
+                    Raster / Composite 跨线程值仅表示与这些主线程窗口时间重叠；没有明确 Trace flow 时，不归因给该帧、动作或源码。
+                </p>
+            ) : null}
+        </section>
+    )
 }
 
 function recommendForTimelineEvent(event: LabTimelineEvent): TimelineRecommendation {
@@ -153,12 +257,14 @@ export function LabTimeline({
     totalEvents,
     truncated,
     authoredSource,
+    mainThreadFrameWindows,
 }: {
     events: LabTimelineEvent[]
     durationMs: number
     totalEvents: number
     truncated: boolean
     authoredSource?: LabTimelineAuthoredSource | null
+    mainThreadFrameWindows?: LabMainThreadFrameWindowSummary | null
 }) {
     const orderedEvents = useMemo(
         () => boundTimelineEvents([...events].sort((left, right) => left.startTimeMs - right.startTimeMs)),
@@ -290,11 +396,21 @@ export function LabTimeline({
     }
 
     if (orderedEvents.length === 0) {
-        return <div className="px-6 py-10 text-sm text-muted-foreground">这个视图没有可显示的时间线事件。</div>
+        return (
+            <div>
+                {mainThreadFrameWindows ? <MainThreadFrameWindowEvidence summary={mainThreadFrameWindows} /> : null}
+                <div className="px-6 py-10 text-sm text-muted-foreground">这个视图没有可显示的时间线事件。</div>
+            </div>
+        )
     }
 
     return (
         <div className="grid min-w-0 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_22rem]">
+            {mainThreadFrameWindows ? (
+                <div className="xl:col-span-2">
+                    <MainThreadFrameWindowEvidence summary={mainThreadFrameWindows} />
+                </div>
+            ) : null}
             <div className="min-w-0 border-b xl:border-r xl:border-b-0">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 text-xs text-muted-foreground">
                     <div className="grid gap-1">

@@ -313,9 +313,36 @@ export type LabTimelineAuthoredSource = {
     limitations: string[]
 }
 
+export type LabMainThreadFrameWindowSummary = {
+    status: 'measured' | 'partial' | 'not-observed'
+    totalWindows: number
+    retainedWindows: number
+    droppedWindows: number
+    windows: Array<{
+        frameId: string
+        startMs: number
+        endMs: number | null
+        durationMs: number | null
+        status: 'measured' | 'partial'
+        boundary: 'begin-main-thread-frame'
+        eventCount: number
+        classifiedMainThreadTimeMs: number | null
+        phases: Record<LabTraceActionPhase, number> | null
+        actionIds: string[]
+        droppedActionIds: number
+        correlatedCrossThread: {
+            eventCount: number
+            classifiedTimeMs: number
+            phases: Record<'composite' | 'raster-gpu', number>
+        } | null
+        limitations: string[]
+    }>
+    limitations: string[]
+}
+
 export type LabTimelineApiResponse = LabApiResponse<{
     runId: string
-    schemaVersion: 1 | 2 | 3
+    schemaVersion: 1 | 2 | 3 | 4
     durationMs: number
     events: LabTimelineEvent[]
     totalEvents: number
@@ -323,6 +350,7 @@ export type LabTimelineApiResponse = LabApiResponse<{
     maxEvents: number
     actionPhaseSummaries?: LabTraceActionPhaseSummary[]
     authoredSource?: LabTimelineAuthoredSource | null
+    mainThreadFrameWindows?: LabMainThreadFrameWindowSummary | null
 }>
 
 export type LabLighthouseCategory = {
@@ -474,6 +502,12 @@ export type LabComparisonMismatchField =
     | 'color-scheme'
     | 'cpu-throttle-rate'
     | 'network-profile'
+    | 'execution-target'
+    | 'execution-driver'
+    | 'authenticated-context'
+    | 'cross-origin-mode'
+    | 'power-sampling'
+    | 'thermal-sampling'
     | 'measurement-contract-version'
     | 'expected-refresh-rate'
     | 'target-frame-duration'
@@ -520,6 +554,12 @@ export type LabComparisonConditions = {
             downloadBytesPerSecond?: number
             uploadBytesPerSecond?: number
         } | null
+        targetKind: 'playwright-desktop-emulation' | 'real-ios' | 'real-android' | 'webview' | 'unknown'
+        driverId: 'playwright-desktop' | 'custom-browser-driver' | 'unknown'
+        authenticated: boolean | null
+        crossOriginMode: 'reject' | 'independent-target' | 'authorized-bridge' | 'unknown'
+        powerSampling: 'unsupported' | 'unknown'
+        thermalSampling: 'unsupported' | 'unknown'
     }
     measurementContract: LabMeasurementContract
 }
