@@ -7,7 +7,12 @@ import { useSearchParams } from 'next/navigation'
 import { type ReactNode, useMemo } from 'react'
 
 import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions, AIPanelCard, AIStatCard, AIStateMessage } from '@/components/ai/page-shell'
-import { AnimationRumV2QualityBadges, AnimationRumV2ScopeBadge } from '@/components/animation/rum-v2-ui'
+import {
+    AnimationRumV2CallerAttestedBadge,
+    AnimationRumV2MediaStageBoundary,
+    AnimationRumV2QualityBadges,
+    AnimationRumV2ScopeBadge,
+} from '@/components/animation/rum-v2-ui'
 import { useAuth } from '@/components/providers'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -19,6 +24,7 @@ import {
     animationRumV2FamilyLabel,
     animationRumV2GpuTrendScopeState,
     animationRumV2MetricDisplay,
+    animationRumV2MetricLabel,
     animationRumV2MetricStatusCountEntries,
     animationRumV2MissingGpuMetricMessage,
     animationRumV2OwnerLabel,
@@ -26,6 +32,7 @@ import {
     findAnimationRumV2SummaryMetric,
     formatAnimationRumV2Integer,
     formatAnimationRumV2Metric,
+    isAnimationRumV2MediaStageMetric,
 } from '@/lib/animation-rum-v2'
 import {
     animationRumV2PipelineStatusMeta,
@@ -204,6 +211,7 @@ export default function AnimationsPage() {
 
     const summary = summaryQuery.data?.data
     const metrics = summary?.metrics ?? []
+    const hasMediaStageEvidence = metrics.some(metric => isAnimationRumV2MediaStageMetric(metric.metricId))
     const captures = capturesQuery.data?.data.captures ?? []
     const pageFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'page', 'page-window')
     const targetFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'target', 'target-temporal-overlap')
@@ -275,6 +283,20 @@ export default function AnimationsPage() {
             {!effectiveAppId ? (
                 <AIPanelCard>
                     <AIStateMessage>请先创建或选择一个应用。</AIStateMessage>
+                </AIPanelCard>
+            ) : null}
+
+            {effectiveAppId && hasMediaStageEvidence ? (
+                <AIPanelCard
+                    title="媒体阶段证据 · 调用方声明"
+                    description="仅显示显式启用 rum.mediaStages 后进入 snapshot schema v2 的页面级闭集聚合。"
+                    headerBorder
+                >
+                    <div className="flex flex-wrap items-center gap-2">
+                        <AnimationRumV2CallerAttestedBadge />
+                        <Badge variant="secondary">不参与自动预算与红绿判定</Badge>
+                    </div>
+                    <AnimationRumV2MediaStageBoundary className="mt-3" />
                 </AIPanelCard>
             ) : null}
 
@@ -735,7 +757,14 @@ export default function AnimationsPage() {
                                             className="hover:bg-muted/20"
                                         >
                                             <td className="px-6 py-4">
-                                                <div className="font-medium">{metric.name}</div>
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span className="font-medium">
+                                                        {animationRumV2MetricLabel(metric.metricId, metric.name)}
+                                                    </span>
+                                                    {isAnimationRumV2MediaStageMetric(metric.metricId) ? (
+                                                        <AnimationRumV2CallerAttestedBadge />
+                                                    ) : null}
+                                                </div>
                                                 <div className="mt-1 font-mono text-xs text-muted-foreground">{metric.metricId}</div>
                                                 <div className="mt-1 text-xs text-muted-foreground">
                                                     {animationRumV2FamilyLabel(metric.family)} · {metric.stat} · {metric.evidenceWindow}
@@ -822,7 +851,14 @@ export default function AnimationsPage() {
                                                 {capture.capturedAt ? formatDateTime(capture.capturedAt) : '未知'}
                                             </td>
                                             <td className="px-6 py-4">
-                                                <AnimationRumV2ScopeBadge scope={capture.scope} />
+                                                <div className="flex flex-wrap items-center gap-1.5">
+                                                    <AnimationRumV2ScopeBadge scope={capture.scope} />
+                                                    <Badge variant="outline">
+                                                        {capture.snapshotSchemaVersion === null
+                                                            ? 'Schema 未知'
+                                                            : `Schema ${capture.snapshotSchemaVersion}`}
+                                                    </Badge>
+                                                </div>
                                                 <div
                                                     className="mt-2 max-w-80 truncate font-medium"
                                                     title={capture.context.routeKey ?? undefined}

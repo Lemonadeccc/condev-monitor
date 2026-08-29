@@ -3,11 +3,16 @@ import { describe, it } from 'node:test'
 
 import type { AnimationRumV2SummaryMetric, AnimationRumV2TrendMetric, AnimationRumV2TrendPoint } from '../types/animation-v2'
 import {
+    animationRumV2CapabilitiesForSchema,
+    animationRumV2CapabilityLabel,
     animationRumV2CaptureAggregatePercentile,
     animationRumV2GpuTrendScopeState,
+    animationRumV2MediaStageBoundaryMessage,
     animationRumV2MetricDisplay,
+    animationRumV2MetricLabel,
     animationRumV2MetricStatusCountEntries,
     animationRumV2MissingGpuMetricMessage,
+    animationRumV2OwnerLabel,
     animationRumV2QualityReasonLabel,
     animationRumV2RelationLabel,
     animationRumV2StatusLabel,
@@ -15,6 +20,7 @@ import {
     findAnimationRumV2SummaryMetric,
     formatAnimationRumV2Integer,
     formatAnimationRumV2Metric,
+    isAnimationRumV2MediaStageMetric,
     isPositiveAnimationRumV2Integer,
 } from './animation-rum-v2'
 
@@ -258,5 +264,42 @@ describe('Animation RUM v2 presentation helpers', () => {
     it('explains attribution and quality boundaries in Chinese', () => {
         assert.match(animationRumV2RelationLabel('target-temporal-overlap'), /非因果/u)
         assert.match(animationRumV2QualityReasonLabel('provider-truncated'), /截断/u)
+    })
+
+    it('recognizes exactly the 25 closed caller-attested media stage metrics', () => {
+        const kinds = ['image', 'video', 'canvas', 'webgl', 'webgpu'] as const
+        const suffixes = [
+            'first-visible.count',
+            'begin-to-decode.p95',
+            'decode-to-upload.p95',
+            'upload-to-first-visible.p95',
+            'begin-to-first-visible.p95',
+        ] as const
+        const metricIds = kinds.flatMap(kind => suffixes.map(suffix => `media.stage.${kind}.${suffix}`))
+
+        assert.equal(metricIds.length, 25)
+        for (const metricId of metricIds) {
+            assert.equal(isAnimationRumV2MediaStageMetric(metricId), true, metricId)
+            assert.notEqual(animationRumV2MetricLabel(metricId, 'rawMetricName'), 'rawMetricName', metricId)
+        }
+        for (const metricId of [
+            'media.stage.custom.first-visible.count',
+            'media.stage.image.unknown.p95',
+            'media.stage.Image.first-visible.count',
+            'media.stage.image.first-visible.count.extra',
+        ]) {
+            assert.equal(isAnimationRumV2MediaStageMetric(metricId), false, metricId)
+            assert.equal(animationRumV2MetricLabel(metricId, 'rawMetricName'), 'rawMetricName', metricId)
+        }
+    })
+
+    it('keeps schema 1 capabilities frozen and labels schema 2 media evidence as caller-attested', () => {
+        assert.equal(new Set<string>(animationRumV2CapabilitiesForSchema(1)).has('media-stage-attestation'), false)
+        assert.equal(new Set<string>(animationRumV2CapabilitiesForSchema(null)).has('media-stage-attestation'), false)
+        assert.equal(animationRumV2CapabilitiesForSchema(2).filter(name => name === 'media-stage-attestation').length, 1)
+        assert.match(animationRumV2CapabilityLabel('media-stage-attestation'), /声明/u)
+        assert.match(animationRumV2OwnerLabel('media-stage-adapter'), /声明/u)
+        assert.match(animationRumV2MediaStageBoundaryMessage(), /调用方声明/u)
+        assert.match(animationRumV2MediaStageBoundaryMessage(), /不是浏览器解码、GPU 完成/u)
     })
 })

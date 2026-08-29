@@ -53,7 +53,9 @@ export const ANIMATION_RUM_V2_CAPABILITIES = [
     'gpu-timer-query',
 ] as const
 
-export type AnimationRumV2CapabilityName = (typeof ANIMATION_RUM_V2_CAPABILITIES)[number]
+export const ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES = [...ANIMATION_RUM_V2_CAPABILITIES, 'media-stage-attestation'] as const
+
+export type AnimationRumV2CapabilityName = (typeof ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES)[number]
 
 export type AnimationRumV2ProviderOwner =
     | 'browser-core'
@@ -62,6 +64,7 @@ export type AnimationRumV2ProviderOwner =
     | 'browser-page-evidence'
     | 'input-scheduling'
     | 'media-adapter'
+    | 'media-stage-adapter'
     | 'renderer-adapter'
     | 'target-sidecar'
 
@@ -196,7 +199,7 @@ export type AnimationRumV2SummaryApiResponse = {
     success: true
     data: {
         contractVersion: 2
-        snapshotSchemaVersion: 1
+        snapshotSchemaVersion: 1 | 2
         catalogMetricCount: number
         retentionDays: number
         aggregationSemantics: 'distribution-of-capture-aggregates'
@@ -320,6 +323,7 @@ export type AnimationRumV2PipelineApiResponse = {
 
 export type AnimationRumV2CaptureBase = {
     captureId: string
+    snapshotSchemaVersion: 1 | 2 | null
     parentCaptureId: string | null
     scope: AnimationRumV2Scope
     targetKey: string | null
@@ -384,7 +388,7 @@ export type AnimationRumV2CapturesApiResponse = {
     success: true
     data: {
         contractVersion: 2
-        snapshotSchemaVersion: 1
+        snapshotSchemaVersion: 1 | 2
         window: AnimationRumV2Window
         filters: AnimationRumV2Filters
         pagination: {
@@ -400,8 +404,7 @@ export type AnimationRumV2CapturesApiResponse = {
 export type AnimationRumV2CaptureDetail = AnimationRumV2CaptureBase & {
     eventId: string
     contractVersion: 2 | null
-    snapshotSchemaVersion: 1 | null
-    capabilities: Record<AnimationRumV2CapabilityName, AnimationRumV2CapabilityState>
+    capabilities: Partial<Record<AnimationRumV2CapabilityName, AnimationRumV2CapabilityState>>
     coverage: Record<
         AnimationRumV2Family,
         {
@@ -427,7 +430,7 @@ export type AnimationRumV2CaptureDetailApiResponse = {
     success: true
     data: {
         contractVersion: 2
-        snapshotSchemaVersion: 1
+        snapshotSchemaVersion: 1 | 2
         capture: AnimationRumV2CaptureDetail
         metrics: AnimationRumV2Metric[]
         providerEvidence: AnimationRumV2ProviderEvidence[]

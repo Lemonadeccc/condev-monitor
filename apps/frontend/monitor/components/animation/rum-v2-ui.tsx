@@ -2,6 +2,7 @@ import type { ReactNode } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import {
+    animationRumV2MediaStageBoundaryMessage,
     animationRumV2QualityReasonLabel,
     animationRumV2ScopeLabel,
     animationRumV2StatusLabel,
@@ -15,6 +16,14 @@ export function AnimationRumV2StatusBadge({ status }: { status: AnimationRumV2Me
 
 export function AnimationRumV2ScopeBadge({ scope }: { scope: AnimationRumV2Scope }) {
     return <Badge variant={scope === 'page' ? 'secondary' : 'outline'}>{animationRumV2ScopeLabel(scope)}</Badge>
+}
+
+export function AnimationRumV2CallerAttestedBadge() {
+    return <Badge variant="outline">调用方声明</Badge>
+}
+
+export function AnimationRumV2MediaStageBoundary({ className = '' }: { className?: string }) {
+    return <p className={`text-sm text-muted-foreground ${className}`.trim()}>{animationRumV2MediaStageBoundaryMessage()}</p>
 }
 
 export function AnimationRumV2QualityBadges({ reasons }: { reasons: readonly AnimationRumV2QualityReason[] }) {

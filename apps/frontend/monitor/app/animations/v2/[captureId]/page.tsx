@@ -8,7 +8,9 @@ import { useMemo } from 'react'
 
 import { AIMonitorHeader, AIMonitorPage, AIPanelCard, AIStatCard, AIStateMessage } from '@/components/ai/page-shell'
 import {
+    AnimationRumV2CallerAttestedBadge,
     AnimationRumV2Fact,
+    AnimationRumV2MediaStageBoundary,
     AnimationRumV2QualityBadges,
     AnimationRumV2ScopeBadge,
     AnimationRumV2StatusBadge,
@@ -20,19 +22,22 @@ import { useApplications } from '@/hooks/use-applications'
 import { buildMonitorScopeHref, resolveMonitorAppId } from '@/hooks/use-monitor-scope'
 import { formatAnimationWindow } from '@/lib/animation-metrics'
 import {
+    animationRumV2CapabilitiesForSchema,
     animationRumV2CapabilityLabel,
     animationRumV2CapabilityStateLabel,
     animationRumV2CapabilityVariant,
     animationRumV2FamilyLabel,
+    animationRumV2MetricLabel,
     animationRumV2OwnerLabel,
     animationRumV2RelationLabel,
     decodeAnimationRumV2CaptureId,
     formatAnimationRumV2Integer,
     formatAnimationRumV2Metric,
+    isAnimationRumV2MediaStageMetric,
 } from '@/lib/animation-rum-v2'
 import { formatDateTime } from '@/lib/datetime'
 import type { AnimationRumV2CaptureBase, AnimationRumV2CaptureDetailApiResponse, AnimationRumV2Metric } from '@/types/animation-v2'
-import { ANIMATION_RUM_V2_CAPABILITIES, ANIMATION_RUM_V2_FAMILIES } from '@/types/animation-v2'
+import { ANIMATION_RUM_V2_FAMILIES } from '@/types/animation-v2'
 
 class AnimationRumV2CaptureApiError extends Error {
     readonly status: number
@@ -110,6 +115,10 @@ export default function AnimationRumV2CapturePage() {
         metrics: metrics.filter(metric => metric.family === family),
     })).filter(group => group.metrics.length > 0)
     const projectionIntegrity = capture?.projectionIntegrity
+    const hasMediaStageEvidence =
+        metrics.some(metric => isAnimationRumV2MediaStageMetric(metric.metricId)) ||
+        detail?.providerEvidence.some(provider => provider.owner === 'media-stage-adapter') === true
+    const capabilityNames = animationRumV2CapabilitiesForSchema(capture?.snapshotSchemaVersion ?? null)
 
     const backHref = buildMonitorScopeHref('/animations', searchParams)
     const relationshipHref = (item: AnimationRumV2CaptureBase) =>
@@ -200,6 +209,9 @@ export default function AnimationRumV2CapturePage() {
                             <AnimationRumV2Fact label="采集 ID">
                                 <span className="font-mono text-xs">{capture.captureId}</span>
                             </AnimationRumV2Fact>
+                            <AnimationRumV2Fact label="RUM snapshot schema">
+                                {capture.snapshotSchemaVersion === null ? '未知' : `v${capture.snapshotSchemaVersion}`}
+                            </AnimationRumV2Fact>
                             <AnimationRumV2Fact label="采集时间">
                                 {capture.capturedAt ? formatDateTime(capture.capturedAt) : '未知'}
                             </AnimationRumV2Fact>
@@ -256,6 +268,21 @@ export default function AnimationRumV2CapturePage() {
                                 : '当前响应没有 ClickHouse 子行核对证据，因此不能把“SDK 完整”理解为“存储投影完整”。'}
                         </p>
                     </AIPanelCard>
+
+                    {hasMediaStageEvidence ? (
+                        <AIPanelCard
+                            title="媒体阶段证据 · 调用方声明"
+                            description="仅在 SDK 显式启用 rum.mediaStages 后进入 snapshot schema v2；schema v1 与默认接入不会上传这些聚合。"
+                            headerBorder
+                        >
+                            <div className="flex flex-wrap items-center gap-2">
+                                <AnimationRumV2CallerAttestedBadge />
+                                <Badge variant="secondary">仅页面级闭集聚合</Badge>
+                                <Badge variant="secondary">不含 URL / selector / attempt / 原始时间戳</Badge>
+                            </div>
+                            <AnimationRumV2MediaStageBoundary className="mt-3" />
+                        </AIPanelCard>
+                    ) : null}
 
                     <AIPanelCard
                         title="页面与目标关系"
@@ -404,8 +431,8 @@ export default function AnimationRumV2CapturePage() {
                                         </tr>
                                     </thead>
                                     <tbody className="divide-y">
-                                        {ANIMATION_RUM_V2_CAPABILITIES.map(capability => {
-                                            const state = capture.capabilities[capability]
+                                        {capabilityNames.map(capability => {
+                                            const state = capture.capabilities[capability] ?? 'unknown'
                                             return (
                                                 <tr key={capability} className="hover:bg-muted/20">
                                                     <td className="px-6 py-4">
@@ -449,7 +476,14 @@ export default function AnimationRumV2CapturePage() {
                                         {group.metrics.map(metric => (
                                             <tr key={`${metric.metricId}:${metric.relation}:${metric.owner}`} className="hover:bg-muted/20">
                                                 <td className="px-6 py-4">
-                                                    <div className="font-medium">{metric.name}</div>
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <span className="font-medium">
+                                                            {animationRumV2MetricLabel(metric.metricId, metric.name)}
+                                                        </span>
+                                                        {isAnimationRumV2MediaStageMetric(metric.metricId) ? (
+                                                            <AnimationRumV2CallerAttestedBadge />
+                                                        ) : null}
+                                                    </div>
                                                     <div className="mt-1 font-mono text-xs text-muted-foreground">{metric.metricId}</div>
                                                     <div className="mt-1 text-xs text-muted-foreground">
                                                         {metric.stat} · {metric.evidenceWindow}
@@ -503,6 +537,11 @@ export default function AnimationRumV2CapturePage() {
                                             <tr key={`${provider.owner}:${provider.family}`} className="hover:bg-muted/20">
                                                 <td className="px-6 py-4">
                                                     <div className="font-medium">{animationRumV2OwnerLabel(provider.owner)}</div>
+                                                    {provider.owner === 'media-stage-adapter' ? (
+                                                        <div className="mt-1">
+                                                            <AnimationRumV2CallerAttestedBadge />
+                                                        </div>
+                                                    ) : null}
                                                     <div className="mt-1 text-xs text-muted-foreground">
                                                         {animationRumV2FamilyLabel(provider.family)} · v{provider.providerVersion}
                                                     </div>

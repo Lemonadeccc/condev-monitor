@@ -13,8 +13,27 @@ import type {
     AnimationRumV2SummaryMetric,
     AnimationRumV2TrendPoint,
 } from '../types/animation-v2'
+import { ANIMATION_RUM_V2_CAPABILITIES, ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES } from '../types/animation-v2'
 
 const DECIMAL_INTEGER = /^\d+$/
+const MEDIA_STAGE_METRIC_PATTERN =
+    /^media\.stage\.(image|video|canvas|webgl|webgpu)\.(first-visible\.count|begin-to-decode\.p95|decode-to-upload\.p95|upload-to-first-visible\.p95|begin-to-first-visible\.p95)$/
+
+const MEDIA_STAGE_KIND_LABELS = {
+    image: '图片',
+    video: '视频',
+    canvas: 'Canvas',
+    webgl: 'WebGL',
+    webgpu: 'WebGPU',
+} as const
+
+const MEDIA_STAGE_SUFFIX_LABELS = {
+    'first-visible.count': '首次可见次数',
+    'begin-to-decode.p95': '开始到解码 p95',
+    'decode-to-upload.p95': '解码到上传 p95',
+    'upload-to-first-visible.p95': '上传到首次可见 p95',
+    'begin-to-first-visible.p95': '开始到首次可见 p95',
+} as const
 
 const FAMILY_LABELS: Record<AnimationRumV2Family, string> = {
     userOutcome: '用户结果',
@@ -67,6 +86,7 @@ const CAPABILITY_LABELS: Record<AnimationRumV2CapabilityName, string> = {
     'target-direct-inspection': '目标元素直接检查',
     'interaction-quality-adapter': '交互质量适配器',
     'gpu-timer-query': 'GPU 计时查询',
+    'media-stage-attestation': '媒体阶段调用方声明',
 }
 
 const OWNER_LABELS: Record<AnimationRumV2ProviderOwner, string> = {
@@ -76,6 +96,7 @@ const OWNER_LABELS: Record<AnimationRumV2ProviderOwner, string> = {
     'browser-page-evidence': '页面证据探针',
     'input-scheduling': '输入调度探针',
     'media-adapter': '媒体适配器',
+    'media-stage-adapter': '媒体阶段声明适配器',
     'renderer-adapter': '渲染器适配器',
     'target-sidecar': '目标元素侧车',
 }
@@ -216,8 +237,28 @@ export function animationRumV2CapabilityLabel(capability: AnimationRumV2Capabili
     return CAPABILITY_LABELS[capability]
 }
 
+export function animationRumV2CapabilitiesForSchema(snapshotSchemaVersion: 1 | 2 | null) {
+    return snapshotSchemaVersion === 2 ? ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES : ANIMATION_RUM_V2_CAPABILITIES
+}
+
 export function animationRumV2OwnerLabel(owner: AnimationRumV2ProviderOwner): string {
     return OWNER_LABELS[owner]
+}
+
+export function isAnimationRumV2MediaStageMetric(metricId: string): boolean {
+    return MEDIA_STAGE_METRIC_PATTERN.test(metricId)
+}
+
+export function animationRumV2MetricLabel(metricId: string, fallback: string): string {
+    const match = MEDIA_STAGE_METRIC_PATTERN.exec(metricId)
+    if (!match) return fallback
+    const kind = match[1] as keyof typeof MEDIA_STAGE_KIND_LABELS
+    const suffix = match[2] as keyof typeof MEDIA_STAGE_SUFFIX_LABELS
+    return `${MEDIA_STAGE_KIND_LABELS[kind]} · ${MEDIA_STAGE_SUFFIX_LABELS[suffix]}`
+}
+
+export function animationRumV2MediaStageBoundaryMessage(): string {
+    return '媒体阶段数据来自业务或 renderer adapter 的调用方声明，只表示同一单调时钟上的闭集阶段聚合；它不是浏览器解码、GPU 完成、合成或屏幕真实呈现的直接证明。'
 }
 
 export function animationRumV2ScopeLabel(scope: AnimationRumV2Scope): string {
