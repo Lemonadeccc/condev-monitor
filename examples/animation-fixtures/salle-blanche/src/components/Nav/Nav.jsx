@@ -160,6 +160,10 @@ export default function Nav({ pageRef }) {
       onComplete: () => {
         isMenuOpenRef.current = true;
         isMenuAnimatingRef.current = false;
+        window.__CONDEV_ANIMATION_LAB_OUTCOME__?.register(
+          "salle.navigation.opened",
+          "completed",
+        );
       },
     });
   }
@@ -208,6 +212,10 @@ export default function Nav({ pageRef }) {
         resetMenuTextToHidden();
         resetPreviewImage();
         unlockScroll();
+        window.__CONDEV_ANIMATION_LAB_OUTCOME__?.register(
+          "salle.navigation.closed",
+          "completed",
+        );
       },
     });
   }

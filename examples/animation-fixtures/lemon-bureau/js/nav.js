@@ -29,6 +29,8 @@ function buildNav() {
 
   const toggler = nav.querySelector(".nav-toggler");
   if (toggler) {
+    toggler.setAttribute("aria-expanded", "false");
+    toggler.setAttribute("aria-controls", "lemon-menu-overlay");
     toggler.innerHTML = `
       <div class="nav-toggle-wrapper">
         <p class="open-label">Menu</p>
@@ -39,6 +41,7 @@ function buildNav() {
 
   const overlay = document.createElement("div");
   overlay.className = "menu-overlay";
+  overlay.id = "lemon-menu-overlay";
   overlay.innerHTML = `
     <div class="menu-content">
       <div class="menu-col" data-col="0">
@@ -351,6 +354,7 @@ function initMenu() {
           menuLinkContainers.forEach((c) => (c.style.overflow = "visible"));
           isMenuOpen = true;
           isMenuAnimating = false;
+          navToggler.setAttribute("aria-expanded", "true");
         },
       });
 
@@ -434,6 +438,7 @@ function initMenu() {
 
           isMenuOpen = false;
           isMenuAnimating = false;
+          navToggler.setAttribute("aria-expanded", "false");
 
           if (lenis) lenis.start();
         },

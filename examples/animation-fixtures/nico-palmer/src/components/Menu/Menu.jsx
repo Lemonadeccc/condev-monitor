@@ -128,7 +128,19 @@ const Menu = () => {
     createMenuBarAnimation();
 
     menuLinksAnimation.current = gsap
-      .timeline({ paused: true })
+      .timeline({
+        paused: true,
+        onComplete: () =>
+          window.__CONDEV_ANIMATION_LAB_OUTCOME__?.register(
+            "nico.navigation.opened",
+            "completed",
+          ),
+        onReverseComplete: () =>
+          window.__CONDEV_ANIMATION_LAB_OUTCOME__?.register(
+            "nico.navigation.closed",
+            "completed",
+          ),
+      })
       .to(".menu-link-item-holder", {
         y: 0,
         duration: 1.25,
@@ -200,7 +212,12 @@ const Menu = () => {
             </div>
             <div className="menu-actions">
               <div className="menu-toggle">
-                <button className="hamburger-icon" onClick={toggleMenu}></button>
+                <button
+                  aria-expanded={isMenuOpen}
+                  aria-label="Toggle primary navigation"
+                  className="hamburger-icon"
+                  onClick={toggleMenu}
+                ></button>
               </div>
             </div>
           </div>

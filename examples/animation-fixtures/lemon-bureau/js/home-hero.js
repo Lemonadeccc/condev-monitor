@@ -18,6 +18,7 @@ function setupCursorTilt({ container, target }) {
     targetY: 0,
     raf: null,
     isInside: false,
+    outcomePending: false,
   };
 
   const LERP = 0.05;
@@ -39,6 +40,14 @@ function setupCursorTilt({ container, target }) {
       Math.abs(state.currentX - state.targetX) < 0.01 &&
       Math.abs(state.currentY - state.targetY) < 0.01;
 
+    if (isSettled && state.outcomePending) {
+      window.__CONDEV_ANIMATION_LAB_OUTCOME__?.register(
+        "lemon.hero.pointer-settled",
+        "completed",
+      );
+      state.outcomePending = false;
+    }
+
     if (isSettled && !state.isInside) {
       state.raf = null;
       return;
@@ -59,6 +68,7 @@ function setupCursorTilt({ container, target }) {
     state.targetX = normalizedX * MAX_ROTATION;
     state.targetY = -normalizedY * MAX_ROTATION;
     state.isInside = true;
+    state.outcomePending = true;
     ensureLoop();
   });
 
@@ -66,6 +76,7 @@ function setupCursorTilt({ container, target }) {
     state.targetX = 0;
     state.targetY = 0;
     state.isInside = false;
+    state.outcomePending = true;
     ensureLoop();
   });
 }
