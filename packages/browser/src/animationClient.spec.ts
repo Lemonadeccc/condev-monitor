@@ -1158,10 +1158,13 @@ describe('browser animation single-init entry', () => {
         expect(observer.snapshot()).toMatchObject({ status: 'disposed', cleanupFailed: true })
         expect(remove).toHaveBeenCalledTimes(1)
 
-        removeFails = false
-        observer.dispose()
-        expect(observer.snapshot()).toMatchObject({ status: 'disposed', cleanupFailed: false })
+        expect(client.animation.retryPendingObserverCleanup()).toBe(false)
         expect(remove).toHaveBeenCalledTimes(2)
+
+        removeFails = false
+        expect(client.animation.retryPendingObserverCleanup()).toBe(true)
+        expect(observer.snapshot()).toMatchObject({ status: 'disposed', cleanupFailed: false })
+        expect(remove).toHaveBeenCalledTimes(3)
     })
 
     it('keeps failed Browser-owned motion recorder cleanup retryable after client destroy', async () => {
@@ -1410,6 +1413,213 @@ describe('browser animation single-init entry', () => {
         expect(tickerRemove).toHaveBeenCalledTimes(1)
         expect(lenisCleanup).toHaveBeenCalledTimes(1)
         expect(scrollTriggerRemove).toHaveBeenCalledTimes(6)
+    })
+
+    it('creates one auto-started motion observer session with unified teardown', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+
+        let tickerListener: ((timeSeconds: number, deltaTimeMs: number, frame: number) => void) | undefined
+        const tickerRemove = jest.fn()
+        let lenisListener: ((event: { progress?: number; velocity?: number }) => void) | undefined
+        const lenisCleanup = jest.fn()
+        const scrollTriggerRemove = jest.fn()
+
+        const session = client.animation.createMotionObserverSession({
+            gsapTicker: {
+                ticker: {
+                    add(listener) {
+                        tickerListener = listener
+                    },
+                    remove: tickerRemove,
+                },
+            },
+            lenisScroll: {
+                lenis: {
+                    on(_event, listener) {
+                        lenisListener = listener
+                        return lenisCleanup
+                    },
+                },
+            },
+            scrollTrigger: {
+                scrollTrigger: {
+                    getAll: () => [{ progress: 0.25, isActive: true, start: 0, end: 200, getVelocity: () => 120 }],
+                    addEventListener() {},
+                    removeEventListener: scrollTriggerRemove,
+                },
+            },
+        })
+
+        tickerListener?.(0.016, 16, 1)
+        lenisListener?.({ progress: 0.25, velocity: 1 })
+        const result = session.begin('scroll', 'smooth-scroll').end()
+
+        expect(result.semantic.before).toMatchObject({ status: 'measured', configuredSourceCount: 3, measuredSourceCount: 3 })
+        expect(session.gsapTicker?.running).toBe(true)
+        expect(session.lenisScroll?.running).toBe(true)
+        expect(session.scrollTrigger?.running).toBe(true)
+
+        session.dispose()
+        session.dispose()
+        expect(session.snapshot().status).toBe('disposed')
+        expect(tickerRemove).toHaveBeenCalledTimes(1)
+        expect(lenisCleanup).toHaveBeenCalledTimes(1)
+        expect(scrollTriggerRemove).toHaveBeenCalledTimes(6)
+
+        await client.destroy()
+        expect(tickerRemove).toHaveBeenCalledTimes(1)
+        expect(lenisCleanup).toHaveBeenCalledTimes(1)
+    })
+
+    it('rolls back observers atomically when motion session construction fails', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        let tickerObserver: ReturnType<typeof client.animation.createGsapTickerObserver> | undefined
+        const createTicker = client.animation.createGsapTickerObserver.bind(client.animation)
+        jest.spyOn(client.animation, 'createGsapTickerObserver').mockImplementation(options => {
+            tickerObserver = createTicker(options)
+            return tickerObserver
+        })
+        jest.spyOn(client.animation, 'createLenisScrollObserver').mockImplementation(() => {
+            throw new Error('constructor failed')
+        })
+
+        expect(() =>
+            client.animation.createMotionObserverSession({
+                gsapTicker: { ticker: { add() {}, remove() {} } },
+                lenisScroll: { lenis: { on() {} } },
+            })
+        ).toThrow('constructor failed')
+        expect(tickerObserver?.snapshot()).toMatchObject({ status: 'disposed', cleanupFailed: false })
+
+        await client.destroy()
+    })
+
+    it('rolls back observers atomically when motion session startup throws', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const dispose = jest.fn()
+        jest.spyOn(client.animation, 'createGsapTickerObserver').mockReturnValue({
+            running: false,
+            start: jest.fn(() => {
+                throw new Error('startup failed')
+            }),
+            stop: jest.fn(() => false),
+            snapshot: jest.fn(() => ({ cleanupFailed: false })),
+            reset: jest.fn(),
+            dispose,
+        } as unknown as ReturnType<typeof client.animation.createGsapTickerObserver>)
+
+        expect(() =>
+            client.animation.createMotionObserverSession({
+                gsapTicker: { ticker: { add() {}, remove() {} } },
+            })
+        ).toThrow('startup failed')
+        expect(dispose).toHaveBeenCalledTimes(1)
+
+        await client.destroy()
+    })
+
+    it('retains a retry handle when start-false rollback cannot remove a partially registered listener', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const healthyRemove = jest.fn()
+        const healthyObserver = client.animation.createGsapTickerObserver({
+            ticker: {
+                add() {},
+                remove: healthyRemove,
+            },
+        })
+        expect(healthyObserver.start()).toBe(true)
+        let removalFails = true
+        const remove = jest.fn(() => {
+            if (removalFails) throw new Error('temporary remove failure')
+        })
+
+        expect(() =>
+            client.animation.createMotionObserverSession({
+                gsapTicker: {
+                    ticker: {
+                        add() {
+                            throw new Error('attached before startup failure')
+                        },
+                        remove,
+                    },
+                },
+            })
+        ).toThrow(/rollback cleanup is incomplete.*retryPendingObserverCleanup/)
+        expect(remove).toHaveBeenCalledTimes(2)
+
+        expect(client.animation.retryPendingObserverCleanup()).toBe(false)
+        expect(remove).toHaveBeenCalledTimes(3)
+        expect(healthyObserver.running).toBe(true)
+        expect(healthyRemove).not.toHaveBeenCalled()
+
+        removalFails = false
+        expect(client.animation.retryPendingObserverCleanup()).toBe(true)
+        expect(remove).toHaveBeenCalledTimes(4)
+        expect(healthyObserver.running).toBe(true)
+        expect(healthyRemove).not.toHaveBeenCalled()
+
+        await client.destroy()
+        expect(remove).toHaveBeenCalledTimes(4)
+        expect(healthyRemove).toHaveBeenCalledTimes(1)
+    })
+
+    it('rolls back started observers atomically when motion recorder creation fails', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const tickerRemove = jest.fn()
+        jest.spyOn(client.animation, 'createMotionSemanticCheckpointRecorder').mockImplementation(() => {
+            throw new Error('recorder failed')
+        })
+
+        expect(() =>
+            client.animation.createMotionObserverSession({
+                gsapTicker: {
+                    ticker: {
+                        add() {},
+                        remove: tickerRemove,
+                    },
+                },
+            })
+        ).toThrow('recorder failed')
+        expect(tickerRemove).toHaveBeenCalledTimes(1)
+
+        await client.destroy()
+        expect(tickerRemove).toHaveBeenCalledTimes(1)
+    })
+
+    it('keeps failed motion session cleanup visible and retryable', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        let removeFails = true
+        const tickerRemove = jest.fn(() => {
+            if (removeFails) throw new Error('temporary cleanup failure')
+        })
+        const session = client.animation.createMotionObserverSession({
+            gsapTicker: {
+                ticker: {
+                    add() {},
+                    remove: tickerRemove,
+                },
+            },
+        })
+
+        session.dispose()
+        expect(session.snapshot()).toMatchObject({ status: 'dispose-failed', cleanupFailed: true })
+        expect(session.gsapTicker?.snapshot()).toMatchObject({ status: 'disposed', cleanupFailed: true })
+        expect(tickerRemove).toHaveBeenCalledTimes(1)
+
+        removeFails = false
+        session.dispose()
+        expect(session.snapshot()).toMatchObject({ status: 'disposed', cleanupFailed: false })
+        expect(session.gsapTicker?.snapshot()).toMatchObject({ status: 'disposed', cleanupFailed: false })
+        expect(tickerRemove).toHaveBeenCalledTimes(2)
+
+        await client.destroy()
+        expect(tickerRemove).toHaveBeenCalledTimes(2)
     })
 
     it('fails clearly when the ordinary Browser client was initialized first', async () => {

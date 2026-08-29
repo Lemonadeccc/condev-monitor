@@ -135,6 +135,7 @@ export type {
 const TARGET_ADAPTER_ID = 'condev-browser-animation'
 const TARGET_ADAPTER_VERSION = '1'
 const SAFE_ANIMATION_VERSION_RE = /^[A-Za-z0-9][A-Za-z0-9._+\-]{0,63}$/
+const MAX_MOTION_SESSION_CLEANUP_FAILURE_COUNT = 1_000_000_000
 
 type AnimationDevtoolsModule = typeof import('@condev-monitor/monitor-sdk-animation/devtools')
 
@@ -223,6 +224,22 @@ export interface BrowserAnimationElementSelectionOptions extends Omit<AnimationE
 
 export interface BrowserAnimationRumTargetOptions extends BrowserAnimationElementSelectionOptions {}
 
+export interface BrowserMotionObserverSessionOptions
+    extends Omit<MotionSemanticCheckpointRecorderOptions, 'beginInteraction' | 'gsapTicker' | 'lenisScroll' | 'scrollTrigger'> {
+    /** Public GSAP ticker observer. It is started and disposed with the session. */
+    gsapTicker?: GsapTickerObserverOptions
+    /** Public Lenis scroll observer. It is started and disposed with the session. */
+    lenisScroll?: LenisScrollObserverOptions
+    /** Public ScrollTrigger observer. It is started and disposed with the session. */
+    scrollTrigger?: ScrollTriggerObserverOptions
+}
+
+export interface BrowserMotionObserverSession extends MotionSemanticCheckpointRecorder {
+    readonly gsapTicker: GsapTickerObserver | null
+    readonly lenisScroll: LenisScrollObserver | null
+    readonly scrollTrigger: ScrollTriggerObserver | null
+}
+
 export interface BrowserAnimationRumTargetHandle {
     readonly targetKey: string
     readonly element: Element
@@ -274,6 +291,10 @@ export interface AnimationClientHandle {
     createMotionSemanticCheckpointRecorder(
         options?: Omit<MotionSemanticCheckpointRecorderOptions, 'beginInteraction'>
     ): MotionSemanticCheckpointRecorder
+    /** Starts public motion observers and exposes one local-only semantic checkpoint recorder with unified teardown. */
+    createMotionObserverSession(options: BrowserMotionObserverSessionOptions): BrowserMotionObserverSession
+    /** Retries Browser-owned observer teardown that a host previously failed to remove. */
+    retryPendingObserverCleanup(): boolean
     createRendererProbe(options: Omit<RendererHostProbeOptions, 'sink'>): RendererHostProbe
     /** Local-only public ScrollTrigger state with Browser-owned teardown. */
     createScrollTriggerObserver(options: ScrollTriggerObserverOptions): ScrollTriggerObserver
@@ -958,6 +979,7 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     }
     private readonly probes = new Set<{ dispose(): void }>()
     private readonly observers = new Set<{ dispose(): void }>()
+    private readonly pendingObserverCleanup = new Set<{ dispose(): void }>()
     private readonly registrations = new Set<AnimationTargetRegistrationHandle>()
     private readonly registrationByElement = new Map<Element, Map<object, AnimationTargetRegistrationHandle>>()
     private readonly legacyTargetRegistrationOwner = Object.freeze({})
@@ -1159,6 +1181,107 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         return this.trackObserver(recorder, () => registration.unregister())
     }
 
+    createMotionObserverSession(options: BrowserMotionObserverSessionOptions): BrowserMotionObserverSession {
+        let gsapTicker: GsapTickerObserver | null = null
+        let lenisScroll: LenisScrollObserver | null = null
+        let scrollTrigger: ScrollTriggerObserver | null = null
+        const observers: Array<GsapTickerObserver | LenisScrollObserver | ScrollTriggerObserver> = []
+        let recorder: MotionSemanticCheckpointRecorder | null = null
+
+        const disposeOwnedResources = (): boolean => {
+            let cleanupFailed = false
+            if (recorder) {
+                try {
+                    recorder.dispose()
+                    cleanupFailed = recorder.snapshot().cleanupFailed || cleanupFailed
+                } catch {
+                    cleanupFailed = true
+                }
+            }
+            for (const observer of [...observers].reverse()) {
+                try {
+                    observer.dispose()
+                    cleanupFailed = observer.snapshot().cleanupFailed || cleanupFailed
+                } catch {
+                    cleanupFailed = true
+                }
+            }
+            return !cleanupFailed
+        }
+
+        try {
+            const gsapTickerOptions = options.gsapTicker
+            if (gsapTickerOptions) {
+                gsapTicker = this.createGsapTickerObserver(gsapTickerOptions)
+                observers.push(gsapTicker)
+            }
+            const lenisScrollOptions = options.lenisScroll
+            if (lenisScrollOptions) {
+                lenisScroll = this.createLenisScrollObserver(lenisScrollOptions)
+                observers.push(lenisScroll)
+            }
+            const scrollTriggerOptions = options.scrollTrigger
+            if (scrollTriggerOptions) {
+                scrollTrigger = this.createScrollTriggerObserver(scrollTriggerOptions)
+                observers.push(scrollTrigger)
+            }
+            for (const observer of observers) {
+                if (!observer.start()) throw new Error('Cannot start a configured animation motion observer')
+            }
+            recorder = this.createMotionSemanticCheckpointRecorder({
+                ...(gsapTicker ? { gsapTicker } : {}),
+                ...(lenisScroll ? { lenisScroll } : {}),
+                ...(scrollTrigger ? { scrollTrigger } : {}),
+                ...(options.capacity === undefined ? {} : { capacity: options.capacity }),
+                ...(options.maximumActiveInteractions === undefined
+                    ? {}
+                    : { maximumActiveInteractions: options.maximumActiveInteractions }),
+                ...(options.now === undefined ? {} : { now: options.now }),
+            })
+            let cleanupComplete = false
+            let sessionCleanupFailed = false
+            let sessionCleanupFailureCount = 0
+            return {
+                gsapTicker,
+                lenisScroll,
+                scrollTrigger,
+                begin: (kind, label) => recorder!.begin(kind, label),
+                snapshot: () => {
+                    const snapshot = recorder!.snapshot()
+                    if (!sessionCleanupFailed) return snapshot
+                    return Object.freeze({
+                        ...snapshot,
+                        status: 'dispose-failed' as const,
+                        cleanupFailed: true,
+                        cleanupFailureCount: Math.min(
+                            MAX_MOTION_SESSION_CLEANUP_FAILURE_COUNT,
+                            snapshot.cleanupFailureCount + sessionCleanupFailureCount
+                        ),
+                    })
+                },
+                dispose(): void {
+                    if (cleanupComplete) return
+                    cleanupComplete = disposeOwnedResources()
+                    sessionCleanupFailed = !cleanupComplete
+                    if (sessionCleanupFailed) {
+                        sessionCleanupFailureCount = Math.min(
+                            MAX_MOTION_SESSION_CLEANUP_FAILURE_COUNT,
+                            sessionCleanupFailureCount + 1
+                        )
+                    }
+                },
+            }
+        } catch (error) {
+            if (!disposeOwnedResources()) {
+                throw new AggregateError(
+                    [error],
+                    'Motion observer session setup failed and rollback cleanup is incomplete; call client.animation.retryPendingObserverCleanup()'
+                )
+            }
+            throw error
+        }
+    }
+
     createRendererProbe(options: Omit<RendererHostProbeOptions, 'sink'>): RendererHostProbe {
         return this.trackProbe(createRendererHostProbe({ ...options, sink: this }))
     }
@@ -1308,14 +1431,17 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         }
         const originalDispose = observer.dispose.bind(observer)
         const registry = new WeakRef(this.observers)
+        const pendingRegistry = new WeakRef(this.pendingObserverCleanup)
         let cleanupComplete = false
         const ownedObserver = {
             dispose: (): void => {
                 if (cleanupComplete) return
+                pendingRegistry.deref()?.add(ownedObserver)
                 originalDispose()
                 if (observer.snapshot().cleanupFailed) return
                 cleanupComplete = true
                 registry.deref()?.delete(ownedObserver)
+                pendingRegistry.deref()?.delete(ownedObserver)
                 try {
                     onDisposed?.()
                 } catch {
@@ -1331,6 +1457,17 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         })
         this.observers.add(ownedObserver)
         return observer
+    }
+
+    retryPendingObserverCleanup(): boolean {
+        for (const observer of [...this.pendingObserverCleanup].reverse()) {
+            try {
+                observer.dispose()
+            } catch {
+                // Keep the owner in the registry so a later retry remains possible.
+            }
+        }
+        return this.pendingObserverCleanup.size === 0
     }
 
     dispose(): void {
@@ -1360,10 +1497,9 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
             try {
                 observer.dispose()
             } catch {
-                // Failed cleanup stays retryable through the caller-owned observer.
+                // The wrapper keeps failed cleanup in pendingObserverCleanup.
             }
         }
-        this.observers.clear()
         this.localEvidence.clear()
     }
 }
