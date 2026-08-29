@@ -717,6 +717,8 @@ export type LabAlertState = {
     lastEvaluationId: string
     openedAt: string | null
     resolvedAt: string | null
+    acknowledged: boolean
+    acknowledgedAt: string | null
     updatedAt: string
 }
 
@@ -766,12 +768,59 @@ export type LabPolicyEvaluationJob = {
     updatedAt: string
 }
 
+export type LabNotificationDestinationKind = 'local' | 'owner-email' | 'webhook'
+
+export type LabNotificationDestination = {
+    destinationId: string
+    appId: string
+    destinationKey: string
+    kind: LabNotificationDestinationKind
+    registryRevision: string | null
+    enabled: boolean
+    cooldownSeconds: number
+    maxAttempts: number
+    createdAt: string
+    updatedAt: string
+}
+
+export type LabNotificationDeliveryState = 'pending' | 'processing' | 'retry' | 'delivered' | 'suppressed' | 'cancelled' | 'quarantined'
+
+export type LabNotificationDelivery = {
+    deliveryId: string
+    eventId: string
+    destinationId: string
+    registryRevision: string | null
+    state: LabNotificationDeliveryState
+    attemptCount: number
+    maxAttempts: number
+    nextAttemptAt: string
+    lastResultCode:
+        | 'LOCAL_RECORDED'
+        | 'EMAIL_DELIVERED'
+        | 'WEBHOOK_ACCEPTED'
+        | 'TRANSPORT_UNAVAILABLE'
+        | 'REGISTRY_REVISION_UNAVAILABLE'
+        | 'WEBHOOK_REJECTED'
+        | 'COOLDOWN_ACTIVE'
+        | 'ACKNOWLEDGED'
+        | 'STATE_CHANGED'
+        | 'LEASE_LOST'
+        | 'LEASE_RENEW_FAILED'
+        | 'DELIVERY_FAILED'
+        | null
+    deliveredAt: string | null
+    createdAt: string
+    updatedAt: string
+}
+
 export type LabPoliciesApiResponse = LabApiResponse<{ policies: LabProjectPolicy[] }>
 export type LabBaselineBindingsApiResponse = LabApiResponse<{ bindings: LabBaselineBinding[] }>
 export type LabPolicyEvaluationsApiResponse = LabApiResponse<{ evaluations: LabPolicyEvaluation[] }>
 export type LabAlertStatesApiResponse = LabApiResponse<{ states: LabAlertState[] }>
 export type LabAlertEventsApiResponse = LabApiResponse<{ events: LabAlertEvent[] }>
 export type LabPolicyEvaluationJobsApiResponse = LabApiResponse<{ jobs: LabPolicyEvaluationJob[] }>
+export type LabNotificationDestinationsApiResponse = LabApiResponse<{ destinations: LabNotificationDestination[] }>
+export type LabNotificationDeliveriesApiResponse = LabApiResponse<{ deliveries: LabNotificationDelivery[] }>
 export type LabProjectBudgetEvaluationsApiResponse = LabApiResponse<{
     runId: string
     evaluations: LabAbsoluteBudgetEvaluation[]

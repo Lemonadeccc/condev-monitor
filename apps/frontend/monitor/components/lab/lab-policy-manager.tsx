@@ -5,6 +5,7 @@ import { BellRing, GitCompareArrows, Pin, ShieldCheck } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
+import { LabAlertAcknowledgementButton, LabNotificationManager } from '@/components/lab/lab-notification-manager'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -198,6 +199,12 @@ export function LabPolicyManager({ appId, runs }: { appId: string; runs: readonl
                                         <p className="mt-1 text-xs text-muted-foreground">
                                             打开于 {alert.openedAt ? formatDateTime(alert.openedAt) : '时间未知'}
                                         </p>
+                                        {alert.acknowledgedAt ? (
+                                            <p className="mt-1 text-xs text-muted-foreground">
+                                                确认于 {formatDateTime(alert.acknowledgedAt)}
+                                            </p>
+                                        ) : null}
+                                        <LabAlertAcknowledgementButton appId={appId} alert={alert} />
                                     </div>
                                 ))
                             ) : (
@@ -225,6 +232,8 @@ export function LabPolicyManager({ appId, runs }: { appId: string; runs: readonl
                     </div>
                 )}
             </AIPanelCard>
+
+            <LabNotificationManager appId={appId} />
         </div>
     )
 }
