@@ -1,11 +1,14 @@
 import { getAnimationLabBudgetV1, getAnimationLabMetricCatalogEntry } from './catalog'
+import { validateLabAnimationCoverageV1 } from './coverage'
 import { safeToken } from './privacy'
 import {
     ANIMATION_LAB_BUDGET_CATALOG_VERSION,
     ANIMATION_LAB_METRIC_CATALOG_VERSION,
-    ANIMATION_LAB_SEMANTICS_VERSION,
+    ANIMATION_LAB_SEMANTICS_V2_VERSION,
+    ANIMATION_LAB_SEMANTICS_V3_VERSION,
     type AnimationLabMetricV2,
     type AnimationLabSemanticsV2,
+    type AnimationLabSemanticsV3,
     type LabActionSubject,
     type LabActionTrigger,
     type LabBudgetRefV1,
@@ -276,7 +279,7 @@ function parseMeasurementContract(value: unknown, label: string, errors: string[
         label,
         errors
     )
-    if (value.contractVersion !== ANIMATION_LAB_SEMANTICS_VERSION) add(errors, `${label}:invalid-contract-version`)
+    if (value.contractVersion !== ANIMATION_LAB_SEMANTICS_V2_VERSION) add(errors, `${label}:invalid-contract-version`)
     if (!finite(value.expectedHz, 1, 1_000)) add(errors, `${label}:invalid-expected-hz`)
     if (!finite(value.targetFrameMs, 1, 1_000)) add(errors, `${label}:invalid-target-frame-ms`)
     if (typeof value.source !== 'string' || !MEASUREMENT_SOURCES.has(value.source)) add(errors, `${label}:invalid-source`)
@@ -564,7 +567,10 @@ function validateFinding(value: unknown, index: number, errors: string[]): void 
     tokenArray(value.limitations, `${label}.limitations`, errors, MAX_LIMITATIONS)
 }
 
-export function validateAnimationLabSemanticsV2(value: unknown): LabContractValidationResult<AnimationLabSemanticsV2> {
+function validateAnimationLabSemantics(
+    value: unknown,
+    semanticsVersion: 2 | 3
+): LabContractValidationResult<AnimationLabSemanticsV2 | AnimationLabSemanticsV3> {
     const errors: string[] = []
     if (!record(value)) return { ok: false, errors: ['semantic-report:invalid'] }
     rejectForbiddenKeys(value, errors)
@@ -578,11 +584,16 @@ export function validateAnimationLabSemanticsV2(value: unknown): LabContractVali
             'metrics',
             'technologyEvidence',
             'findings',
+            ...(semanticsVersion === 3 ? ['coverage'] : []),
         ]),
         'semantic-report',
         errors
     )
-    if (value.semanticsVersion !== ANIMATION_LAB_SEMANTICS_VERSION) add(errors, 'semantic-report:invalid-version')
+    if (value.semanticsVersion !== semanticsVersion) add(errors, 'semantic-report:invalid-version')
+    if (semanticsVersion === ANIMATION_LAB_SEMANTICS_V3_VERSION) {
+        const coverage = validateLabAnimationCoverageV1(value.coverage)
+        if (!coverage.ok) coverage.errors.forEach(error => add(errors, error))
+    }
     parseMeasurementContract(value.measurementContract, 'measurementContract', errors)
     const metricCatalogVersion: LabMetricCatalogVersion =
         record(value.measurementContract) &&
@@ -619,6 +630,14 @@ export function validateAnimationLabSemanticsV2(value: unknown): LabContractVali
     if (new Set(orders).size !== orders.length || orders.some((order, index) => order !== index))
         add(errors, 'scenarioActions:non-contiguous-order')
     const actionsById = new Map(actions.map(action => [action.actionId, action] as const))
+
+    if (semanticsVersion === ANIMATION_LAB_SEMANTICS_V3_VERSION && record(value.coverage) && Array.isArray(value.coverage.items)) {
+        for (const item of value.coverage.items) {
+            if (record(item) && typeof item.actionId === 'string' && !actionsById.has(item.actionId)) {
+                add(errors, 'coverage-report:unknown-action-id')
+            }
+        }
+    }
 
     const windows = Array.isArray(value.actionWindows) ? value.actionWindows.filter(record) : []
     const windowIds = windows.map(window => window.actionId).filter((id): id is string => typeof id === 'string')
@@ -703,5 +722,15 @@ export function validateAnimationLabSemanticsV2(value: unknown): LabContractVali
         }
     }
 
-    return errors.length > 0 ? { ok: false, errors } : { ok: true, value: value as unknown as AnimationLabSemanticsV2 }
+    return errors.length > 0
+        ? { ok: false, errors }
+        : { ok: true, value: value as unknown as AnimationLabSemanticsV2 | AnimationLabSemanticsV3 }
+}
+
+export function validateAnimationLabSemanticsV2(value: unknown): LabContractValidationResult<AnimationLabSemanticsV2> {
+    return validateAnimationLabSemantics(value, ANIMATION_LAB_SEMANTICS_V2_VERSION) as LabContractValidationResult<AnimationLabSemanticsV2>
+}
+
+export function validateAnimationLabSemanticsV3(value: unknown): LabContractValidationResult<AnimationLabSemanticsV3> {
+    return validateAnimationLabSemantics(value, ANIMATION_LAB_SEMANTICS_V3_VERSION) as LabContractValidationResult<AnimationLabSemanticsV3>
 }

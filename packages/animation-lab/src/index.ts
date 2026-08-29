@@ -48,7 +48,13 @@ export type {
     LabExecutionTargetKind,
 } from './execution'
 export { sanitizeTraceSource, safeDisplayText, safeToken } from './privacy'
+export { projectAnimationCoverageManifestV1, validateAnimationCoverageManifestV1, validateLabAnimationCoverageV1 } from './coverage'
 export { resolveLabActionId, validateAnimationLabScenario, type ScenarioValidationResult } from './scenario'
-export { validateAnimationLabSemanticsV2, validateLabMeasurementContract, type LabContractValidationResult } from './semantics'
+export {
+    validateAnimationLabSemanticsV2,
+    validateAnimationLabSemanticsV3,
+    validateLabMeasurementContract,
+    type LabContractValidationResult,
+} from './semantics'
 export { normalizeTraceEvents } from './trace'
 export * from './types'

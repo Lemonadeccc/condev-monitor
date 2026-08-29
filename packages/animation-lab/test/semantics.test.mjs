@@ -2,6 +2,10 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+    ANIMATION_LAB_SEMANTICS_V2_VERSION,
+    ANIMATION_LAB_SEMANTICS_V3_VERSION,
+    ANIMATION_LAB_CURRENT_SEMANTICS_VERSION,
+    ANIMATION_LAB_SEMANTICS_VERSION,
     ANIMATION_LAB_METRIC_CATALOG_V1,
     ANIMATION_LAB_METRIC_CATALOG_V2,
     ANIMATION_LAB_METRIC_CATALOG_V3,
@@ -21,6 +25,7 @@ import {
     getAnimationLabBudgetV1,
     getAnimationLabMetricCatalogEntry,
     validateAnimationLabSemanticsV2,
+    validateAnimationLabSemanticsV3,
     validateLabMeasurementContract,
 } from '../build/esm/index.js'
 
@@ -117,6 +122,51 @@ test('accepts a fully referenced selector-free v2 semantic bundle', () => {
     assert.equal(result.ok, true)
     assert.equal(result.value.metrics[0].scope.attemptId, undefined)
     assert.equal(result.value.metrics[0].aggregation.method, 'median-of-attempts')
+})
+
+test('keeps the legacy semantics constant on v2 while publishing v3 through the current-version constant', () => {
+    assert.equal(ANIMATION_LAB_SEMANTICS_V2_VERSION, 2)
+    assert.equal(ANIMATION_LAB_SEMANTICS_V3_VERSION, 3)
+    assert.equal(ANIMATION_LAB_CURRENT_SEMANTICS_VERSION, 3)
+    assert.equal(ANIMATION_LAB_SEMANTICS_VERSION, 2)
+    assert.equal(validateAnimationLabSemanticsV2(semantics()).ok, true)
+    assert.equal(validateAnimationLabSemanticsV3(semantics()).ok, false)
+})
+
+test('requires and validates upload-safe animation coverage in semantics v3', () => {
+    const input = semantics()
+    input.semanticsVersion = 3
+    input.coverage = {
+        schemaVersion: 1,
+        manifestHash: 'b'.repeat(64),
+        review: 'matched',
+        totals: { declared: 1, discovered: 0, executed: 1, passed: 1, uncovered: 0 },
+        items: [
+            {
+                coverageId: 'hero.hover',
+                kind: 'hover',
+                actionId: 'hero-hover-01',
+                origin: 'declared',
+                critical: true,
+                authentication: 'none',
+                status: 'passed',
+                reasons: [],
+            },
+        ],
+    }
+    assert.equal(validateAnimationLabSemanticsV3(input).ok, true)
+    assert.equal(validateAnimationLabSemanticsV2(input).ok, false)
+
+    input.coverage.localScenarioSha256 = 'a'.repeat(64)
+    const leaked = validateAnimationLabSemanticsV3(input)
+    assert.equal(leaked.ok, false)
+    assert.ok(leaked.errors.includes('coverage-report:invalid-shape'))
+
+    delete input.coverage.localScenarioSha256
+    input.coverage.items[0].actionId = 'unknown-action'
+    const unknownAction = validateAnimationLabSemanticsV3(input)
+    assert.equal(unknownAction.ok, false)
+    assert.ok(unknownAction.errors.includes('coverage-report:unknown-action-id'))
 })
 
 test('accepts touch and pen action kinds in scenario and action-window semantics', () => {

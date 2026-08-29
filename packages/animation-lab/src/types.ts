@@ -1,5 +1,9 @@
 export const ANIMATION_LAB_SCHEMA_VERSION = 1 as const
-export const ANIMATION_LAB_SEMANTICS_VERSION = 2 as const
+export const ANIMATION_LAB_SEMANTICS_V2_VERSION = 2 as const
+export const ANIMATION_LAB_SEMANTICS_V3_VERSION = 3 as const
+export const ANIMATION_LAB_CURRENT_SEMANTICS_VERSION = ANIMATION_LAB_SEMANTICS_V3_VERSION
+/** @deprecated Use ANIMATION_LAB_CURRENT_SEMANTICS_VERSION for newly emitted reports. */
+export const ANIMATION_LAB_SEMANTICS_VERSION = ANIMATION_LAB_SEMANTICS_V2_VERSION
 export const ANIMATION_LAB_BUDGET_CATALOG_VERSION = 1 as const
 /** Compatibility default for scenarios that do not opt into a newer catalog. */
 export const ANIMATION_LAB_METRIC_CATALOG_VERSION = 1 as const
@@ -412,6 +416,110 @@ export interface AnimationLabSemanticsV2 {
     findings: readonly LabFindingV2[]
 }
 
+/** Semantics v3 adds a privacy-safe, reviewed animation-coverage projection. */
+export interface AnimationLabSemanticsV3 {
+    semanticsVersion: 3
+    measurementContract: LabMeasurementContractV2
+    scenarioActions: readonly LabReportScenarioActionV2[]
+    actionWindows: readonly LabActionWindowV2[]
+    metrics: readonly AnimationLabMetricV2[]
+    technologyEvidence: readonly LabTechnologyEvidenceV2[]
+    findings: readonly LabFindingV2[]
+    coverage: LabAnimationCoverageV1
+}
+
+export type AnimationCoverageItemKind =
+    | 'load'
+    | 'click'
+    | 'hover'
+    | 'scroll'
+    | 'drag'
+    | 'resize'
+    | 'keyboard'
+    | 'touch'
+    | 'pointer-path'
+    | 'renderer-object'
+    | 'business-state'
+
+export type AnimationCoverageReviewStatus = 'draft' | 'needs-review' | 'reviewed'
+
+export type AnimationCoverageOutcomeContract =
+    | { kind: 'scenario-expectation'; expectationIndex: number }
+    | { kind: 'registered-outcome'; outcomeKey: string }
+    | { kind: 'business-assertion'; assertionKey: string }
+
+export interface AnimationCoverageRendererHitContract {
+    kind: 'renderer-adapter'
+    adapterKey: string
+    objectKey: string
+    strategy: 'raycast' | 'semantic-hit-test' | 'adapter-callback'
+}
+
+/** Local-only reviewed coverage inventory. Never upload this object directly. */
+export interface AnimationCoverageManifestItemV1 {
+    coverageId: string
+    kind: AnimationCoverageItemKind
+    actionId: string
+    origin: 'declared' | 'explorer' | 'recorder'
+    critical: boolean
+    /** Local execution requirement only; no storage-state path or credential is retained. */
+    authentication: 'none' | 'required-local-storage-state'
+    outcomeContract?: AnimationCoverageOutcomeContract
+    hit?: AnimationCoverageRendererHitContract
+}
+
+/** Local-only: contains the route key and the local Scenario digest. */
+export interface AnimationCoverageManifestV1 {
+    schemaVersion: 1
+    routeKey: string
+    reviewStatus: AnimationCoverageReviewStatus
+    localScenarioSha256: string
+    items: readonly AnimationCoverageManifestItemV1[]
+}
+
+export type LabAnimationCoverageItemStatus = 'passed' | 'failed' | 'not-executed'
+
+export type LabAnimationCoverageReason =
+    | 'review-required'
+    | 'no-reviewed-scenario'
+    | 'action-id-not-found'
+    | 'action-not-executed'
+    | 'action-failed'
+    | 'action-timed-out'
+    | 'outcome-contract-missing'
+    | 'outcome-not-observed'
+    | 'renderer-object-adapter-missing'
+    | 'renderer-object-not-resolved'
+    | 'authentication-required'
+    | 'driver-capability-unavailable'
+    | 'partial-attempt-coverage'
+
+export interface LabAnimationCoverageResultV1 {
+    coverageId: string
+    status: LabAnimationCoverageItemStatus
+    reasons: readonly LabAnimationCoverageReason[]
+}
+
+export interface LabAnimationCoverageItemV1 {
+    coverageId: string
+    kind: AnimationCoverageItemKind
+    actionId: string
+    origin: 'declared' | 'explorer' | 'recorder'
+    critical: boolean
+    authentication: 'none' | 'required-local-storage-state'
+    status: LabAnimationCoverageItemStatus
+    reasons: readonly LabAnimationCoverageReason[]
+}
+
+/** Upload-safe coverage evidence. Local route, Scenario digest and contracts are absent. */
+export interface LabAnimationCoverageV1 {
+    schemaVersion: 1
+    manifestHash: string
+    review: 'matched'
+    totals: { declared: number; discovered: number; executed: number; passed: number; uncovered: number }
+    items: readonly LabAnimationCoverageItemV1[]
+}
+
 export type LabTimelineCategory =
     | 'interaction'
     | 'script'
@@ -698,12 +806,13 @@ export interface AnimationLabReport {
     aggregateMetrics: readonly AnimationLabMetric[]
     timeline?: LabTimelineChunk
     lighthouse?: LabLighthouseSummary
-    semanticsVersion?: 2
+    semanticsVersion?: 2 | 3
     measurementContract?: LabMeasurementContractV2
     /** Canonical per-action windows aggregated across measured attempts. */
     actionWindows?: readonly LabActionWindowV2[]
     technologyEvidence?: readonly LabTechnologyEvidenceV2[]
     findings?: readonly LabFindingV2[]
+    coverage?: LabAnimationCoverageV1
     privacy: {
         selectorsRetained: false
         inputValuesRetained: false
