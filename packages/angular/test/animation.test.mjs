@@ -222,11 +222,19 @@ test('Angular input changes produce closed local check evidence without entering
     const times = [10, 18]
     const scope = createCondevAngularAnimationScope({ client: harness.client, getTarget: () => ({}), now: () => times.shift() })
     scope.postRendered()
-    scope.inputChanged()
+    scope.inputChanged(2)
     scope.checkStarted()
     scope.viewChecked()
     assert.deepEqual(harness.localRecords, [
-        { kind: 'check', reason: 'angular-input-change', reasonSource: 'angular-input-change', durationMs: 8, timestampMs: 18 },
+        {
+            kind: 'check',
+            reason: 'angular-input-change',
+            reasonSource: 'angular-input-change',
+            durationMs: 8,
+            timestampMs: 18,
+            updateCauses: ['input'],
+            observedCauseCount: 2,
+        },
     ])
     const inspect = harness.registrations[0].inspect
     assert.equal(inspect({ inspectionPurpose: 'local', evidenceWindow: { startedAt: 0, endedAt: 20 } }).frameworkScopes.length, 1)

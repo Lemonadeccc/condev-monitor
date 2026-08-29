@@ -24,8 +24,8 @@ export interface CondevAngularAnimationOptions {
 }
 
 export interface CondevAngularAnimationScope {
-    /** Call from `ngOnChanges` when at least one component input changed. */
-    inputChanged(): void
+    /** Call from `ngOnChanges`; pass only the changed-input count, never names or values. */
+    inputChanged(observedInputCount?: number): void
     /** Call from `ngDoCheck`. This starts an observed component check window. */
     checkStarted(): void
     /** Call from `ngAfterViewChecked`. This closes the component check window. */
@@ -181,6 +181,7 @@ export function createCondevAngularAnimationScope(options: CondevAngularAnimatio
     let probe: AngularFrameworkProbe | undefined
     let componentScope: FrameworkComponentScope | undefined
     let inputChangePending = false
+    let observedInputCount = 0
     let checkStartedAt: number | undefined
     let registeredTarget: Element | undefined
     let targetRegistration: AttachedAngularTargetRegistration | undefined
@@ -238,6 +239,7 @@ export function createCondevAngularAnimationScope(options: CondevAngularAnimatio
         destroyed = true
         checkStartedAt = undefined
         inputChangePending = false
+        observedInputCount = 0
         clearTarget()
         safeDispose(() => probe?.dispose())
         safeDispose(() => componentScope?.dispose())
@@ -246,8 +248,10 @@ export function createCondevAngularAnimationScope(options: CondevAngularAnimatio
     }
 
     return {
-        inputChanged(): void {
-            if (!destroyed) inputChangePending = true
+        inputChanged(nextObservedInputCount = 1): void {
+            if (destroyed || !Number.isSafeInteger(nextObservedInputCount) || nextObservedInputCount < 1) return
+            inputChangePending = true
+            observedInputCount = Math.min(1_024, observedInputCount + nextObservedInputCount)
         },
         checkStarted(): void {
             if (destroyed) return
@@ -257,12 +261,15 @@ export function createCondevAngularAnimationScope(options: CondevAngularAnimatio
             if (destroyed) {
                 checkStartedAt = undefined
                 inputChangePending = false
+                observedInputCount = 0
                 return false
             }
             const startedAt = checkStartedAt
             checkStartedAt = undefined
             const hadInputChange = inputChangePending
             inputChangePending = false
+            const causeCount = observedInputCount
+            observedInputCount = 0
             const endedAt = readMonotonicNow(now)
             if (startedAt === undefined || endedAt === undefined || endedAt < startedAt) return false
             if (hadInputChange) {
@@ -272,6 +279,8 @@ export function createCondevAngularAnimationScope(options: CondevAngularAnimatio
                     reasonSource: 'angular-input-change',
                     durationMs: endedAt - startedAt,
                     timestampMs: endedAt,
+                    updateCauses: ['input'],
+                    observedCauseCount: causeCount,
                 })
             }
             try {

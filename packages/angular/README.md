@@ -80,6 +80,8 @@ export class AnimatedCard {
 
 `ngDoCheck()` to `ngAfterViewChecked()` is reported as an observed **component check window**. It can include descendant checks and does not prove that Angular changed the DOM. It is never labelled render, commit, DOM update, paint, or GPU time.
 
+Call `inputChanged(Object.keys(changes).length)` from `ngOnChanges` when count-only cause evidence is useful. The local component record retains only the closed `input` cause and bounded count; input names and values are never retained or uploaded.
+
 Angular's public `afterEveryRender({ read })` callback is application-wide. The helper uses it only to synchronize anonymous target ownership after the page DOM has rendered. It records no duration and is never paired with a component check window. The callback does not run during SSR; page-level browser monitoring remains available wherever the Browser SDK itself is supported.
 
 The real Element and raw owner stay in page memory. If the application separately authorizes the Element as a semantic RUM v2 target, only the closed `angular` framework value and `framework-adapter` capability can be projected. Component names, inputs, state, text, selectors, classes, IDs, and URLs are not retained or uploaded.
