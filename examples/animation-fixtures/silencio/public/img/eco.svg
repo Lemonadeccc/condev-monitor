@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Generator: Adobe Illustrator 27.3.1, SVG Export Plug-In . SVG Version: 6.00 Build 0)  -->
+<svg version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" x="0px" y="0px"
+	 viewBox="0 0 42.3 36.7" style="enable-background:new 0 0 42.3 36.7;" xml:space="preserve">
+<style type="text/css">
+	.st0{fill:none;stroke:#000000;stroke-miterlimit:10;}
+</style>
+<g>
+	<ellipse class="st0" cx="22.8" cy="20.4" rx="12.6" ry="2.2"/>
+	<path class="st0" d="M10.2,32.5c0,1.2,5.6,2.2,12.6,2.2s12.6-1,12.6-2.2"/>
+	<line class="st0" x1="10.2" y1="20.4" x2="10.2" y2="32.5"/>
+	<line class="st0" x1="35.4" y1="20.4" x2="35.4" y2="32.5"/>
+	<g>
+		<ellipse transform="matrix(0.866 -0.5 0.5 0.866 -1.798 10.0555)" class="st0" cx="17.9" cy="8.4" rx="12.6" ry="1.1"/>
+		<path class="st0" d="M7.9,16.3c0.3,0.5,5.4-1.9,11.4-5.4S30,4.2,29.7,3.7"/>
+		<line class="st0" x1="6.9" y1="14.7" x2="7.9" y2="16.3"/>
+		<line class="st0" x1="28.8" y1="2.1" x2="29.7" y2="3.7"/>
+	</g>
+</g>
+</svg>
