@@ -76,7 +76,15 @@
                 { "axis": "renderer", "technologyKey": "dom" }
             ],
             "selector": ".hamburger-icon",
-            "durationMs": 1800
+            "durationMs": 1800,
+            "expect": [
+                {
+                    "kind": "registered-outcome",
+                    "outcomeKey": "nico.navigation.opened",
+                    "state": "completed",
+                    "timeoutMs": 3000
+                }
+            ]
         },
         {
             "kind": "hover",
@@ -114,7 +122,15 @@
                 { "axis": "renderer", "technologyKey": "dom" }
             ],
             "selector": ".hamburger-icon",
-            "durationMs": 1800
+            "durationMs": 1800,
+            "expect": [
+                {
+                    "kind": "registered-outcome",
+                    "outcomeKey": "nico.navigation.closed",
+                    "state": "completed",
+                    "timeoutMs": 3000
+                }
+            ]
         },
         {
             "kind": "scroll",

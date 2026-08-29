@@ -3,6 +3,7 @@ import { promises as fs } from 'node:fs'
 import test from 'node:test'
 
 import { validateAnimationLabScenario } from '@condev-monitor/animation-lab'
+import { createLocalScenarioSha256, validateCoverageManifestForScenario } from '../build/index.js'
 
 const fixtures = [
     { name: 'lemon-bureau', port: '43101', metricCatalogVersion: 3, budgetVersion: 2 },
@@ -29,6 +30,7 @@ function devServerPort(script, fixtureName) {
 test('keeps animation fixture scenarios aligned with their root launch ports and current Lab contract', async () => {
     for (const fixture of fixtures) {
         const scenario = await readJson(new URL(`../examples/${fixture.name}.scenario.json`, import.meta.url))
+        const coverage = await readJson(new URL(`../examples/${fixture.name}.coverage.json`, import.meta.url))
         const packageJson = await readJson(new URL(`../../../../examples/animation-fixtures/${fixture.name}/package.json`, import.meta.url))
         const scenarioUrl = new URL(scenario.url)
         const packagePort = devServerPort(packageJson.scripts.dev, fixture.name)
@@ -50,6 +52,24 @@ test('keeps animation fixture scenarios aligned with their root launch ports and
 
         const validation = validateAnimationLabScenario(scenario)
         assert.equal(validation.ok, true, `${fixture.name} scenario is invalid: ${validation.ok ? '' : validation.errors.join(', ')}`)
+        assert.equal(coverage.localScenarioSha256, createLocalScenarioSha256(scenario))
+        assert.doesNotThrow(() => validateCoverageManifestForScenario(coverage, scenario))
+        assert.ok(coverage.items.length > 0, `${fixture.name} must declare a non-empty reviewed animation inventory`)
+        const inventoriedActionIds = new Set(coverage.items.map(item => item.actionId))
+        const scenarioActionIds = new Set(scenario.actions.map((action, index) => action.actionId ?? `${action.kind}-${index + 1}`))
+        assert.deepEqual(inventoriedActionIds, scenarioActionIds, `${fixture.name} must inventory every reviewed Scenario action`)
+        assert.ok(
+            coverage.items.filter(item => item.critical).every(item => item.outcomeContract),
+            `${fixture.name} critical paths require outcomes`
+        )
+        assert.ok(
+            coverage.items.some(item => item.critical),
+            `${fixture.name} must declare at least one critical path`
+        )
+        assert.ok(
+            coverage.items.some(item => !item.critical),
+            `${fixture.name} must preserve non-critical reviewed inventory`
+        )
     }
 })
 
@@ -81,14 +101,26 @@ test('keeps fixture SDK integration single-init, public, and privacy-safe', asyn
             name: 'aegis',
             entry: 'instrumentation-client.js',
             routeKey: 'aegis.home',
-            evidence: ['CondevR3FObserver', 'useCondevReactComponentScope', 'webgpu'],
+            evidence: [
+                'CondevR3FObserver',
+                'useCondevReactComponentScope',
+                'webgpu',
+                'createThreeRaycastObjectResolver',
+                '__CONDEV_ANIMATION_LAB_OUTCOME__',
+            ],
             sources: ['components/AegisCanvas.jsx', 'components/AegisExperience.jsx'],
         },
         {
             name: 'silencio',
             entry: 'instrumentation-client.ts',
             routeKey: 'silencio.home',
-            evidence: ['CondevAnimationProfiler', 'useCondevReactComponentScope', 'createThreeRendererAdapter'],
+            evidence: [
+                'CondevAnimationProfiler',
+                'useCondevReactComponentScope',
+                'createThreeRendererAdapter',
+                'createThreeRaycastObjectResolver',
+                '__CONDEV_ANIMATION_LAB_OUTCOME__',
+            ],
             sources: ['app/_silencio/SilencioExperience.tsx'],
         },
     ]
@@ -112,7 +144,7 @@ test('keeps fixture SDK integration single-init, public, and privacy-safe', asyn
         assert.match(entry, new RegExp(`routeKey:\\s*["']${integration.routeKey.replaceAll('.', '\\.')}["']`, 'u'))
         assert.doesNotMatch(source, /routeKey:\s*(?:location|window|pathname|usePathname)/u)
         assert.doesNotMatch(source, /(?:performance|whiteScreen):\s*false/u)
-        assert.doesNotMatch(source, /window\.__CONDEV/u)
+        assert.doesNotMatch(source, /__CONDEV_(?!ANIMATION_LAB_OUTCOME__)/u)
         for (const marker of integration.evidence) {
             assert.ok(source.includes(marker), `${integration.name} must retain ${marker} integration evidence`)
         }

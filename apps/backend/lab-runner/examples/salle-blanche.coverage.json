@@ -1,0 +1,84 @@
+{
+    "schemaVersion": 1,
+    "routeKey": "salle-blanche.home",
+    "reviewStatus": "reviewed",
+    "localScenarioSha256": "7fd66f1cc1629553134a075f1130bd38c7d44b8bed08790d64685aa4cc6c7f58",
+    "items": [
+        {
+            "coverageId": "home.preloader.ready",
+            "kind": "load",
+            "actionId": "preloader-progress-window",
+            "origin": "declared",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "scenario-expectation", "expectationIndex": 0 }
+        },
+        {
+            "coverageId": "home.preloader.enter-hover",
+            "kind": "hover",
+            "actionId": "preloader-enter-hover",
+            "origin": "explorer",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.preloader.exit",
+            "kind": "click",
+            "actionId": "preloader-exit",
+            "origin": "declared",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "scenario-expectation", "expectationIndex": 0 }
+        },
+        {
+            "coverageId": "home.navigation.open",
+            "kind": "click",
+            "actionId": "navigation-menu-open",
+            "origin": "declared",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "registered-outcome", "outcomeKey": "salle.navigation.opened" }
+        },
+        {
+            "coverageId": "home.navigation.preview-pointer-path",
+            "kind": "pointer-path",
+            "actionId": "navigation-preview-pointer-path",
+            "origin": "explorer",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.navigation.preview-hover",
+            "kind": "hover",
+            "actionId": "navigation-preview-hover",
+            "origin": "explorer",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.navigation.close",
+            "kind": "click",
+            "actionId": "navigation-menu-close",
+            "origin": "declared",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "registered-outcome", "outcomeKey": "salle.navigation.closed" }
+        },
+        {
+            "coverageId": "home.about.gallery-scroll",
+            "kind": "scroll",
+            "actionId": "about-gallery-scroll",
+            "origin": "explorer",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.desktop.resize",
+            "kind": "resize",
+            "actionId": "desktop-layout-resize",
+            "origin": "declared",
+            "critical": false,
+            "authentication": "none"
+        }
+    ]
+}

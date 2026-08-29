@@ -38,7 +38,15 @@
                 { "axis": "meta-runtime", "technologyKey": "next" },
                 { "axis": "renderer", "technologyKey": "three" }
             ],
-            "durationMs": 6000
+            "durationMs": 6000,
+            "expect": [
+                {
+                    "kind": "registered-outcome",
+                    "outcomeKey": "aegis.scene.ready",
+                    "state": "completed",
+                    "timeoutMs": 22000
+                }
+            ]
         },
         {
             "kind": "pointer-path",
@@ -53,10 +61,18 @@
             "selector": ".scene-canvas canvas",
             "durationMs": 1800,
             "points": [
-                { "xRatio": 0.2, "yRatio": 0.25 },
+                { "xRatio": 0.7, "yRatio": 0.35 },
                 { "xRatio": 0.75, "yRatio": 0.3 },
                 { "xRatio": 0.65, "yRatio": 0.75 },
                 { "xRatio": 0.3, "yRatio": 0.6 }
+            ],
+            "expect": [
+                {
+                    "kind": "registered-outcome",
+                    "outcomeKey": "aegis.hero.raycast-hit",
+                    "state": "completed",
+                    "timeoutMs": 5000
+                }
             ]
         },
         {

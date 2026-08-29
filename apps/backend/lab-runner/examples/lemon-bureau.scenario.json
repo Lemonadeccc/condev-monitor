@@ -28,6 +28,26 @@
     },
     "actions": [
         {
+            "kind": "wait",
+            "label": "preloader-complete",
+            "actionId": "preloader-complete",
+            "subject": { "scope": "page", "role": "preloader", "surface": "dom" },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "vanilla" },
+                { "axis": "motion-engine", "technologyKey": "gsap" }
+            ],
+            "durationMs": 100,
+            "expect": [
+                {
+                    "kind": "element-state",
+                    "selector": ".preloader",
+                    "state": "hidden",
+                    "timeoutMs": 8000
+                }
+            ]
+        },
+        {
             "kind": "pointer-path",
             "label": "hero-pointer-follow",
             "actionId": "hero-pointer-follow",
@@ -39,25 +59,63 @@
                 { "axis": "graphics-api", "technologyKey": "webgl" }
             ],
             "durationMs": 1600,
+            "selector": ".hero",
             "points": [
                 { "xRatio": 0.2, "yRatio": 0.25 },
                 { "xRatio": 0.75, "yRatio": 0.3 },
                 { "xRatio": 0.65, "yRatio": 0.75 },
                 { "xRatio": 0.3, "yRatio": 0.6 }
+            ],
+            "expect": [
+                {
+                    "kind": "registered-outcome",
+                    "outcomeKey": "lemon.hero.pointer-settled",
+                    "state": "completed",
+                    "timeoutMs": 3000
+                }
             ]
         },
         {
-            "kind": "scroll",
-            "label": "home-scroll",
-            "actionId": "home-scroll",
-            "subject": { "scope": "page", "role": "scroll", "surface": "unknown" },
+            "kind": "click",
+            "label": "navigation-open",
+            "actionId": "navigation-open",
+            "subject": { "scope": "page", "role": "navigation", "surface": "dom" },
             "trigger": { "source": "scenario" },
             "technologies": [
                 { "axis": "ui-framework", "technologyKey": "vanilla" },
-                { "axis": "motion-engine", "technologyKey": "lenis" }
+                { "axis": "motion-engine", "technologyKey": "gsap" }
             ],
-            "deltaY": 1800,
-            "durationMs": 2200
+            "selector": ".nav-toggler",
+            "expect": [
+                {
+                    "kind": "attribute-token",
+                    "selector": ".nav-toggler",
+                    "attribute": "aria-expanded",
+                    "value": "true",
+                    "timeoutMs": 4000
+                }
+            ]
+        },
+        {
+            "kind": "click",
+            "label": "navigation-close",
+            "actionId": "navigation-close",
+            "subject": { "scope": "page", "role": "navigation", "surface": "dom" },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "vanilla" },
+                { "axis": "motion-engine", "technologyKey": "gsap" }
+            ],
+            "selector": ".nav-toggler",
+            "expect": [
+                {
+                    "kind": "attribute-token",
+                    "selector": ".nav-toggler",
+                    "attribute": "aria-expanded",
+                    "value": "false",
+                    "timeoutMs": 4000
+                }
+            ]
         },
         {
             "kind": "press",

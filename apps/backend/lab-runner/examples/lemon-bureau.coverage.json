@@ -1,0 +1,60 @@
+{
+    "schemaVersion": 1,
+    "routeKey": "lemon-bureau.home",
+    "reviewStatus": "reviewed",
+    "localScenarioSha256": "a4e0971baf09b38fe47d136435db5f211ec43a997ba1c962f2ddbde512683f5e",
+    "items": [
+        {
+            "coverageId": "home.preloader.complete",
+            "kind": "load",
+            "actionId": "preloader-complete",
+            "origin": "declared",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "scenario-expectation", "expectationIndex": 0 }
+        },
+        {
+            "coverageId": "home.hero.pointer-follow",
+            "kind": "pointer-path",
+            "actionId": "hero-pointer-follow",
+            "origin": "explorer",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "registered-outcome", "outcomeKey": "lemon.hero.pointer-settled" }
+        },
+        {
+            "coverageId": "home.navigation.open",
+            "kind": "click",
+            "actionId": "navigation-open",
+            "origin": "explorer",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "scenario-expectation", "expectationIndex": 0 }
+        },
+        {
+            "coverageId": "home.navigation.close",
+            "kind": "click",
+            "actionId": "navigation-close",
+            "origin": "explorer",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "scenario-expectation", "expectationIndex": 0 }
+        },
+        {
+            "coverageId": "home.keyboard.scheduling-proxy",
+            "kind": "keyboard",
+            "actionId": "keyboard-scheduling",
+            "origin": "declared",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.desktop.resize",
+            "kind": "resize",
+            "actionId": "desktop-resize",
+            "origin": "declared",
+            "critical": false,
+            "authentication": "none"
+        }
+    ]
+}

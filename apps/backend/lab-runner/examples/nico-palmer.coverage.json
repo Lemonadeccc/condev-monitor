@@ -1,0 +1,90 @@
+{
+    "schemaVersion": 1,
+    "routeKey": "nico-palmer.home",
+    "reviewStatus": "reviewed",
+    "localScenarioSha256": "9705fad6be2d1b27112ff256b61885d2815acb18949eb2a4a410dac41807e767",
+    "items": [
+        {
+            "coverageId": "home.initial-route-transition",
+            "kind": "load",
+            "actionId": "initial-route-transition",
+            "origin": "declared",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.navigation.control-hover",
+            "kind": "hover",
+            "actionId": "primary-navigation-control-hover",
+            "origin": "explorer",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.navigation.open",
+            "kind": "click",
+            "actionId": "primary-navigation-open",
+            "origin": "declared",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "registered-outcome", "outcomeKey": "nico.navigation.opened" }
+        },
+        {
+            "coverageId": "home.navigation.item-hover",
+            "kind": "hover",
+            "actionId": "primary-navigation-item-hover",
+            "origin": "explorer",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.navigation.close",
+            "kind": "click",
+            "actionId": "primary-navigation-close",
+            "origin": "declared",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "registered-outcome", "outcomeKey": "nico.navigation.closed" }
+        },
+        {
+            "coverageId": "home.scroll.forward",
+            "kind": "scroll",
+            "actionId": "home-scroll-forward",
+            "origin": "explorer",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.scroll.forward-settle",
+            "kind": "business-state",
+            "actionId": "forward-scroll-settle",
+            "origin": "declared",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.scroll.reverse",
+            "kind": "scroll",
+            "actionId": "home-scroll-reverse",
+            "origin": "explorer",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.navigation.controls-settle",
+            "kind": "business-state",
+            "actionId": "navigation-controls-settle",
+            "origin": "declared",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.desktop.resize",
+            "kind": "resize",
+            "actionId": "desktop-resize",
+            "origin": "declared",
+            "critical": false,
+            "authentication": "none"
+        }
+    ]
+}

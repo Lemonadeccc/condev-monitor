@@ -42,7 +42,15 @@
                 { "axis": "ui-framework", "technologyKey": "react" },
                 { "axis": "meta-runtime", "technologyKey": "next" }
             ],
-            "durationMs": 3200
+            "durationMs": 3200,
+            "expect": [
+                {
+                    "kind": "element-state",
+                    "selector": ".preloader-enter-button",
+                    "state": "visible",
+                    "timeoutMs": 3000
+                }
+            ]
         },
         {
             "kind": "hover",
@@ -79,7 +87,15 @@
                 { "axis": "meta-runtime", "technologyKey": "next" }
             ],
             "selector": ".preloader-enter-button",
-            "durationMs": 900
+            "durationMs": 900,
+            "expect": [
+                {
+                    "kind": "element-state",
+                    "selector": ".preloader",
+                    "state": "detached",
+                    "timeoutMs": 3000
+                }
+            ]
         },
         {
             "kind": "click",
@@ -99,7 +115,15 @@
                 { "axis": "motion-engine", "technologyKey": "lenis" }
             ],
             "selector": ".nav-toggle",
-            "durationMs": 1400
+            "durationMs": 1400,
+            "expect": [
+                {
+                    "kind": "registered-outcome",
+                    "outcomeKey": "salle.navigation.opened",
+                    "state": "completed",
+                    "timeoutMs": 3000
+                }
+            ]
         },
         {
             "kind": "pointer-path",
@@ -163,7 +187,15 @@
                 { "axis": "motion-engine", "technologyKey": "lenis" }
             ],
             "selector": ".nav-toggle",
-            "durationMs": 1400
+            "durationMs": 1400,
+            "expect": [
+                {
+                    "kind": "registered-outcome",
+                    "outcomeKey": "salle.navigation.closed",
+                    "state": "completed",
+                    "timeoutMs": 3000
+                }
+            ]
         },
         {
             "kind": "scroll",

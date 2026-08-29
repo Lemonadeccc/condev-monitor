@@ -1,0 +1,66 @@
+{
+    "schemaVersion": 1,
+    "routeKey": "aegis.home",
+    "reviewStatus": "reviewed",
+    "localScenarioSha256": "d9aedbb01f7e35ae5fcbc1c5991b27263cbe0f703ff8c6d9c539db346e042f48",
+    "items": [
+        {
+            "coverageId": "home.scene.ready",
+            "kind": "load",
+            "actionId": "scene-load-window",
+            "origin": "declared",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "registered-outcome", "outcomeKey": "aegis.scene.ready" }
+        },
+        {
+            "coverageId": "home.hero.primary-object",
+            "kind": "renderer-object",
+            "actionId": "hero-scene-pointer-path",
+            "origin": "explorer",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "registered-outcome", "outcomeKey": "aegis.hero.raycast-hit" },
+            "hit": {
+                "kind": "renderer-adapter",
+                "adapterKey": "three.raycast",
+                "objectKey": "aegis.hero.primary",
+                "strategy": "raycast"
+            }
+        },
+        {
+            "coverageId": "home.scene.scroll",
+            "kind": "scroll",
+            "actionId": "scene-scroll",
+            "origin": "explorer",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.contact.open",
+            "kind": "click",
+            "actionId": "contact-open",
+            "origin": "declared",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "scenario-expectation", "expectationIndex": 0 }
+        },
+        {
+            "coverageId": "home.contact.close",
+            "kind": "keyboard",
+            "actionId": "contact-close",
+            "origin": "declared",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "scenario-expectation", "expectationIndex": 0 }
+        },
+        {
+            "coverageId": "home.desktop.resize",
+            "kind": "resize",
+            "actionId": "desktop-layout-resize",
+            "origin": "declared",
+            "critical": false,
+            "authentication": "none"
+        }
+    ]
+}

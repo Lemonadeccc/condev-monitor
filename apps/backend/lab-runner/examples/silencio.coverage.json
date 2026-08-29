@@ -1,0 +1,48 @@
+{
+    "schemaVersion": 1,
+    "routeKey": "silencio.home",
+    "reviewStatus": "reviewed",
+    "localScenarioSha256": "19e7b84dd417f3543607edd3aa7c0a18286582236922637993b42d117a6fafaf",
+    "items": [
+        {
+            "coverageId": "home.scene.loaded",
+            "kind": "load",
+            "actionId": "preloader-window",
+            "origin": "declared",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "scenario-expectation", "expectationIndex": 0 }
+        },
+        {
+            "coverageId": "home.product.primary-object",
+            "kind": "renderer-object",
+            "actionId": "product-scene-pointer-path",
+            "origin": "explorer",
+            "critical": true,
+            "authentication": "none",
+            "outcomeContract": { "kind": "registered-outcome", "outcomeKey": "silencio.product.raycast-hit" },
+            "hit": {
+                "kind": "renderer-adapter",
+                "adapterKey": "three.raycast",
+                "objectKey": "silencio.product.primary",
+                "strategy": "raycast"
+            }
+        },
+        {
+            "coverageId": "home.product.sections-scroll",
+            "kind": "scroll",
+            "actionId": "product-sections-scroll",
+            "origin": "explorer",
+            "critical": false,
+            "authentication": "none"
+        },
+        {
+            "coverageId": "home.desktop.resize",
+            "kind": "resize",
+            "actionId": "desktop-layout-resize",
+            "origin": "declared",
+            "critical": false,
+            "authentication": "none"
+        }
+    ]
+}
