@@ -3,7 +3,16 @@ import { onCleanup } from 'solid-js'
 
 type SolidAnimationClient = Pick<AnimationBrowserClient, 'animation'>
 type FrameworkComponentScope = ReturnType<AnimationBrowserClient['animation']['createFrameworkComponentScope']>
+type FrameworkComponentEvidenceInput = Parameters<FrameworkComponentScope['record']>[0]
+export type CondevSolidUpdateCause = NonNullable<FrameworkComponentEvidenceInput['updateCauses']>[number]
 type CleanupRegistrar = (callback: () => void) => void
+
+export interface CondevSolidReactiveWorkEvidence {
+    /** Value-free caller declaration; defaults to `effect`. */
+    cause?: CondevSolidUpdateCause
+    /** Count only. Never pass signal names or values. */
+    observedCauseCount?: number
+}
 
 export interface CondevSolidAnimationOptions {
     /** The same client returned by `@condev-monitor/solid/animation` `init()`. */
@@ -26,7 +35,7 @@ export interface CondevSolidAnimationScope {
      * Measures only the synchronous callback supplied by the application.
      * It is host script work, not Solid render, update, commit, paint, or GPU time.
      */
-    measureReactiveWork<T>(callback: () => T): T
+    measureReactiveWork<T>(callback: () => T, evidence?: CondevSolidReactiveWorkEvidence): T
     getDiagnostics(): CondevSolidAnimationDiagnostics
     destroy(): void
 }
@@ -47,6 +56,7 @@ interface SolidScopeInternals {
 }
 
 const scopeInternals = new WeakMap<CondevSolidAnimationScope, SolidScopeInternals>()
+const SOLID_UPDATE_CAUSES = new Set<CondevSolidUpdateCause>(['signal', 'store', 'dependency', 'effect', 'scheduler', 'unknown'])
 
 function defaultNow(): number {
     return globalThis.performance?.now?.() ?? Date.now()
@@ -154,7 +164,7 @@ export function createCondevSolidAnimationScope(options: CondevSolidAnimationOpt
 
     const scope: CondevSolidAnimationScope = {
         bindTarget,
-        measureReactiveWork<T>(callback: () => T): T {
+        measureReactiveWork<T>(callback: () => T, evidence: CondevSolidReactiveWorkEvidence = {}): T {
             if (destroyed) return callback()
 
             const startedAt = readMonotonicNow(now)
@@ -170,12 +180,19 @@ export function createCondevSolidAnimationScope(options: CondevSolidAnimationOpt
             }
 
             try {
+                const cause = SOLID_UPDATE_CAUSES.has(evidence.cause ?? 'effect') ? (evidence.cause ?? 'effect') : 'unknown'
+                const observedCauseCount =
+                    Number.isSafeInteger(evidence.observedCauseCount) && (evidence.observedCauseCount ?? 0) >= 1
+                        ? Math.min(1_024, evidence.observedCauseCount!)
+                        : 1
                 componentScope?.record({
                     kind: 'host-script',
                     reason: 'solid-caller-explicit',
                     reasonSource: 'solid-caller',
                     durationMs: endedAt - startedAt,
                     timestampMs: endedAt,
+                    updateCauses: [cause],
+                    observedCauseCount,
                 })
                 if (
                     !options.client.animation.recordWorkStats({

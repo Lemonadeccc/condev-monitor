@@ -137,9 +137,17 @@ test('Solid caller-explicit work is associated with a local component scope and 
     const times = [10, 18]
     const scope = createCondevSolidAnimationScope({ client: harness.client, now: () => times.shift() })
     const unbind = scope.bindTarget({})
-    scope.measureReactiveWork(() => 'ok')
+    scope.measureReactiveWork(() => 'ok', { cause: 'signal', observedCauseCount: 2 })
     assert.deepEqual(harness.localRecords, [
-        { kind: 'host-script', reason: 'solid-caller-explicit', reasonSource: 'solid-caller', durationMs: 8, timestampMs: 18 },
+        {
+            kind: 'host-script',
+            reason: 'solid-caller-explicit',
+            reasonSource: 'solid-caller',
+            durationMs: 8,
+            timestampMs: 18,
+            updateCauses: ['signal'],
+            observedCauseCount: 2,
+        },
     ])
     const inspect = harness.registrations[0].inspect
     assert.equal(inspect({ inspectionPurpose: 'local', evidenceWindow: { startedAt: 0, endedAt: 20 } }).frameworkScopes.length, 1)
