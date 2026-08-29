@@ -3,9 +3,8 @@ import { SilencioPage } from "./_silencio/SilencioPage";
 
 export default function Home() {
   return (
-    <>
+    <SilencioExperience>
       <SilencioPage />
-      <SilencioExperience />
-    </>
+    </SilencioExperience>
   );
 }

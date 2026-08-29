@@ -908,9 +908,9 @@ importers:
 
   examples/animation-fixtures/nico-palmer:
     dependencies:
-      '@condev-monitor/monitor-sdk-browser':
+      '@condev-monitor/react':
         specifier: workspace:*
-        version: link:../../../packages/browser
+        version: link:../../../packages/react
       '@gsap/react':
         specifier: ^2.1.2
         version: 2.1.2(gsap@3.15.0)(react@19.2.6)
@@ -978,9 +978,9 @@ importers:
 
   examples/animation-fixtures/salle-blanche:
     dependencies:
-      '@condev-monitor/monitor-sdk-browser':
+      '@condev-monitor/react':
         specifier: workspace:*
-        version: link:../../../packages/browser
+        version: link:../../../packages/react
       '@gsap/react':
         specifier: ^2.1.2
         version: 2.1.2(gsap@3.15.0)(react@19.2.3)
@@ -1008,9 +1008,12 @@ importers:
 
   examples/animation-fixtures/silencio:
     dependencies:
-      '@condev-monitor/monitor-sdk-browser':
+      '@condev-monitor/monitor-sdk-animation-renderer':
         specifier: workspace:*
-        version: link:../../../packages/browser
+        version: link:../../../packages/animation-renderer
+      '@condev-monitor/react':
+        specifier: workspace:*
+        version: link:../../../packages/react
       gsap:
         specifier: ^3.15.0
         version: 3.15.0

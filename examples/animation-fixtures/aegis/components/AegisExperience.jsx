@@ -2,11 +2,13 @@
 
 import dynamic from "next/dynamic";
 import {
+  Profiler,
   createElement,
   useCallback,
   useRef,
   useState,
 } from "react";
+import { useCondevReactComponentScope } from "@condev-monitor/react/animation";
 import {
   FlickerText,
   RiseText,
@@ -27,6 +29,7 @@ import {
 import { gsap, useGSAP } from "@/lib/gsapClient";
 import { getScrollOffset } from "@/lib/scrollRuntime";
 import { useReducedMotion } from "@/lib/useReducedMotion";
+import { condevClient } from "@/instrumentation-client";
 
 const AegisCanvas = dynamic(
   () => import("./AegisCanvas").then((module) => module.AegisCanvas),
@@ -326,47 +329,101 @@ function HudOverlay({ onOpenContact }) {
 }
 
 export function AegisExperience() {
+  const pageRef = useRef(null);
+  const pageMonitor = useCondevReactComponentScope({
+    client: condevClient,
+    label: "Aegis experience",
+    targetRef: pageRef,
+  });
   const [contactOpen, setContactOpen] = useState(false);
+  const contactOpenRef = useRef(false);
   const [hudVisible, setHudVisible] = useState(false);
+  const hudVisibleRef = useRef(false);
   const [bootStatus, setBootStatus] = useState("loading");
+  const bootStatusRef = useRef("loading");
   const [rendererState, setRendererState] = useState({
     backend: "",
     ready: false,
   });
+  const rendererStateRef = useRef(rendererState);
 
-  const handleSceneReady = useCallback((backend) => {
-    setRendererState({
-      backend,
-      ready: true,
-    });
-  }, []);
+  const handleSceneReady = useCallback(
+    (backend) => {
+      const current = rendererStateRef.current;
+      if (current.ready && current.backend === backend) {
+        return;
+      }
+      const next = {
+        backend,
+        ready: true,
+      };
+      rendererStateRef.current = next;
+      pageMonitor.recordUpdateCause("state");
+      setRendererState(next);
+    },
+    [pageMonitor]
+  );
+  const handleBootState = useCallback(
+    (status) => {
+      if (bootStatusRef.current === status) {
+        return;
+      }
+      bootStatusRef.current = status;
+      pageMonitor.recordUpdateCause("state");
+      setBootStatus(status);
+    },
+    [pageMonitor]
+  );
   const handleRevealStart = useCallback(() => {
+    if (hudVisibleRef.current) {
+      return;
+    }
+    hudVisibleRef.current = true;
+    pageMonitor.recordUpdateCause("state");
     setHudVisible(true);
-  }, []);
+  }, [pageMonitor]);
+  const handleOpenContact = useCallback(() => {
+    if (contactOpenRef.current) {
+      return;
+    }
+    contactOpenRef.current = true;
+    pageMonitor.recordUpdateCause("state");
+    setContactOpen(true);
+  }, [pageMonitor]);
+  const handleCloseContact = useCallback(() => {
+    if (!contactOpenRef.current) {
+      return;
+    }
+    contactOpenRef.current = false;
+    pageMonitor.recordUpdateCause("state");
+    setContactOpen(false);
+  }, [pageMonitor]);
 
   return (
-    <main className="aegis-page">
-      <AegisCanvas
-        introStarted={hudVisible}
-        onBootState={setBootStatus}
-        onReady={handleSceneReady}
-      />
-      {hudVisible ? (
-        <HudOverlay onOpenContact={() => setContactOpen(true)} />
-      ) : null}
-
-      {contactOpen ? (
-        <ContactOverlay
-          copy={contactCopy}
-          onClose={() => setContactOpen(false)}
+    <Profiler id="condev-aegis-experience" onRender={pageMonitor.onRender}>
+      <main className="aegis-page" ref={pageRef}>
+        <AegisCanvas
+          introStarted={hudVisible}
+          onBootState={handleBootState}
+          onReady={handleSceneReady}
         />
-      ) : null}
+        {hudVisible ? (
+          <HudOverlay onOpenContact={handleOpenContact} />
+        ) : null}
 
-      <LoaderOverlay
-        onRevealStart={handleRevealStart}
-        ready={rendererState.ready}
-        status={bootStatus}
-      />
-    </main>
+        {contactOpen ? (
+          <ContactOverlay
+            copy={contactCopy}
+            onClose={handleCloseContact}
+          />
+        ) : null}
+
+        <LoaderOverlay
+          onRevealStart={handleRevealStart}
+          ready={rendererState.ready}
+          status={bootStatus}
+        />
+      </main>
+    </Profiler>
   );
 }

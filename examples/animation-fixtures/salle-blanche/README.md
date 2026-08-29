@@ -1,5 +1,13 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Condev animation fixture
+
+Run this workspace fixture with `pnpm --filter salle-blanche dev` and open
+`http://127.0.0.1:43103`. `src/instrumentation-client.js` owns the single
+animation client. `src/client-layout.js` adds the public root Profiler and one
+optional local route-page scope; only actual breakpoint state changes are
+caller-attested. Local development needs no DSN and does not upload.
+
 ## Getting Started
 
 First, run the development server:

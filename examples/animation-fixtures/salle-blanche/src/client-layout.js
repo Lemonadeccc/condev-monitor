@@ -1,12 +1,17 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { Profiler, useEffect, useState, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { ReactLenis } from "lenis/react";
 import { ViewTransitions } from "next-view-transitions";
+import {
+  CondevAnimationProfiler,
+  useCondevReactComponentScope,
+} from "@condev-monitor/react/animation";
 
 import Nav from "@/components/Nav/Nav";
 import Footer from "@/components/Footer/Footer";
+import { condevClient } from "@/instrumentation-client";
 
 const MOBILE_BREAKPOINT = 1000;
 const VIEW_TRANSITION_SETTLE_MS = 1600;
@@ -48,11 +53,22 @@ export default function ClientLayout({ children }) {
   const pathname = usePathname();
 
   const [isMobile, setIsMobile] = useState(false);
+  const isMobileRef = useRef(false);
+  const pageMonitor = useCondevReactComponentScope({
+    client: condevClient,
+    label: "Route page",
+    targetRef: pageRef,
+  });
 
   /* track breakpoint changes */
   useEffect(() => {
-    const handleResize = () =>
-      setIsMobile(window.innerWidth <= MOBILE_BREAKPOINT);
+    const handleResize = () => {
+      const nextIsMobile = window.innerWidth <= MOBILE_BREAKPOINT;
+      if (isMobileRef.current === nextIsMobile) return;
+      isMobileRef.current = nextIsMobile;
+      pageMonitor.recordUpdateCause("state");
+      setIsMobile(nextIsMobile);
+    };
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
@@ -80,16 +96,20 @@ export default function ClientLayout({ children }) {
   const lenisOptions = isMobile ? LENIS_MOBILE : LENIS_DESKTOP;
 
   return (
-    <ViewTransitions>
-      <ReactLenis root options={lenisOptions}>
-        <Nav pageRef={pageWrapperRef} />
-        <div className="page" ref={pageRef}>
-          <div className="page-wrapper" ref={pageWrapperRef}>
-            {children}
-            <Footer />
-          </div>
-        </div>
-      </ReactLenis>
-    </ViewTransitions>
+    <CondevAnimationProfiler client={condevClient}>
+      <Profiler id="condev-salle-route-page" onRender={pageMonitor.onRender}>
+        <ViewTransitions>
+          <ReactLenis root options={lenisOptions}>
+            <Nav pageRef={pageWrapperRef} />
+            <div className="page" ref={pageRef}>
+              <div className="page-wrapper" ref={pageWrapperRef}>
+                {children}
+                <Footer />
+              </div>
+            </div>
+          </ReactLenis>
+        </ViewTransitions>
+      </Profiler>
+    </CondevAnimationProfiler>
   );
 }

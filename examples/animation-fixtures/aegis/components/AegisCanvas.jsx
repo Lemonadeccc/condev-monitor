@@ -14,6 +14,23 @@ import { useReducedMotion } from "@/lib/useReducedMotion";
 
 const rendererBackends = new WeakMap();
 
+function detectRendererBackend(renderer) {
+  if (renderer?.backend?.isWebGPUBackend === true) return "webgpu";
+  if (renderer?.backend?.isWebGLBackend === true) return "webgl2";
+  return null;
+}
+
+function registerRendererBackend(renderer) {
+  const backend = detectRendererBackend(renderer);
+  if (backend) {
+    rendererBackends.set(renderer, backend);
+    return;
+  }
+  console.warn(
+    "[AEGIS] Renderer backend is not publicly identifiable; deep renderer monitoring is disabled."
+  );
+}
+
 async function createRenderer(properties) {
   const { WebGPURenderer } = await import("three/webgpu");
   const webGpuAvailable =
@@ -29,10 +46,7 @@ async function createRenderer(properties) {
     renderer.toneMapping = ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.3;
     await renderer.init();
-    rendererBackends.set(
-      renderer,
-      webGpuAvailable ? "webgpu" : "webgl2"
-    );
+    registerRendererBackend(renderer);
   } catch (error) {
     console.warn(
       "[AEGIS] WebGPU initialization failed; using Three's WebGL 2 node backend.",
@@ -47,7 +61,7 @@ async function createRenderer(properties) {
     renderer.toneMapping = ACESFilmicToneMapping;
     renderer.toneMappingExposure = 1.3;
     await renderer.init();
-    rendererBackends.set(renderer, "webgl2");
+    registerRendererBackend(renderer);
   }
 
   return renderer;
@@ -55,14 +69,15 @@ async function createRenderer(properties) {
 
 function AegisR3FObserver() {
   const renderer = useThree((state) => state.gl);
+  const backend = rendererBackends.get(renderer);
 
-  if (rendererBackends.get(renderer) !== "webgl2") {
+  if (backend !== "webgl2" && backend !== "webgpu") {
     return null;
   }
 
   return (
     <CondevR3FObserver
-      backend="webgl2"
+      backend={backend}
       client={condevClient}
     />
   );

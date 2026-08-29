@@ -22,6 +22,13 @@ Animation monitoring starts locally without a DSN. To test an approved upload
 target, provide `NEXT_PUBLIC_MONITOR_DSN` only in the command environment; do
 not add it to an `.env` file.
 
+The integration uses one shared React animation client, a public root Profiler,
+one local component scope bound to the existing `#wrapper`, and a fail-open
+Three/WebGL renderer adapter around the original render call. No React Fiber or
+Three private fields are inspected. Because the missing GLB/HDR assets prevent
+the original scene from completing, renderer instrumentation working here is
+not evidence that every product animation completed.
+
 ## Production
 
 ```bash

@@ -23,8 +23,13 @@ Open `http://127.0.0.1:43104`.
 
 Animation monitoring is initialized once from `instrumentation-client.js`.
 `components/AegisCanvas.jsx` adds only the public React Profiler and R3F
-observer around the existing scene. Local development needs no DSN and does
-not upload. To test an approved upload target, provide
+observer around the existing scene. It uses the renderer's actual public backend
+flag: WebGPU records public per-frame draw/primitive counters without claiming
+GPU timing, while a real WebGL fallback uses the WebGL counter path.
+`components/AegisExperience.jsx` binds one
+local component scope to the existing page root and attests only the known
+state updates that it performs; it does not inspect React internals. Local
+development needs no DSN and does not upload. To test an approved upload target, provide
 `NEXT_PUBLIC_MONITOR_DSN` only in the command environment; do not add it to an
 `.env` file.
 

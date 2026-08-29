@@ -1,9 +1,9 @@
-import { init } from '@condev-monitor/monitor-sdk-browser/animation'
+import { init } from '@condev-monitor/react/animation'
 
 const development = process.env.NODE_ENV !== 'production'
 const dsn = process.env.NEXT_PUBLIC_MONITOR_DSN?.trim()
 
-init({
+export const condevClient = init({
     dsn,
     animation: {
         autoStart: development || Boolean(dsn),

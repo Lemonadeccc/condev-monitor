@@ -1,5 +1,13 @@
 # React + Vite
 
+## Condev animation fixture
+
+Run this workspace fixture with `pnpm --filter nico-palmer dev` and open
+`http://127.0.0.1:43102`. `src/condev-monitor.js` owns the single animation
+client, `src/main.jsx` adds the public root Profiler, and the existing primary
+navigation adds one optional local component scope with caller-attested state
+updates. Local development needs no DSN and does not upload.
+
 This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
 Currently, two official plugins are available:

@@ -1,32 +1,19 @@
-import { init } from "@condev-monitor/monitor-sdk-browser/animation";
+import { CondevAnimationProfiler } from "@condev-monitor/react/animation";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import "./index.css";
 import App from "./App.jsx";
 import { BrowserRouter as Router, Route, Routes } from "react-router-dom";
-
-const dsn = import.meta.env.VITE_MONITOR_DSN?.trim();
-
-init({
-  dsn,
-  animation: {
-    autoStart: import.meta.env.DEV || Boolean(dsn),
-    devtools: import.meta.env.DEV,
-    rum: dsn ? { contractVersion: 2, sampleRate: 1 } : false,
-    context: {
-      routeKey: "nico-palmer",
-      environment: import.meta.env.MODE,
-      runtimeFamily: "react",
-    },
-  },
-});
+import { condevClient } from "./condev-monitor.js";
 
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <Router>
-      <Routes>
-        <Route path="/*" element={<App />} />
-      </Routes>
-    </Router>
+    <CondevAnimationProfiler client={condevClient}>
+      <Router>
+        <Routes>
+          <Route path="/*" element={<App />} />
+        </Routes>
+      </Router>
+    </CondevAnimationProfiler>
   </StrictMode>
 );

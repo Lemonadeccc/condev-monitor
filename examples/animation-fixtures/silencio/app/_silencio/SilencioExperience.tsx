@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect } from "react";
+import {
+  CondevAnimationProfiler,
+  useCondevReactComponentScope,
+} from "@condev-monitor/react/animation";
+import {
+  createThreeRendererAdapter,
+  createWebGlGpuTimer,
+} from "@condev-monitor/monitor-sdk-animation-renderer";
+import { Profiler, type ReactNode, useEffect } from "react";
 import gsap from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
 import { ScrollSmoother } from "gsap/ScrollSmoother";
@@ -10,6 +18,7 @@ import * as THREE from "three";
 import { DRACOLoader } from "three/examples/jsm/loaders/DRACOLoader.js";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { HDRLoader } from "three/examples/jsm/loaders/HDRLoader.js";
+import { condevClient } from "@/instrumentation-client";
 
 type ProductId = "marco1" | "marco2" | "marco3" | "marco4";
 
@@ -169,6 +178,8 @@ const sceneModels: SceneModel[] = [
 function query<T extends Element>(selector: string): T | null {
   return document.querySelector<T>(selector);
 }
+
+const resolveSilencioRoot = () => query<HTMLElement>("#wrapper");
 
 function playAudio(src: string) {
   const audio = new Audio(src);
@@ -1373,6 +1384,28 @@ function initThreeScene(isMobile: boolean) {
   renderer.toneMappingExposure = 1;
   mount.appendChild(renderer.domElement);
 
+  const gl = renderer.getContext();
+  const backend =
+    typeof WebGL2RenderingContext !== "undefined" &&
+    gl instanceof WebGL2RenderingContext
+      ? "webgl2"
+      : "webgl";
+  const rendererMonitor = createThreeRendererAdapter({
+    animation: condevClient.animation,
+    renderer,
+    backend,
+    gpuTimer: {
+      timer: createWebGlGpuTimer({
+        gl,
+        backend,
+        disjointQueryOwnership: "exclusive",
+        sampleEvery: 60,
+      }),
+      ownership: "adapter",
+    },
+    target: { element: renderer.domElement },
+  });
+
   const group = new THREE.Group();
   group.rotation.set(1, 0, 0);
   group.position.set(0, 0, -3);
@@ -1474,7 +1507,7 @@ function initThreeScene(isMobile: boolean) {
     frame = window.requestAnimationFrame(render);
     const elapsedTime = clock.getElapsedTime();
     floatingModels.forEach((model) => updateFloatingModel(model, elapsedTime));
-    renderer.render(scene, camera);
+    rendererMonitor.render(scene, camera);
   };
   render();
 
@@ -1519,6 +1552,7 @@ function initThreeScene(isMobile: boolean) {
     environmentMap?.dispose();
     pmremGenerator.dispose();
     dracoLoader.dispose();
+    rendererMonitor.dispose();
     renderer.dispose();
     renderer.domElement.remove();
   };
@@ -1610,7 +1644,6 @@ function initDesktop(context: gsap.Context) {
     autoAlpha: 1,
     ease: "power4.inOut",
   });
-
   ([
     [".etiqueta.uno", "#tercera", "#border1", 0.325, "-200%"],
     [".etiqueta.dos", "#aesthetics", "#border2", 0, "-100%"],
@@ -1783,7 +1816,13 @@ function initMobile() {
   };
 }
 
-export function SilencioExperience() {
+export function SilencioExperience({ children }: { children: ReactNode }) {
+  const experienceMonitor = useCondevReactComponentScope({
+    client: condevClient,
+    label: "Silencio experience",
+    resolveTarget: resolveSilencioRoot,
+  });
+
   useEffect(() => {
     gsap.registerPlugin(ScrollTrigger, ScrollSmoother, SplitText);
 
@@ -1814,5 +1853,14 @@ export function SilencioExperience() {
     };
   }, []);
 
-  return null;
+  return (
+    <CondevAnimationProfiler client={condevClient}>
+      <Profiler
+        id="condev-silencio-experience"
+        onRender={experienceMonitor.onRender}
+      >
+        {children}
+      </Profiler>
+    </CondevAnimationProfiler>
+  );
 }

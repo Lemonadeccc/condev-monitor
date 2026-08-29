@@ -12,7 +12,7 @@ const monitorClient = init({
     devtools: import.meta.env.DEV,
     rum: dsn ? { contractVersion: 2, sampleRate: 1 } : false,
     context: {
-      routeKey: "lemon-bureau",
+      routeKey: "lemon-bureau.home",
       environment: import.meta.env.MODE,
       runtimeFamily: "vanilla",
     },
@@ -20,6 +20,10 @@ const monitorClient = init({
 });
 
 let lenis = null;
+let motionSession = null;
+let scrollWindow = null;
+let scrollWindowTimer = null;
+let removeLenisScrollListener = null;
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -46,7 +50,21 @@ function initLenisScroll() {
     touchMultiplier: isMobile ? 1.5 : 2,
   });
 
-  lenis.on("scroll", ScrollTrigger.update);
+  motionSession = monitorClient.animation.createMotionObserverSession({
+    gsapTicker: { ticker: gsap.ticker },
+    lenisScroll: { lenis },
+    scrollTrigger: { scrollTrigger: ScrollTrigger },
+  });
+
+  removeLenisScrollListener = lenis.on("scroll", () => {
+    ScrollTrigger.update();
+    scrollWindow ??= motionSession.begin("scroll", "lenis-smooth-scroll");
+    window.clearTimeout(scrollWindowTimer);
+    scrollWindowTimer = window.setTimeout(() => {
+      scrollWindow?.end();
+      scrollWindow = null;
+    }, 180);
+  });
   gsap.ticker.add((time) => lenis.raf(time * 1000));
   gsap.ticker.lagSmoothing(0);
 
@@ -56,6 +74,30 @@ function initLenisScroll() {
   // the final layout + active Lenis loop.
   requestAnimationFrame(() => ScrollTrigger.refresh());
   window.addEventListener("load", () => ScrollTrigger.refresh(), { once: true });
+}
+
+function disposeHostObservers() {
+  window.clearTimeout(scrollWindowTimer);
+  scrollWindowTimer = null;
+  scrollWindow?.cancel();
+  scrollWindow = null;
+  removeLenisScrollListener?.();
+  removeLenisScrollListener = null;
+  motionSession?.dispose();
+  motionSession = null;
+}
+
+const handlePageHide = (event) => {
+  if (!event.persisted) disposeHostObservers();
+};
+
+window.addEventListener("pagehide", handlePageHide);
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    window.removeEventListener("pagehide", handlePageHide);
+    disposeHostObservers();
+  });
 }
 
 export { lenis, monitorClient };

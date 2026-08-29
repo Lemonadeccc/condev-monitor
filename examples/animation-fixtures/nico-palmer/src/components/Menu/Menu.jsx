@@ -1,8 +1,10 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { Profiler, useEffect, useRef, useState } from "react";
 import "./Menu.css";
 
+import { useCondevReactComponentScope } from "@condev-monitor/react/animation";
 import { Link, useLocation } from "react-router-dom";
 import { gsap } from "gsap";
+import { condevClient } from "../../condev-monitor.js";
 
 const Menu = () => {
   const menuLinks = [
@@ -15,7 +17,13 @@ const Menu = () => {
 
   const location = useLocation();
   const menuContainer = useRef();
+  const menuMonitor = useCondevReactComponentScope({
+    client: condevClient,
+    label: "Primary navigation",
+    targetRef: menuContainer,
+  });
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const isMenuOpenRef = useRef(false);
   const menuAnimation = useRef();
   const menuLinksAnimation = useRef();
   const menuBarAnimation = useRef();
@@ -23,8 +31,10 @@ const Menu = () => {
   const lastScrollY = useRef(0);
   const menuBarRef = useRef();
 
-  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+  const windowWidthRef = useRef(window.innerWidth);
+  const [windowWidth, setWindowWidth] = useState(windowWidthRef.current);
   const [shouldDelayClose, setShouldDelayClose] = useState(false);
+  const shouldDelayCloseRef = useRef(false);
   const previousPathRef = useRef(location.pathname);
   const scrollPositionRef = useRef(0);
 
@@ -46,21 +56,27 @@ const Menu = () => {
 
   const toggleMenu = () => {
     document.querySelector(".hamburger-icon").classList.toggle("active");
-    const newMenuState = !isMenuOpen;
+    const newMenuState = !isMenuOpenRef.current;
+    isMenuOpenRef.current = newMenuState;
+    menuMonitor.recordUpdateCause("state");
     setIsMenuOpen(newMenuState);
     toggleBodyScroll(newMenuState);
   };
 
   const closeMenu = () => {
-    if (isMenuOpen) {
+    if (isMenuOpenRef.current) {
       document.querySelector(".hamburger-icon").classList.toggle("active");
+      isMenuOpenRef.current = false;
+      menuMonitor.recordUpdateCause("state");
       setIsMenuOpen(false);
       toggleBodyScroll(false);
     } else return;
   };
 
   const handleLinkClick = (path) => {
-    if (path !== location.pathname) {
+    if (path !== location.pathname && !shouldDelayCloseRef.current) {
+      shouldDelayCloseRef.current = true;
+      menuMonitor.recordUpdateCause("state");
       setShouldDelayClose(true);
     }
   };
@@ -68,8 +84,20 @@ const Menu = () => {
   useEffect(() => {
     if (location.pathname !== previousPathRef.current && shouldDelayClose) {
       const timer = setTimeout(() => {
-        closeMenu();
-        setShouldDelayClose(false);
+        let updateCount = 0;
+        if (isMenuOpenRef.current) {
+          document.querySelector(".hamburger-icon").classList.toggle("active");
+          isMenuOpenRef.current = false;
+          setIsMenuOpen(false);
+          toggleBodyScroll(false);
+          updateCount += 1;
+        }
+        if (shouldDelayCloseRef.current) {
+          shouldDelayCloseRef.current = false;
+          setShouldDelayClose(false);
+          updateCount += 1;
+        }
+        if (updateCount > 0) menuMonitor.recordUpdateCause("state", updateCount);
       }, 700);
 
       previousPathRef.current = location.pathname;
@@ -81,7 +109,11 @@ const Menu = () => {
 
   useEffect(() => {
     const handleResize = () => {
-      setWindowWidth(window.innerWidth);
+      const nextWidth = window.innerWidth;
+      if (windowWidthRef.current === nextWidth) return;
+      windowWidthRef.current = nextWidth;
+      menuMonitor.recordUpdateCause("state");
+      setWindowWidth(nextWidth);
     };
 
     window.addEventListener("resize", handleResize);
@@ -180,7 +212,8 @@ const Menu = () => {
   }, []);
 
   return (
-    <div className="menu-container" ref={menuContainer}>
+    <Profiler id="condev-nico-primary-navigation" onRender={menuMonitor.onRender}>
+      <div className="menu-container" ref={menuContainer}>
       <div className="menu-bar" ref={menuBarRef}>
         <div className="menu-bar-container">
           <div className="menu-logo" onClick={closeMenu}>
@@ -216,7 +249,8 @@ const Menu = () => {
           </div>
         </div>
       </div>
-    </div>
+      </div>
+    </Profiler>
   );
 };
 
