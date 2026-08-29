@@ -14,6 +14,7 @@ import { LabPolicyEvaluationJobEntity } from './entity/lab-policy-evaluation-job
 import { LabProjectPolicyEntity } from './entity/lab-project-policy.entity'
 import { LabService } from './lab.service'
 import type { AnimationLabComparisonResult } from './lab-comparison'
+import { LabNotificationService } from './lab-notification.service'
 import {
     digestLabProjectPolicyDefinition,
     evaluateLabProjectAbsoluteBudget,
@@ -46,7 +47,8 @@ export class LabPolicyService {
         @InjectRepository(LabAlertEventEntity) private readonly alertEventRepository: Repository<LabAlertEventEntity>,
         private readonly dataSource: DataSource,
         private readonly applicationService: ApplicationService,
-        private readonly labService: LabService
+        private readonly labService: LabService,
+        private readonly notificationService: LabNotificationService
     ) {}
 
     async createPolicy(userId: number, input: CreateLabProjectPolicyInput) {
@@ -446,6 +448,7 @@ export class LabPolicyService {
             const previous = state?.status === 'open' ? 'open' : state?.status === 'healthy' ? 'healthy' : 'unknown'
             const next = rule.status === 'breach' ? 'open' : rule.status === 'within-policy' ? 'healthy' : previous
             const eventType = previous !== next ? (next === 'open' ? 'opened' : previous === 'open' ? 'resolved' : null) : null
+            const transitionEventId = eventType ? randomUUID() : null
             if (!state) {
                 state = states.create({
                     id: randomUUID(),
@@ -456,8 +459,11 @@ export class LabPolicyService {
                     status: next,
                     severity: rule.severity,
                     lastEvaluationId: evaluation.id,
+                    transitionEventId,
                     openedAt: next === 'open' ? now : null,
                     resolvedAt: null,
+                    acknowledgedBy: null,
+                    acknowledgedAt: null,
                     updatedAt: now,
                 })
             } else {
@@ -465,10 +471,17 @@ export class LabPolicyService {
                 state.severity = rule.severity
                 state.lastEvaluationId = evaluation.id
                 state.updatedAt = now
+                if (transitionEventId) state.transitionEventId = transitionEventId
                 if (eventType === 'opened') {
                     state.openedAt = now
                     state.resolvedAt = null
-                } else if (eventType === 'resolved') state.resolvedAt = now
+                    state.acknowledgedBy = null
+                    state.acknowledgedAt = null
+                } else if (eventType === 'resolved') {
+                    state.resolvedAt = now
+                    state.acknowledgedBy = null
+                    state.acknowledgedAt = null
+                }
             }
             await states.save(state)
             if (!eventType) continue
@@ -485,7 +498,7 @@ export class LabPolicyService {
             if (Buffer.byteLength(evidence, 'utf8') > ALERT_EVIDENCE_MAX_BYTES) throw new BadRequestException('Alert evidence is too large')
             const fingerprint = this.fingerprint(`${evaluation.id}:${rule.ruleId}:${eventType}`)
             const event = events.create({
-                id: randomUUID(),
+                id: transitionEventId!,
                 appId: binding.appId,
                 stateId: state.id,
                 evaluationId: evaluation.id,
@@ -499,6 +512,7 @@ export class LabPolicyService {
                 createdAt: now,
             })
             await events.save(event)
+            await this.notificationService.enqueueEvent(manager, event)
         }
     }
 
@@ -514,26 +528,30 @@ export class LabPolicyService {
         for (const state of existing) {
             if (state.status === 'superseded') continue
             const previous = state.status
+            const transitionEventId = previous === 'open' ? randomUUID() : null
             state.status = 'superseded'
+            state.acknowledgedBy = null
+            state.acknowledgedAt = null
             state.updatedAt = now
+            if (transitionEventId) state.transitionEventId = transitionEventId
             await states.save(state)
             if (previous !== 'open') continue
-            await events.save(
-                events.create({
-                    id: randomUUID(),
-                    appId: binding.appId,
-                    stateId: state.id,
-                    evaluationId: state.lastEvaluationId,
-                    ruleId: state.ruleId,
-                    eventType: 'superseded',
-                    severity: state.severity,
-                    fromState: 'open',
-                    toState: 'superseded',
-                    fingerprint: this.fingerprint(`${state.id}:${replacementBindingId}:superseded`),
-                    evidence: JSON.stringify({ replacementBindingId, reason: 'baseline-or-policy-binding-replaced' }),
-                    createdAt: now,
-                })
-            )
+            const event = events.create({
+                id: transitionEventId!,
+                appId: binding.appId,
+                stateId: state.id,
+                evaluationId: state.lastEvaluationId,
+                ruleId: state.ruleId,
+                eventType: 'superseded',
+                severity: state.severity,
+                fromState: 'open',
+                toState: 'superseded',
+                fingerprint: this.fingerprint(`${state.id}:${replacementBindingId}:superseded`),
+                evidence: JSON.stringify({ replacementBindingId, reason: 'baseline-or-policy-binding-replaced' }),
+                createdAt: now,
+            })
+            await events.save(event)
+            await this.notificationService.enqueueEvent(manager, event)
         }
     }
 
@@ -609,6 +627,8 @@ export class LabPolicyService {
             lastEvaluationId: state.lastEvaluationId,
             openedAt: state.openedAt?.toISOString() ?? null,
             resolvedAt: state.resolvedAt?.toISOString() ?? null,
+            acknowledged: Boolean(state.acknowledgedAt),
+            acknowledgedAt: state.acknowledgedAt?.toISOString() ?? null,
             updatedAt: state.updatedAt.toISOString(),
         }
     }

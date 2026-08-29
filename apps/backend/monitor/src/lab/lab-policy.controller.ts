@@ -1,24 +1,31 @@
-import { Body, Controller, Get, Param, Post, Put, Query, Request, Res, UseGuards } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Param, Post, Put, Query, Request, Res, UseGuards } from '@nestjs/common'
 import { AuthGuard } from '@nestjs/passport'
 import type { Response } from 'express'
 
+import { LabNotificationService } from './lab-notification.service'
 import {
     parseCreateLabPolicyEvaluationInput,
     parseCreateLabProjectPolicyInput,
     parseCreateLabProjectPolicyVersionInput,
+    parseLabNotificationMutationInput,
     parseLabPolicyAppId,
     parseLabPolicyKey,
     parseLabPolicyOptionalActive,
     parseLabPolicyOptionalRunId,
     parseLabPolicyPagination,
+    parseLabPolicyUuid,
     parsePutLabBaselineBindingInput,
+    parsePutLabNotificationDestinationInput,
 } from './lab-policy.contracts'
 import { LabPolicyService } from './lab-policy.service'
 
 @Controller('/labs')
 @UseGuards(AuthGuard('jwt'))
 export class LabPolicyController {
-    constructor(private readonly policyService: LabPolicyService) {}
+    constructor(
+        private readonly policyService: LabPolicyService,
+        private readonly notificationService: LabNotificationService
+    ) {}
 
     @Post('/policies')
     async createPolicy(@Body() body: unknown, @Request() req, @Res({ passthrough: true }) response: Response) {
@@ -144,6 +151,97 @@ export class LabPolicyController {
         return {
             success: true,
             data: await this.policyService.listAlertEvents(req.user.id, parseLabPolicyAppId(appId)),
+        }
+    }
+
+    @Put('/notification-destinations/:destinationKey')
+    async putNotificationDestination(
+        @Param('destinationKey') destinationKey: string,
+        @Body() body: unknown,
+        @Request() req,
+        @Res({ passthrough: true }) response: Response
+    ) {
+        this.noStore(response)
+        return {
+            success: true,
+            data: await this.notificationService.putDestination(
+                req.user.id,
+                parseLabPolicyKey(destinationKey, 'destinationKey'),
+                parsePutLabNotificationDestinationInput(body)
+            ),
+        }
+    }
+
+    @Get('/notification-destinations')
+    async listNotificationDestinations(@Query('appId') appId: string, @Request() req) {
+        return {
+            success: true,
+            data: await this.notificationService.listDestinations(req.user.id, parseLabPolicyAppId(appId)),
+        }
+    }
+
+    @Get('/notification-deliveries')
+    async listNotificationDeliveries(@Query('appId') appId: string, @Request() req) {
+        return {
+            success: true,
+            data: await this.notificationService.listDeliveries(req.user.id, parseLabPolicyAppId(appId)),
+        }
+    }
+
+    @Post('/notification-deliveries/:deliveryId/retry')
+    async retryNotificationDelivery(
+        @Param('deliveryId') deliveryId: string,
+        @Body() body: unknown,
+        @Request() req,
+        @Res({ passthrough: true }) response: Response
+    ) {
+        this.noStore(response)
+        const input = parseLabNotificationMutationInput(body)
+        return {
+            success: true,
+            data: await this.notificationService.retryDelivery(req.user.id, input.appId, parseLabPolicyUuid(deliveryId, 'deliveryId')),
+        }
+    }
+
+    @Put('/alert-states/:stateId/acknowledgement')
+    async acknowledgeAlertState(
+        @Param('stateId') stateId: string,
+        @Body() body: unknown,
+        @Request() req,
+        @Res({ passthrough: true }) response: Response
+    ) {
+        this.noStore(response)
+        const input = parseLabNotificationMutationInput(body)
+        return {
+            success: true,
+            data: await this.notificationService.acknowledge(req.user.id, input.appId, parseLabPolicyUuid(stateId, 'stateId'), true),
+        }
+    }
+
+    @Delete('/alert-states/:stateId/acknowledgement')
+    async clearAlertStateAcknowledgement(
+        @Param('stateId') stateId: string,
+        @Query('appId') appId: string,
+        @Request() req,
+        @Res({ passthrough: true }) response: Response
+    ) {
+        this.noStore(response)
+        return {
+            success: true,
+            data: await this.notificationService.acknowledge(
+                req.user.id,
+                parseLabPolicyAppId(appId),
+                parseLabPolicyUuid(stateId, 'stateId'),
+                false
+            ),
+        }
+    }
+
+    @Get('/alert-acknowledgements')
+    async listAlertAcknowledgements(@Query('appId') appId: string, @Request() req) {
+        return {
+            success: true,
+            data: await this.notificationService.listAcknowledgements(req.user.id, parseLabPolicyAppId(appId)),
         }
     }
 

@@ -48,6 +48,10 @@ function harness() {
     const events = repository<LabAlertEventEntity>()
     const applications = { assertOwned: jest.fn().mockResolvedValue(undefined) }
     const labs = { getComparisonCandidateForPolicy: jest.fn(), compareRuns: jest.fn(), getRun: jest.fn() }
+    const notifications = {
+        enqueueEvent: jest.fn().mockResolvedValue(undefined),
+        processPendingForApp: jest.fn().mockResolvedValue({ processed: 0 }),
+    }
     const transactionManager = {
         query: jest.fn().mockResolvedValue([]),
         getRepository: jest.fn(entity => (entity === LabProjectPolicyEntity ? policies : repository<never>())),
@@ -62,9 +66,23 @@ function harness() {
         events as never,
         dataSource as never,
         applications as never,
-        labs as never
+        labs as never,
+        notifications as never
     )
-    return { service, policies, bindings, evaluations, jobs, states, events, applications, labs, dataSource, transactionManager }
+    return {
+        service,
+        policies,
+        bindings,
+        evaluations,
+        jobs,
+        states,
+        events,
+        applications,
+        labs,
+        notifications,
+        dataSource,
+        transactionManager,
+    }
 }
 
 function comparisonResult(status: 'breach' | 'within-policy' | 'indeterminate'): LabProjectComparisonEvaluationV1 {
@@ -366,7 +384,7 @@ describe('LabPolicyService', () => {
     })
 
     it('locks and revalidates the exact active binding before persisting an evaluation', async () => {
-        const { service, bindings, policies, evaluations, labs, dataSource } = harness()
+        const { service, bindings, policies, evaluations, labs, notifications, dataSource } = harness()
         const storedDefinition = definition()
         const policy = {
             id: '55555555-5555-4555-8555-555555555555',
@@ -392,6 +410,7 @@ describe('LabPolicyService', () => {
         policies.findOne.mockResolvedValue(policy)
         evaluations.findOne.mockResolvedValue(null)
         labs.compareRuns.mockResolvedValue({ comparable: false, reasons: [] })
+        notifications.processPendingForApp.mockRejectedValue(new Error('transport unavailable'))
         const transactionBindings = repository<LabBaselineBindingEntity>()
         transactionBindings.findOne.mockResolvedValue(binding)
         const transactionEvaluations = repository<LabPolicyEvaluationEntity>()
@@ -422,5 +441,6 @@ describe('LabPolicyService', () => {
             lock: { mode: 'pessimistic_write' },
         })
         expect(transactionEvaluations.save).toHaveBeenCalledTimes(1)
+        expect(notifications.processPendingForApp).not.toHaveBeenCalled()
     })
 })

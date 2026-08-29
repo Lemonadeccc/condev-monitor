@@ -159,7 +159,31 @@ Comparison verdicts are `within-policy`, `breach`, or `indeterminate`. Any defin
 
 When an attached run first becomes complete, the Monitor transaction writes an idempotent policy-evaluation job for every matching active binding. A leased worker executes the exact immutable binding and policy digest, retries with bounded backoff, and quarantines after the fifth failure. Replacing a binding supersedes its old alert states; indeterminate evidence never resolves an open alert, and a superseded state is terminal. The platform exposes bounded policy, binding, evaluation, job-state, alert-state, and alert-event APIs behind the existing JWT and application-ownership checks. It stores only closed metric/rule ids, numeric aggregates, digests, run ids, and state codes—never selectors, DOM text, target URLs, input values, props, state, raw traces, or arbitrary error text.
 
-The first platform tranche persists alert state and events only. Email, chat, webhook delivery, recipient routing, cooldown policy, and notification acknowledgements are intentionally separate transports and are not implied by an `opened` event.
+The Monitor persists address-free notification destinations, creates an outbox row in the same transaction as each alert event, applies destination-scoped cooldowns, claims one delivery at a time, retries with bounded backoff, quarantines exhausted failures, cancels obsolete opened-state work, and records acknowledgement/clear history. `local` destinations prove only a platform record. `owner-email` resolves the current application owner's address at send time and uses the platform's existing SMTP or Resend provider; when no real provider or safe recipient is available it is explicitly suppressed rather than reported as delivered. `webhook` destinations store only an alias and immutable registry revision. Their HTTPS URL and HMAC secret come from a bounded server-side read-only registry, redirects and non-public network targets are rejected, the payload is rebuilt from a closed allowlist without event evidence, and every retry reuses the outbox ID as its idempotency key. Provider acceptance is not proof of final inbox or remote business processing, and acknowledging an alert cannot recall a request that a provider already accepted. Destination rows and user APIs never retain an email address, URL, secret, selector, target URL, input value, raw trace, or free-form evidence body.
+
+The built-in opened/resolved/superseded state, outbox, cooldown, retry, quarantine, acknowledgement, and clear flow is the product's **Sentry-style alert workflow**. It is not a bidirectional Sentry integration. A real Sentry ingest exporter would be a separately named, one-way transport and could not synchronize Condev acknowledgement or resolution without a distinct Sentry API mapping and callback design.
+
+Production Webhooks use a private registry document mounted at `/run/secrets/condev-animation-lab-notification-registry.json`, or at the absolute path supplied through the optional runtime key `LAB_NOTIFICATION_ENDPOINT_REGISTRY_FILE`. Do not commit this document or place its contents in a `.env` file. The document is loaded at process start and has this closed shape:
+
+```json
+{
+    "version": 1,
+    "endpoints": [
+        {
+            "appId": "approvedAppId",
+            "destinationKey": "ops-primary",
+            "kind": "webhook",
+            "revision": "v1",
+            "url": "https://hooks.example.com/condev-animation-lab",
+            "signingSecret": "replace-with-a-secret-of-at-least-32-characters"
+        }
+    ]
+}
+```
+
+Registry rotation must retain an old revision until every outbox row that references it has reached a terminal state. The worker is intentionally at-least-once: a process can still fail after a Webhook or mail provider accepts a request but before the database finalize commits. Webhook receivers must honor `Idempotency-Key`; Resend HTTP and Resend SMTP receive the same stable delivery id through their supported idempotency headers. A generic SMTP relay may ignore both the stable message id and the Resend-specific header, so it has no code-level exactly-once guarantee and can duplicate after a lease-expiry or finalize failure.
+
+Webhook receivers verify the closed V2 request contract against the exact UTF-8 bytes received: read `X-Condev-Timestamp` as Unix seconds, read the UUID delivery id from `Idempotency-Key`, compute `HMAC-SHA256(secret, timestamp + "." + deliveryId + "." + rawBody)`, prefix the lowercase hex digest with `sha256=`, and compare it to `X-Condev-Signature-V2` in constant time. Reject malformed values and timestamps outside a narrow deployment-owned clock-skew window (five minutes is the platform default). Deduplicate the signed delivery id before business processing and retain that key for at least as long as the receiver permits delayed or manual retries; a shorter TTL weakens the sender's at-least-once contract. Do not parse and reserialize JSON before signature verification.
 
 The bundled `condev.animation.default@1` rules are:
 

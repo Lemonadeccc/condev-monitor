@@ -33,6 +33,17 @@ export type CreateLabPolicyEvaluationInput = {
     afterRunId: string
 }
 
+export type PutLabNotificationDestinationInput = {
+    appId: string
+    kind: 'local' | 'owner-email' | 'webhook'
+    registryRevision: string | null
+    enabled: boolean
+    cooldownSeconds: number
+    maxAttempts: number
+}
+
+export type LabNotificationMutationInput = { appId: string }
+
 function record(value: unknown): value is Record<string, unknown> {
     return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -67,6 +78,13 @@ function string(value: unknown, label: string, max: number, pattern?: RegExp): s
 function version(value: unknown): number {
     if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > 1_000_000) {
         throw new BadRequestException('policyVersion must be an integer between 1 and 1000000')
+    }
+    return value as number
+}
+
+function boundedInteger(value: unknown, label: string, minimum: number, maximum: number): number {
+    if (!Number.isInteger(value) || (value as number) < minimum || (value as number) > maximum) {
+        throw new BadRequestException(`${label} must be an integer between ${minimum} and ${maximum}`)
     }
     return value as number
 }
@@ -111,6 +129,38 @@ export function parseCreateLabPolicyEvaluationInput(raw: unknown): CreateLabPoli
         bindingKey: string(body.bindingKey, 'bindingKey', 120, SAFE_KEY),
         afterRunId: string(body.afterRunId, 'afterRunId', 36, STRICT_UUID),
     }
+}
+
+export function parsePutLabNotificationDestinationInput(raw: unknown): PutLabNotificationDestinationInput {
+    const body = boundedBody(raw)
+    exactKeys(body, ['appId', 'kind', 'registryRevision', 'enabled', 'cooldownSeconds', 'maxAttempts'], 'request body')
+    if (body.kind !== 'local' && body.kind !== 'owner-email' && body.kind !== 'webhook') {
+        throw new BadRequestException('Invalid notification destination kind')
+    }
+    if (typeof body.enabled !== 'boolean') throw new BadRequestException('enabled must be a boolean')
+    const registryRevision =
+        body.registryRevision === null ? null : string(body.registryRevision, 'registryRevision', 64, /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u)
+    if ((body.kind === 'webhook') !== Boolean(registryRevision)) {
+        throw new BadRequestException('registryRevision is required only for webhook destinations')
+    }
+    return {
+        appId: string(body.appId, 'appId', 80, SAFE_APP_ID),
+        kind: body.kind,
+        registryRevision,
+        enabled: body.enabled,
+        cooldownSeconds: boundedInteger(body.cooldownSeconds, 'cooldownSeconds', 0, 86_400),
+        maxAttempts: boundedInteger(body.maxAttempts, 'maxAttempts', 1, 10),
+    }
+}
+
+export function parseLabNotificationMutationInput(raw: unknown): LabNotificationMutationInput {
+    const body = boundedBody(raw)
+    exactKeys(body, ['appId'], 'request body')
+    return { appId: string(body.appId, 'appId', 80, SAFE_APP_ID) }
+}
+
+export function parseLabPolicyUuid(value: unknown, label: string): string {
+    return string(value, label, 36, STRICT_UUID)
 }
 
 export function parseLabPolicyKey(value: unknown, label: string): string {

@@ -14,12 +14,21 @@ describe('LabPolicyController', () => {
         expect(Reflect.getMetadata(PATH_METADATA, LabPolicyController.prototype.createEvaluation)).toBe('/policy-evaluations')
         expect(Reflect.getMetadata(PATH_METADATA, LabPolicyController.prototype.listEvaluationJobs)).toBe('/policy-evaluation-jobs')
         expect(Reflect.getMetadata(PATH_METADATA, LabPolicyController.prototype.listAlertEvents)).toBe('/alert-events')
+        expect(Reflect.getMetadata(PATH_METADATA, LabPolicyController.prototype.putNotificationDestination)).toBe(
+            '/notification-destinations/:destinationKey'
+        )
+        expect(Reflect.getMetadata(PATH_METADATA, LabPolicyController.prototype.retryNotificationDelivery)).toBe(
+            '/notification-deliveries/:deliveryId/retry'
+        )
+        expect(Reflect.getMetadata(PATH_METADATA, LabPolicyController.prototype.acknowledgeAlertState)).toBe(
+            '/alert-states/:stateId/acknowledgement'
+        )
     })
 
     it('validates the closed project policy body before calling the service', async () => {
         const createPolicy = jest.fn().mockResolvedValue({ policyId: 'policy-1' })
         const setHeader = jest.fn()
-        const controller = new LabPolicyController({ createPolicy } as never)
+        const controller = new LabPolicyController({ createPolicy } as never, {} as never)
         const body = {
             appId: 'app-123',
             policyKey: 'animation-release',
@@ -55,7 +64,7 @@ describe('LabPolicyController', () => {
     it('rejects expression-shaped policy input and non-canonical evaluation run ids', async () => {
         const createPolicy = jest.fn()
         const createEvaluation = jest.fn()
-        const controller = new LabPolicyController({ createPolicy, createEvaluation } as never)
+        const controller = new LabPolicyController({ createPolicy, createEvaluation } as never, {} as never)
 
         await expect(
             controller.createPolicy(
@@ -80,7 +89,7 @@ describe('LabPolicyController', () => {
 
     it('parses bounded active baseline pagination before calling the service', async () => {
         const listBaselineBindings = jest.fn().mockResolvedValue({ bindings: [] })
-        const controller = new LabPolicyController({ listBaselineBindings } as never)
+        const controller = new LabPolicyController({ listBaselineBindings } as never, {} as never)
 
         await expect(controller.listBaselineBindings('app-123', 'true', '2', '25', { user: { id: 7 } })).resolves.toEqual({
             success: true,
