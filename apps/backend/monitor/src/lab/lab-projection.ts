@@ -90,7 +90,7 @@ export type ParsedTraceActionPhaseSummary = {
 }
 
 export type ParsedTimeline = {
-    schemaVersion: 1 | 2
+    schemaVersion: 1 | 2 | 3
     durationMs: number
     events: Array<{
         eventId: string
@@ -115,6 +115,12 @@ export type ParsedTimeline = {
             fileName: string | null
             lineNumber: number | null
             columnNumber: number | null
+            authoredStatus?: 'mapped' | 'not-eligible' | 'map-not-supplied' | 'segment-not-found'
+            authored?: {
+                fileName: string
+                lineNumber: number
+                columnNumber: number
+            } | null
         }>
         attributes: Record<string, string | number | boolean | null>
     }>
@@ -122,6 +128,14 @@ export type ParsedTimeline = {
     truncated: boolean
     maxEvents: number
     actionPhaseSummaries: ParsedTraceActionPhaseSummary[]
+    authoredSource: {
+        status: 'measured' | 'partial' | 'not-observed'
+        coordinateBase: 0
+        frameCount: number
+        eligibleFrameCount: number
+        mappedFrameCount: number
+        limitations: string[]
+    } | null
 }
 
 export type ParsedAnimationReport = {
@@ -904,19 +918,153 @@ function limitations(value: unknown, label: string): string[] {
     return boundedArray(value, label, 64).map((item, index) => string(item, `${label}[${index}]`, 200))
 }
 
-function stackFrame(value: unknown, label: string) {
-    const raw = record(value, label)
-    exactKeys(raw, ['functionName', 'source', 'line', 'column'], label)
-    const source = string(raw.source, `${label}.source`, 600, true)
-    const safeOpaqueSource = /^(?:data|blob):\[redacted\]$/u.test(source)
-    if (/[?#]/u.test(source) || /https?:\/\//iu.test(source) || (/^(?:data|blob):/iu.test(source) && !safeOpaqueSource)) {
-        throw new BadRequestException(`${label}.source is not redacted`)
+const TRACE_AUTHORED_STATUSES = ['mapped', 'not-eligible', 'map-not-supplied', 'segment-not-found'] as const
+const TRACE_AUTHORED_SOURCE_STATUSES = ['measured', 'partial', 'not-observed'] as const
+const TRACE_AUTHORED_SOURCE_LIMITATIONS = [
+    'authored-source-caller-attested-map-match',
+    'authored-source-retained-stack-only',
+    'authored-source-is-location-not-causation',
+    'authored-source-content-not-retained',
+    'authored-source-map-file-rejected',
+    'authored-source-map-not-supplied',
+    'authored-source-segment-not-found',
+    'authored-source-coordinate-basis-unknown',
+    'authored-source-path-redacted',
+] as const
+const TRACE_SENSITIVE_PATH_SEGMENT = /^(?:\d{5,}|[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9a-f]{16,}|[^/@\s]+@[^/\s]+)$/iu
+
+function decodeTracePathSegment(value: string): string {
+    try {
+        return decodeURIComponent(value)
+    } catch {
+        return value
     }
-    return {
+}
+
+function sanitizeTracePath(pathname: string): string {
+    const normalized = pathname.replace(/\\/gu, '/')
+    const inputSegments = normalized.split('/')
+    const homeRoot = inputSegments.findIndex(segment => /^(?:users|home)$/iu.test(segment))
+    const segments = inputSegments.map((segment, index) => {
+        const privateHomeSegment = homeRoot >= 0 && index === homeRoot + 1
+        return privateHomeSegment || TRACE_SENSITIVE_PATH_SEGMENT.test(decodeTracePathSegment(segment))
+            ? ':redacted'
+            : segment.slice(0, 120)
+    })
+    const nonEmpty = segments.filter(Boolean)
+    const retained = nonEmpty.slice(-8)
+    const prefix = nonEmpty.length > retained.length ? '…/' : normalized.startsWith('/') ? '/' : ''
+    return `${prefix}${retained.join('/')}`.slice(0, 512)
+}
+
+function sanitizeTraceSource(value: string): string {
+    const trimmed = value.trim().slice(0, 2_048)
+    if (!trimmed) return ''
+    if (/^(?:blob:|data:)/iu.test(trimmed)) return `${trimmed.slice(0, trimmed.indexOf(':') + 1).toLowerCase()}[redacted]`
+    if (/^about:/iu.test(trimmed)) return trimmed.toLowerCase() === 'about:blank' ? 'about:blank' : 'about:[redacted]'
+    if (/^node:/iu.test(trimmed)) return /^node:[A-Za-z0-9_./-]{1,120}$/u.test(trimmed) ? trimmed : 'node:[redacted]'
+    if (/^(?:webpack|vite):/iu.test(trimmed)) {
+        return sanitizeTracePath(trimmed.replace(/^[a-z]+:(?:\/\/)?/iu, '').split(/[?#]/u, 1)[0]!)
+    }
+    try {
+        const parsed = new URL(trimmed)
+        return sanitizeTracePath(parsed.pathname || '/')
+    } catch {
+        return sanitizeTracePath(trimmed.split('#', 1)[0]!.split('?', 1)[0]!)
+    }
+}
+
+function redactedStackSource(value: unknown, label: string): string {
+    const source = string(value, label, 600, true)
+    if (source !== sanitizeTraceSource(source)) {
+        throw new BadRequestException(`${label} is not redacted`)
+    }
+    return source
+}
+
+function stackFrame(value: unknown, label: string, schemaVersion: 1 | 2 | 3) {
+    const raw = record(value, label)
+    exactKeys(raw, ['functionName', 'source', 'line', 'column', ...(schemaVersion === 3 ? ['authoredStatus', 'authored'] : [])], label)
+    const source = redactedStackSource(raw.source, `${label}.source`)
+    const generated = {
         functionName: string(raw.functionName, `${label}.functionName`, 120, true) || null,
         fileName: source || null,
         lineNumber: raw.line === null ? null : integer(raw.line, `${label}.line`, 0, 100_000_000),
         columnNumber: raw.column === null ? null : integer(raw.column, `${label}.column`, 0, 100_000_000),
+    }
+    if (schemaVersion !== 3) return generated
+    const authoredStatus = enumeration(raw.authoredStatus, `${label}.authoredStatus`, TRACE_AUTHORED_STATUSES)
+    const authoredRaw = raw.authored === null ? null : record(raw.authored, `${label}.authored`)
+    if ((authoredStatus === 'mapped') !== (authoredRaw !== null)) {
+        throw new BadRequestException(`${label}.authored does not match authoredStatus`)
+    }
+    const authored = authoredRaw
+        ? (() => {
+              exactKeys(authoredRaw, ['source', 'line', 'column'], `${label}.authored`)
+              const authoredSource = redactedStackSource(authoredRaw.source, `${label}.authored.source`)
+              if (!authoredSource) throw new BadRequestException(`${label}.authored.source is required`)
+              return {
+                  fileName: authoredSource,
+                  lineNumber: integer(authoredRaw.line, `${label}.authored.line`, 0, 100_000_000),
+                  columnNumber: integer(authoredRaw.column, `${label}.authored.column`, 0, 100_000_000),
+              }
+          })()
+        : null
+    return { ...generated, authoredStatus, authored }
+}
+
+function parseTraceAuthoredSource(value: unknown, events: ParsedTimeline['events']): NonNullable<ParsedTimeline['authoredSource']> {
+    const raw = record(value, 'trace-index.authoredSource')
+    exactKeys(
+        raw,
+        ['status', 'coordinateBase', 'frameCount', 'eligibleFrameCount', 'mappedFrameCount', 'limitations'],
+        'trace-index.authoredSource'
+    )
+    const status = enumeration(raw.status, 'trace-index.authoredSource.status', TRACE_AUTHORED_SOURCE_STATUSES)
+    if (raw.coordinateBase !== 0) throw new BadRequestException('trace-index.authoredSource.coordinateBase must be zero')
+    const frames = events.flatMap(event => event.stack)
+    const frameCount = integer(raw.frameCount, 'trace-index.authoredSource.frameCount', 0, LAB_PLATFORM_TIMELINE_EVENT_LIMIT * 48)
+    const eligibleFrameCount = integer(raw.eligibleFrameCount, 'trace-index.authoredSource.eligibleFrameCount', 0, frameCount)
+    const mappedFrameCount = integer(raw.mappedFrameCount, 'trace-index.authoredSource.mappedFrameCount', 0, eligibleFrameCount)
+    const actualEligible = frames.filter(frame => frame.authoredStatus !== 'not-eligible').length
+    const actualMapped = frames.filter(frame => frame.authoredStatus === 'mapped' && frame.authored !== null).length
+    if (frameCount !== frames.length || eligibleFrameCount !== actualEligible || mappedFrameCount !== actualMapped) {
+        throw new BadRequestException('trace-index.authoredSource counts do not match retained stack frames')
+    }
+    const expectedStatus =
+        actualEligible > 0 && actualMapped === actualEligible ? 'measured' : actualMapped > 0 ? 'partial' : 'not-observed'
+    if (status !== expectedStatus) throw new BadRequestException('trace-index.authoredSource.status does not match coverage')
+    const seen = new Set<string>()
+    const parsedLimitations = boundedArray(
+        raw.limitations,
+        'trace-index.authoredSource.limitations',
+        TRACE_AUTHORED_SOURCE_LIMITATIONS.length
+    ).map((item, index) => {
+        const limitation = enumeration(item, `trace-index.authoredSource.limitations[${index}]`, TRACE_AUTHORED_SOURCE_LIMITATIONS)
+        if (seen.has(limitation)) throw new BadRequestException('trace-index.authoredSource limitations must be unique')
+        seen.add(limitation)
+        return limitation
+    })
+    for (const required of TRACE_AUTHORED_SOURCE_LIMITATIONS.slice(0, 4)) {
+        if (!seen.has(required)) throw new BadRequestException(`trace-index.authoredSource is missing ${required}`)
+    }
+    const relationships: Array<[boolean, (typeof TRACE_AUTHORED_SOURCE_LIMITATIONS)[number]]> = [
+        [frames.some(frame => frame.authoredStatus === 'map-not-supplied'), 'authored-source-map-not-supplied'],
+        [frames.some(frame => frame.authoredStatus === 'segment-not-found'), 'authored-source-segment-not-found'],
+        [frames.some(frame => frame.authoredStatus === 'not-eligible'), 'authored-source-coordinate-basis-unknown'],
+    ]
+    for (const [present, limitation] of relationships) {
+        if (seen.has(limitation) !== present) {
+            throw new BadRequestException(`trace-index.authoredSource limitation ${limitation} does not match frame evidence`)
+        }
+    }
+    return {
+        status,
+        coordinateBase: 0,
+        frameCount,
+        eligibleFrameCount,
+        mappedFrameCount,
+        limitations: parsedLimitations,
     }
 }
 
@@ -1137,7 +1285,10 @@ function parseTraceActionPhaseSummaries(
 
 export function parseTraceIndexArtifact(value: unknown): ParsedTimeline {
     const raw = record(value, 'trace-index')
-    if (raw.schemaVersion !== 1 && raw.schemaVersion !== 2) throw new BadRequestException('Unsupported trace-index schemaVersion')
+    if (raw.schemaVersion !== 1 && raw.schemaVersion !== 2 && raw.schemaVersion !== 3) {
+        throw new BadRequestException('Unsupported trace-index schemaVersion')
+    }
+    const schemaVersion = raw.schemaVersion
     exactKeys(
         raw,
         [
@@ -1149,7 +1300,8 @@ export function parseTraceIndexArtifact(value: unknown): ParsedTimeline {
             'droppedEvents',
             'events',
             'categoryDurationMs',
-            ...(raw.schemaVersion === 2 ? ['actionPhaseSummaries'] : []),
+            ...(schemaVersion >= 2 ? ['actionPhaseSummaries'] : []),
+            ...(schemaVersion === 3 ? ['authoredSource'] : []),
         ],
         'trace-index'
     )
@@ -1190,7 +1342,7 @@ export function parseTraceIndexArtifact(value: unknown): ParsedTimeline {
             severity,
             description: actionLabel ? `场景动作：${actionLabel}` : null,
             stack: boundedArray(event.stack, `${label}.stack`, 48).map((frame, frameIndex) =>
-                stackFrame(frame, `${label}.stack[${frameIndex}]`)
+                stackFrame(frame, `${label}.stack[${frameIndex}]`, schemaVersion)
             ),
             attributes: {
                 thread,
@@ -1207,18 +1359,18 @@ export function parseTraceIndexArtifact(value: unknown): ParsedTimeline {
     }
 
     const actionPhaseSummaries =
-        raw.schemaVersion === 2
-            ? parseTraceActionPhaseSummaries(raw.actionPhaseSummaries, startMs, endMs, retainedEvents + droppedEvents)
-            : []
+        schemaVersion >= 2 ? parseTraceActionPhaseSummaries(raw.actionPhaseSummaries, startMs, endMs, retainedEvents + droppedEvents) : []
+    const authoredSource = schemaVersion === 3 ? parseTraceAuthoredSource(raw.authoredSource, events) : null
 
     return {
-        schemaVersion: raw.schemaVersion,
+        schemaVersion,
         durationMs,
         events,
         totalEvents: retainedEvents + droppedEvents,
         truncated: droppedEvents > 0,
         maxEvents: LAB_PLATFORM_TIMELINE_EVENT_LIMIT,
         actionPhaseSummaries,
+        authoredSource,
     }
 }
 

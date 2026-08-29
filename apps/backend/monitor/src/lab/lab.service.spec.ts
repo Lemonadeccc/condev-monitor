@@ -62,6 +62,77 @@ function reportArtifact(run: LabRunEntity): LabArtifactEntity {
     }
 }
 
+function traceIndexV3() {
+    return {
+        schemaVersion: 3,
+        startMs: 0,
+        endMs: 100,
+        totalInputEvents: 1,
+        retainedEvents: 1,
+        droppedEvents: 0,
+        events: [
+            {
+                id: 'trace-0',
+                category: 'script',
+                name: 'FunctionCall',
+                startMs: 10,
+                durationMs: 55,
+                selfTimeMs: 30,
+                thread: 'main',
+                stack: [
+                    {
+                        functionName: 'render',
+                        source: '/assets/app.js',
+                        line: 12,
+                        column: 4,
+                        authoredStatus: 'mapped',
+                        authored: { source: '/src/render.ts', line: 2, column: 8 },
+                    },
+                ],
+            },
+        ],
+        categoryDurationMs: {
+            interaction: 0,
+            script: 55,
+            'style-layout': 0,
+            paint: 0,
+            composite: 0,
+            'raster-gpu': 0,
+            network: 0,
+            animation: 0,
+            gc: 0,
+            other: 0,
+        },
+        actionPhaseSummaries: [
+            {
+                actionId: 'hero-hover-01',
+                actionLabel: 'hover-card',
+                startMs: null,
+                endMs: null,
+                wallTimeMs: null,
+                status: 'not-observed',
+                eventCount: 0,
+                classifiedThreadTimeMs: null,
+                threads: [],
+                limitations: ['trace-action-marker-not-observed'],
+            },
+        ],
+        authoredSource: {
+            status: 'measured',
+            coordinateBase: 0,
+            frameCount: 1,
+            eligibleFrameCount: 1,
+            mappedFrameCount: 1,
+            limitations: [
+                'authored-source-caller-attested-map-match',
+                'authored-source-retained-stack-only',
+                'authored-source-is-location-not-causation',
+                'authored-source-content-not-retained',
+            ],
+        },
+    }
+}
+
 describe('LabService runner grants and ownership', () => {
     it('revalidates Trace Index v2 against the latest report before exposing the timeline', async () => {
         const runs = repository<LabRunEntity>()
@@ -136,6 +207,64 @@ describe('LabService runner grants and ownership', () => {
             where: { runId: run.id, appId: run.appId, kind: 'animation-report' },
             order: { createdAt: 'DESC' },
         })
+    })
+
+    it('revalidates and exposes bounded Trace Index v3 authored-source candidates', async () => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const run = runEntity()
+        const traceArtifact = {
+            ...reportArtifact(run),
+            id: '44444444-4444-4444-8444-444444444444',
+            kind: 'trace-index' as const,
+            storageKey: 'animation-lab/private/trace-index-v3.json',
+        }
+        const report = reportArtifact(run)
+        const timeline = traceIndexV3()
+        runs.findOne.mockResolvedValue(run)
+        artifacts.findOne.mockImplementation(async options => (options.where.kind === 'trace-index' ? traceArtifact : report))
+        const applications = { assertOwned: jest.fn().mockResolvedValue(undefined) }
+        const storage = { readStoredJson: jest.fn().mockResolvedValue(timeline) }
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            {} as never,
+            applications as never,
+            storage as never
+        )
+        const readAnimationReport = jest.fn().mockResolvedValue({
+            analysis: { scenarioActions: [{ actionId: 'hero-hover-01', label: 'hover-card' }] },
+        })
+        Object.defineProperty(service, 'readAnimationReport', { value: readAnimationReport })
+
+        await expect(service.getTimeline(7, run.id)).resolves.toEqual(
+            expect.objectContaining({
+                runId: run.id,
+                schemaVersion: 3,
+                authoredSource: expect.objectContaining({
+                    status: 'measured',
+                    coordinateBase: 0,
+                    frameCount: 1,
+                    eligibleFrameCount: 1,
+                    mappedFrameCount: 1,
+                }),
+                events: [
+                    expect.objectContaining({
+                        stack: [
+                            expect.objectContaining({
+                                authoredStatus: 'mapped',
+                                authored: { fileName: '/src/render.ts', lineNumber: 2, columnNumber: 8 },
+                            }),
+                        ],
+                    }),
+                ],
+            })
+        )
+        expect(applications.assertOwned).toHaveBeenCalledWith(run.appId, 7)
+        expect(storage.readStoredJson).toHaveBeenCalledWith(traceArtifact.storageKey, 'identity', 4 * 1024 * 1024)
+        expect(readAnimationReport).toHaveBeenCalledWith(report)
     })
 
     it('binds Trace Index v2 summaries to the latest verified animation-report actions', async () => {

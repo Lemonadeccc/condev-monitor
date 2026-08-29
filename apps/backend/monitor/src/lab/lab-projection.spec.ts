@@ -85,6 +85,35 @@ function traceIndexV2() {
     }
 }
 
+function traceIndexV3() {
+    const value = traceIndexV2()
+    return {
+        ...value,
+        schemaVersion: 3,
+        events: value.events.map(event => ({
+            ...event,
+            stack: event.stack.map(frame => ({
+                ...frame,
+                authoredStatus: 'mapped' as const,
+                authored: { source: '/src/render.ts', line: 2, column: 8 },
+            })),
+        })),
+        authoredSource: {
+            status: 'measured',
+            coordinateBase: 0,
+            frameCount: 1,
+            eligibleFrameCount: 1,
+            mappedFrameCount: 1,
+            limitations: [
+                'authored-source-caller-attested-map-match',
+                'authored-source-retained-stack-only',
+                'authored-source-is-location-not-causation',
+                'authored-source-content-not-retained',
+            ],
+        },
+    }
+}
+
 function metric(overrides: Record<string, unknown> = {}) {
     return {
         family: 'frameCadence',
@@ -914,6 +943,70 @@ describe('lab platform artifact projections', () => {
         expect(parseTraceIndexArtifact(truncatedThreads).actionPhaseSummaries[0]).toEqual(
             expect.objectContaining({ status: 'partial', eventCount: 65, classifiedThreadTimeMs: 64 })
         )
+    })
+
+    it('strictly projects Trace Index v3 authored-source coverage without accepting raw origins or inconsistent counts', () => {
+        const parsed = parseTraceIndexArtifact(traceIndexV3())
+        expect(parsed).toEqual(
+            expect.objectContaining({
+                schemaVersion: 3,
+                authoredSource: expect.objectContaining({
+                    status: 'measured',
+                    coordinateBase: 0,
+                    frameCount: 1,
+                    eligibleFrameCount: 1,
+                    mappedFrameCount: 1,
+                }),
+                events: [
+                    expect.objectContaining({
+                        stack: [
+                            expect.objectContaining({
+                                authoredStatus: 'mapped',
+                                authored: { fileName: '/src/render.ts', lineNumber: 2, columnNumber: 8 },
+                            }),
+                        ],
+                    }),
+                ],
+            })
+        )
+
+        const mutations: Array<(value: ReturnType<typeof traceIndexV3>) => void> = [
+            value => {
+                value.authoredSource.mappedFrameCount = 0
+            },
+            value => {
+                value.authoredSource.status = 'partial'
+            },
+            value => {
+                Object.assign(value.events[0]!.stack[0]!, { authored: null })
+            },
+            value => {
+                value.events[0]!.stack[0]!.authored!.source = 'https://private.example/src/render.ts?token=secret'
+            },
+            value => {
+                value.events[0]!.stack[0]!.authored!.source = 'file:///Users/alice/private/src/render.ts'
+            },
+            value => {
+                value.events[0]!.stack[0]!.authored!.source = 'webpack:///Users/alice/private/src/render.ts'
+            },
+            value => {
+                value.events[0]!.stack[0]!.authored!.source = 'C:\\Users\\alice\\private\\src\\render.ts'
+            },
+            value => {
+                value.events[0]!.stack[0]!.authored!.source = '/home/alice/private/src/render.ts'
+            },
+            value => {
+                value.authoredSource.limitations.pop()
+            },
+            value => {
+                value.authoredSource.limitations.push('authored-source-content-not-retained')
+            },
+        ]
+        for (const mutate of mutations) {
+            const value = traceIndexV3()
+            mutate(value)
+            expect(() => parseTraceIndexArtifact(value)).toThrow(BadRequestException)
+        }
     })
 
     it('rejects forged, duplicate, inconsistent, or extended Trace Index v2 summaries', () => {

@@ -300,12 +300,12 @@ describe('animation lab contracts', () => {
             } catch (error) {
                 expect(error).toBeInstanceOf(HttpException)
                 expect((error as HttpException).getStatus()).toBe(426)
-                expect((error as Error).message).toMatch(/contract 4 or 5 or 6 or 7 is required/u)
+                expect((error as Error).message).toMatch(/contract 4 or 5 or 6 or 7 or 8 is required/u)
             }
         }
     })
 
-    it('keeps trace-index v1 compatible and gates v2 on Runner contract 7', () => {
+    it('keeps trace-index v1 compatible and gates v2/v3 on Runner contracts 7/8', () => {
         for (const version of LAB_RUNNER_CONTRACT_VERSIONS) {
             expect(() => assertLabRunnerSupportsTraceIndexVersion(version, 1)).not.toThrow()
         }
@@ -314,6 +314,9 @@ describe('animation lab contracts', () => {
         }
         expect(() => assertLabRunnerSupportsTraceIndexVersion(7, 2)).not.toThrow()
         expect(() => assertLabRunnerSupportsTraceIndexVersion(7, 3)).toThrow(HttpException)
+        expect(() => assertLabRunnerSupportsTraceIndexVersion(8, 2)).not.toThrow()
+        expect(() => assertLabRunnerSupportsTraceIndexVersion(8, 3)).not.toThrow()
+        expect(() => assertLabRunnerSupportsTraceIndexVersion(8, 4)).toThrow(HttpException)
     })
 
     it('accepts only the closed, bounded summary shape', () => {
