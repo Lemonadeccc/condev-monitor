@@ -264,6 +264,45 @@ describe('animation lab contracts', () => {
         expect(() => assertLabRunnerSupportsMeasurementContract(6, measurementContract)).not.toThrow()
     })
 
+    it('accepts catalog v5 caller-attested media stages only on Runner contract v9', () => {
+        const measurementContract = parseCreateLabRunInput({
+            appId: 'app-123',
+            scenarioKey: 'media.stage.v5',
+            config: {
+                measurementContract: {
+                    contractVersion: 2,
+                    expectedHz: 60,
+                    targetFrameMs: 16.666667,
+                    source: 'explicit',
+                    confidence: 'explicit',
+                    budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 5 },
+                    metricCatalogVersion: 5,
+                },
+            },
+        }).config.measurementContract
+
+        expect(measurementContract).toEqual(
+            expect.objectContaining({ budgetRef: expect.objectContaining({ budgetVersion: 5 }), metricCatalogVersion: 5 })
+        )
+        for (const version of [4, 5, 6, 7, 8] as const) {
+            expect(() => assertLabRunnerSupportsMeasurementContract(version, measurementContract)).toThrow(HttpException)
+        }
+        expect(() => assertLabRunnerSupportsMeasurementContract(9, measurementContract)).not.toThrow()
+
+        expect(() =>
+            parseCreateLabRunInput({
+                appId: 'app-123',
+                scenarioKey: 'media.stage.mismatch',
+                config: {
+                    measurementContract: {
+                        ...measurementContract,
+                        metricCatalogVersion: 4,
+                    },
+                },
+            })
+        ).toThrow('budget v4+ requires the matching metric catalog')
+    })
+
     it('keeps legacy report actions on Runner v4/v5 and gates touch or pen evidence to v6', () => {
         const legacyKinds = ['wait', 'click', 'hover', 'pointer-path', 'scroll', 'resize', 'drag', 'press']
         expect(() => assertLabRunnerSupportsReportActionKinds(4, legacyKinds)).not.toThrow()
@@ -290,6 +329,7 @@ describe('animation lab contracts', () => {
     })
 
     it('accepts the rolling Runner contracts and rejects unsupported versions before claim', () => {
+        expect(LAB_RUNNER_CONTRACT_VERSIONS).toEqual([4, 5, 6, 7, 8, 9])
         for (const version of LAB_RUNNER_CONTRACT_VERSIONS) {
             expect(parseLabRunnerContractVersion(String(version))).toBe(version)
         }
@@ -300,7 +340,7 @@ describe('animation lab contracts', () => {
             } catch (error) {
                 expect(error).toBeInstanceOf(HttpException)
                 expect((error as HttpException).getStatus()).toBe(426)
-                expect((error as Error).message).toMatch(/contract 4 or 5 or 6 or 7 or 8 is required/u)
+                expect((error as Error).message).toMatch(/contract 4 or 5 or 6 or 7 or 8 or 9 is required/u)
             }
         }
     })
@@ -317,6 +357,8 @@ describe('animation lab contracts', () => {
         expect(() => assertLabRunnerSupportsTraceIndexVersion(8, 2)).not.toThrow()
         expect(() => assertLabRunnerSupportsTraceIndexVersion(8, 3)).not.toThrow()
         expect(() => assertLabRunnerSupportsTraceIndexVersion(8, 4)).toThrow(HttpException)
+        expect(() => assertLabRunnerSupportsTraceIndexVersion(9, 3)).not.toThrow()
+        expect(() => assertLabRunnerSupportsTraceIndexVersion(9, 4)).toThrow(HttpException)
     })
 
     it('accepts only the closed, bounded summary shape', () => {

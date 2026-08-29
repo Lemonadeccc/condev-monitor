@@ -123,11 +123,13 @@ const DEFAULT_BUDGET_RULES_V4: readonly DefaultBudgetRuleDefinition[] = [
         minimumSamples: 30,
     },
 ]
+const DEFAULT_BUDGET_RULES_V5: readonly DefaultBudgetRuleDefinition[] = DEFAULT_BUDGET_RULES_V4.map(rule => ({ ...rule }))
 const DEFAULT_BUDGET_RULES_BY_VERSION = new Map<number, readonly DefaultBudgetRuleDefinition[]>([
     [1, DEFAULT_BUDGET_RULES_V1],
     [2, DEFAULT_BUDGET_RULES_V2],
     [3, DEFAULT_BUDGET_RULES_V3],
     [4, DEFAULT_BUDGET_RULES_V4],
+    [5, DEFAULT_BUDGET_RULES_V5],
 ])
 const DEFAULT_BUDGET_RULE_METRICS_BY_VERSION = new Map<number, Readonly<Record<string, string>>>(
     [...DEFAULT_BUDGET_RULES_BY_VERSION].map(([version, rules]) => [
@@ -224,7 +226,7 @@ const METRIC_FAMILIES = [
 const METRIC_STATS = ['latest', 'count', 'sum', 'avg', 'min', 'max', 'p50', 'p75', 'p95', 'p99', 'rate', 'ratio'] as const
 const METRIC_UNITS = ['ms', 'count', 'ratio', 'bytes', 'pixels', 'hz', 'frames', 'percent', 'score'] as const
 const METRIC_STATUSES = ['measured', 'partial', 'not-observed', 'unsupported', 'unknown'] as const
-const EVIDENCE_LEVELS = ['controlled-lab-measurement', 'runtime-observation', 'unsupported-or-unknown'] as const
+const EVIDENCE_LEVELS = ['controlled-lab-measurement', 'runtime-observation', 'caller-attested', 'unsupported-or-unknown'] as const
 const TECHNOLOGY_AXES = ['ui-framework', 'meta-runtime', 'motion-engine', 'renderer', 'graphics-api', 'media', 'browser-runtime'] as const
 const TECHNOLOGY_SOURCES = ['scenario-declaration', 'runtime-probe', 'host-adapter', 'cdp-trace', 'lighthouse', 'unknown'] as const
 const TECHNOLOGY_STATUSES = ['observed', 'declared', 'inferred', 'unsupported', 'unknown'] as const
@@ -275,7 +277,7 @@ type MetricStat = (typeof METRIC_STATS)[number]
 type MetricUnit = (typeof METRIC_UNITS)[number]
 type MetricStatus = (typeof METRIC_STATUSES)[number]
 type EvidenceLevel = (typeof EVIDENCE_LEVELS)[number]
-type MetricCatalogVersion = 1 | 2 | 3 | 4
+type MetricCatalogVersion = 1 | 2 | 3 | 4 | 5
 
 export type LabMetricScopeV2Projection = {
     level: MetricScopeLevel
@@ -539,7 +541,8 @@ function measurementContract(value: unknown): AnimationLabSemanticsV2['measureme
         raw.metricCatalogVersion !== 1 &&
         raw.metricCatalogVersion !== 2 &&
         raw.metricCatalogVersion !== 3 &&
-        raw.metricCatalogVersion !== 4
+        raw.metricCatalogVersion !== 4 &&
+        raw.metricCatalogVersion !== 5
     ) {
         throw new BadRequestException(`Invalid ${label}.metricCatalogVersion`)
     }
@@ -641,6 +644,12 @@ const METRIC_CATALOG = new Map<string, readonly [MetricFamily, string, MetricSta
     ['renderer.draw-calls.p95', ['renderer', 'drawCalls', 'p95', 'count']],
     ['renderer.triangles.p95', ['renderer', 'triangles', 'p95', 'count']],
     ['renderer.gpu-frame.p95', ['renderer', 'gpuFrameMs', 'p95', 'ms']],
+    ['media.declared-completed.count', ['resourcesMedia', 'declaredMediaCompletedAttempts', 'count', 'count']],
+    ['media.declared-cancelled.count', ['resourcesMedia', 'declaredMediaCancelledAttempts', 'count', 'count']],
+    ['media.declared-begin-to-decode.p95', ['resourcesMedia', 'declaredMediaBeginToDecodeMs', 'p95', 'ms']],
+    ['media.declared-decode-to-upload.p95', ['resourcesMedia', 'declaredMediaDecodeToUploadMs', 'p95', 'ms']],
+    ['media.declared-upload-to-first-visible.p95', ['resourcesMedia', 'declaredMediaUploadToFirstVisibleMs', 'p95', 'ms']],
+    ['media.declared-begin-to-first-visible.p95', ['resourcesMedia', 'declaredMediaBeginToFirstVisibleMs', 'p95', 'ms']],
 ])
 
 const METRIC_CATALOG_V2_ONLY = new Set([
@@ -658,6 +667,14 @@ const METRIC_CATALOG_V2_ONLY = new Set([
 
 const METRIC_CATALOG_V3_ONLY = new Set(['media.video-window-dropped-frame-rate'])
 const METRIC_CATALOG_V4_ONLY = new Set(['renderer.draw-calls.p95', 'renderer.triangles.p95', 'renderer.gpu-frame.p95'])
+const METRIC_CATALOG_V5_ONLY = new Set([
+    'media.declared-completed.count',
+    'media.declared-cancelled.count',
+    'media.declared-begin-to-decode.p95',
+    'media.declared-decode-to-upload.p95',
+    'media.declared-upload-to-first-visible.p95',
+    'media.declared-begin-to-first-visible.p95',
+])
 
 export function assertAnimationLabMetricCatalogTupleV2(
     value: { metricId: string; family: string; name: string; stat: string; unit: string },
@@ -674,6 +691,9 @@ export function assertAnimationLabMetricCatalogTupleV2(
     }
     if (metricCatalogVersion < 4 && METRIC_CATALOG_V4_ONLY.has(value.metricId)) {
         throw new BadRequestException(`${label} requires metric catalog v4`)
+    }
+    if (metricCatalogVersion < 5 && METRIC_CATALOG_V5_ONLY.has(value.metricId)) {
+        throw new BadRequestException(`${label} requires metric catalog v5`)
     }
     if (value.family !== catalog[0] || value.name !== catalog[1] || value.stat !== catalog[2] || value.unit !== catalog[3]) {
         throw new BadRequestException(`${label} does not match the canonical metric catalog`)
@@ -749,6 +769,23 @@ export function parseAnimationLabMetricV2(
     const samples = raw.samples === null ? null : integer(raw.samples, `${label}.samples`, 0, ANIMATION_LAB_METRIC_SAMPLES_MAX)
     const evidenceRefs = tokenArray(raw.evidenceRefs, `${label}.evidenceRefs`)
     const limitations = tokenArray(raw.limitations, `${label}.limitations`, MAX_LIMITATIONS)
+    if (METRIC_CATALOG_V5_ONLY.has(metricId)) {
+        const required = [
+            'media-stage-caller-attested',
+            'media-stage-not-browser-decoder-or-gpu-proof',
+            'media-stage-complete-attempt-window-only',
+            'media-stage-kind-aggregate',
+        ]
+        if (evidenceLevel !== 'caller-attested' && evidenceLevel !== 'unsupported-or-unknown') {
+            throw new BadRequestException(`${label} media stage metric requires caller-attested evidence`)
+        }
+        if (!evidenceRefs.includes('lab-media-stage-attestation')) {
+            throw new BadRequestException(`${label} media stage metric requires its closed evidence reference`)
+        }
+        if (required.some(limitation => !limitations.includes(limitation))) {
+            throw new BadRequestException(`${label} media stage metric is missing its caller-attested boundary`)
+        }
+    }
     if (metricId === 'media.video-window-dropped-frame-rate') {
         const required = [
             'video-playback-quality-window-counter-delta',

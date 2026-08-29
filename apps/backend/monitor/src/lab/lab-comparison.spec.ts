@@ -224,6 +224,54 @@ describe('animation Lab Before/After comparison core', () => {
         ])
     })
 
+    it('compares catalog v5 caller-attested media stages descriptively without decoder or GPU claims', () => {
+        const mediaCandidate = (runId: string, values: readonly number[]): LabComparisonCandidate => {
+            const value = candidate(runId, values)
+            value.comparisonContext.measurementContract.metricCatalogVersion = 5
+            value.comparisonContext.measurementContract.budgetRef.budgetVersion = 5
+            value.measuredAttempts.forEach((attempt, index) => {
+                attempt.capabilities = { mediaStageEvidenceBridge: true }
+                attempt.metrics = [
+                    metric(attempt.attemptId, values[index] ?? null, {
+                        metricId: 'media.declared-begin-to-first-visible.p95',
+                        family: 'resourcesMedia',
+                        name: 'declaredMediaBeginToFirstVisibleMs',
+                        unit: 'ms',
+                        samples: 1,
+                        evidenceLevel: 'caller-attested',
+                        aggregation: { population: 'samples', method: 'nearest-rank' },
+                        budgetRefs: [],
+                        evidenceRefs: ['lab-media-stage-attestation'],
+                        limitations: [
+                            'media-stage-caller-attested',
+                            'media-stage-not-browser-decoder-or-gpu-proof',
+                            'media-stage-complete-attempt-window-only',
+                            'media-stage-kind-aggregate',
+                        ],
+                    }),
+                ]
+            })
+            return value
+        }
+
+        const result = compareAnimationLabCandidates(
+            mediaCandidate('media-before', [30, 32, 34]),
+            mediaCandidate('media-after', [20, 22, 24])
+        )
+
+        expect(result.comparable).toBe(true)
+        if (!result.comparable) throw new Error('expected a comparable result')
+        expect(result.metrics).toEqual([
+            expect.objectContaining({
+                metricId: 'media.declared-begin-to-first-visible.p95',
+                before: expect.objectContaining({ median: 32 }),
+                after: expect.objectContaining({ median: 22 }),
+                delta: -10,
+            }),
+        ])
+        expect(JSON.stringify(result)).not.toMatch(/"verdict"\s*:|"improved"\s*:|"regressed"\s*:|decoder completion|gpu completion/iu)
+    })
+
     it('does not emit a formal delta when any attempt is partial, unavailable, or missing', () => {
         const cases: Array<{
             mutate: (value: LabComparisonCandidate) => void

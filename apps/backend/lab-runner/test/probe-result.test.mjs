@@ -5,6 +5,7 @@ import {
     ANIMATION_LAB_METRIC_CATALOG_V1,
     ANIMATION_LAB_METRIC_CATALOG_V2,
     ANIMATION_LAB_METRIC_CATALOG_V4,
+    ANIMATION_LAB_METRIC_CATALOG_V5,
 } from '@condev-monitor/animation-lab'
 
 import {
@@ -14,14 +15,17 @@ import {
     PAGE_PROBE_ACTION_METRIC_IDS_V2,
     PAGE_PROBE_ACTION_METRIC_IDS_V3,
     PAGE_PROBE_ACTION_METRIC_IDS_V4,
+    PAGE_PROBE_ACTION_METRIC_IDS_V5,
     PAGE_PROBE_CAPABILITY_KEYS,
     PAGE_PROBE_CAPABILITY_KEYS_V2,
     PAGE_PROBE_CAPABILITY_KEYS_V4,
+    PAGE_PROBE_CAPABILITY_KEYS_V5,
     PAGE_PROBE_OBSERVER_DROP_KEYS,
     PAGE_PROBE_ROOT_METRIC_IDS,
     PAGE_PROBE_ROOT_METRIC_IDS_V2,
     PAGE_PROBE_ROOT_METRIC_IDS_V3,
     PAGE_PROBE_ROOT_METRIC_IDS_V4,
+    PAGE_PROBE_ROOT_METRIC_IDS_V5,
 } from '../src/probe-result.ts'
 
 const expectedActions = [{ actionId: 'hero-hover', order: 0, kind: 'hover' }]
@@ -40,7 +44,7 @@ function metric(overrides = {}) {
     }
 }
 
-const catalogByIdV3 = new Map(ANIMATION_LAB_METRIC_CATALOG_V4.map(entry => [entry.metricId, entry]))
+const catalogByIdV3 = new Map(ANIMATION_LAB_METRIC_CATALOG_V5.map(entry => [entry.metricId, entry]))
 const catalogIdByTuple = new Map(
     ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [[entry.family, entry.name, entry.stat, entry.unit].join('|'), entry.metricId])
 )
@@ -223,6 +227,57 @@ function rawResultV4() {
     result.capabilities = Object.fromEntries(PAGE_PROBE_CAPABILITY_KEYS_V4.map(key => [key, true]))
     result.sampleDrops.rendererHostEvidence = 0
     result.rendererEvidence = rendererRootEvidence()
+    return result
+}
+
+function mediaStageWindowEvidence(overrides = {}) {
+    return {
+        acceptedAttempts: 1,
+        retainedAttempts: 1,
+        droppedAttempts: 0,
+        rejectedAttempts: 0,
+        completedAttempts: 1,
+        cancelledAttempts: 0,
+        ...overrides,
+    }
+}
+
+function mediaStageMetric(metricId, action = false) {
+    const count = metricId.endsWith('.count')
+    const cancelled = metricId === 'media.declared-cancelled.count'
+    const values = {
+        'media.declared-begin-to-decode.p95': 12,
+        'media.declared-decode-to-upload.p95': 8,
+        'media.declared-upload-to-first-visible.p95': 5,
+        'media.declared-begin-to-first-visible.p95': 25,
+    }
+    return metricForId(metricId, {
+        value: count ? (cancelled ? (action ? 0 : 1) : 1) : values[metricId],
+        samples: count ? (action ? 1 : 2) : 1,
+        evidenceLevel: 'caller-attested',
+    })
+}
+
+function rawResultV5() {
+    const result = rawResultV4()
+    result.metrics = PAGE_PROBE_ROOT_METRIC_IDS_V5.map(metricId => {
+        if (metricId === 'probe.dropped-samples.count') return metricForId(metricId, { value: 0 })
+        if (metricId.startsWith('media.declared-')) return mediaStageMetric(metricId)
+        return result.metrics.find(item => metricForCatalogId([item], metricId)) ?? metricForId(metricId)
+    })
+    result.actionResults[0].metrics = PAGE_PROBE_ACTION_METRIC_IDS_V5.map(metricId => {
+        if (metricId.startsWith('media.declared-')) return mediaStageMetric(metricId, true)
+        return result.actionResults[0].metrics.find(item => metricForCatalogId([item], metricId)) ?? metricForId(metricId)
+    })
+    result.actionResults[0].mediaStageWindowEvidence = mediaStageWindowEvidence()
+    result.capabilities = Object.fromEntries(PAGE_PROBE_CAPABILITY_KEYS_V5.map(key => [key, true]))
+    result.sampleDrops.mediaStageEvidence = 0
+    result.mediaStageEvidence = mediaStageWindowEvidence({
+        acceptedAttempts: 2,
+        retainedAttempts: 2,
+        completedAttempts: 1,
+        cancelledAttempts: 1,
+    })
     return result
 }
 
@@ -551,6 +606,111 @@ test('decodes catalog v4 renderer evidence without manufacturing adapter or GPU 
         decodePageProbeResult(unsupportedGpu, expectedActions, 4).metrics.find(item => item.name === 'gpuFrameMs')?.status,
         'unsupported'
     )
+})
+
+test('decodes catalog v5 caller-attested media stages without manufacturing absent attempts', () => {
+    const decoded = decodePageProbeResult(rawResultV5(), expectedActions, 5)
+    const rootMedia = decoded.metrics.filter(item => item.name.startsWith('declaredMedia'))
+    assert.deepEqual(
+        rootMedia.map(item => [item.name, item.value, item.samples, item.status, item.evidenceLevel]),
+        [
+            ['declaredMediaCompletedAttempts', 1, 2, 'measured', 'caller-attested'],
+            ['declaredMediaCancelledAttempts', 1, 2, 'measured', 'caller-attested'],
+            ['declaredMediaBeginToDecodeMs', 12, 1, 'measured', 'caller-attested'],
+            ['declaredMediaDecodeToUploadMs', 8, 1, 'measured', 'caller-attested'],
+            ['declaredMediaUploadToFirstVisibleMs', 5, 1, 'measured', 'caller-attested'],
+            ['declaredMediaBeginToFirstVisibleMs', 25, 1, 'measured', 'caller-attested'],
+        ]
+    )
+    const actionMedia = decoded.actionResults[0].metrics.filter(item => item.name.startsWith('declaredMedia'))
+    assert.equal(actionMedia.length, 6)
+    assert.ok(actionMedia.every(item => item.samples === 1 && item.status === 'measured' && item.evidenceLevel === 'caller-attested'))
+    assert.ok(decoded.limitations.includes('media-stage-caller-attested'))
+    assert.ok(decoded.limitations.includes('media-stage-not-browser-decoder-or-gpu-proof'))
+    assert.ok(decoded.limitations.includes('media-stage-complete-attempt-window-only'))
+    assert.ok(decoded.limitations.includes('media-stage-kind-aggregate'))
+
+    const absent = rawResultV5()
+    for (const metrics of [absent.metrics, absent.actionResults[0].metrics]) {
+        for (const item of metrics.filter(metric => metric.name.startsWith('declaredMedia'))) {
+            Object.assign(item, { value: null, samples: 0, status: 'not-observed', evidenceLevel: 'caller-attested' })
+        }
+    }
+    absent.mediaStageEvidence = mediaStageWindowEvidence({
+        acceptedAttempts: 0,
+        retainedAttempts: 0,
+        completedAttempts: 0,
+    })
+    absent.actionResults[0].mediaStageWindowEvidence = mediaStageWindowEvidence({
+        acceptedAttempts: 0,
+        retainedAttempts: 0,
+        completedAttempts: 0,
+    })
+    const absentDecoded = decodePageProbeResult(absent, expectedActions, 5)
+    assert.ok(
+        absentDecoded.metrics
+            .filter(item => item.name.startsWith('declaredMedia'))
+            .every(item => item.value === null && item.samples === 0 && item.status === 'not-observed')
+    )
+})
+
+test('fails closed around unsupported, rejected, truncated, or forged catalog v5 media evidence', () => {
+    const unsupported = rawResultV5()
+    unsupported.capabilities.mediaStageEvidenceBridge = false
+    for (const metrics of [unsupported.metrics, unsupported.actionResults[0].metrics]) {
+        for (const item of metrics.filter(metric => metric.name.startsWith('declaredMedia'))) {
+            Object.assign(item, { value: null, samples: null, status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' })
+        }
+    }
+    unsupported.mediaStageEvidence = mediaStageWindowEvidence({
+        acceptedAttempts: 0,
+        retainedAttempts: 0,
+        completedAttempts: 0,
+    })
+    unsupported.actionResults[0].mediaStageWindowEvidence = mediaStageWindowEvidence({
+        acceptedAttempts: 0,
+        retainedAttempts: 0,
+        completedAttempts: 0,
+    })
+    assert.ok(
+        decodePageProbeResult(unsupported, expectedActions, 5)
+            .metrics.filter(item => item.name.startsWith('declaredMedia'))
+            .every(item => item.status === 'unsupported')
+    )
+
+    const rejected = rawResultV5()
+    for (const metrics of [rejected.metrics, rejected.actionResults[0].metrics]) {
+        for (const item of metrics.filter(metric => metric.name.startsWith('declaredMedia'))) {
+            Object.assign(item, { value: null, samples: null, status: 'unknown', evidenceLevel: 'unsupported-or-unknown' })
+        }
+    }
+    rejected.mediaStageEvidence = mediaStageWindowEvidence({
+        acceptedAttempts: 0,
+        retainedAttempts: 0,
+        rejectedAttempts: 1,
+        completedAttempts: 0,
+    })
+    rejected.actionResults[0].mediaStageWindowEvidence = mediaStageWindowEvidence({
+        acceptedAttempts: 0,
+        retainedAttempts: 0,
+        rejectedAttempts: 1,
+        completedAttempts: 0,
+    })
+    const rejectedDecoded = decodePageProbeResult(rejected, expectedActions, 5)
+    assert.ok(rejectedDecoded.limitations.includes('media-stage-evidence-rejected'))
+    assert.ok(
+        rejectedDecoded.metrics
+            .filter(item => item.name.startsWith('declaredMedia'))
+            .every(item => item.status === 'unknown' && item.limitations.includes('media-stage-evidence-rejected'))
+    )
+
+    const forged = rawResultV5()
+    forged.mediaStageEvidence.completedAttempts = 2
+    assert.throws(() => decodePageProbeResult(forged, expectedActions, 5), /Invalid page probe result/)
+
+    const privateField = rawResultV5()
+    privateField.mediaStageEvidence.selector = '#private-video'
+    assert.throws(() => decodePageProbeResult(privateField, expectedActions, 5), /Invalid page probe result/)
 })
 
 test('derives catalog v4 renderer partial and unknown states from closed evidence counters', () => {

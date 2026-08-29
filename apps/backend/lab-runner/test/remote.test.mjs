@@ -426,6 +426,39 @@ test('accepts and preserves the closed platform measurement contract', async t =
     assert.deepEqual((await client.claim()).config.measurementContract, measurementContract)
 })
 
+test('accepts and preserves the catalog v5 caller-attested media contract', async t => {
+    const originalFetch = globalThis.fetch
+    const measurementContract = {
+        contractVersion: 2,
+        expectedHz: 60,
+        targetFrameMs: 16.666667,
+        source: 'explicit',
+        confidence: 'explicit',
+        budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 5 },
+        metricCatalogVersion: 5,
+    }
+    globalThis.fetch = async url =>
+        new Response(
+            JSON.stringify({
+                success: true,
+                data: String(url).endsWith('/contract')
+                    ? contractData({ requiredCapabilities: requiredCapabilities(measurementContract) })
+                    : {
+                          ...contractData({ requiredCapabilities: requiredCapabilities(measurementContract) }),
+                          targetUrl: 'http://localhost:5173/',
+                          config: claimedConfig({ measurementContract }),
+                      },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+        )
+    t.after(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
+    assert.deepEqual((await client.claim()).config.measurementContract, measurementContract)
+})
+
 test('rejects budget v4 paired with an older metric catalog before navigation', async t => {
     const originalFetch = globalThis.fetch
     const measurementContract = {

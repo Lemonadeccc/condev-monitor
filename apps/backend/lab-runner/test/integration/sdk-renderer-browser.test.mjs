@@ -280,3 +280,110 @@ test('connects the built Browser animation SDK to the catalog v4 Lab probe in Ch
         await fixture?.close().catch(() => undefined)
     }
 })
+
+test('connects the built Browser media-stage recorder to the catalog v5 Lab probe in Chromium', async () => {
+    let fixture
+    let session
+    let context
+    let page
+    try {
+        fixture = await startFixtureServer()
+        const driver = createBrowserDriver('chromium')
+        session = await driver.launch()
+        context = await session.createContext(scenario(fixture.origin))
+        page = await context.newPage()
+        const key = '__condevLabProbe_browser_sdk_media'
+        const capability = 'M'.repeat(43)
+        const actions = [{ actionId: 'media-action', order: 0, label: 'media-action', kind: 'wait' }]
+        await page.addInitScript(
+            browserProbeSource(key, {
+                capability,
+                expectedRefreshHz: 60,
+                targetFrameMs: 1000 / 60,
+                metricCatalogVersion: 5,
+                actions,
+            })
+        )
+        await page.navigate(fixture.origin, 10_000)
+        await page.rawPage.waitForFunction(() => globalThis.__condevSdkReady === true, undefined, { timeout: 10_000 })
+
+        assert.equal(await page.notifyProbe(key, capability, 0, 'media-action', 'start', 'completed'), true)
+        const forged = await page.rawPage.evaluate(() => {
+            const sink = globalThis[Symbol.for('@condev-monitor/animation-lab/media-stage-evidence/v1')]
+            const now = performance.now()
+            const evidence = (startedAtMs, endedAtMs) => ({
+                contractVersion: 1,
+                kind: 'video',
+                outcome: 'completed',
+                startedAtMs,
+                endedAtMs,
+                decodeReadyAtMs: null,
+                uploadReadyAtMs: null,
+                firstVisibleAtMs: null,
+            })
+            return {
+                excessiveDuration: sink(evidence(0, 600_001)),
+                futureTerminal: sink(evidence(now, now + 1)),
+            }
+        })
+        assert.deepEqual(forged, { excessiveDuration: false, futureTerminal: false })
+        const settled = await page.rawPage.evaluate(async () => {
+            const recorder = globalThis.__condevSdkClient.animation.createMediaSemanticStageRecorder()
+            const startedAt = performance.now()
+            const attempt = recorder.begin('webgpu', startedAt)
+            await new Promise(resolve => setTimeout(resolve, 12))
+            attempt.decodeReady({ timestampMs: startedAt + 2, byteCount: 9_999, itemCount: 7 })
+            attempt.uploadReady({ timestampMs: startedAt + 5, byteCount: 9_999, itemCount: 7 })
+            attempt.firstVisible({ timestampMs: startedAt + 9, itemCount: 7 })
+            const result = attempt.end(startedAt + 9)
+            recorder.dispose()
+            return result
+        })
+        assert.equal(settled.outcome, 'completed')
+        assert.equal(await page.notifyProbe(key, capability, 1, 'media-action', 'end', 'completed'), true)
+
+        const raw = await page.collectProbeResult(key, capability, 2)
+        const result = decodePageProbeResult(raw, [{ actionId: 'media-action', order: 0, kind: 'wait' }], 5)
+        const rootMetric = name => result.metrics.find(metric => metric.name === name)
+        const actionMetric = name => result.actionResults[0].metrics.find(metric => metric.name === name)
+
+        assert.deepEqual(raw.mediaStageEvidence, {
+            acceptedAttempts: 1,
+            retainedAttempts: 1,
+            droppedAttempts: 0,
+            rejectedAttempts: 2,
+            completedAttempts: 1,
+            cancelledAttempts: 0,
+        })
+        assert.deepEqual(raw.actionResults[0].mediaStageWindowEvidence, {
+            acceptedAttempts: 1,
+            retainedAttempts: 1,
+            droppedAttempts: 0,
+            rejectedAttempts: 0,
+            completedAttempts: 1,
+            cancelledAttempts: 0,
+        })
+        assert.deepEqual(
+            [rootMetric('declaredMediaBeginToFirstVisibleMs').value, rootMetric('declaredMediaBeginToFirstVisibleMs').evidenceLevel],
+            [9, 'caller-attested']
+        )
+        assert.deepEqual(
+            [actionMetric('declaredMediaDecodeToUploadMs').value, actionMetric('declaredMediaDecodeToUploadMs').status],
+            [3, 'measured']
+        )
+        const mediaEvidenceBoundary = {
+            mediaStageEvidence: raw.mediaStageEvidence,
+            actionMediaStageEvidence: raw.actionResults[0].mediaStageWindowEvidence,
+            metrics: raw.metrics.filter(metric => metric.name.startsWith('declaredMedia')),
+            actionMetrics: raw.actionResults[0].metrics.filter(metric => metric.name.startsWith('declaredMedia')),
+        }
+        assert.doesNotMatch(
+            JSON.stringify(mediaEvidenceBoundary),
+            /9999|attemptId|byteCount|itemCount|lab\.sdk\.renderer|renderer fixture/u
+        )
+    } finally {
+        await context?.close().catch(() => undefined)
+        await session?.close().catch(() => undefined)
+        await fixture?.close().catch(() => undefined)
+    }
+})

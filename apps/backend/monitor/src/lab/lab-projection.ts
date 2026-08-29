@@ -51,6 +51,12 @@ const CAPABILITY_BACKED_METRIC_IDS_V2 = new Set([
     'pipeline.loaf-attributed-forced-style-layout.count',
     'pipeline.loaf-attributed-forced-style-layout.p95',
     'media.video-window-dropped-frame-rate',
+    'media.declared-completed.count',
+    'media.declared-cancelled.count',
+    'media.declared-begin-to-decode.p95',
+    'media.declared-decode-to-upload.p95',
+    'media.declared-upload-to-first-visible.p95',
+    'media.declared-begin-to-first-visible.p95',
 ])
 
 type RecordValue = Record<string, unknown>
@@ -281,7 +287,7 @@ function metric(
     value: unknown,
     label: string,
     semanticsV2: boolean,
-    compactMetricCatalogVersion?: 1 | 2 | 3 | 4,
+    compactMetricCatalogVersion?: 1 | 2 | 3 | 4 | 5,
     compactAllowedMetricIds?: ReadonlySet<string>
 ): ParsedMetric {
     const raw = record(value, label)
@@ -330,6 +336,7 @@ function metric(
     const evidenceLevel = enumeration(raw.evidenceLevel, `${label}.evidenceLevel`, [
         'controlled-lab-measurement',
         'runtime-observation',
+        'caller-attested',
         'unsupported-or-unknown',
     ] as const)
     const unavailableEvidence = status === 'unsupported' || status === 'unknown'
@@ -382,6 +389,14 @@ function assertV2MetricCapabilities(
                 Array.isArray(metric.limitations) &&
                 (metric.limitations.includes('renderer-host-evidence-rejected') ||
                     metric.limitations.includes('page-probe-renderer-host-evidence-truncated'))
+            const declaredMediaMetric = metric.metricId.startsWith('media.declared-')
+            const incompleteMediaStageUnknown =
+                declaredMediaMetric &&
+                metric.status === 'unknown' &&
+                'limitations' in metric &&
+                Array.isArray(metric.limitations) &&
+                (metric.limitations.includes('media-stage-evidence-rejected') ||
+                    metric.limitations.includes('page-probe-media-stage-evidence-truncated'))
             if (capability === false && metric.status !== 'unsupported') {
                 throw new BadRequestException(`${label} ${capabilityLabel} capability conflicts with ${metric.metricId}`)
             }
@@ -391,8 +406,12 @@ function assertV2MetricCapabilities(
             if (
                 capability === true &&
                 (metric.status === 'unsupported' ||
-                    (metric.status === 'unknown' && !crossDocumentUnknown && !incompleteVideoWindowUnknown && !incompleteRendererUnknown) ||
-                    (metric.stat === 'count' && metric.status === 'not-observed'))
+                    (metric.status === 'unknown' &&
+                        !crossDocumentUnknown &&
+                        !incompleteVideoWindowUnknown &&
+                        !incompleteRendererUnknown &&
+                        !incompleteMediaStageUnknown) ||
+                    (metric.stat === 'count' && metric.status === 'not-observed' && !declaredMediaMetric))
             ) {
                 throw new BadRequestException(`${label} ${capabilityLabel} capability conflicts with ${metric.metricId}`)
             }
@@ -475,6 +494,20 @@ function assertV2MetricCapabilities(
             : undefined,
         'rendererEvidenceBridge'
     )
+    assertStatuses(
+        [
+            'media.declared-completed.count',
+            'media.declared-cancelled.count',
+            'media.declared-begin-to-decode.p95',
+            'media.declared-decode-to-upload.p95',
+            'media.declared-upload-to-first-visible.p95',
+            'media.declared-begin-to-first-visible.p95',
+        ],
+        Object.prototype.hasOwnProperty.call(capabilitiesValue, 'mediaStageEvidenceBridge')
+            ? capabilitiesValue.mediaStageEvidenceBridge
+            : undefined,
+        'mediaStageEvidenceBridge'
+    )
 }
 
 function expandedMetric(value: ParsedMetric): value is AnimationLabMetricV2Projection {
@@ -529,6 +562,7 @@ function aggregateCapabilityForMetric(
     }
     if (metricId === 'media.video-window-dropped-frame-rate') return capabilitiesValue.videoPlaybackQuality
     if (metricId.startsWith('renderer.')) return capabilitiesValue.rendererEvidenceBridge
+    if (metricId.startsWith('media.declared-')) return capabilitiesValue.mediaStageEvidenceBridge
     return undefined
 }
 
@@ -803,13 +837,20 @@ function assertV2AggregateMetrics(
                 metricValue.status === 'unknown' &&
                 (metricValue.limitations.includes('renderer-host-evidence-rejected') ||
                     metricValue.limitations.includes('page-probe-renderer-host-evidence-truncated'))
+            const declaredMediaMetric = metricValue.metricId.startsWith('media.declared-')
+            const incompleteMediaStageUnknown =
+                declaredMediaMetric &&
+                metricValue.status === 'unknown' &&
+                (metricValue.limitations.includes('media-stage-evidence-rejected') ||
+                    metricValue.limitations.includes('page-probe-media-stage-evidence-truncated'))
             if (
                 metricValue.status === 'unsupported' ||
                 (metricValue.status === 'unknown' &&
                     !crossDocumentUnknown &&
                     !incompleteVideoWindowUnknown &&
-                    !incompleteRendererUnknown) ||
-                (metricValue.stat === 'count' && metricValue.status === 'not-observed')
+                    !incompleteRendererUnknown &&
+                    !incompleteMediaStageUnknown) ||
+                (metricValue.stat === 'count' && metricValue.status === 'not-observed' && !declaredMediaMetric)
             ) {
                 throw new BadRequestException(
                     `animation-report.aggregateMetrics ${metricValue.metricId} conflicts with supported capabilities`
@@ -831,7 +872,7 @@ function metrics(
     label: string,
     maximumLength = MAX_METRICS,
     semanticsV2 = false,
-    compactMetricCatalogVersion?: 1 | 2 | 3 | 4,
+    compactMetricCatalogVersion?: 1 | 2 | 3 | 4 | 5,
     compactAllowedMetricIds?: ReadonlySet<string>
 ): ParsedMetric[] {
     return boundedArray(value, label, maximumLength).map((item, index) =>
@@ -1486,7 +1527,7 @@ function scenario(value: unknown, semanticsV2: boolean) {
     }
 }
 
-function attempt(value: unknown, index: number, semanticsV2: boolean, metricCatalogVersion: 1 | 2 | 3 | 4) {
+function attempt(value: unknown, index: number, semanticsV2: boolean, metricCatalogVersion: 1 | 2 | 3 | 4 | 5) {
     const label = `animation-report.attempts[${index}]`
     const raw = record(value, label)
     exactKeys(
@@ -1581,7 +1622,7 @@ function lighthouseAudit(value: unknown, label: string) {
 function lighthouse(
     value: unknown,
     semanticsV2: boolean,
-    metricCatalogVersion: 1 | 2 | 3 | 4
+    metricCatalogVersion: 1 | 2 | 3 | 4 | 5
 ): NonNullable<ParsedAnimationReport['lighthouse']> {
     const raw = record(value, 'animation-report.lighthouse')
     exactKeys(

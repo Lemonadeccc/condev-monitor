@@ -1,5 +1,5 @@
 import {
-    ANIMATION_LAB_METRIC_CATALOG_V4,
+    ANIMATION_LAB_METRIC_CATALOG_V5,
     ANIMATION_LAB_METRIC_CATALOG_VERSION,
     ANIMATION_LAB_SEMANTICS_VERSION,
     type AnimationLabMetric,
@@ -24,6 +24,7 @@ import {
 const BROWSER_EVIDENCE_ID = 'runtime-browser'
 const ACTION_CLOCK_EVIDENCE_ID = 'runner-action-clock'
 export const LAB_RENDERER_EVIDENCE_ID = 'lab-renderer-adapter'
+export const LAB_MEDIA_STAGE_EVIDENCE_ID = 'lab-media-stage-attestation'
 // Keep these projections aligned with the closed v2 contract. Aggregation is
 // performed from the complete in-memory attempts first; the report then keeps
 // a deterministic, platform-safe view of both canonical and per-attempt data.
@@ -47,7 +48,7 @@ function median(values: readonly number[]): number {
 }
 
 function catalogEntry(metric: AnimationLabMetric) {
-    return ANIMATION_LAB_METRIC_CATALOG_V4.find(
+    return ANIMATION_LAB_METRIC_CATALOG_V5.find(
         entry =>
             (metric.metricId ? entry.metricId === metric.metricId : true) &&
             entry.family === metric.family &&
@@ -130,7 +131,7 @@ export function measurementContractForReport(scenario: AnimationLabScenario): La
 export function probeFrameContract(scenario: AnimationLabScenario): {
     expectedRefreshHz: number
     targetFrameMs: number
-    metricCatalogVersion: 1 | 2 | 3 | 4
+    metricCatalogVersion: 1 | 2 | 3 | 4 | 5
 } {
     const contract = scenario.measurementContract
     return contract
@@ -292,6 +293,31 @@ function technologyEvidence(
             ],
         })
     }
+    const mediaStageMetrics = attempts.flatMap(attempt =>
+        attempt.metrics.filter(metric => metric.evidenceRefs?.includes(LAB_MEDIA_STAGE_EVIDENCE_ID))
+    )
+    if (mediaStageMetrics.length > 0) {
+        const observed = mediaStageMetrics.some(
+            metric => (metric.status === 'measured' || metric.status === 'partial') && finite(metric.samples) && metric.samples > 0
+        )
+        const unsupported = mediaStageMetrics.every(metric => metric.status === 'unsupported')
+        evidence.push({
+            evidenceId: LAB_MEDIA_STAGE_EVIDENCE_ID,
+            axis: 'media',
+            technologyKey: 'condev-media-stage-attestation',
+            source: 'host-adapter',
+            confidence: observed ? 'medium' : 'low',
+            status: observed ? 'observed' : unsupported ? 'unsupported' : 'unknown',
+            scope: { level: 'run' },
+            limitations: [
+                'media-stage-caller-attested',
+                'media-stage-not-browser-decoder-or-gpu-proof',
+                'media-stage-complete-attempt-window-only',
+                'media-stage-kind-aggregate',
+                ...(observed ? [] : ['media-stage-attempts-not-observed-or-rejected']),
+            ],
+        })
+    }
     const observedSurfaces: Array<{ metricName: string; key: string; axis: LabTechnologyEvidenceV2['axis'] }> = [
         { metricName: 'svgSurfaces', key: 'svg', axis: 'renderer' },
         { metricName: 'canvas2dSurfaces', key: 'canvas2d', axis: 'graphics-api' },
@@ -420,7 +446,7 @@ function canonicalMetricProjection(
     scenarioActions: readonly LabReportScenarioActionV2[]
 ): { metrics: AnimationLabMetricV2[]; omittedActionIds: ReadonlySet<string>; truncated: boolean } {
     const actionOrder = new Map(scenarioActions.map(action => [action.actionId, action.order]))
-    const catalogOrder = new Map(ANIMATION_LAB_METRIC_CATALOG_V4.map((entry, index) => [entry.metricId, index]))
+    const catalogOrder = new Map(ANIMATION_LAB_METRIC_CATALOG_V5.map((entry, index) => [entry.metricId, index]))
     const candidates = metrics
         .filter((metric): metric is AnimationLabMetricV2 => Boolean(metric.metricId && metric.scope))
         .map((metric, originalOrder) => ({ metric, originalOrder }))

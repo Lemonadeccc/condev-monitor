@@ -3,6 +3,7 @@ import {
     ANIMATION_LAB_METRIC_CATALOG_V2,
     ANIMATION_LAB_METRIC_CATALOG_V3,
     ANIMATION_LAB_METRIC_CATALOG_V4,
+    ANIMATION_LAB_METRIC_CATALOG_V5,
     type AnimationLabMetric,
     type LabActionKind,
     type LabMetricCatalogEntryV1,
@@ -57,6 +58,7 @@ const CAPABILITY_KEYS_V2 = new Set([
 ])
 const CAPABILITY_KEYS_V3 = CAPABILITY_KEYS_V2
 const CAPABILITY_KEYS_V4 = new Set([...CAPABILITY_KEYS_V3, 'rendererEvidenceBridge'])
+const CAPABILITY_KEYS_V5 = new Set([...CAPABILITY_KEYS_V4, 'mediaStageEvidenceBridge'])
 const PAGE_PROBE_LIMITATIONS = [
     'renderer-gpu-timing-requires-explicit-evidence',
     'continuous-input-observation-is-sampled',
@@ -65,7 +67,8 @@ const PAGE_PROBE_LIMITATIONS = [
 const SAMPLE_DROP_KEYS_V1 = ['frames', 'longTasks', 'longAnimationFrames', 'eventTimings', 'resources'] as const
 const SAMPLE_DROP_KEYS_V2 = [...SAMPLE_DROP_KEYS_V1, 'inputFrameScheduling'] as const
 const SAMPLE_DROP_KEYS_V4 = [...SAMPLE_DROP_KEYS_V2, 'rendererHostEvidence'] as const
-type SampleDropKey = (typeof SAMPLE_DROP_KEYS_V4)[number]
+const SAMPLE_DROP_KEYS_V5 = [...SAMPLE_DROP_KEYS_V4, 'mediaStageEvidence'] as const
+type SampleDropKey = (typeof SAMPLE_DROP_KEYS_V5)[number]
 type PageProbeSampleDrops = Record<SampleDropKey, number>
 export const PAGE_PROBE_OBSERVER_DROP_KEYS = [
     'longTasks',
@@ -176,6 +179,26 @@ const SAMPLE_TRUNCATION_CONTRACT: Readonly<
         capability: 'rendererEvidenceBridge',
         rootMetricIds: new Set(['renderer.draw-calls.p95', 'renderer.triangles.p95', 'renderer.gpu-frame.p95']),
         actionMetricIds: new Set(['renderer.draw-calls.p95', 'renderer.triangles.p95']),
+    },
+    mediaStageEvidence: {
+        limitation: 'page-probe-media-stage-evidence-truncated',
+        capability: 'mediaStageEvidenceBridge',
+        rootMetricIds: new Set([
+            'media.declared-completed.count',
+            'media.declared-cancelled.count',
+            'media.declared-begin-to-decode.p95',
+            'media.declared-decode-to-upload.p95',
+            'media.declared-upload-to-first-visible.p95',
+            'media.declared-begin-to-first-visible.p95',
+        ]),
+        actionMetricIds: new Set([
+            'media.declared-completed.count',
+            'media.declared-cancelled.count',
+            'media.declared-begin-to-decode.p95',
+            'media.declared-decode-to-upload.p95',
+            'media.declared-upload-to-first-visible.p95',
+            'media.declared-begin-to-first-visible.p95',
+        ]),
     },
 }
 const OBSERVER_DROP_CONTRACT: Readonly<
@@ -407,6 +430,16 @@ export const PAGE_PROBE_ROOT_METRIC_IDS_V4 = [
     'renderer.gpu-frame.p95',
 ] as const
 
+export const PAGE_PROBE_ROOT_METRIC_IDS_V5 = [
+    ...PAGE_PROBE_ROOT_METRIC_IDS_V4,
+    'media.declared-completed.count',
+    'media.declared-cancelled.count',
+    'media.declared-begin-to-decode.p95',
+    'media.declared-decode-to-upload.p95',
+    'media.declared-upload-to-first-visible.p95',
+    'media.declared-begin-to-first-visible.p95',
+] as const
+
 export const PAGE_PROBE_ACTION_METRIC_IDS = [
     'frame.duration.p50',
     'frame.duration.p95',
@@ -443,11 +476,21 @@ export const PAGE_PROBE_ACTION_METRIC_IDS_V4 = [
     'renderer.draw-calls.p95',
     'renderer.triangles.p95',
 ] as const
+export const PAGE_PROBE_ACTION_METRIC_IDS_V5 = [
+    ...PAGE_PROBE_ACTION_METRIC_IDS_V4,
+    'media.declared-completed.count',
+    'media.declared-cancelled.count',
+    'media.declared-begin-to-decode.p95',
+    'media.declared-decode-to-upload.p95',
+    'media.declared-upload-to-first-visible.p95',
+    'media.declared-begin-to-first-visible.p95',
+] as const
 
 export const PAGE_PROBE_CAPABILITY_KEYS = [...CAPABILITY_KEYS_V1] as const
 export const PAGE_PROBE_CAPABILITY_KEYS_V2 = [...CAPABILITY_KEYS_V2] as const
 export const PAGE_PROBE_CAPABILITY_KEYS_V3 = [...CAPABILITY_KEYS_V3] as const
 export const PAGE_PROBE_CAPABILITY_KEYS_V4 = [...CAPABILITY_KEYS_V4] as const
+export const PAGE_PROBE_CAPABILITY_KEYS_V5 = [...CAPABILITY_KEYS_V5] as const
 
 type RecordValue = Record<string, unknown>
 type ProbeMetricStatus = 'measured' | 'partial' | 'not-observed' | 'unsupported' | 'unknown'
@@ -524,6 +567,7 @@ const METRIC_CATALOG_BY_ID_V1 = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map(entr
 const METRIC_CATALOG_BY_ID_V2 = new Map(ANIMATION_LAB_METRIC_CATALOG_V2.map(entry => [entry.metricId, entry] as const))
 const METRIC_CATALOG_BY_ID_V3 = new Map(ANIMATION_LAB_METRIC_CATALOG_V3.map(entry => [entry.metricId, entry] as const))
 const METRIC_CATALOG_BY_ID_V4 = new Map(ANIMATION_LAB_METRIC_CATALOG_V4.map(entry => [entry.metricId, entry] as const))
+const METRIC_CATALOG_BY_ID_V5 = new Map(ANIMATION_LAB_METRIC_CATALOG_V5.map(entry => [entry.metricId, entry] as const))
 
 function producerMetricCatalog(metricIds: readonly string[], metricCatalog: ReadonlyMap<string, LabMetricCatalogEntryV1>) {
     const catalog = new Map(
@@ -545,6 +589,8 @@ const ROOT_PAGE_PROBE_METRICS_V3 = producerMetricCatalog(PAGE_PROBE_ROOT_METRIC_
 const ACTION_PAGE_PROBE_METRICS_V3 = producerMetricCatalog(PAGE_PROBE_ACTION_METRIC_IDS_V3, METRIC_CATALOG_BY_ID_V3)
 const ROOT_PAGE_PROBE_METRICS_V4 = producerMetricCatalog(PAGE_PROBE_ROOT_METRIC_IDS_V4, METRIC_CATALOG_BY_ID_V4)
 const ACTION_PAGE_PROBE_METRICS_V4 = producerMetricCatalog(PAGE_PROBE_ACTION_METRIC_IDS_V4, METRIC_CATALOG_BY_ID_V4)
+const ROOT_PAGE_PROBE_METRICS_V5 = producerMetricCatalog(PAGE_PROBE_ROOT_METRIC_IDS_V5, METRIC_CATALOG_BY_ID_V5)
+const ACTION_PAGE_PROBE_METRICS_V5 = producerMetricCatalog(PAGE_PROBE_ACTION_METRIC_IDS_V5, METRIC_CATALOG_BY_ID_V5)
 
 function metricMaximum(unit: AnimationLabMetric['unit']): number {
     switch (unit) {
@@ -626,6 +672,14 @@ function metricLimitations(metricId: string): string[] {
     if (metricId === 'renderer.gpu-frame.p95') {
         return ['renderer-host-gpu-query-p95', 'renderer-multiple-producers-not-distinguished', 'renderer-gpu-action-window-not-proven']
     }
+    if (metricId.startsWith('media.declared-')) {
+        return [
+            'media-stage-caller-attested',
+            'media-stage-not-browser-decoder-or-gpu-proof',
+            'media-stage-complete-attempt-window-only',
+            'media-stage-kind-aggregate',
+        ]
+    }
     return []
 }
 
@@ -662,7 +716,8 @@ function decodeMetrics(
             status === 'partial' &&
             catalog.metricId !== 'media.video-dropped-frame-rate' &&
             catalog.metricId !== 'media.video-window-dropped-frame-rate' &&
-            !catalog.metricId.startsWith('renderer.')
+            !catalog.metricId.startsWith('renderer.') &&
+            !catalog.metricId.startsWith('media.declared-')
         ) {
             fail(`${metricLabel} status`)
         }
@@ -670,7 +725,9 @@ function decodeMetrics(
         const expectedProducerEvidenceLevel =
             metricCatalogVersion >= 2 && (status === 'unsupported' || status === 'unknown')
                 ? 'unsupported-or-unknown'
-                : 'controlled-lab-measurement'
+                : metricCatalogVersion >= 5 && catalog.metricId.startsWith('media.declared-')
+                  ? 'caller-attested'
+                  : 'controlled-lab-measurement'
         if (raw.evidenceLevel !== expectedProducerEvidenceLevel) fail(`${metricLabel} evidence level`)
         const parsedValue = metricValue(raw.value, catalog.unit, `${metricLabel} value`)
         if (status === 'measured' || status === 'partial' ? parsedValue === null : parsedValue !== null) {
@@ -698,7 +755,13 @@ function decodeMetrics(
 function decodeCapabilities(value: unknown, metricCatalogVersion: LabMetricCatalogVersion): Record<string, boolean | null> {
     const raw = record(value, 'capabilities')
     const capabilityKeys =
-        metricCatalogVersion === 4 ? CAPABILITY_KEYS_V4 : metricCatalogVersion >= 2 ? CAPABILITY_KEYS_V2 : CAPABILITY_KEYS_V1
+        metricCatalogVersion === 5
+            ? CAPABILITY_KEYS_V5
+            : metricCatalogVersion === 4
+              ? CAPABILITY_KEYS_V4
+              : metricCatalogVersion >= 2
+                ? CAPABILITY_KEYS_V2
+                : CAPABILITY_KEYS_V1
     if (Object.keys(raw).length !== capabilityKeys.size) fail('capabilities count')
     const output: Record<string, boolean | null> = {}
     for (const [key, item] of Object.entries(raw)) {
@@ -730,7 +793,14 @@ function decodeCapabilities(value: unknown, metricCatalogVersion: LabMetricCatal
 
 function decodeSampleDrops(value: unknown, metricCatalogVersion: LabMetricCatalogVersion): PageProbeSampleDrops {
     const raw = record(value, 'sampleDrops')
-    const keys = metricCatalogVersion === 4 ? SAMPLE_DROP_KEYS_V4 : metricCatalogVersion >= 2 ? SAMPLE_DROP_KEYS_V2 : SAMPLE_DROP_KEYS_V1
+    const keys =
+        metricCatalogVersion === 5
+            ? SAMPLE_DROP_KEYS_V5
+            : metricCatalogVersion === 4
+              ? SAMPLE_DROP_KEYS_V4
+              : metricCatalogVersion >= 2
+                ? SAMPLE_DROP_KEYS_V2
+                : SAMPLE_DROP_KEYS_V1
     exactKeys(raw, keys, 'sampleDrops')
     if (Object.keys(raw).length !== keys.length) fail('sampleDrops count')
     const decoded = Object.fromEntries(
@@ -740,6 +810,7 @@ function decodeSampleDrops(value: unknown, metricCatalogVersion: LabMetricCatalo
         ...decoded,
         inputFrameScheduling: decoded.inputFrameScheduling ?? 0,
         rendererHostEvidence: decoded.rendererHostEvidence ?? 0,
+        mediaStageEvidence: decoded.mediaStageEvidence ?? 0,
     } as PageProbeSampleDrops
 }
 
@@ -1369,6 +1440,135 @@ function enforceRendererRootContract(
     rendererGpuContract(metrics, catalog, bridgeCapability, evidence)
 }
 
+interface MediaStageWindowEvidence {
+    acceptedAttempts: number
+    retainedAttempts: number
+    droppedAttempts: number
+    rejectedAttempts: number
+    completedAttempts: number
+    cancelledAttempts: number
+}
+
+const MEDIA_STAGE_WINDOW_EVIDENCE_KEYS = [
+    'acceptedAttempts',
+    'retainedAttempts',
+    'droppedAttempts',
+    'rejectedAttempts',
+    'completedAttempts',
+    'cancelledAttempts',
+] as const
+const MEDIA_STAGE_METRIC_IDS = [
+    'media.declared-completed.count',
+    'media.declared-cancelled.count',
+    'media.declared-begin-to-decode.p95',
+    'media.declared-decode-to-upload.p95',
+    'media.declared-upload-to-first-visible.p95',
+    'media.declared-begin-to-first-visible.p95',
+] as const
+
+function decodeMediaStageWindowEvidence(value: unknown, label: string): MediaStageWindowEvidence {
+    const raw = record(value, label)
+    exactKeys(raw, MEDIA_STAGE_WINDOW_EVIDENCE_KEYS, label)
+    if (Object.keys(raw).length !== MEDIA_STAGE_WINDOW_EVIDENCE_KEYS.length) fail(`${label} count`)
+    const evidence = Object.fromEntries(
+        MEDIA_STAGE_WINDOW_EVIDENCE_KEYS.map(key => [key, integer(raw[key], `${label}.${key}`, 0, MAX_SAMPLES)])
+    ) as unknown as MediaStageWindowEvidence
+    if (
+        evidence.acceptedAttempts !== evidence.retainedAttempts + evidence.droppedAttempts ||
+        evidence.completedAttempts + evidence.cancelledAttempts !== evidence.retainedAttempts
+    ) {
+        fail(`${label} coherence`)
+    }
+    return evidence
+}
+
+function mediaStageMetric(
+    metrics: readonly AnimationLabMetric[],
+    catalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
+    metricId: (typeof MEDIA_STAGE_METRIC_IDS)[number],
+    label: string
+): AnimationLabMetric {
+    const item = metrics.find(metric => catalog.get(metricKey(metric.family, metric.name, metric.stat, metric.unit))?.metricId === metricId)
+    return item ?? fail(`${label} completeness`)
+}
+
+function enforceMediaStageContract(
+    metrics: readonly AnimationLabMetric[],
+    catalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
+    bridgeCapability: boolean,
+    evidence: MediaStageWindowEvidence,
+    label: string
+): void {
+    if (!bridgeCapability && Object.values(evidence).some(value => value !== 0)) fail(`${label} capability coherence`)
+    const incomplete = evidence.rejectedAttempts > 0 || evidence.droppedAttempts > 0
+    for (const metricId of MEDIA_STAGE_METRIC_IDS) {
+        const item = mediaStageMetric(metrics, catalog, metricId, label)
+        const countMetric = metricId === 'media.declared-completed.count' || metricId === 'media.declared-cancelled.count'
+        const expectedStatus: ProbeMetricStatus = !bridgeCapability
+            ? 'unsupported'
+            : countMetric
+              ? evidence.retainedAttempts > 0
+                  ? incomplete
+                      ? 'partial'
+                      : 'measured'
+                  : incomplete
+                    ? 'unknown'
+                    : 'not-observed'
+              : (item.samples ?? 0) > 0
+                ? incomplete
+                    ? 'partial'
+                    : 'measured'
+                : incomplete
+                  ? 'unknown'
+                  : 'not-observed'
+        const expectedSamples = !bridgeCapability
+            ? null
+            : countMetric
+              ? evidence.retainedAttempts > 0
+                  ? evidence.retainedAttempts
+                  : incomplete
+                    ? null
+                    : 0
+              : expectedStatus === 'not-observed'
+                ? 0
+                : item.samples
+        if (item.status !== expectedStatus || item.samples !== expectedSamples) fail(`${label} metric contract`)
+        if (
+            countMetric &&
+            item.value !==
+                (evidence.retainedAttempts > 0
+                    ? metricId === 'media.declared-completed.count'
+                        ? evidence.completedAttempts
+                        : evidence.cancelledAttempts
+                    : null)
+        ) {
+            fail(`${label} count metric value`)
+        }
+        if (!countMetric && item.samples !== null && item.samples > evidence.completedAttempts) {
+            fail(`${label} stage population`)
+        }
+    }
+}
+
+function addMediaStageEvidenceLimitations(
+    metrics: readonly AnimationLabMetric[],
+    catalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
+    evidence: MediaStageWindowEvidence
+): AnimationLabMetric[] {
+    const limitations = [
+        ...(evidence.droppedAttempts > 0 ? ['page-probe-media-stage-evidence-truncated'] : []),
+        ...(evidence.rejectedAttempts > 0 ? ['media-stage-evidence-rejected'] : []),
+    ]
+    if (limitations.length === 0) return [...metrics]
+    const affected = new Set<string>(MEDIA_STAGE_METRIC_IDS)
+    return metrics.map(metric => {
+        const metricId = catalog.get(metricKey(metric.family, metric.name, metric.stat, metric.unit))?.metricId
+        return metricId && affected.has(metricId)
+            ? { ...metric, limitations: [...new Set([...(metric.limitations ?? []), ...limitations])] }
+            : metric
+    })
+}
+
 function decodeActionResults(
     value: unknown,
     expectedActions: readonly ExpectedPageProbeAction[],
@@ -1377,13 +1577,16 @@ function decodeActionResults(
     actionMetricCatalog: ReadonlyMap<string, LabMetricCatalogEntryV1>,
     videoPlaybackQualityCapability: boolean | null,
     rendererBridgeCapability: boolean | null,
-    rendererRootEvidence: RendererRootEvidence | null
+    rendererRootEvidence: RendererRootEvidence | null,
+    mediaStageBridgeCapability: boolean | null,
+    mediaStageRootEvidence: MediaStageWindowEvidence | null
 ): DecodedPageProbeActionResult[] {
     const source = boundedArray(value, 'actionResults', MAX_ACTIONS)
     if (source.length !== expectedActions.length) fail('actionResults count')
     const expectedById = new Map(expectedActions.map(action => [action.actionId, action] as const))
     const decodedById = new Map<string, DecodedPageProbeActionResult>()
     const rendererWindows: RendererWindowEvidence[] = []
+    const mediaStageWindows: MediaStageWindowEvidence[] = []
     for (let index = 0; index < source.length; index += 1) {
         const label = `actionResults[${index}]`
         const raw = record(source[index], label)
@@ -1399,7 +1602,8 @@ function decodeActionResults(
                 'outcome',
                 'metrics',
                 ...(metricCatalogVersion >= 3 ? ['videoWindowEvidence'] : []),
-                ...(metricCatalogVersion === 4 ? ['rendererWindowEvidence'] : []),
+                ...(metricCatalogVersion >= 4 ? ['rendererWindowEvidence'] : []),
+                ...(metricCatalogVersion === 5 ? ['mediaStageWindowEvidence'] : []),
             ],
             label
         )
@@ -1424,7 +1628,7 @@ function decodeActionResults(
                       decodeVideoWindowEvidence(raw.videoWindowEvidence, `${label}.videoWindowEvidence`)
                   )
                 : decodedMetrics
-        if (metricCatalogVersion === 4) {
+        if (metricCatalogVersion >= 4) {
             if (rendererBridgeCapability === null || rendererRootEvidence === null) fail(`${label} renderer contract`)
             const rendererWindow = decodeRendererWindowEvidence(raw.rendererWindowEvidence, `${label}.rendererWindowEvidence`)
             if (!rendererBridgeCapability && Object.values(rendererWindow).some(item => item !== 0)) {
@@ -1451,6 +1655,13 @@ function decodeActionResults(
             metrics = addRendererEvidenceLimitations(metrics, actionMetricCatalog, rendererWindow, false)
             rendererWindows.push(rendererWindow)
         }
+        if (metricCatalogVersion === 5) {
+            if (mediaStageBridgeCapability === null || mediaStageRootEvidence === null) fail(`${label} media stage contract`)
+            const mediaStageWindow = decodeMediaStageWindowEvidence(raw.mediaStageWindowEvidence, `${label}.mediaStageWindowEvidence`)
+            enforceMediaStageContract(metrics, actionMetricCatalog, mediaStageBridgeCapability, mediaStageWindow, `${label} media stage`)
+            metrics = addMediaStageEvidenceLimitations(metrics, actionMetricCatalog, mediaStageWindow)
+            mediaStageWindows.push(mediaStageWindow)
+        }
         decodedById.set(actionId, {
             actionId: expected.actionId,
             order: expected.order,
@@ -1461,10 +1672,16 @@ function decodeActionResults(
             metrics,
         })
     }
-    if (metricCatalogVersion === 4 && rendererRootEvidence) {
+    if (metricCatalogVersion >= 4 && rendererRootEvidence) {
         for (const key of RENDERER_WINDOW_EVIDENCE_KEYS) {
             const actionTotal = rendererWindows.reduce((total, evidence) => total + evidence[key], 0)
             if (actionTotal > rendererRootEvidence[key]) fail('renderer action evidence coherence')
+        }
+    }
+    if (metricCatalogVersion === 5 && mediaStageRootEvidence) {
+        for (const key of MEDIA_STAGE_WINDOW_EVIDENCE_KEYS) {
+            const actionTotal = mediaStageWindows.reduce((total, evidence) => total + evidence[key], 0)
+            if (actionTotal > mediaStageRootEvidence[key]) fail('media stage action evidence coherence')
         }
     }
     return expectedActions.map(action => decodedById.get(action.actionId) ?? fail('actionResults one-to-one mapping'))
@@ -1476,7 +1693,13 @@ function decodePageProbeResultWire(
     metricCatalogVersion: LabMetricCatalogVersion,
     observerDropContractVersion: PageProbeObserverDropContractVersion
 ): DecodedPageProbeResultWithObserverDrops {
-    if (metricCatalogVersion !== 1 && metricCatalogVersion !== 2 && metricCatalogVersion !== 3 && metricCatalogVersion !== 4) {
+    if (
+        metricCatalogVersion !== 1 &&
+        metricCatalogVersion !== 2 &&
+        metricCatalogVersion !== 3 &&
+        metricCatalogVersion !== 4 &&
+        metricCatalogVersion !== 5
+    ) {
         fail('metric catalog version')
     }
     if (observerDropContractVersion !== 0 && observerDropContractVersion !== 1) fail('observer drop contract version')
@@ -1492,7 +1715,8 @@ function decodePageProbeResultWire(
             ...(observerDropContractVersion === 1
                 ? ['observerDrops', 'observerDropCountUnavailable', 'observerDropCountCapped', 'observerEntryDeliveryObserved']
                 : []),
-            ...(metricCatalogVersion === 4 ? ['rendererEvidence'] : []),
+            ...(metricCatalogVersion >= 4 ? ['rendererEvidence'] : []),
+            ...(metricCatalogVersion === 5 ? ['mediaStageEvidence'] : []),
             'limitations',
         ],
         'root'
@@ -1500,39 +1724,58 @@ function decodePageProbeResultWire(
     const durationMs = finite(raw.durationMs, 'duration', 0, MAX_DURATION_MS)
     const expectedActions = decodeExpectedActions(expectedActionsValue)
     const rootMetricCatalog =
-        metricCatalogVersion === 4
-            ? ROOT_PAGE_PROBE_METRICS_V4
-            : metricCatalogVersion === 3
-              ? ROOT_PAGE_PROBE_METRICS_V3
-              : metricCatalogVersion === 2
-                ? ROOT_PAGE_PROBE_METRICS_V2
-                : ROOT_PAGE_PROBE_METRICS_V1
+        metricCatalogVersion === 5
+            ? ROOT_PAGE_PROBE_METRICS_V5
+            : metricCatalogVersion === 4
+              ? ROOT_PAGE_PROBE_METRICS_V4
+              : metricCatalogVersion === 3
+                ? ROOT_PAGE_PROBE_METRICS_V3
+                : metricCatalogVersion === 2
+                  ? ROOT_PAGE_PROBE_METRICS_V2
+                  : ROOT_PAGE_PROBE_METRICS_V1
     const actionMetricCatalog =
-        metricCatalogVersion === 4
-            ? ACTION_PAGE_PROBE_METRICS_V4
-            : metricCatalogVersion === 3
-              ? ACTION_PAGE_PROBE_METRICS_V3
-              : metricCatalogVersion === 2
-                ? ACTION_PAGE_PROBE_METRICS_V2
-                : ACTION_PAGE_PROBE_METRICS_V1
+        metricCatalogVersion === 5
+            ? ACTION_PAGE_PROBE_METRICS_V5
+            : metricCatalogVersion === 4
+              ? ACTION_PAGE_PROBE_METRICS_V4
+              : metricCatalogVersion === 3
+                ? ACTION_PAGE_PROBE_METRICS_V3
+                : metricCatalogVersion === 2
+                  ? ACTION_PAGE_PROBE_METRICS_V2
+                  : ACTION_PAGE_PROBE_METRICS_V1
     let rawMetrics = decodeMetrics(raw.metrics, 'metrics', rootMetricCatalog, metricCatalogVersion)
     const capabilities = decodeCapabilities(raw.capabilities, metricCatalogVersion)
     const sampleDrops = decodeSampleDrops(raw.sampleDrops, metricCatalogVersion)
     const rendererBridgeCapability: boolean | null =
-        metricCatalogVersion === 4
+        metricCatalogVersion >= 4
             ? (() => {
                   const value = capabilities.rendererEvidenceBridge
                   if (typeof value !== 'boolean') fail('renderer bridge capability')
                   return value
               })()
             : null
-    const rendererEvidence = metricCatalogVersion === 4 ? decodeRendererRootEvidence(raw.rendererEvidence) : null
+    const rendererEvidence = metricCatalogVersion >= 4 ? decodeRendererRootEvidence(raw.rendererEvidence) : null
     if (rendererEvidence && rendererBridgeCapability !== null) {
         if (rendererEvidence.droppedSamples !== sampleDrops.rendererHostEvidence) {
             fail('renderer sample drop coherence')
         }
         enforceRendererRootContract(rawMetrics, rootMetricCatalog, rendererBridgeCapability, rendererEvidence)
         rawMetrics = addRendererEvidenceLimitations(rawMetrics, rootMetricCatalog, rendererEvidence, true)
+    }
+    const mediaStageBridgeCapability: boolean | null =
+        metricCatalogVersion === 5
+            ? (() => {
+                  const value = capabilities.mediaStageEvidenceBridge
+                  if (typeof value !== 'boolean') fail('media stage bridge capability')
+                  return value
+              })()
+            : null
+    const mediaStageEvidence =
+        metricCatalogVersion === 5 ? decodeMediaStageWindowEvidence(raw.mediaStageEvidence, 'mediaStageEvidence') : null
+    if (mediaStageEvidence && mediaStageBridgeCapability !== null) {
+        if (mediaStageEvidence.droppedAttempts !== sampleDrops.mediaStageEvidence) fail('media stage sample drop coherence')
+        enforceMediaStageContract(rawMetrics, rootMetricCatalog, mediaStageBridgeCapability, mediaStageEvidence, 'media stage')
+        rawMetrics = addMediaStageEvidenceLimitations(rawMetrics, rootMetricCatalog, mediaStageEvidence)
     }
     const observerDrops = observerDropContractVersion === 1 ? decodeObserverDrops(raw.observerDrops) : emptyObserverDrops()
     const observerDropCountUnavailable =
@@ -1552,7 +1795,13 @@ function decodePageProbeResultWire(
     if (ignoredLimitations.some(item => typeof item !== 'string' || item.length > 200)) fail('limitations')
     const droppedSamples = rawMetrics.find(metric => metric.family === 'monitorOverhead' && metric.name === 'droppedProbeSamples')?.value
     const activeSampleDropKeys =
-        metricCatalogVersion === 4 ? SAMPLE_DROP_KEYS_V4 : metricCatalogVersion >= 2 ? SAMPLE_DROP_KEYS_V2 : SAMPLE_DROP_KEYS_V1
+        metricCatalogVersion === 5
+            ? SAMPLE_DROP_KEYS_V5
+            : metricCatalogVersion === 4
+              ? SAMPLE_DROP_KEYS_V4
+              : metricCatalogVersion >= 2
+                ? SAMPLE_DROP_KEYS_V2
+                : SAMPLE_DROP_KEYS_V1
     if (droppedSamples !== activeSampleDropKeys.reduce((total, key) => total + sampleDrops[key], 0)) {
         fail('sampleDrops total coherence')
     }
@@ -1607,7 +1856,9 @@ function decodePageProbeResultWire(
         actionMetricCatalog,
         videoPlaybackQualityCapability,
         rendererBridgeCapability,
-        rendererEvidence
+        rendererEvidence,
+        mediaStageBridgeCapability,
+        mediaStageEvidence
     ).map(action => {
         const actionPairs =
             metricCatalogVersion >= 2
@@ -1638,12 +1889,23 @@ function decodePageProbeResultWire(
         observerEntryDeliveryObserved,
         limitations: [
             ...PAGE_PROBE_LIMITATIONS,
-            ...(metricCatalogVersion === 4
+            ...(metricCatalogVersion >= 4
                 ? ['renderer-gpu-action-window-not-proven', 'renderer-multiple-producers-not-distinguished']
                 : []),
-            ...(metricCatalogVersion === 4 && rendererBridgeCapability === false ? ['renderer-evidence-bridge-unavailable'] : []),
+            ...(metricCatalogVersion >= 4 && rendererBridgeCapability === false ? ['renderer-evidence-bridge-unavailable'] : []),
             ...(rendererEvidence && rendererEvidence.rejectedSamples > 0 ? ['renderer-host-evidence-rejected'] : []),
             ...(sampleDrops.rendererHostEvidence > 0 ? ['page-probe-renderer-host-evidence-truncated'] : []),
+            ...(metricCatalogVersion === 5
+                ? [
+                      'media-stage-caller-attested',
+                      'media-stage-not-browser-decoder-or-gpu-proof',
+                      'media-stage-complete-attempt-window-only',
+                      'media-stage-kind-aggregate',
+                  ]
+                : []),
+            ...(metricCatalogVersion === 5 && mediaStageBridgeCapability === false ? ['media-stage-evidence-bridge-unavailable'] : []),
+            ...(mediaStageEvidence && mediaStageEvidence.rejectedAttempts > 0 ? ['media-stage-evidence-rejected'] : []),
+            ...(sampleDrops.mediaStageEvidence > 0 ? ['page-probe-media-stage-evidence-truncated'] : []),
             ...(typeof droppedSamples === 'number' && droppedSamples > 0 ? ['page-probe-samples-truncated'] : []),
             ...PAGE_PROBE_OBSERVER_DROP_KEYS.flatMap(stream => {
                 const contract = OBSERVER_DROP_CONTRACT[stream]

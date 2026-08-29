@@ -287,7 +287,7 @@ function metricScopeIdentity(metric: AnimationLabMetricV2Projection): string {
     return JSON.stringify([metric.metricId, comparisonScope(metric.scope)])
 }
 
-function validMetric(metric: AnimationLabMetricV2Projection, attemptId: string, metricCatalogVersion: 1 | 2 | 3 | 4): boolean {
+function validMetric(metric: AnimationLabMetricV2Projection, attemptId: string, metricCatalogVersion: 1 | 2 | 3 | 4 | 5): boolean {
     if (!token(metric.metricId) || !token(metric.name)) return false
     try {
         assertAnimationLabMetricCatalogTupleV2(metric, 'lab-comparison.metric', metricCatalogVersion)
@@ -314,7 +314,11 @@ function validMetric(metric: AnimationLabMetricV2Projection, attemptId: string, 
         return false
     }
     if (!['measured', 'partial', 'not-observed', 'unsupported', 'unknown'].includes(metric.status)) return false
-    if (!['controlled-lab-measurement', 'runtime-observation', 'unsupported-or-unknown'].includes(metric.evidenceLevel)) return false
+    if (
+        !['controlled-lab-measurement', 'runtime-observation', 'caller-attested', 'unsupported-or-unknown'].includes(metric.evidenceLevel)
+    ) {
+        return false
+    }
     if (metric.samples !== null && !integer(metric.samples, 0, ANIMATION_LAB_METRIC_SAMPLES_MAX)) return false
     if (metric.status === 'measured' || metric.status === 'partial') {
         return finite(metric.value, 0, Number.MAX_VALUE) && metric.evidenceLevel !== 'unsupported-or-unknown'
@@ -372,7 +376,8 @@ function validateContext(context: LabComparisonCandidate['comparisonContext']): 
         (contract.metricCatalogVersion === 1 ||
             contract.metricCatalogVersion === 2 ||
             contract.metricCatalogVersion === 3 ||
-            contract.metricCatalogVersion === 4)
+            contract.metricCatalogVersion === 4 ||
+            contract.metricCatalogVersion === 5)
     )
 }
 

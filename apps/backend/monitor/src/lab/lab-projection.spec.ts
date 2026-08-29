@@ -260,6 +260,41 @@ function rendererMetric(metricId: RendererMetricId, overrides: Record<string, un
     })
 }
 
+const MEDIA_STAGE_LIMITATIONS = [
+    'media-stage-caller-attested',
+    'media-stage-not-browser-decoder-or-gpu-proof',
+    'media-stage-complete-attempt-window-only',
+    'media-stage-kind-aggregate',
+] as const
+
+const MEDIA_STAGE_METRICS = [
+    ['media.declared-completed.count', 'declaredMediaCompletedAttempts', 'count', 'count', 1],
+    ['media.declared-cancelled.count', 'declaredMediaCancelledAttempts', 'count', 'count', 0],
+    ['media.declared-begin-to-decode.p95', 'declaredMediaBeginToDecodeMs', 'p95', 'ms', 12],
+    ['media.declared-decode-to-upload.p95', 'declaredMediaDecodeToUploadMs', 'p95', 'ms', 8],
+    ['media.declared-upload-to-first-visible.p95', 'declaredMediaUploadToFirstVisibleMs', 'p95', 'ms', 5],
+    ['media.declared-begin-to-first-visible.p95', 'declaredMediaBeginToFirstVisibleMs', 'p95', 'ms', 25],
+] as const
+
+function mediaStageMetric(definition: (typeof MEDIA_STAGE_METRICS)[number], overrides: Record<string, unknown> = {}) {
+    const [metricId, name, stat, unit, value] = definition
+    return expandedMetric({
+        family: 'resourcesMedia',
+        name,
+        stat,
+        unit,
+        value,
+        samples: 1,
+        evidenceLevel: 'caller-attested',
+        metricId,
+        aggregation: { population: 'attempts', method: 'median-of-attempts' },
+        budgetRefs: [],
+        evidenceRefs: ['lab-media-stage-attestation'],
+        limitations: [...MEDIA_STAGE_LIMITATIONS],
+        ...overrides,
+    })
+}
+
 const ADDITIONAL_CATALOG_V2_METRICS = [
     {
         metricId: 'main.input-capture-to-next-raf-callback.count',
@@ -1524,7 +1559,7 @@ describe('lab platform artifact projections', () => {
         omittedObserved.findings = []
         expect(() => parseAnimationReportArtifact(omittedObserved)).toThrow('canonical budget evaluation')
 
-        const unknownBudgetFinding = setReportBudgetVersion(candidateFrameTailReportV2(), 5)
+        const unknownBudgetFinding = setReportBudgetVersion(candidateFrameTailReportV2(), 6)
         expect(() => parseAnimationReportArtifact(unknownBudgetFinding)).toThrow('canonical budget evaluation')
 
         const actionCandidate = candidateFrameTailReportV2()
@@ -1902,6 +1937,98 @@ describe('lab platform artifact projections', () => {
             scope: { level: 'action', attemptId: 'attempt_1', actionId: 'hero-hover-01' },
         })
         expect(() => parseAnimationReportArtifact(actionGpu)).toThrow('cannot attribute GPU timing to an action window')
+    })
+
+    it('accepts catalog v5 caller-attested media stages and rejects forged provenance', () => {
+        const report = animationReportV2()
+        report.measurementContract.metricCatalogVersion = 5
+        report.measurementContract.budgetRef.budgetVersion = 5
+        Object.assign(report.attempts[0]!.capabilities, { mediaStageEvidenceBridge: true })
+        report.attempts[0]!.metrics = MEDIA_STAGE_METRICS.map(definition =>
+            mediaStageMetric(definition, {
+                scope: { level: 'attempt', attemptId: 'attempt_1' },
+                aggregation: { population: 'samples', method: definition[2] === 'count' ? 'count' : 'nearest-rank' },
+            })
+        )
+        report.aggregateMetrics = MEDIA_STAGE_METRICS.map(definition => mediaStageMetric(definition))
+        report.technologyEvidence.push({
+            evidenceId: 'lab-media-stage-attestation',
+            axis: 'media',
+            technologyKey: 'condev-media-stage-attestation',
+            source: 'host-adapter',
+            confidence: 'medium',
+            status: 'observed',
+            scope: { level: 'run' },
+            limitations: [...MEDIA_STAGE_LIMITATIONS],
+        } as unknown as (typeof report.technologyEvidence)[number])
+        report.findings = []
+
+        const parsed = parseAnimationReportArtifact(report)
+        expect(parsed.analysis?.measurementContract.metricCatalogVersion).toBe(5)
+        expect(parsed.analysis?.metrics.map(item => item.metricId)).toEqual(MEDIA_STAGE_METRICS.map(item => item[0]))
+        expect(parsed.analysis?.metrics.every(item => item.evidenceLevel === 'caller-attested')).toBe(true)
+        expect(parsed.analysis?.findings).toEqual([])
+
+        const forgedV4 = JSON.parse(JSON.stringify(report)) as typeof report
+        forgedV4.measurementContract.metricCatalogVersion = 4
+        forgedV4.measurementContract.budgetRef.budgetVersion = 4
+        expect(() => parseAnimationReportArtifact(forgedV4)).toThrow('requires metric catalog v5')
+
+        const forgedEvidence = JSON.parse(JSON.stringify(report)) as typeof report
+        forgedEvidence.attempts[0]!.metrics[0]!.evidenceLevel = 'controlled-lab-measurement'
+        expect(() => parseAnimationReportArtifact(forgedEvidence)).toThrow('requires caller-attested evidence')
+
+        const missingRef = JSON.parse(JSON.stringify(report)) as typeof report
+        missingRef.attempts[0]!.metrics[0]!.evidenceRefs = []
+        expect(() => parseAnimationReportArtifact(missingRef)).toThrow('requires its closed evidence reference')
+
+        const missingBoundary = JSON.parse(JSON.stringify(report)) as typeof report
+        missingBoundary.attempts[0]!.metrics[0]!.limitations = MEDIA_STAGE_LIMITATIONS.slice(0, -1)
+        expect(() => parseAnimationReportArtifact(missingBoundary)).toThrow('missing its caller-attested boundary')
+
+        const capabilityMismatch = JSON.parse(JSON.stringify(report)) as typeof report
+        ;(capabilityMismatch.attempts[0]!.capabilities as Record<string, boolean | null>).mediaStageEvidenceBridge = false
+        expect(() => parseAnimationReportArtifact(capabilityMismatch)).toThrow('mediaStageEvidenceBridge capability conflicts')
+    })
+
+    it('keeps supported catalog v5 media counts not-observed instead of manufacturing zero', () => {
+        const report = animationReportV2()
+        const completed = MEDIA_STAGE_METRICS[0]
+        report.measurementContract.metricCatalogVersion = 5
+        report.measurementContract.budgetRef.budgetVersion = 5
+        Object.assign(report.attempts[0]!.capabilities, { mediaStageEvidenceBridge: true })
+        report.attempts[0]!.metrics = [
+            mediaStageMetric(completed, {
+                value: null,
+                samples: 0,
+                status: 'not-observed',
+                scope: { level: 'attempt', attemptId: 'attempt_1' },
+                aggregation: { population: 'samples', method: 'count' },
+            }),
+        ]
+        report.aggregateMetrics = [
+            mediaStageMetric(completed, {
+                value: null,
+                samples: 0,
+                status: 'not-observed',
+            }),
+        ]
+        report.technologyEvidence.push({
+            evidenceId: 'lab-media-stage-attestation',
+            axis: 'media',
+            technologyKey: 'condev-media-stage-attestation',
+            source: 'host-adapter',
+            confidence: 'low',
+            status: 'unknown',
+            scope: { level: 'run' },
+            limitations: [...MEDIA_STAGE_LIMITATIONS, 'media-stage-attempts-not-observed-or-rejected'],
+        } as unknown as (typeof report.technologyEvidence)[number])
+        report.findings = []
+
+        const parsed = parseAnimationReportArtifact(report)
+        expect(parsed.analysis?.metrics[0]).toEqual(
+            expect.objectContaining({ value: null, samples: 0, status: 'not-observed', evidenceLevel: 'caller-attested' })
+        )
     })
 
     it('binds catalog v3 video-window evidence to every measured attempt capability', () => {

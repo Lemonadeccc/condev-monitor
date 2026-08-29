@@ -10,6 +10,7 @@ import {
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V3,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V4,
+    DEFAULT_ANIMATION_LAB_BUDGET_REF_V5,
     DEFAULT_ANIMATION_LAB_BUDGET_V2,
     evaluateAnimationLabBudgetRule,
     validateAnimationLabSemanticsV2,
@@ -180,12 +181,19 @@ test('keeps decoration on budget v1 unless a known newer reference is explicit',
     )
     assert.deepEqual(loaf.budgetRefs, [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V3, ruleId: 'loaf-count' }])
 
+    const mediaCatalogBudget = decorateLabMetric(
+        longTaskMetric(0, 0),
+        { level: 'run' },
+        { acrossAttempts: true, budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V5 }
+    )
+    assert.deepEqual(mediaCatalogBudget.budgetRefs, [{ ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V5, ruleId: 'long-task-count' }])
+
     const unknown = decorateLabMetric(
         longTaskMetric(0, 0),
         { level: 'run' },
         {
             acrossAttempts: true,
-            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 5 },
+            budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 6 },
         }
     )
     assert.deepEqual(unknown.budgetRefs, [])

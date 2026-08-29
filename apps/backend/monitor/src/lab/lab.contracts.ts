@@ -8,8 +8,8 @@ import { type AnimationLabMetricV2Projection, parseAnimationLabMetricV2 } from '
 export const LAB_RUN_CONFIG_MAX_BYTES = 16 * 1024
 export const LAB_RUN_SUMMARY_MAX_BYTES = 64 * 1024
 export const LAB_RUN_ARTIFACT_TOTAL_MAX_BYTES = 128 * 1024 * 1024
-export const LAB_RUNNER_CONTRACT_VERSION = 8 as const
-export const LAB_RUNNER_CONTRACT_VERSIONS = [4, 5, 6, 7, LAB_RUNNER_CONTRACT_VERSION] as const
+export const LAB_RUNNER_CONTRACT_VERSION = 9 as const
+export const LAB_RUNNER_CONTRACT_VERSIONS = [4, 5, 6, 7, 8, LAB_RUNNER_CONTRACT_VERSION] as const
 export type LabRunnerContractVersion = (typeof LAB_RUNNER_CONTRACT_VERSIONS)[number]
 
 const LAB_RUNNER_V5_ACTION_KINDS: ReadonlySet<string> = new Set([
@@ -76,7 +76,7 @@ export type LabRunMeasurementContract = {
     source: 'explicit' | 'package-default'
     confidence: 'explicit' | 'low'
     budgetRef: { catalogVersion: 1; budgetId: string; budgetVersion: number }
-    metricCatalogVersion: 1 | 2 | 3 | 4
+    metricCatalogVersion: 1 | 2 | 3 | 4 | 5
 }
 
 export type LabRunnerRequiredCapabilities = Pick<LabRunMeasurementContract, 'metricCatalogVersion' | 'budgetRef'>
@@ -122,7 +122,7 @@ export function assertLabRunnerSupportsMeasurementContract(
     runnerContractVersion: LabRunnerContractVersion,
     measurementContract: LabRunMeasurementContract
 ): void {
-    const maximumVersion = runnerContractVersion === 4 ? 3 : 4
+    const maximumVersion = runnerContractVersion === 4 ? 3 : runnerContractVersion >= 9 ? 5 : 4
     if (measurementContract.metricCatalogVersion > maximumVersion || measurementContract.budgetRef.budgetVersion > maximumVersion) {
         throw new HttpException(
             `Animation Lab Runner contract ${runnerContractVersion} cannot execute metric catalog ${measurementContract.metricCatalogVersion} and budget ${measurementContract.budgetRef.budgetVersion}`,
@@ -386,13 +386,18 @@ function parseLabRunMeasurementContract(raw: unknown): LabRunMeasurementContract
         throw new BadRequestException('Invalid config.measurementContract.budgetRef.catalogVersion')
     }
     const budgetId = requiredString(raw.budgetRef.budgetId, 'config.measurementContract.budgetRef.budgetId', 120, SAFE_KEY)
-    const budgetVersion = integer(raw.budgetRef.budgetVersion, 'config.measurementContract.budgetRef.budgetVersion', 1, 4)
+    const budgetVersion = integer(raw.budgetRef.budgetVersion, 'config.measurementContract.budgetRef.budgetVersion', 1, 5)
     if (budgetId !== 'condev.animation.default') {
         throw new BadRequestException('config.measurementContract references an unknown local budget')
     }
-    const metricCatalogVersion = integer(raw.metricCatalogVersion, 'config.measurementContract.metricCatalogVersion', 1, 4) as 1 | 2 | 3 | 4
-    if (budgetVersion === 4 && metricCatalogVersion !== 4) {
-        throw new BadRequestException('config.measurementContract budget v4 requires metric catalog v4')
+    const metricCatalogVersion = integer(raw.metricCatalogVersion, 'config.measurementContract.metricCatalogVersion', 1, 5) as
+        | 1
+        | 2
+        | 3
+        | 4
+        | 5
+    if (budgetVersion >= 4 && metricCatalogVersion !== budgetVersion) {
+        throw new BadRequestException('config.measurementContract budget v4+ requires the matching metric catalog')
     }
     const normalized: LabRunMeasurementContract = {
         contractVersion: 2,

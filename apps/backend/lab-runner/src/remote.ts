@@ -32,7 +32,7 @@ const AUTHORED_SOURCE_FRAME_LIMITATIONS: ReadonlySet<LabTraceSourceMapLimitation
     'authored-source-segment-not-found',
     'authored-source-coordinate-basis-unknown',
 ])
-export const LAB_RUNNER_CONTRACT_VERSION = 8 as const
+export const LAB_RUNNER_CONTRACT_VERSION = 9 as const
 
 export interface RemoteLabConnectionOptions {
     server: string
@@ -107,7 +107,7 @@ function claimedBoolean(value: unknown, label: string): boolean {
 }
 
 function assertCompatibleMeasurementVersions(metricCatalogVersion: number, budgetVersion: number): void {
-    if (budgetVersion === 4 && metricCatalogVersion !== 4) {
+    if (budgetVersion >= 4 && metricCatalogVersion !== budgetVersion) {
         throw new Error('Lab server returned an incompatible platform metric catalog and budget')
     }
 }
@@ -141,8 +141,8 @@ function claimedMeasurementContract(value: unknown): LabMeasurementContractV2 {
     if (typeof budgetRef.budgetId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,119}$/u.test(budgetRef.budgetId)) {
         throw new Error('Lab server returned an invalid platform measurement budget id')
     }
-    const metricCatalogVersion = claimedInteger(contract.metricCatalogVersion, 1, 4, 'measurementContract.metricCatalogVersion')
-    const budgetVersion = claimedInteger(budgetRef.budgetVersion, 1, 4, 'measurementContract.budgetRef.budgetVersion')
+    const metricCatalogVersion = claimedInteger(contract.metricCatalogVersion, 1, 5, 'measurementContract.metricCatalogVersion')
+    const budgetVersion = claimedInteger(budgetRef.budgetVersion, 1, 5, 'measurementContract.budgetRef.budgetVersion')
     if (budgetRef.budgetId !== 'condev.animation.default') {
         throw new Error('Lab server returned an unknown platform measurement budget')
     }
@@ -158,7 +158,7 @@ function claimedMeasurementContract(value: unknown): LabMeasurementContractV2 {
             budgetId: budgetRef.budgetId,
             budgetVersion,
         },
-        metricCatalogVersion: metricCatalogVersion as 1 | 2 | 3 | 4,
+        metricCatalogVersion: metricCatalogVersion as 1 | 2 | 3 | 4 | 5,
     }
     if (
         normalized.source === 'package-default' &&
@@ -183,12 +183,13 @@ function claimedRequiredCapabilities(value: unknown): RemoteRequiredCapabilities
     if (budgetRef.catalogVersion !== 1 || budgetRef.budgetId !== 'condev.animation.default') {
         throw new Error('Lab server returned an invalid platform required budget')
     }
-    const metricCatalogVersion = claimedInteger(capabilities.metricCatalogVersion, 1, 4, 'requiredCapabilities.metricCatalogVersion') as
+    const metricCatalogVersion = claimedInteger(capabilities.metricCatalogVersion, 1, 5, 'requiredCapabilities.metricCatalogVersion') as
         | 1
         | 2
         | 3
         | 4
-    const budgetVersion = claimedInteger(budgetRef.budgetVersion, 1, 4, 'requiredCapabilities.budgetRef.budgetVersion')
+        | 5
+    const budgetVersion = claimedInteger(budgetRef.budgetVersion, 1, 5, 'requiredCapabilities.budgetRef.budgetVersion')
     assertCompatibleMeasurementVersions(metricCatalogVersion, budgetVersion)
     return {
         metricCatalogVersion,

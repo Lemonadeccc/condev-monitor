@@ -17,7 +17,7 @@ export interface LabBrowserProbeConfig {
     targetFrameMs?: number
     slowFrameFactor?: number
     /** Additive metric payload contract. Omitted callers retain the exact v1 shape. */
-    metricCatalogVersion?: 1 | 2 | 3 | 4
+    metricCatalogVersion?: 1 | 2 | 3 | 4 | 5
     /** Additive page-probe wire evidence. Omitted callers retain the exact legacy shape. */
     observerDropContractVersion?: 1
     actions?: readonly LabBrowserProbeActionConfig[]
@@ -27,7 +27,15 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
     const windowValue = window as unknown as Window & Record<string, unknown>
     const startedAt = performance.now()
     const metricCatalogVersion =
-        config.metricCatalogVersion === 4 ? 4 : config.metricCatalogVersion === 3 ? 3 : config.metricCatalogVersion === 2 ? 2 : 1
+        config.metricCatalogVersion === 5
+            ? 5
+            : config.metricCatalogVersion === 4
+              ? 4
+              : config.metricCatalogVersion === 3
+                ? 3
+                : config.metricCatalogVersion === 2
+                  ? 2
+                  : 1
     const observerDropContractVersion = config.observerDropContractVersion === 1 ? 1 : null
     const maximumSamples = 20_000
     const maximumMetricSamples = 10_000_000
@@ -117,6 +125,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         resources: 0,
         inputFrameScheduling: 0,
         rendererHostEvidence: 0,
+        mediaStageEvidence: 0,
     }
     const streamTotals = {
         longTasks: { count: 0, duration: 0 },
@@ -214,6 +223,39 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
     const rendererSamples: RendererEvidenceSample[] = []
     let rendererEvidenceBridgeCapability = false
     let recordingRendererEvidence = false
+
+    type MediaStageKind = 'image' | 'video' | 'canvas' | 'webgl' | 'webgpu' | 'custom'
+    type MediaStageOutcome = 'completed' | 'cancelled'
+    type MediaStageEvidenceSample = {
+        actionId: string | null
+        kind: MediaStageKind
+        outcome: MediaStageOutcome
+        beginToDecodeMs: number | null
+        decodeToUploadMs: number | null
+        uploadToFirstVisibleMs: number | null
+        beginToFirstVisibleMs: number | null
+    }
+    type MediaStageWindowEvidence = {
+        acceptedAttempts: number
+        retainedAttempts: number
+        droppedAttempts: number
+        rejectedAttempts: number
+        completedAttempts: number
+        cancelledAttempts: number
+    }
+    const emptyMediaStageWindowEvidence = (): MediaStageWindowEvidence => ({
+        acceptedAttempts: 0,
+        retainedAttempts: 0,
+        droppedAttempts: 0,
+        rejectedAttempts: 0,
+        completedAttempts: 0,
+        cancelledAttempts: 0,
+    })
+    const mediaStageEvidence = emptyMediaStageWindowEvidence()
+    const mediaStageActionEvidence = new Map<string, MediaStageWindowEvidence>()
+    const mediaStageSamples: MediaStageEvidenceSample[] = []
+    let mediaStageEvidenceBridgeCapability = false
+    let recordingMediaStageEvidence = false
 
     const rendererWindowForAction = (actionId: string | null): RendererWindowEvidence | null => {
         if (actionId === null) return null
@@ -382,7 +424,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         }
     }
 
-    if (metricCatalogVersion === 4) {
+    if (metricCatalogVersion >= 4) {
         try {
             Object.defineProperty(windowValue, Symbol.for('@condev-monitor/animation-lab/renderer-evidence/v1'), {
                 value: rendererSink,
@@ -393,6 +435,142 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             rendererEvidenceBridgeCapability = true
         } catch {
             rendererEvidenceBridgeCapability = false
+        }
+    }
+
+    const mediaStageWindowForAction = (actionId: string | null): MediaStageWindowEvidence | null => {
+        if (actionId === null) return null
+        const existing = mediaStageActionEvidence.get(actionId)
+        if (existing) return existing
+        const created = emptyMediaStageWindowEvidence()
+        mediaStageActionEvidence.set(actionId, created)
+        return created
+    }
+    const incrementMediaStageCounter = (target: MediaStageWindowEvidence, key: keyof MediaStageWindowEvidence): void => {
+        target[key] = Math.min(maximumMetricSamples, target[key] + 1)
+    }
+    const mediaStageTimestamp = (value: unknown): number | null =>
+        typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1_000_000_000_000_000 ? value : null
+    const maximumMediaStageAttemptDurationMs = 600_000
+    const mediaStageNullableTimestamp = (value: unknown): number | null | undefined =>
+        value === null ? null : (mediaStageTimestamp(value) ?? undefined)
+    const mediaStageActionId = (attemptStartedAt: number, attemptEndedAt: number): string | null => {
+        if (activeActionId === null) return null
+        const activeWindow = actionWindows.get(activeActionId)
+        if (!activeWindow || activeWindow.endedAtMs !== null) return null
+        const absoluteActionStart = startedAt + activeWindow.startedAtMs
+        const observedNow = performance.now()
+        return attemptStartedAt >= absoluteActionStart && attemptEndedAt <= observedNow ? activeActionId : null
+    }
+    const rejectMediaStageEvidence = (actionId: string | null): false => {
+        incrementMediaStageCounter(mediaStageEvidence, 'rejectedAttempts')
+        const actionEvidence = mediaStageWindowForAction(actionId)
+        if (actionEvidence) incrementMediaStageCounter(actionEvidence, 'rejectedAttempts')
+        return false
+    }
+    const mediaStageSink = (value: unknown): boolean => {
+        if (recordingMediaStageEvidence || stopped) return false
+        recordingMediaStageEvidence = true
+        let actionId: string | null = null
+        try {
+            const raw = rendererRecord(value)
+            if (
+                !raw ||
+                !rendererExactKeys(raw, [
+                    'contractVersion',
+                    'kind',
+                    'outcome',
+                    'startedAtMs',
+                    'endedAtMs',
+                    'decodeReadyAtMs',
+                    'uploadReadyAtMs',
+                    'firstVisibleAtMs',
+                ])
+            ) {
+                return rejectMediaStageEvidence(null)
+            }
+            const kinds = new Set<MediaStageKind>(['image', 'video', 'canvas', 'webgl', 'webgpu', 'custom'])
+            const outcomes = new Set<MediaStageOutcome>(['completed', 'cancelled'])
+            const kind = raw.kind
+            const outcome = raw.outcome
+            const startedAtMs = mediaStageTimestamp(raw.startedAtMs)
+            const endedAtMs = mediaStageTimestamp(raw.endedAtMs)
+            const decodeReadyAtMs = mediaStageNullableTimestamp(raw.decodeReadyAtMs)
+            const uploadReadyAtMs = mediaStageNullableTimestamp(raw.uploadReadyAtMs)
+            const firstVisibleAtMs = mediaStageNullableTimestamp(raw.firstVisibleAtMs)
+            const observedNow = performance.now()
+            if (
+                raw.contractVersion !== 1 ||
+                typeof kind !== 'string' ||
+                !kinds.has(kind as MediaStageKind) ||
+                typeof outcome !== 'string' ||
+                !outcomes.has(outcome as MediaStageOutcome) ||
+                startedAtMs === null ||
+                endedAtMs === null ||
+                endedAtMs < startedAtMs ||
+                endedAtMs - startedAtMs > maximumMediaStageAttemptDurationMs ||
+                endedAtMs > observedNow ||
+                decodeReadyAtMs === undefined ||
+                uploadReadyAtMs === undefined ||
+                firstVisibleAtMs === undefined ||
+                (decodeReadyAtMs !== null && (decodeReadyAtMs < startedAtMs || decodeReadyAtMs > endedAtMs)) ||
+                (uploadReadyAtMs !== null && (uploadReadyAtMs < (decodeReadyAtMs ?? startedAtMs) || uploadReadyAtMs > endedAtMs)) ||
+                (firstVisibleAtMs !== null &&
+                    (firstVisibleAtMs < (uploadReadyAtMs ?? decodeReadyAtMs ?? startedAtMs) || firstVisibleAtMs > endedAtMs)) ||
+                (outcome === 'cancelled' && firstVisibleAtMs !== null)
+            ) {
+                return rejectMediaStageEvidence(null)
+            }
+            actionId = mediaStageActionId(startedAtMs, endedAtMs)
+            const actionEvidence = mediaStageWindowForAction(actionId)
+            incrementMediaStageCounter(mediaStageEvidence, 'acceptedAttempts')
+            if (actionEvidence) incrementMediaStageCounter(actionEvidence, 'acceptedAttempts')
+            if (mediaStageSamples.length >= maximumSamples) {
+                incrementMediaStageCounter(mediaStageEvidence, 'droppedAttempts')
+                if (actionEvidence) incrementMediaStageCounter(actionEvidence, 'droppedAttempts')
+                droppedSamples += 1
+                sampleDrops.mediaStageEvidence += 1
+                return true
+            }
+            const completed = outcome === 'completed'
+            const beginToDecodeMs = decodeReadyAtMs === null ? null : decodeReadyAtMs - startedAtMs
+            const decodeToUploadMs = decodeReadyAtMs === null || uploadReadyAtMs === null ? null : uploadReadyAtMs - decodeReadyAtMs
+            const uploadToFirstVisibleMs = uploadReadyAtMs === null || firstVisibleAtMs === null ? null : firstVisibleAtMs - uploadReadyAtMs
+            const beginToFirstVisibleMs = firstVisibleAtMs === null ? null : firstVisibleAtMs - startedAtMs
+            mediaStageSamples.push({
+                actionId,
+                kind: kind as MediaStageKind,
+                outcome: outcome as MediaStageOutcome,
+                beginToDecodeMs,
+                decodeToUploadMs,
+                uploadToFirstVisibleMs,
+                beginToFirstVisibleMs,
+            })
+            incrementMediaStageCounter(mediaStageEvidence, 'retainedAttempts')
+            incrementMediaStageCounter(mediaStageEvidence, completed ? 'completedAttempts' : 'cancelledAttempts')
+            if (actionEvidence) {
+                incrementMediaStageCounter(actionEvidence, 'retainedAttempts')
+                incrementMediaStageCounter(actionEvidence, completed ? 'completedAttempts' : 'cancelledAttempts')
+            }
+            return true
+        } catch {
+            return rejectMediaStageEvidence(actionId)
+        } finally {
+            recordingMediaStageEvidence = false
+        }
+    }
+
+    if (metricCatalogVersion === 5) {
+        try {
+            Object.defineProperty(windowValue, Symbol.for('@condev-monitor/animation-lab/media-stage-evidence/v1'), {
+                value: mediaStageSink,
+                configurable: false,
+                enumerable: false,
+                writable: false,
+            })
+            mediaStageEvidenceBridgeCapability = true
+        } catch {
+            mediaStageEvidenceBridgeCapability = false
         }
     }
 
@@ -921,7 +1099,8 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
         unit: string,
         value: number | null,
         samples: number | null,
-        status?: 'measured' | 'partial' | 'not-observed' | 'unsupported' | 'unknown'
+        status?: 'measured' | 'partial' | 'not-observed' | 'unsupported' | 'unknown',
+        evidenceLevel?: 'controlled-lab-measurement' | 'caller-attested'
     ) => {
         const resolvedStatus = status ?? (value === null || !Number.isFinite(value) ? 'not-observed' : 'measured')
         return {
@@ -935,7 +1114,7 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             evidenceLevel:
                 metricCatalogVersion >= 2 && (resolvedStatus === 'unsupported' || resolvedStatus === 'unknown')
                     ? 'unsupported-or-unknown'
-                    : 'controlled-lab-measurement',
+                    : (evidenceLevel ?? 'controlled-lab-measurement'),
         }
     }
     const rendererScalarMetric = (
@@ -1021,6 +1200,110 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             ),
         ]
     }
+    const mediaStageMetric = (
+        name:
+            | 'declaredMediaCompletedAttempts'
+            | 'declaredMediaCancelledAttempts'
+            | 'declaredMediaBeginToDecodeMs'
+            | 'declaredMediaDecodeToUploadMs'
+            | 'declaredMediaUploadToFirstVisibleMs'
+            | 'declaredMediaBeginToFirstVisibleMs',
+        stat: 'count' | 'p95',
+        unit: 'count' | 'ms',
+        values: number[],
+        evidence: MediaStageWindowEvidence
+    ) => {
+        if (!mediaStageEvidenceBridgeCapability) {
+            return metric('resourcesMedia', name, stat, unit, null, null, 'unsupported')
+        }
+        const incomplete = evidence.rejectedAttempts > 0 || evidence.droppedAttempts > 0
+        if (stat === 'count') {
+            if (evidence.retainedAttempts === 0) {
+                return metric(
+                    'resourcesMedia',
+                    name,
+                    stat,
+                    unit,
+                    null,
+                    incomplete ? null : 0,
+                    incomplete ? 'unknown' : 'not-observed',
+                    'caller-attested'
+                )
+            }
+            const value = name === 'declaredMediaCompletedAttempts' ? evidence.completedAttempts : evidence.cancelledAttempts
+            return metric(
+                'resourcesMedia',
+                name,
+                stat,
+                unit,
+                value,
+                evidence.retainedAttempts,
+                incomplete ? 'partial' : 'measured',
+                'caller-attested'
+            )
+        }
+        const stats = statistics(values)
+        if (stats) {
+            return metric(
+                'resourcesMedia',
+                name,
+                stat,
+                unit,
+                stats.p95,
+                stats.count,
+                incomplete ? 'partial' : 'measured',
+                'caller-attested'
+            )
+        }
+        return metric(
+            'resourcesMedia',
+            name,
+            stat,
+            unit,
+            null,
+            incomplete ? null : 0,
+            incomplete ? 'unknown' : 'not-observed',
+            'caller-attested'
+        )
+    }
+    const mediaStageMetrics = (samples: MediaStageEvidenceSample[], evidence: MediaStageWindowEvidence) => [
+        mediaStageMetric('declaredMediaCompletedAttempts', 'count', 'count', [], evidence),
+        mediaStageMetric('declaredMediaCancelledAttempts', 'count', 'count', [], evidence),
+        mediaStageMetric(
+            'declaredMediaBeginToDecodeMs',
+            'p95',
+            'ms',
+            samples.map(sample => sample.beginToDecodeMs).filter((value): value is number => value !== null),
+            evidence
+        ),
+        mediaStageMetric(
+            'declaredMediaDecodeToUploadMs',
+            'p95',
+            'ms',
+            samples.map(sample => sample.decodeToUploadMs).filter((value): value is number => value !== null),
+            evidence
+        ),
+        mediaStageMetric(
+            'declaredMediaUploadToFirstVisibleMs',
+            'p95',
+            'ms',
+            samples.map(sample => sample.uploadToFirstVisibleMs).filter((value): value is number => value !== null),
+            evidence
+        ),
+        mediaStageMetric(
+            'declaredMediaBeginToFirstVisibleMs',
+            'p95',
+            'ms',
+            samples.map(sample => sample.beginToFirstVisibleMs).filter((value): value is number => value !== null),
+            evidence
+        ),
+    ]
+    const mediaStageRootMetrics = () => mediaStageMetrics(mediaStageSamples, mediaStageEvidence)
+    const mediaStageActionMetrics = (actionId: string) =>
+        mediaStageMetrics(
+            mediaStageSamples.filter(sample => sample.actionId === actionId),
+            mediaStageActionEvidence.get(actionId) ?? emptyMediaStageWindowEvidence()
+        )
     const combinedPresentationCapability = (): boolean | null =>
         loafPaintCapabilities.loafPaintTime === false || loafPaintCapabilities.loafPresentationTime === false
             ? false
@@ -1431,7 +1714,8 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
             )
         }
         if (videoWindow) metrics.push(videoWindow.metric)
-        if (metricCatalogVersion === 4) metrics.push(...rendererActionMetrics(actionId))
+        if (metricCatalogVersion >= 4) metrics.push(...rendererActionMetrics(actionId))
+        if (metricCatalogVersion === 5) metrics.push(...mediaStageActionMetrics(actionId))
         return metrics
     }
 
@@ -1916,7 +2200,8 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     )
                 )
             }
-            if (metricCatalogVersion === 4) metrics.push(...rendererRootMetrics())
+            if (metricCatalogVersion >= 4) metrics.push(...rendererRootMetrics())
+            if (metricCatalogVersion === 5) metrics.push(...mediaStageRootMetrics())
             metrics.push(
                 metric('monitorOverhead', 'reportBuildSelfTimeMs', 'latest', 'ms', performance.now() - reportBuildStarted, 1, 'measured')
             )
@@ -1942,9 +2227,15 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                         outcome: window.outcome === 'running' ? 'cancelled' : window.outcome,
                         metrics: actionMetrics(window.actionId, absoluteStart, absoluteEnd, targetFrameMs, slowFrameFactor, videoWindow),
                         ...(videoWindow ? { videoWindowEvidence: videoWindow.evidence } : {}),
-                        ...(metricCatalogVersion === 4
+                        ...(metricCatalogVersion >= 4
                             ? {
                                   rendererWindowEvidence: rendererActionEvidence.get(window.actionId) ?? emptyRendererWindowEvidence(),
+                              }
+                            : {}),
+                        ...(metricCatalogVersion === 5
+                            ? {
+                                  mediaStageWindowEvidence:
+                                      mediaStageActionEvidence.get(window.actionId) ?? emptyMediaStageWindowEvidence(),
                               }
                             : {}),
                     }
@@ -1953,6 +2244,13 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                 'Browser page probe reports outcomes; renderer GPU timing and authored stacks require explicit adapter or CDP trace evidence.',
                 'Event Timing does not cover every continuous pointer or scroll sample.',
                 'Canvas context families are observed only from successful getContext calls made after the document probe installed.',
+                ...(metricCatalogVersion === 5
+                    ? [
+                          'Media stage timings are caller-attested boundaries, not browser decoder, GPU upload, compositor presentation, or first-pixel proof.',
+                          'Action media stage metrics retain only attempts whose declared start and end are fully contained by one active action window.',
+                          'Media stage metrics aggregate the closed image, video, canvas, WebGL, WebGPU, and custom kinds instead of exposing per-attempt identity.',
+                      ]
+                    : []),
                 ...(droppedSamples > 0 ? [`${droppedSamples} probe samples exceeded the bounded in-page buffers.`] : []),
             ]
             const result = {
@@ -1964,12 +2262,13 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                     ...(metricCatalogVersion >= 2
                         ? { ...loafPaintCapabilities, ...loafDiagnosticCapabilities, inputFrameScheduling: inputFrameSchedulingCapability }
                         : {}),
-                    ...(metricCatalogVersion === 4 ? { rendererEvidenceBridge: rendererEvidenceBridgeCapability } : {}),
+                    ...(metricCatalogVersion >= 4 ? { rendererEvidenceBridge: rendererEvidenceBridgeCapability } : {}),
+                    ...(metricCatalogVersion === 5 ? { mediaStageEvidenceBridge: mediaStageEvidenceBridgeCapability } : {}),
                 },
                 sampleDrops:
-                    metricCatalogVersion === 4
+                    metricCatalogVersion === 5
                         ? sampleDrops
-                        : metricCatalogVersion >= 2
+                        : metricCatalogVersion === 4
                           ? {
                                 frames: sampleDrops.frames,
                                 longTasks: sampleDrops.longTasks,
@@ -1977,15 +2276,26 @@ export function installLabBrowserProbe(globalKey: string, config: LabBrowserProb
                                 eventTimings: sampleDrops.eventTimings,
                                 resources: sampleDrops.resources,
                                 inputFrameScheduling: sampleDrops.inputFrameScheduling,
+                                rendererHostEvidence: sampleDrops.rendererHostEvidence,
                             }
-                          : {
-                                frames: sampleDrops.frames,
-                                longTasks: sampleDrops.longTasks,
-                                longAnimationFrames: sampleDrops.longAnimationFrames,
-                                eventTimings: sampleDrops.eventTimings,
-                                resources: sampleDrops.resources,
-                            },
-                ...(metricCatalogVersion === 4 ? { rendererEvidence } : {}),
+                          : metricCatalogVersion >= 2
+                            ? {
+                                  frames: sampleDrops.frames,
+                                  longTasks: sampleDrops.longTasks,
+                                  longAnimationFrames: sampleDrops.longAnimationFrames,
+                                  eventTimings: sampleDrops.eventTimings,
+                                  resources: sampleDrops.resources,
+                                  inputFrameScheduling: sampleDrops.inputFrameScheduling,
+                              }
+                            : {
+                                  frames: sampleDrops.frames,
+                                  longTasks: sampleDrops.longTasks,
+                                  longAnimationFrames: sampleDrops.longAnimationFrames,
+                                  eventTimings: sampleDrops.eventTimings,
+                                  resources: sampleDrops.resources,
+                              },
+                ...(metricCatalogVersion >= 4 ? { rendererEvidence } : {}),
+                ...(metricCatalogVersion === 5 ? { mediaStageEvidence } : {}),
                 ...(observerDropContractVersion === 1
                     ? { observerDrops, observerDropCountUnavailable, observerDropCountCapped, observerEntryDeliveryObserved }
                     : {}),

@@ -35,6 +35,7 @@ import {
     buildAnimationLabSemantics,
     decorateLabMetric,
     decorateLighthouseLabMetric,
+    LAB_MEDIA_STAGE_EVIDENCE_ID,
     LAB_RENDERER_EVIDENCE_ID,
     measurementContractForReport,
     probeFrameContract,
@@ -75,9 +76,36 @@ export interface LabRunResult {
 export type LighthouseSkipReason = 'auth-state' | 'https-errors' | null
 
 const LAB_RENDERER_METRIC_NAMES = new Set(['drawCalls', 'triangles', 'gpuFrameMs'])
+const LAB_MEDIA_STAGE_METRIC_NAMES = new Set([
+    'declaredMediaCompletedAttempts',
+    'declaredMediaCancelledAttempts',
+    'declaredMediaBeginToDecodeMs',
+    'declaredMediaDecodeToUploadMs',
+    'declaredMediaUploadToFirstVisibleMs',
+    'declaredMediaBeginToFirstVisibleMs',
+])
+const LAB_MEDIA_STAGE_LIMITATIONS = [
+    'media-stage-caller-attested',
+    'media-stage-not-browser-decoder-or-gpu-proof',
+    'media-stage-complete-attempt-window-only',
+    'media-stage-kind-aggregate',
+] as const
 
-function pageProbeEvidenceId(metric: { family: string; name: string }): 'runtime-browser' | typeof LAB_RENDERER_EVIDENCE_ID {
-    return metric.family === 'renderer' && LAB_RENDERER_METRIC_NAMES.has(metric.name) ? LAB_RENDERER_EVIDENCE_ID : 'runtime-browser'
+function pageProbeEvidenceId(metric: {
+    family: string
+    name: string
+}): 'runtime-browser' | typeof LAB_RENDERER_EVIDENCE_ID | typeof LAB_MEDIA_STAGE_EVIDENCE_ID {
+    if (metric.family === 'renderer' && LAB_RENDERER_METRIC_NAMES.has(metric.name)) return LAB_RENDERER_EVIDENCE_ID
+    if (metric.family === 'resourcesMedia' && LAB_MEDIA_STAGE_METRIC_NAMES.has(metric.name)) return LAB_MEDIA_STAGE_EVIDENCE_ID
+    return 'runtime-browser'
+}
+
+function withPageProbeEvidenceBoundaries(metric: AnimationLabMetric): AnimationLabMetric {
+    if (pageProbeEvidenceId(metric) !== LAB_MEDIA_STAGE_EVIDENCE_ID) return metric
+    return {
+        ...metric,
+        limitations: [...new Set([...(metric.limitations ?? []), ...LAB_MEDIA_STAGE_LIMITATIONS])],
+    }
 }
 
 export function lighthouseSkipReason(options: Pick<LabRunOptions, 'storageState' | 'ignoreHTTPSErrors'>): LighthouseSkipReason {
@@ -230,20 +258,22 @@ async function measuredAttempt(
                           : metric.status === 'unknown'
                             ? { ...metric, limitations: crossDocumentLimitations }
                             : metric
+                const boundedEvidenceMetric = withPageProbeEvidenceBoundaries(boundedMetric)
                 return decorateLabMetric(
-                    boundedMetric,
+                    boundedEvidenceMetric,
                     { level: 'attempt', attemptId },
-                    { evidenceId: pageProbeEvidenceId(boundedMetric), budgetRef }
+                    { evidenceId: pageProbeEvidenceId(boundedEvidenceMetric), budgetRef }
                 )
             }),
             ...(probe.actionResults ?? []).flatMap(actionResult =>
-                actionResult.metrics.map(metric =>
-                    decorateLabMetric(
+                actionResult.metrics.map(rawMetric => {
+                    const metric = withPageProbeEvidenceBoundaries(rawMetric)
+                    return decorateLabMetric(
                         metric,
                         { level: 'action', attemptId, actionId: actionResult.actionId },
                         { evidenceId: pageProbeEvidenceId(metric), budgetRef }
                     )
-                )
+                })
             ),
         ]
         const finishedAt = performance.now()
