@@ -2880,7 +2880,14 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
                     frameworkScopeSection,
                     scope.records.map(record => {
                         const base = record.baseRenderMs === undefined ? '' : ` · base-render ${record.baseRenderMs} ms`
-                        return `${record.kind} · ${record.reason} · ${record.reasonSource} · ${record.durationMs} ms${base}`
+                        const causes =
+                            record.updateCauses === undefined || record.observedCauseCount === undefined
+                                ? ''
+                                : ` · ${overlayText(locale, 'frameworkUpdateCauses', {
+                                      causes: record.updateCauses.join(' + '),
+                                      count: record.observedCauseCount,
+                                  })}`
+                        return `${record.kind} · ${record.reason} · ${record.reasonSource} · ${record.durationMs} ms${base}${causes}`
                     })
                 )
             }

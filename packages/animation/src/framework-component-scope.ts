@@ -3,6 +3,18 @@ import type { AnimationUiFramework } from './types'
 
 export type FrameworkComponentScopeFramework = Extract<AnimationUiFramework, 'react' | 'vue' | 'angular' | 'svelte' | 'solid'>
 export type FrameworkComponentEvidenceKind = 'render' | 'update' | 'check' | 'host-script' | 'commit-attested'
+export type FrameworkComponentUpdateCause =
+    | 'props'
+    | 'state'
+    | 'context'
+    | 'input'
+    | 'signal'
+    | 'store'
+    | 'dependency'
+    | 'effect'
+    | 'parent'
+    | 'scheduler'
+    | 'unknown'
 export type FrameworkComponentEvidenceReason =
     | 'react-mount'
     | 'react-update'
@@ -31,6 +43,10 @@ export interface FrameworkComponentEvidenceInput {
     readonly durationMs: number
     readonly baseRenderMs?: number
     readonly timestampMs?: number
+    /** Closed, value-free cause categories observed by a public framework hook or declared by the caller. */
+    readonly updateCauses?: readonly FrameworkComponentUpdateCause[]
+    /** Number of observed cause signals; never includes their names or values. */
+    readonly observedCauseCount?: number
 }
 
 export interface FrameworkComponentEvidenceRecord extends FrameworkComponentEvidenceInput {
@@ -68,6 +84,20 @@ export interface FrameworkComponentScopeOptions {
 
 const MAX_DURATION_MS = 600_000
 const MAX_RECORDS = 128
+const MAX_OBSERVED_CAUSE_COUNT = 1_024
+const UPDATE_CAUSES = new Set<FrameworkComponentUpdateCause>([
+    'props',
+    'state',
+    'context',
+    'input',
+    'signal',
+    'store',
+    'dependency',
+    'effect',
+    'parent',
+    'scheduler',
+    'unknown',
+])
 let scopeSequence = 0
 
 function defaultNow(): number {
@@ -91,6 +121,21 @@ function safeLabel(value: unknown): string | null {
     if (typeof value !== 'string') return null
     const normalized = value.replace(/[\r\n\t]+/gu, ' ').trim()
     return normalized ? normalized.slice(0, 120) : null
+}
+
+function safeUpdateCauses(value: unknown): readonly FrameworkComponentUpdateCause[] | null | undefined {
+    if (value === undefined) return undefined
+    if (!Array.isArray(value) || value.length === 0 || value.length > UPDATE_CAUSES.size) return null
+    const causes = value.filter((cause): cause is FrameworkComponentUpdateCause =>
+        UPDATE_CAUSES.has(cause as FrameworkComponentUpdateCause)
+    )
+    if (causes.length !== value.length || new Set(causes).size !== causes.length) return null
+    return Object.freeze([...causes].sort())
+}
+
+function safeObservedCauseCount(value: unknown): number | null | undefined {
+    if (value === undefined) return undefined
+    return Number.isSafeInteger(value) && (value as number) >= 1 && (value as number) <= MAX_OBSERVED_CAUSE_COUNT ? (value as number) : null
 }
 
 function compatible(framework: FrameworkComponentScopeFramework, input: FrameworkComponentEvidenceInput): boolean {
@@ -147,12 +192,18 @@ export function projectFrameworkComponentScopeSnapshot(
                 reasonSource: record.reasonSource,
                 durationMs: record.durationMs,
                 ...(record.baseRenderMs === undefined ? {} : { baseRenderMs: record.baseRenderMs }),
+                ...(record.updateCauses === undefined ? {} : { updateCauses: record.updateCauses }),
+                ...(record.observedCauseCount === undefined ? {} : { observedCauseCount: record.observedCauseCount }),
             } as FrameworkComponentEvidenceInput
             const recordedAt = typeof record.recordedAt === 'number' && Number.isFinite(record.recordedAt) ? record.recordedAt : null
             const durationMs = safeDuration(candidate.durationMs)
             const baseRenderMs = candidate.baseRenderMs === undefined ? undefined : safeDuration(candidate.baseRenderMs)
+            const updateCauses = safeUpdateCauses(candidate.updateCauses)
+            const observedCauseCount = safeObservedCauseCount(candidate.observedCauseCount)
             if (!compatible(framework, candidate) || durationMs === null || recordedAt === null) return null
             if (candidate.baseRenderMs !== undefined && (candidate.kind !== 'render' || baseRenderMs === null)) return null
+            if (updateCauses === null || observedCauseCount === null) return null
+            if ((updateCauses === undefined) !== (observedCauseCount === undefined)) return null
             if (recordedAt < requiredWindow.startedAt || recordedAt > requiredWindow.endedAt) continue
             const projected: FrameworkComponentEvidenceRecord = {
                 kind: candidate.kind,
@@ -163,6 +214,10 @@ export function projectFrameworkComponentScopeSnapshot(
             }
             if (typeof baseRenderMs === 'number') {
                 ;(projected as { baseRenderMs?: number }).baseRenderMs = baseRenderMs
+            }
+            if (updateCauses) {
+                ;(projected as { updateCauses?: readonly FrameworkComponentUpdateCause[] }).updateCauses = updateCauses
+                ;(projected as { observedCauseCount?: number }).observedCauseCount = observedCauseCount
             }
             records.push(Object.freeze(projected))
         }
@@ -217,8 +272,17 @@ export function createFrameworkComponentScope(options: FrameworkComponentScopeOp
             }
             const durationMs = safeDuration(input.durationMs)
             const baseRenderMs = input.baseRenderMs === undefined ? undefined : safeDuration(input.baseRenderMs)
+            const updateCauses = safeUpdateCauses(input.updateCauses)
+            const observedCauseCount = safeObservedCauseCount(input.observedCauseCount)
             const recordedAt = input.timestampMs === undefined ? safeNow(now) : safeNow(() => input.timestampMs!)
-            if (durationMs === null || recordedAt === null || (input.baseRenderMs !== undefined && baseRenderMs === null)) {
+            if (
+                durationMs === null ||
+                recordedAt === null ||
+                (input.baseRenderMs !== undefined && baseRenderMs === null) ||
+                updateCauses === null ||
+                observedCauseCount === null ||
+                (updateCauses === undefined) !== (observedCauseCount === undefined)
+            ) {
                 rejectedRecordCount += 1
                 return false
             }
@@ -235,6 +299,10 @@ export function createFrameworkComponentScope(options: FrameworkComponentScopeOp
             }
             if (typeof baseRenderMs === 'number') {
                 ;(record as { baseRenderMs?: number }).baseRenderMs = baseRenderMs
+            }
+            if (updateCauses) {
+                ;(record as { updateCauses?: readonly FrameworkComponentUpdateCause[] }).updateCauses = updateCauses
+                ;(record as { observedCauseCount?: number }).observedCauseCount = observedCauseCount
             }
             records.push(Object.freeze(record))
             acceptedRecordCount += 1

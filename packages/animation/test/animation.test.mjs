@@ -47,6 +47,8 @@ test('framework component scopes keep closed local evidence in a bounded inspect
             reasonSource: 'react-profiler-phase',
             durationMs: 5,
             baseRenderMs: 9,
+            updateCauses: ['state', 'props'],
+            observedCauseCount: 3,
         }),
         true
     )
@@ -82,7 +84,19 @@ test('framework component scopes keep closed local evidence in a bounded inspect
         scope.snapshot({ startedAt: 0, endedAt: 19 }).records.map(record => record.reason),
         ['react-update']
     )
-    assert.equal(JSON.stringify(scope.snapshot({ startedAt: 0, endedAt: 40 })).includes('props'), false)
+    assert.deepEqual(scope.snapshot({ startedAt: 0, endedAt: 19 }).records[0].updateCauses, ['props', 'state'])
+    assert.equal(scope.snapshot({ startedAt: 0, endedAt: 19 }).records[0].observedCauseCount, 3)
+    assert.equal(
+        scope.record({
+            kind: 'render',
+            reason: 'react-update',
+            reasonSource: 'react-profiler-phase',
+            durationMs: 1,
+            updateCauses: ['state'],
+        }),
+        false
+    )
+    assert.equal(JSON.stringify(scope.snapshot({ startedAt: 0, endedAt: 40 })).includes('private'), false)
     scope.dispose()
     assert.equal(scope.record({ kind: 'render', reason: 'react-update', reasonSource: 'react-profiler-phase', durationMs: 1 }), false)
 })
