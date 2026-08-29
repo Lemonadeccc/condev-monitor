@@ -36,7 +36,7 @@ import type {
     InteractionPerformanceSummary,
 } from './types'
 
-// cspell:ignore describedby keyshortcuts Menlo rvfc Segoe
+// cspell:ignore describedby keyshortcuts Menlo rvfc scanout Segoe
 
 declare const process: { env?: { NODE_ENV?: string } } | undefined
 
@@ -1507,7 +1507,9 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             evidence.media.retainedRecordCount > 0 ||
             evidence.media.droppedRecordCount > 0 ||
             evidence.motion.retainedRecordCount > 0 ||
-            evidence.motion.droppedRecordCount > 0
+            evidence.motion.droppedRecordCount > 0 ||
+            evidence.browserVideoPresentation.retainedRecordCount > 0 ||
+            evidence.browserVideoPresentation.droppedRecordCount > 0
         if (!hasEvidence) {
             localEvidencePanel.hidden = true
             return
@@ -1575,6 +1577,60 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             }
         }
 
+        const videoPresentationGroup = documentValue.createElement('section')
+        videoPresentationGroup.className = 'local-evidence-group'
+        appendTextElement(
+            documentValue,
+            videoPresentationGroup,
+            'h4',
+            '',
+            locale === 'zh-CN'
+                ? `浏览器视频呈现回调 · 保留 ${evidence.browserVideoPresentation.retainedRecordCount} · 丢弃 ${evidence.browserVideoPresentation.droppedRecordCount}`
+                : `Browser video presentation callbacks · retained ${evidence.browserVideoPresentation.retainedRecordCount} · dropped ${evidence.browserVideoPresentation.droppedRecordCount}`
+        )
+        if (evidence.browserVideoPresentation.records.length === 0) {
+            appendTextElement(
+                documentValue,
+                videoPresentationGroup,
+                'div',
+                'local-evidence-empty',
+                locale === 'zh-CN' ? '尚无 requestVideoFrameCallback 证据。' : 'No requestVideoFrameCallback evidence yet.'
+            )
+        } else {
+            for (const record of [...evidence.browserVideoPresentation.records].reverse()) {
+                const item = documentValue.createElement('article')
+                item.className = 'local-evidence-record'
+                appendTextElement(
+                    documentValue,
+                    item,
+                    'strong',
+                    '',
+                    locale === 'zh-CN'
+                        ? `呈现回调 ${localEvidenceValue(record.callbackAt, 'ms')}`
+                        : `Presentation callback ${localEvidenceValue(record.callbackAt, 'ms')}`
+                )
+                appendTextElement(
+                    documentValue,
+                    item,
+                    'span',
+                    '',
+                    locale === 'zh-CN'
+                        ? `回调间隔 ${localEvidenceValue(record.callbackIntervalMs, 'ms')} · 预期显示差 ${localEvidenceValue(record.expectedDisplayDeltaMs, 'ms')} · 解码处理 ${localEvidenceValue(record.processingDurationMs, 'ms')} · presentedFrames 增量 ${localEvidenceValue(record.presentedFramesDelta, 'count')}`
+                        : `callback interval ${localEvidenceValue(record.callbackIntervalMs, 'ms')} · expected-display delta ${localEvidenceValue(record.expectedDisplayDeltaMs, 'ms')} · decode processing ${localEvidenceValue(record.processingDurationMs, 'ms')} · presentedFrames delta ${localEvidenceValue(record.presentedFramesDelta, 'count')}`
+                )
+                videoPresentationGroup.appendChild(item)
+            }
+        }
+        appendTextElement(
+            documentValue,
+            videoPresentationGroup,
+            'p',
+            'local-evidence-boundary',
+            locale === 'zh-CN'
+                ? '这是浏览器 requestVideoFrameCallback 回调与其元数据证据。processingDuration 是浏览器报告的解码处理时长；它不证明 GPU 上传完成、物理 scanout 或屏幕真实首像素，也不是 schema 2 中由调用方声明的媒体阶段。'
+                : 'This is browser requestVideoFrameCallback and callback-metadata evidence. processingDuration is browser-reported decode processing; it does not prove GPU upload completion, physical scanout, or a real screen first pixel, and it is separate from caller-attested schema 2 media stages.'
+        )
+
         const motionGroup = documentValue.createElement('section')
         motionGroup.className = 'local-evidence-group'
         appendTextElement(
@@ -1632,7 +1688,7 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
                 motionGroup.appendChild(item)
             }
         }
-        groups.append(mediaGroup, motionGroup)
+        groups.append(videoPresentationGroup, mediaGroup, motionGroup)
         localEvidencePanel.appendChild(groups)
         if (wasVisible) {
             localEvidencePanel.scrollTop = scrollTop
@@ -2789,6 +2845,115 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
             )
         }
         targetDetail.appendChild(attributionSection)
+
+        const frameworkScopeSection = documentValue.createElement('section')
+        frameworkScopeSection.className = 'detail-section'
+        appendTextElement(
+            documentValue,
+            frameworkScopeSection,
+            'h4',
+            '',
+            locale === 'zh-CN' ? '组件作用域证据（仅本地）' : 'Component scope evidence (local only)'
+        )
+        const frameworkScopes = selected.frameworkScopes ?? []
+        if (frameworkScopes.length === 0) {
+            appendTextElement(
+                documentValue,
+                frameworkScopeSection,
+                'p',
+                '',
+                locale === 'zh-CN'
+                    ? '当前元素没有匹配到显式组件作用域；页面级和原生 DOM 证据仍然可用。'
+                    : 'No explicit component scope matched this element; page-level and native DOM evidence remain available.'
+            )
+        } else {
+            for (const scope of frameworkScopes) {
+                appendTextElement(
+                    documentValue,
+                    frameworkScopeSection,
+                    'p',
+                    '',
+                    `${scope.framework} · ${scope.label ?? scope.scopeId} · ${scope.retainedRecordCount}/${scope.acceptedRecordCount}`
+                )
+                appendList(
+                    documentValue,
+                    frameworkScopeSection,
+                    scope.records.map(record => {
+                        const base = record.baseRenderMs === undefined ? '' : ` · base-render ${record.baseRenderMs} ms`
+                        return `${record.kind} · ${record.reason} · ${record.reasonSource} · ${record.durationMs} ms${base}`
+                    })
+                )
+            }
+        }
+        appendTextElement(
+            documentValue,
+            frameworkScopeSection,
+            'div',
+            'target-boundary',
+            locale === 'zh-CN'
+                ? 'render、update、check、host-script 与 commit-attested 是不同证据；commit-attested 只接受宿主独立测量。'
+                : 'render, update, check, host-script, and commit-attested are distinct evidence; commit-attested requires an independent host measurement.'
+        )
+        targetDetail.appendChild(frameworkScopeSection)
+
+        const videoPresentationSection = documentValue.createElement('section')
+        videoPresentationSection.className = 'detail-section'
+        appendTextElement(
+            documentValue,
+            videoPresentationSection,
+            'h4',
+            '',
+            locale === 'zh-CN' ? '视频呈现回调证据（仅本地）' : 'Video presentation callback evidence (local only)'
+        )
+        const videoPresentations = selected.videoPresentations ?? []
+        if (videoPresentations.length === 0) {
+            appendTextElement(
+                documentValue,
+                videoPresentationSection,
+                'p',
+                '',
+                locale === 'zh-CN'
+                    ? '当前目标没有绑定且落在检查窗口内的 requestVideoFrameCallback 证据。'
+                    : 'No bound requestVideoFrameCallback evidence fell inside this target inspection window.'
+            )
+        } else {
+            for (const presentation of videoPresentations) {
+                const latest = presentation.records.at(-1)
+                const facts = documentValue.createElement('div')
+                facts.className = 'interaction-facts'
+                appendTargetFact(
+                    facts,
+                    locale === 'zh-CN' ? '启动至首次回调' : 'Start to first callback',
+                    localEvidenceValue(presentation.startToFirstCallbackMs, 'ms')
+                )
+                appendTargetFact(
+                    facts,
+                    locale === 'zh-CN' ? '窗口内回调' : 'Callbacks in window',
+                    formatOverlayMeasurement(presentation.retainedRecordCount, 'count', locale)
+                )
+                appendTargetFact(
+                    facts,
+                    locale === 'zh-CN' ? '最近解码处理' : 'Latest decode processing',
+                    localEvidenceValue(latest?.processingDurationMs ?? null, 'ms')
+                )
+                appendTargetFact(
+                    facts,
+                    locale === 'zh-CN' ? '最近预期显示差' : 'Latest expected-display delta',
+                    localEvidenceValue(latest?.expectedDisplayDeltaMs ?? null, 'ms')
+                )
+                videoPresentationSection.appendChild(facts)
+            }
+        }
+        appendTextElement(
+            documentValue,
+            videoPresentationSection,
+            'div',
+            'target-boundary',
+            locale === 'zh-CN'
+                ? '该证据只关联显式 video 元素与 SDK 检查窗口，证明浏览器回调及其元数据；不证明 GPU 上传完成、物理 scanout 或屏幕真实首像素，并与 schema 2 调用方声明阶段严格分离。'
+                : 'This evidence binds only an explicit video element to the SDK inspection window and proves browser callback metadata; it does not prove GPU upload completion, physical scanout, or a real screen first pixel, and remains separate from caller-attested schema 2 stages.'
+        )
+        targetDetail.appendChild(videoPresentationSection)
 
         const rendererSection = documentValue.createElement('section')
         rendererSection.className = 'detail-section'

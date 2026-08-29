@@ -200,6 +200,7 @@ interface AutomaticPageEvidenceOptions extends BrowserAnimationAutoPageEvidenceO
     document: Document
     window: Window
     sink: Pick<AnimationHostEvidenceSink, 'recordMediaStats'>
+    onVideoProbe?(video: HTMLVideoElement, probe: VideoFrameProbe): (() => void) | void
 }
 
 interface ResolvedPageEvidenceOptions {
@@ -434,6 +435,18 @@ export function createAutomaticAnimationPageEvidence(input: AutomaticPageEvidenc
     const knownSurfaces = new WeakSet<Element>()
     const knownVideos = new WeakSet<HTMLVideoElement>()
     const videoProbes = new Map<HTMLVideoElement, VideoFrameProbe>()
+    const videoProbeCleanups = new Map<HTMLVideoElement, () => void>()
+
+    const cleanupVideoProbeRegistration = (video: HTMLVideoElement): void => {
+        const cleanup = videoProbeCleanups.get(video)
+        videoProbeCleanups.delete(video)
+        if (!cleanup) return
+        try {
+            cleanup()
+        } catch {
+            // Local evidence registration must not make page evidence teardown unavailable.
+        }
+    }
     const contextEventCleanups = new Map<HTMLCanvasElement, () => void>()
     const rootLifecycleCleanups = new Map<RootWithQueries, () => void>()
     const intersectionStates = new WeakMap<Element, boolean>()
@@ -703,12 +716,15 @@ export function createAutomaticAnimationPageEvidence(input: AutomaticPageEvidenc
                 })
                 probe.start()
                 videoProbes.set(video, probe)
+                const cleanup = safeRead(() => input.onVideoProbe?.(video, probe))
+                if (cleanup) videoProbeCleanups.set(video, cleanup)
             }
         }
         for (const [video, probe] of [...videoProbes]) {
             if (all.has(video) && retained.includes(video)) continue
             probe.dispose()
             videoProbes.delete(video)
+            cleanupVideoProbeRegistration(video)
         }
         currentVideoCount = all.size
         retainedVideoCount = retained.length
@@ -1053,6 +1069,8 @@ export function createAutomaticAnimationPageEvidence(input: AutomaticPageEvidenc
             timer = null
             for (const probe of videoProbes.values()) probe.dispose()
             videoProbes.clear()
+            for (const video of [...videoProbeCleanups.keys()]) cleanupVideoProbeRegistration(video)
+            videoProbeCleanups.clear()
             intersectionObserver?.disconnect()
             intersectionObserver = null
             contextObservation?.disconnect()

@@ -11,6 +11,7 @@
 import { isHostGpuTimingSourceCompatible } from './gpu-timing-compatibility'
 import { BoundedRing, durationStatistics, percentile, round } from './statistics'
 import type { DurationStatistics } from './types'
+import { type BrowserVideoPresentationSnapshot, createBrowserVideoPresentationRecorder } from './video-presentation-evidence'
 
 export type AnimationHostFramework = 'react' | 'preact' | 'vue' | 'angular' | 'svelte' | 'solid' | 'qwik' | 'lit' | 'vanilla' | 'other'
 
@@ -1918,6 +1919,9 @@ export interface VideoFrameProbeOptions {
      * but do not read playback quality or emit. Defaults to every callback.
      */
     minimumSampleIntervalMs?: number
+    /** Bounded local-only RVFC callback/metadata records. Defaults to 64. */
+    maxPresentationEvidenceRecords?: number
+    now?: () => number
 }
 
 export interface VideoFrameProbe {
@@ -1925,6 +1929,8 @@ export interface VideoFrameProbe {
     start(): boolean
     /** Re-baseline after hidden/offscreen periods without controlling playback. */
     resetBaseline(): void
+    /** Local browser callback evidence; never a caller-attested media-stage claim. */
+    snapshotPresentation(window?: { readonly startedAt: number; readonly endedAt: number }): BrowserVideoPresentationSnapshot
     stop(): void
     dispose(): void
 }
@@ -2006,6 +2012,10 @@ export function createVideoFrameProbe(options: VideoFrameProbeOptions): VideoFra
     let disposed = false
     let pendingHandle: number | null = null
     let baseline: VideoFrameBaseline | null = null
+    const presentation = createBrowserVideoPresentationRecorder({
+        maxRecords: options.maxPresentationEvidenceRecords,
+        now: options.now,
+    })
 
     const schedule = (): boolean => {
         const request = options.video.requestVideoFrameCallback
@@ -2023,6 +2033,7 @@ export function createVideoFrameProbe(options: VideoFrameProbeOptions): VideoFra
     const onVideoFrame: VideoFrameRequestCallbackLike = (callbackNowMs, metadata): void => {
         pendingHandle = null
         if (!active) return
+        presentation.observe(callbackNowMs, metadata)
 
         const safeCallbackNow = finiteTimestamp(callbackNowMs)
         if (
@@ -2106,6 +2117,7 @@ export function createVideoFrameProbe(options: VideoFrameProbeOptions): VideoFra
         if (!active && pendingHandle === null) return
         active = false
         baseline = null
+        presentation.stop()
         const handle = pendingHandle
         pendingHandle = null
         if (handle === null || !options.video.cancelVideoFrameCallback) return
@@ -2122,18 +2134,24 @@ export function createVideoFrameProbe(options: VideoFrameProbeOptions): VideoFra
         },
         start(): boolean {
             if (disposed || active || !options.video.requestVideoFrameCallback) return false
+            if (!presentation.start()) return false
             active = true
             baseline = null
-            return schedule()
+            const scheduled = schedule()
+            if (!scheduled) presentation.stop()
+            return scheduled
         },
         resetBaseline(): void {
             baseline = null
+            presentation.resetBaseline()
         },
+        snapshotPresentation: window => presentation.snapshot(window),
         stop,
         dispose(): void {
             if (disposed) return
             disposed = true
             stop()
+            presentation.dispose()
         },
     }
 }

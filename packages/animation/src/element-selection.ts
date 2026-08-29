@@ -1,3 +1,4 @@
+import { type FrameworkComponentScopeSnapshot, projectFrameworkComponentScopeSnapshot } from './framework-component-scope'
 import { isTargetGpuTimingSourceCompatible } from './gpu-timing-compatibility'
 import { durationStatistics, round } from './statistics'
 import type {
@@ -26,6 +27,7 @@ import type {
     InteractionHandle,
     InteractionMeasurement,
 } from './types'
+import { type BrowserVideoPresentationSnapshot, projectBrowserVideoPresentationSnapshot } from './video-presentation-evidence'
 
 // cspell:ignore contentinfo menuitemcheckbox menuitemradio qwik readback spinbutton treegrid waapi webgpu
 
@@ -179,6 +181,8 @@ const MAX_PROPERTIES_PER_BUCKET = 64
 const MAX_TARGET_ADAPTERS = 16
 const MAX_TARGET_OWNERS = 32
 const MAX_TARGET_RENDERERS = 16
+const MAX_TARGET_FRAMEWORK_SCOPES = 16
+const MAX_TARGET_VIDEO_PRESENTATIONS = 16
 const MAX_RENDERER_EVIDENCE_TIME_MS = 1_000_000_000_000_000
 const MAX_RENDERER_METRIC = 1_000_000_000_000
 const MAX_RENDERER_SAMPLE_COUNT = 1_000_000_000
@@ -929,6 +933,8 @@ export function createAnimationElementSelection(
             if ((direct.cssAnimationCount ?? 0) + (direct.cssTransitionCount ?? 0) > 0) motionEngines.add('css')
             if ((direct.webAnimationCount ?? 0) > 0) motionEngines.add('waapi')
             const owners: AnimationTargetOwnerAttribution[] = []
+            const frameworkScopes: FrameworkComponentScopeSnapshot[] = []
+            const videoPresentations: BrowserVideoPresentationSnapshot[] = []
             const rendererCandidates: Array<{
                 adapterId: string
                 adapterVersion: string
@@ -977,21 +983,37 @@ export function createAnimationElementSelection(
                         }
                         if (owners.length < MAX_TARGET_OWNERS) owners.push(normalized)
                     }
-                    if (inspection.renderer && RENDERERS.has(inspection.renderer.family)) {
-                        renderers.add(inspection.renderer.family)
+                    if (inspectionPurpose === 'local') {
+                        for (const scope of inspection.frameworkScopes ?? []) {
+                            if (frameworkScopes.length >= MAX_TARGET_FRAMEWORK_SCOPES) break
+                            const projected = projectFrameworkComponentScopeSnapshot(scope, adapterEvidenceWindow)
+                            if (projected) frameworkScopes.push(projected)
+                            else adapterErrors.push(`${adapterId}:framework-scope-invalid`)
+                        }
+                        for (const presentation of inspection.videoPresentations ?? []) {
+                            if (videoPresentations.length >= MAX_TARGET_VIDEO_PRESENTATIONS) break
+                            const projected = projectBrowserVideoPresentationSnapshot(presentation, adapterEvidenceWindow)
+                            if (projected) videoPresentations.push(projected)
+                            else adapterErrors.push(`${adapterId}:video-presentation-invalid`)
+                        }
+                    }
+                    const adapterRenderers = [inspection.renderer, ...(inspection.renderers ?? [])]
+                    for (const rendererInspection of adapterRenderers) {
+                        if (!rendererInspection || !RENDERERS.has(rendererInspection.family)) continue
+                        renderers.add(rendererInspection.family)
                         if (rendererCandidates.length >= MAX_TARGET_RENDERERS) continue
-                        const capability = adapterCapability(inspection.renderer.capability)
+                        const capability = adapterCapability(rendererInspection.capability)
                         const canUseRendererEvidence = capability.state === 'supported' && capability.observed
-                        if (!canUseRendererEvidence && (inspection.renderer.metrics || inspection.renderer.evidence)) {
+                        if (!canUseRendererEvidence && (rendererInspection.metrics || rendererInspection.evidence)) {
                             adapterErrors.push(`${adapterId}:renderer-capability-conflict`)
                         }
                         rendererCandidates.push({
                             adapterId,
                             adapterVersion,
-                            family: inspection.renderer.family,
+                            family: rendererInspection.family,
                             capability,
-                            metrics: canUseRendererEvidence ? inspection.renderer.metrics : undefined,
-                            evidence: canUseRendererEvidence ? inspection.renderer.evidence : undefined,
+                            metrics: canUseRendererEvidence ? rendererInspection.metrics : undefined,
+                            evidence: canUseRendererEvidence ? rendererInspection.evidence : undefined,
                         })
                     }
                 } catch {
@@ -1049,6 +1071,8 @@ export function createAnimationElementSelection(
                 geometry: inspectGeometry(element, resizeCounts),
                 inventory,
                 owners,
+                ...(frameworkScopes.length > 0 ? { frameworkScopes } : {}),
+                ...(videoPresentations.length > 0 ? { videoPresentations } : {}),
                 renderers: rendererInspections,
                 activeInteractionId: activeInteraction?.id ?? null,
                 correlated,

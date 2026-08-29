@@ -1,10 +1,12 @@
 import type { MediaSemanticAttemptOutcome, MediaSemanticKind, MediaSemanticStageKind } from './media-semantics'
 import type { MotionSemanticCheckpointStatus, MotionSemanticSource, MotionSemanticSourceStatus } from './motion-semantics'
 import type { AnimationInteractionKind, InteractionOutcome } from './types'
+import type { BrowserVideoPresentationRecord } from './video-presentation-evidence'
 
 export const ANIMATION_LOCAL_EVIDENCE_VERSION = 1 as const
 
-const MAX_PROVIDER_COUNT = 16
+const MAX_PROVIDER_COUNT_PER_FAMILY = 16
+const MAX_PROVIDER_COUNT = MAX_PROVIDER_COUNT_PER_FAMILY * 3
 const MAX_RECORD_COUNT_PER_FAMILY = 32
 const MAX_RECORD_INSPECTION_COUNT = 64
 const MAX_COUNT = 1_000_000_000
@@ -32,7 +34,7 @@ const SOURCE_STATUSES = new Set<MotionSemanticSourceStatus>(['not-configured', '
 const MOTION_SOURCES = ['gsap-ticker', 'lenis-scroll', 'scroll-trigger'] as const satisfies readonly MotionSemanticSource[]
 
 export interface AnimationLocalEvidenceProviderInput {
-    readonly kind: 'media' | 'motion'
+    readonly kind: 'media' | 'motion' | 'browser-video-presentation'
     readonly snapshot: unknown
 }
 
@@ -93,9 +95,14 @@ export interface AnimationLocalEvidenceSnapshotV1 {
     readonly truncated: boolean
     readonly media: AnimationLocalEvidenceFamily<AnimationLocalMediaAttemptEvidence>
     readonly motion: AnimationLocalEvidenceFamily<AnimationLocalMotionInteractionEvidence>
+    /** Additive local field; absent from legacy schema-v1 producers and normalized to an empty family by the projector. */
+    readonly browserVideoPresentation?: AnimationLocalEvidenceFamily<BrowserVideoPresentationRecord>
 }
 
-export type AnimationLocalEvidenceSnapshot = AnimationLocalEvidenceSnapshotV1
+/** SDK-normalized form returned by projectAnimationLocalEvidenceSnapshot(). */
+export type AnimationLocalEvidenceSnapshot = AnimationLocalEvidenceSnapshotV1 & {
+    readonly browserVideoPresentation: AnimationLocalEvidenceFamily<BrowserVideoPresentationRecord>
+}
 
 interface MutableFamily<TRecord> {
     providerCount: number
@@ -277,31 +284,84 @@ function projectMotionInteraction(value: unknown): AnimationLocalMotionInteracti
     }
 }
 
+function signedDuration(value: unknown): number | null {
+    return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= MAX_DURATION_MS ? value : null
+}
+
+function projectBrowserVideoPresentationRecord(value: unknown): BrowserVideoPresentationRecord | null {
+    try {
+        const input = record(value)
+        if (!input) return null
+        const callbackAt = safeNumber(property(input, 'callbackAt'), 1_000_000_000_000_000)
+        const callbackIntervalMs = nullableNumber(property(input, 'callbackIntervalMs'), MAX_DURATION_MS)
+        const mediaTimeDeltaMs = nullableNumber(property(input, 'mediaTimeDeltaMs'), MAX_DURATION_MS)
+        const presentedFramesDelta = nullableCount(property(input, 'presentedFramesDelta'))
+        const expectedDisplayValue = property(input, 'expectedDisplayDeltaMs')
+        const expectedDisplayDeltaMs = expectedDisplayValue === null ? null : signedDuration(expectedDisplayValue)
+        const processingDurationMs = nullableNumber(property(input, 'processingDurationMs'), MAX_DURATION_MS)
+        if (
+            callbackAt === null ||
+            callbackIntervalMs === undefined ||
+            mediaTimeDeltaMs === undefined ||
+            presentedFramesDelta === undefined ||
+            (expectedDisplayValue !== null && expectedDisplayDeltaMs === null) ||
+            processingDurationMs === undefined
+        ) {
+            return null
+        }
+        return Object.freeze({
+            callbackAt,
+            callbackIntervalMs,
+            mediaTimeDeltaMs,
+            presentedFramesDelta,
+            expectedDisplayDeltaMs,
+            processingDurationMs,
+        })
+    } catch {
+        return null
+    }
+}
+
 function projectProvider(
     value: unknown,
     media: MutableFamily<AnimationLocalMediaAttemptEvidence>,
-    motion: MutableFamily<AnimationLocalMotionInteractionEvidence>
-): boolean {
+    motion: MutableFamily<AnimationLocalMotionInteractionEvidence>,
+    browserVideoPresentation: MutableFamily<BrowserVideoPresentationRecord>
+): 'accepted' | 'rejected' | 'family-capacity' {
     try {
         const provider = record(value)
-        if (!provider) return false
+        if (!provider) return 'rejected'
         const kind = property(provider, 'kind')
         const snapshot = record(property(provider, 'snapshot'))
-        if ((kind !== 'media' && kind !== 'motion') || !snapshot) return false
-        const rawRecords = property(snapshot, kind === 'media' ? 'attempts' : 'interactions')
+        if ((kind !== 'media' && kind !== 'motion' && kind !== 'browser-video-presentation') || !snapshot) return 'rejected'
+        const target = kind === 'media' ? media : kind === 'motion' ? motion : browserVideoPresentation
+        if (target.providerCount >= MAX_PROVIDER_COUNT_PER_FAMILY) return 'family-capacity'
+        const rawRecords = property(snapshot, kind === 'media' ? 'attempts' : kind === 'motion' ? 'interactions' : 'records')
         const length = arrayLength(rawRecords)
-        if (length === null) return false
-        const recorderDropped = safeCount(property(snapshot, kind === 'media' ? 'droppedAttemptCount' : 'droppedInteractionCount'))
-        if (recorderDropped === null) return false
-        const target = kind === 'media' ? media : motion
+        if (length === null) return 'rejected'
+        const recorderDropped = safeCount(
+            property(
+                snapshot,
+                kind === 'media' ? 'droppedAttemptCount' : kind === 'motion' ? 'droppedInteractionCount' : 'droppedRecordCount'
+            )
+        )
+        if (recorderDropped === null) return 'rejected'
         target.providerCount += 1
-        const project = kind === 'media' ? projectMediaAttempt : projectMotionInteraction
         const inspectionStart = Math.max(0, length - MAX_RECORD_INSPECTION_COUNT)
         target.droppedRecordCount = addBoundedCount(target.droppedRecordCount, inspectionStart)
         for (let index = inspectionStart; index < length; index += 1) {
-            let projected: AnimationLocalMediaAttemptEvidence | AnimationLocalMotionInteractionEvidence | null
+            let projected:
+                | AnimationLocalMediaAttemptEvidence
+                | AnimationLocalMotionInteractionEvidence
+                | BrowserVideoPresentationRecord
+                | null
             try {
-                projected = project((rawRecords as unknown[])[index] as never)
+                projected =
+                    kind === 'media'
+                        ? projectMediaAttempt((rawRecords as unknown[])[index])
+                        : kind === 'motion'
+                          ? projectMotionInteraction((rawRecords as unknown[])[index])
+                          : projectBrowserVideoPresentationRecord((rawRecords as unknown[])[index])
             } catch {
                 projected = null
             }
@@ -316,9 +376,9 @@ function projectProvider(
             }
         }
         target.droppedRecordCount = addBoundedCount(target.droppedRecordCount, recorderDropped)
-        return true
+        return 'accepted'
     } catch {
-        return false
+        return 'rejected'
     }
 }
 
@@ -366,19 +426,28 @@ function projectClosedFamily<TRecord>(
     }
 }
 
-function projectClosedSnapshot(value: Record<PropertyKey, unknown>): AnimationLocalEvidenceSnapshotV1 | null {
+function projectClosedSnapshot(value: Record<PropertyKey, unknown>): AnimationLocalEvidenceSnapshot | null {
     const providerCount = safeCount(property(value, 'providerCount'))
     const rejectedProviderCount = safeCount(property(value, 'rejectedProviderCount'))
     const droppedProviderCount = safeCount(property(value, 'droppedProviderCount'))
     const media = projectClosedFamily(property(value, 'media'), projectMediaAttempt)
     const motion = projectClosedFamily(property(value, 'motion'), projectMotionInteraction)
+    const browserVideoPresentationValue = property(value, 'browserVideoPresentation')
+    const browserVideoPresentation =
+        browserVideoPresentationValue === undefined
+            ? freezeFamily<BrowserVideoPresentationRecord>({ providerCount: 0, droppedRecordCount: 0, records: [] })
+            : projectClosedFamily(browserVideoPresentationValue, projectBrowserVideoPresentationRecord)
     if (
         providerCount === null ||
         rejectedProviderCount === null ||
         droppedProviderCount === null ||
         !media ||
         !motion ||
-        providerCount !== media.providerCount + motion.providerCount ||
+        !browserVideoPresentation ||
+        providerCount !== media.providerCount + motion.providerCount + browserVideoPresentation.providerCount ||
+        media.providerCount > MAX_PROVIDER_COUNT_PER_FAMILY ||
+        motion.providerCount > MAX_PROVIDER_COUNT_PER_FAMILY ||
+        browserVideoPresentation.providerCount > MAX_PROVIDER_COUNT_PER_FAMILY ||
         providerCount + rejectedProviderCount > MAX_PROVIDER_COUNT
     ) {
         return null
@@ -388,9 +457,10 @@ function projectClosedSnapshot(value: Record<PropertyKey, unknown>): AnimationLo
         providerCount,
         rejectedProviderCount,
         droppedProviderCount,
-        truncated: droppedProviderCount > 0 || media.truncated || motion.truncated,
+        truncated: droppedProviderCount > 0 || media.truncated || motion.truncated || browserVideoPresentation.truncated,
         media,
         motion,
+        browserVideoPresentation,
     })
 }
 
@@ -399,7 +469,7 @@ function projectClosedSnapshot(value: Record<PropertyKey, unknown>): AnimationLo
  * view. The projection never retains provider identity, labels, selectors,
  * URLs, DOM nodes, framework objects, renderer hosts, props, or state.
  */
-export function projectAnimationLocalEvidenceSnapshot(input: unknown): AnimationLocalEvidenceSnapshotV1 | null {
+export function projectAnimationLocalEvidenceSnapshot(input: unknown): AnimationLocalEvidenceSnapshot | null {
     try {
         const value = record(input)
         if (!value || property(value, 'version') !== ANIMATION_LOCAL_EVIDENCE_VERSION) return null
@@ -412,29 +482,42 @@ export function projectAnimationLocalEvidenceSnapshot(input: unknown): Animation
         if (registryDroppedProviderCount === null) return null
         const media: MutableFamily<AnimationLocalMediaAttemptEvidence> = { providerCount: 0, droppedRecordCount: 0, records: [] }
         const motion: MutableFamily<AnimationLocalMotionInteractionEvidence> = { providerCount: 0, droppedRecordCount: 0, records: [] }
+        const browserVideoPresentation: MutableFamily<BrowserVideoPresentationRecord> = {
+            providerCount: 0,
+            droppedRecordCount: 0,
+            records: [],
+        }
         const inspectedProviderCount = Math.min(providerLength, MAX_PROVIDER_COUNT)
         let rejectedProviderCount = 0
+        let familyCapacityDroppedProviderCount = 0
         for (let index = 0; index < inspectedProviderCount; index += 1) {
-            let projected = false
+            let projected: 'accepted' | 'rejected' | 'family-capacity' = 'rejected'
             try {
-                projected = projectProvider((providers as unknown[])[index], media, motion)
+                projected = projectProvider((providers as unknown[])[index], media, motion, browserVideoPresentation)
             } catch {
-                projected = false
+                projected = 'rejected'
             }
-            if (!projected) rejectedProviderCount += 1
+            if (projected === 'rejected') rejectedProviderCount += 1
+            if (projected === 'family-capacity') familyCapacityDroppedProviderCount += 1
         }
-        const droppedProviderCount = addBoundedCount(registryDroppedProviderCount, providerLength - inspectedProviderCount)
-        const providerCount = media.providerCount + motion.providerCount
+        const droppedProviderCount = addBoundedCount(
+            addBoundedCount(registryDroppedProviderCount, familyCapacityDroppedProviderCount),
+            providerLength - inspectedProviderCount
+        )
+        const providerCount = media.providerCount + motion.providerCount + browserVideoPresentation.providerCount
         const mediaOutput = freezeFamily(media)
         const motionOutput = freezeFamily(motion)
+        const browserVideoPresentationOutput = freezeFamily(browserVideoPresentation)
         return Object.freeze({
             version: ANIMATION_LOCAL_EVIDENCE_VERSION,
             providerCount,
             rejectedProviderCount,
             droppedProviderCount,
-            truncated: droppedProviderCount > 0 || mediaOutput.truncated || motionOutput.truncated,
+            truncated:
+                droppedProviderCount > 0 || mediaOutput.truncated || motionOutput.truncated || browserVideoPresentationOutput.truncated,
             media: mediaOutput,
             motion: motionOutput,
+            browserVideoPresentation: browserVideoPresentationOutput,
         })
     } catch {
         return null

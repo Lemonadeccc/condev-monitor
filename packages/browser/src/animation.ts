@@ -3,6 +3,7 @@ import {
     createAnimationTargetAdapterRegistry,
     createBrowserAnimationRuntime,
     createFrameworkCommitProbe,
+    createFrameworkComponentScope,
     createGsapLifecycleProbe,
     createGsapTickerObserver,
     createLenisScrollObserver,
@@ -34,8 +35,12 @@ import {
     type AnimationSnapshot,
     type AnimationTargetAdapterInspection,
     type AnimationTargetAdapterInspectionContext,
+    type AnimationTargetAdapterRegistrationOptions,
+    type AnimationTargetAdapter,
     type AnimationWorkStatsSample,
     type FrameworkCommitProbe,
+    type FrameworkComponentScope,
+    type FrameworkComponentScopeOptions,
     type GsapLifecycleProbe,
     type GsapLifecycleProbeOptions,
     type GsapTickerObserver,
@@ -230,7 +235,7 @@ export interface BrowserAnimationRumTargetHandle {
 
 export interface AnimationTargetRegistrationHandle {
     (): void
-    /** False after explicit cleanup, replacement by another provider, or client destruction. */
+    /** False after explicit cleanup, same-owner replacement, or client destruction. */
     readonly active: boolean
 }
 
@@ -256,6 +261,8 @@ export interface AnimationClientHandle {
     recordWorkStats(sample: AnimationWorkStatsSample): boolean
     recordMediaStats(sample: AnimationMediaStatsSample): boolean
     createFrameworkProbe(framework: AnimationHostFramework): FrameworkCommitProbe
+    /** Local-only bounded component evidence; it is absent from RUM v2/v3. */
+    createFrameworkComponentScope(options: FrameworkComponentScopeOptions): FrameworkComponentScope
     createGsapProbe(options: Omit<GsapLifecycleProbeOptions, 'sink'>): GsapLifecycleProbe
     /** Local-only public GSAP ticker cadence with Browser-owned teardown. */
     createGsapTickerObserver(options: GsapTickerObserverOptions): GsapTickerObserver
@@ -271,12 +278,14 @@ export interface AnimationClientHandle {
     /** Local-only public ScrollTrigger state with Browser-owned teardown. */
     createScrollTriggerObserver(options: ScrollTriggerObserverOptions): ScrollTriggerObserver
     createThreeProbe(options: Omit<ThreeRendererProbeOptions, 'sink'>): ThreeRendererProbe
+    /** Browser callback/decode-processing metadata; target/sidecar detail stays local and outside RUM wire contracts. */
     createVideoProbe(video: VideoFrameSourceLike): VideoFrameProbe
     /** Registers one caller-owned semantic target for RUM v2. Picker/overlay selections are never uploaded. */
     registerRumTarget(targetKey: string, element: Element, options?: BrowserAnimationRumTargetOptions): BrowserAnimationRumTargetHandle
     registerTarget(
         element: Element,
-        inspect: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null
+        inspect: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null,
+        options?: AnimationTargetAdapterRegistrationOptions
     ): AnimationTargetRegistrationHandle
     unregisterTarget(element: Element): void
 }
@@ -935,10 +944,23 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     readonly devtools: DeferredAnimationDevtools
     private readonly localEvidence = new BrowserAnimationLocalEvidenceRegistry()
     private readonly targetRegistry = createAnimationTargetAdapterRegistry(TARGET_ADAPTER_ID, TARGET_ADAPTER_VERSION)
+    private readonly videoPresentationsByElement = new WeakMap<object, VideoFrameProbe[]>()
+    private readonly videoPresentationAdapter: AnimationTargetAdapter = {
+        id: 'browser-video-presentation',
+        version: '1',
+        canInspect: element => (this.videoPresentationsByElement.get(element)?.length ?? 0) > 0,
+        inspect: (element, context) => {
+            if (context?.inspectionPurpose === 'rum') return null
+            const probe = this.videoPresentationsByElement.get(element)?.at(-1)
+            if (!probe) return null
+            return { videoPresentations: [probe.snapshotPresentation(context?.evidenceWindow)] }
+        },
+    }
     private readonly probes = new Set<{ dispose(): void }>()
     private readonly observers = new Set<{ dispose(): void }>()
     private readonly registrations = new Set<AnimationTargetRegistrationHandle>()
-    private readonly registrationByElement = new Map<Element, AnimationTargetRegistrationHandle>()
+    private readonly registrationByElement = new Map<Element, Map<object, AnimationTargetRegistrationHandle>>()
+    private readonly legacyTargetRegistrationOwner = Object.freeze({})
     private automaticInputWindows: AutomaticInputWindows | null = null
     private automaticPageEvidence: BrowserAnimationPageEvidenceController | null = null
     private finalPageEvidence: BrowserAnimationPageEvidenceSnapshot | null = null
@@ -998,6 +1020,7 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
                 document,
                 window,
                 sink: this,
+                onVideoProbe: (video, probe) => this.registerVideoPresentationEvidence(video, probe),
             })
             this.automaticPageEvidence.start()
         }
@@ -1059,7 +1082,7 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
         options: AnimationElementSelectionOptions,
         inspectionPurpose: 'local' | 'rum'
     ): AnimationElementSelectionHandle {
-        const adapters = [this.targetRegistry.adapter, ...(options.adapters ?? [])]
+        const adapters = [this.targetRegistry.adapter, this.videoPresentationAdapter, ...(options.adapters ?? [])]
         return this.integration.selectElement(element, { ...options, adapters, inspectionPurpose })
     }
 
@@ -1095,6 +1118,10 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
 
     createFrameworkProbe(framework: AnimationHostFramework): FrameworkCommitProbe {
         return this.trackProbe(createFrameworkCommitProbe({ sink: this, framework }))
+    }
+
+    createFrameworkComponentScope(options: FrameworkComponentScopeOptions): FrameworkComponentScope {
+        return this.trackProbe(createFrameworkComponentScope(options))
     }
 
     createGsapProbe(options: Omit<GsapLifecycleProbeOptions, 'sink'>): GsapLifecycleProbe {
@@ -1145,7 +1172,8 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     }
 
     createVideoProbe(video: VideoFrameSourceLike): VideoFrameProbe {
-        return this.trackProbe(createVideoFrameProbe({ sink: this, video }))
+        const probe = createVideoFrameProbe({ sink: this, video })
+        return this.trackProbe(probe, this.registerVideoPresentationEvidence(video, probe))
     }
 
     registerRumTarget(targetKey: string, element: Element, options?: BrowserAnimationRumTargetOptions): BrowserAnimationRumTargetHandle {
@@ -1167,29 +1195,59 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
 
     registerTarget(
         element: Element,
-        inspect: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null
+        inspect: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null,
+        options?: AnimationTargetAdapterRegistrationOptions
     ): AnimationTargetRegistrationHandle {
         if (this.disposed) throw new Error('Cannot register an animation target after the client was destroyed')
-        this.registrationByElement.get(element)?.()
-        const unregister = this.targetRegistry.register(element, inspect)
+        const owner = options?.owner ?? this.legacyTargetRegistrationOwner
+        if (!owner || typeof owner !== 'object') throw new TypeError('animation target registration owner must be an object')
+        let ownedRegistrations = this.registrationByElement.get(element)
+        if (!ownedRegistrations) {
+            ownedRegistrations = new Map()
+            this.registrationByElement.set(element, ownedRegistrations)
+        }
+        ownedRegistrations.get(owner)?.()
+        if (this.registrationByElement.get(element) !== ownedRegistrations) {
+            this.registrationByElement.set(element, ownedRegistrations)
+        }
+        const unregister = this.targetRegistry.register(element, inspect, { owner })
         let active = true
         const ownedUnregister = (() => {
             if (!active) return
             active = false
             this.registrations.delete(ownedUnregister)
-            if (this.registrationByElement.get(element) === ownedUnregister) this.registrationByElement.delete(element)
+            const current = this.registrationByElement.get(element)
+            if (current?.get(owner) === ownedUnregister) {
+                current.delete(owner)
+                if (current.size === 0) this.registrationByElement.delete(element)
+            }
             unregister()
         }) as AnimationTargetRegistrationHandle
         Object.defineProperty(ownedUnregister, 'active', { get: () => active })
         this.registrations.add(ownedUnregister)
-        this.registrationByElement.set(element, ownedUnregister)
+        ownedRegistrations.set(owner, ownedUnregister)
         return ownedUnregister
     }
 
     unregisterTarget(element: Element): void {
         const unregister = this.registrationByElement.get(element)
-        if (unregister) unregister()
+        if (unregister) for (const registration of [...unregister.values()]) registration()
         else this.targetRegistry.unregister(element)
+    }
+
+    private registerVideoPresentationEvidence(video: object, probe: VideoFrameProbe): () => void {
+        const liveProbes = this.videoPresentationsByElement.get(video) ?? []
+        liveProbes.push(probe)
+        this.videoPresentationsByElement.set(video, liveProbes)
+        const localRegistration = this.localEvidence.registerBrowserVideoPresentation(probe)
+        return () => {
+            localRegistration.unregister()
+            const current = this.videoPresentationsByElement.get(video)
+            if (!current) return
+            const index = current.lastIndexOf(probe)
+            if (index >= 0) current.splice(index, 1)
+            if (current.length === 0) this.videoPresentationsByElement.delete(video)
+        }
     }
 
     private trackProbe<T extends { dispose(): void }>(probe: T, onDisposed?: () => void): T {

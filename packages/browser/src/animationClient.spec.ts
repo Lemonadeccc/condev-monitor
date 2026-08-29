@@ -778,6 +778,16 @@ describe('browser animation single-init entry', () => {
 
         const react = client.animation.createFrameworkProbe('react')
         expect(react.recordCommit({ renderMs: 3, phase: 'update' })).toBe(true)
+        const componentScope = client.animation.createFrameworkComponentScope({ framework: 'react', label: 'Private card' })
+        expect(
+            componentScope.record({
+                kind: 'render',
+                reason: 'react-update',
+                reasonSource: 'react-profiler-phase',
+                durationMs: 2,
+            })
+        ).toBe(true)
+        expect(componentScope.snapshot().records).toHaveLength(1)
 
         const gsap = client.animation.createGsapProbe({
             gsap: { globalTimeline: { getChildren: () => [] } },
@@ -803,6 +813,9 @@ describe('browser animation single-init entry', () => {
         expect(lifecycleRecord).toHaveBeenCalledTimes(1)
         expect(rendererRecord).toHaveBeenCalledTimes(2)
         await client.destroy()
+        expect(componentScope.record({ kind: 'render', reason: 'react-update', reasonSource: 'react-profiler-phase', durationMs: 1 })).toBe(
+            false
+        )
     })
 
     it('publishes only accepted redacted renderer evidence to the optional local Lab bridge', async () => {
@@ -1479,6 +1492,85 @@ describe('browser animation single-init entry', () => {
         expect(() => client.animation.registerTarget({} as Element, () => null)).toThrow('after the client was destroyed')
     })
 
+    it('binds explicit video callback evidence to local target windows without exposing it to RUM inspection', async () => {
+        const clock = controllableFrameRuntime()
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: clock.runtime } })
+        let callback: ((now: number, metadata: Record<string, number>) => void) | undefined
+        const video = {
+            tagName: 'VIDEO',
+            namespaceURI: 'http://www.w3.org/1999/xhtml',
+            isConnected: true,
+            ownerDocument: { defaultView: { innerWidth: 1_000, innerHeight: 800 } },
+            getAttribute: () => null,
+            getAnimations: () => [],
+            getBoundingClientRect: () => ({ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }),
+            addEventListener: () => undefined,
+            removeEventListener: () => undefined,
+            requestVideoFrameCallback: jest.fn(value => {
+                callback = value
+                return 7
+            }),
+            cancelVideoFrameCallback: jest.fn(),
+        }
+        const probe = client.animation.createVideoProbe(video)
+        expect(probe.start()).toBe(true)
+        const local = client.animation.selectElement(video as unknown as Element)
+        clock.advance(10)
+        callback?.(1_010, { mediaTime: 1, presentedFrames: 1, expectedDisplayTime: 1_014, processingDuration: 0.002 })
+        clock.advance(1)
+
+        expect(local.snapshot().videoPresentations).toMatchObject([
+            {
+                evidenceKind: 'browser-video-presentation-callback',
+                proves: 'browser-callback-and-metadata',
+                retainedRecordCount: 1,
+                records: [{ callbackAt: 1_010, expectedDisplayDeltaMs: 4, processingDurationMs: 2 }],
+            },
+        ])
+        expect(client.animation.snapshot()).not.toHaveProperty('videoPresentations')
+        const rumSelection = (
+            client.animation as unknown as {
+                selectElementForRum(element: Element): { snapshot(): { videoPresentations: readonly unknown[] }; clear(): void }
+            }
+        ).selectElementForRum(video as unknown as Element)
+        expect(rumSelection.snapshot().videoPresentations).toBeUndefined()
+
+        local.clear()
+        rumSelection.clear()
+        probe.dispose()
+        await client.destroy()
+    })
+
+    it('does not restore an already disposed video probe when overlapping probes are disposed out of order', async () => {
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const video = {
+            tagName: 'VIDEO',
+            namespaceURI: 'http://www.w3.org/1999/xhtml',
+            isConnected: true,
+            ownerDocument: { defaultView: { innerWidth: 1_000, innerHeight: 800 } },
+            getAttribute: () => null,
+            getAnimations: () => [],
+            getBoundingClientRect: () => ({ left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 }),
+            addEventListener: () => undefined,
+            removeEventListener: () => undefined,
+            requestVideoFrameCallback: jest.fn(() => 7),
+            cancelVideoFrameCallback: jest.fn(),
+        }
+        const first = client.animation.createVideoProbe(video)
+        const second = client.animation.createVideoProbe(video)
+        const selection = client.animation.selectElement(video as unknown as Element)
+
+        first.dispose()
+        expect(selection.snapshot().videoPresentations).toHaveLength(1)
+        second.dispose()
+        expect(selection.snapshot().videoPresentations).toBeUndefined()
+
+        selection.clear()
+        await client.destroy()
+    })
+
     it('forces public target inspection to local while forwarding evidence windows to Browser providers', async () => {
         const clock = controllableFrameRuntime()
         const { init } = require('./animation') as typeof import('./animation')
@@ -1547,8 +1639,64 @@ describe('browser animation single-init entry', () => {
         first()
         expect(replacement.active).toBe(true)
 
+        client.animation.unregisterTarget(target)
+        expect(replacement.active).toBe(false)
+
         await client.destroy()
         expect(replacement.active).toBe(false)
+        restoreGlobals()
+    })
+
+    it('composes owner-scoped target providers and disposes only the matching owner', async () => {
+        const restoreGlobals = installBrowserGlobals()
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const target = {
+            tagName: 'CANVAS',
+            namespaceURI: 'http://www.w3.org/1999/xhtml',
+            isConnected: true,
+            width: 320,
+            height: 180,
+            ownerDocument: { defaultView: { innerWidth: 1_280, innerHeight: 720 } },
+            getAttribute: () => null,
+            getAnimations: () => [],
+            getBoundingClientRect: () => ({ left: 0, top: 0, right: 320, bottom: 180, width: 320, height: 180 }),
+            addEventListener() {},
+            removeEventListener() {},
+        } as unknown as Element
+        const frameworkOwner = {}
+        const pixiOwner = {}
+        const rendererOwner = {}
+        const framework = client.animation.registerTarget(
+            target,
+            () => ({ inventory: { uiFrameworks: ['react'] }, owners: [{ relation: 'framework-owner', framework: 'react' }] }),
+            { owner: frameworkOwner }
+        )
+        const pixi = client.animation.registerTarget(
+            target,
+            () => ({ inventory: { renderers: ['webgl'] }, owners: [{ relation: 'renderer-host', label: 'Pixi sprite target-1' }] }),
+            { owner: pixiOwner }
+        )
+        const renderer = client.animation.registerTarget(
+            target,
+            () => ({ renderer: { family: 'webgl', capability: { state: 'supported', observed: false, buffered: false } } }),
+            { owner: rendererOwner }
+        )
+
+        let snapshot = client.animation.selectElement(target).snapshot()
+        expect(snapshot.inventory.uiFrameworks).toEqual(['react'])
+        expect(snapshot.owners).toHaveLength(2)
+        expect(snapshot.renderers).toHaveLength(1)
+
+        pixi()
+        snapshot = client.animation.selectElement(target).snapshot()
+        expect(snapshot.owners).toHaveLength(1)
+        expect(framework.active).toBe(true)
+        expect(renderer.active).toBe(true)
+
+        framework()
+        renderer()
+        await client.destroy()
         restoreGlobals()
     })
 

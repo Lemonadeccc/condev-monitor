@@ -1,6 +1,10 @@
 // cspell:ignore gsap
 
+import type { FrameworkComponentScopeSnapshot } from './framework-component-scope'
 import type { AnimationGpuTimerCapability } from './host-adapters'
+import type { BrowserVideoPresentationSnapshot } from './video-presentation-evidence'
+
+// cspell:ignore RVFC
 
 export type CapabilityState = 'supported' | 'unsupported' | 'unknown'
 export type CollectorState = 'idle' | 'running' | 'stopped' | 'destroyed'
@@ -893,13 +897,29 @@ export interface AnimationTargetAdapterInspection {
     inventory?: Partial<AnimationTargetRuntimeInventory>
     owners?: readonly AnimationTargetAdapterOwnerInspection[]
     renderer?: AnimationTargetAdapterRendererInspection
+    /** Additional independently owned renderer providers for the same host Element. */
+    renderers?: readonly AnimationTargetAdapterRendererInspection[]
+    /** Local-only, bounded component evidence. RUM inspections must omit it. */
+    frameworkScopes?: readonly FrameworkComponentScopeSnapshot[]
+    /** Local-only browser RVFC callback evidence; never media-stage or RUM evidence. */
+    videoPresentations?: readonly BrowserVideoPresentationSnapshot[]
+}
+
+export interface AnimationTargetAdapterRegistrationOptions {
+    /**
+     * Identity-scoped owner. Re-registering the same Element with the same
+     * owner replaces only that owner's provider. Omit for legacy single-owner
+     * replacement semantics.
+     */
+    owner?: object
 }
 
 export interface AnimationTargetAdapterRegistry {
     readonly adapter: AnimationTargetAdapter
     register(
         element: Element,
-        inspect: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null
+        inspect: (context?: AnimationTargetAdapterInspectionContext) => AnimationTargetAdapterInspection | null,
+        options?: AnimationTargetAdapterRegistrationOptions
     ): () => void
     unregister(element: Element): void
 }
@@ -929,6 +949,11 @@ export interface AnimationElementSelectionSnapshot {
     geometry: AnimationElementGeometrySummary
     inventory: AnimationTargetRuntimeInventory
     owners: readonly AnimationTargetOwnerAttribution[]
+    /** Local-only framework work associated with this real Element by adapter identity. */
+    /** Additive local-only schema-v1 field; absent in snapshots produced before component scopes existed. */
+    frameworkScopes?: readonly FrameworkComponentScopeSnapshot[]
+    /** Additive local-only schema-v1 field; absent in snapshots produced before browser RVFC evidence existed. */
+    videoPresentations?: readonly BrowserVideoPresentationSnapshot[]
     renderers: readonly AnimationTargetRendererInspection[]
     activeInteractionId: string | null
     correlated: InteractionPerformanceSummary | null

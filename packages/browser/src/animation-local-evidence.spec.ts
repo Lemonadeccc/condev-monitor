@@ -98,30 +98,70 @@ function motionSnapshot() {
     }
 }
 
+function browserVideoPresentationSnapshot() {
+    return {
+        schemaVersion: 1 as const,
+        evidenceKind: 'browser-video-presentation-callback' as const,
+        proves: 'browser-callback-and-metadata' as const,
+        state: 'active' as const,
+        startedAt: 90,
+        firstCallbackAt: 100,
+        startToFirstCallbackMs: 10,
+        acceptedRecordCount: 1,
+        retainedRecordCount: 1,
+        droppedRecordCount: 0,
+        rejectedRecordCount: 0,
+        truncated: false,
+        window: { startedAt: 100, endedAt: 100 },
+        records: [
+            {
+                callbackAt: 100,
+                callbackIntervalMs: null,
+                mediaTimeDeltaMs: null,
+                presentedFramesDelta: null,
+                expectedDisplayDeltaMs: 4,
+                processingDurationMs: 2,
+                src: 'https://private.example/video.mp4',
+            },
+        ],
+        gpuUploadMs: 7,
+    }
+}
+
 describe('BrowserAnimationLocalEvidenceRegistry', () => {
-    it('projects media and motion recorders into a closed local-only snapshot', () => {
+    it('projects media, motion, and browser video callback evidence into a closed local-only snapshot', () => {
         const registry = new BrowserAnimationLocalEvidenceRegistry()
         const media = registry.registerMedia({ snapshot: mediaSnapshot })
         const motion = registry.registerMotion({ snapshot: motionSnapshot })
+        const video = registry.registerBrowserVideoPresentation({ snapshotPresentation: browserVideoPresentationSnapshot })
 
         const snapshot = registry.snapshot()
 
         expect(snapshot).toMatchObject({
             version: 1,
-            providerCount: 2,
+            providerCount: 3,
             rejectedProviderCount: 0,
             droppedProviderCount: 0,
             media: { providerCount: 1, retainedRecordCount: 1 },
             motion: { providerCount: 1, retainedRecordCount: 1 },
+            browserVideoPresentation: {
+                providerCount: 1,
+                retainedRecordCount: 1,
+                records: [{ callbackAt: 100, expectedDisplayDeltaMs: 4, processingDurationMs: 2 }],
+            },
         })
         expect(JSON.stringify(snapshot)).not.toContain('private-interaction-id')
         expect(JSON.stringify(snapshot)).not.toContain('private-motion-label')
+        expect(JSON.stringify(snapshot)).not.toContain('private.example')
+        expect(JSON.stringify(snapshot)).not.toContain('gpuUploadMs')
 
         media.unregister()
         motion.unregister()
+        video.unregister()
         expect(registry.snapshot()).toMatchObject({ providerCount: 0 })
         expect(media.active).toBe(false)
         expect(motion.active).toBe(false)
+        expect(video.active).toBe(false)
     })
 
     it('fails hostile providers closed and reports provider capacity loss', () => {
@@ -139,6 +179,32 @@ describe('BrowserAnimationLocalEvidenceRegistry', () => {
             droppedProviderCount: 1,
             truncated: true,
         })
+    })
+
+    it('keeps media and motion capacity available after sixteen automatic video providers', () => {
+        const registry = new BrowserAnimationLocalEvidenceRegistry()
+        const videos = Array.from({ length: 16 }, () =>
+            registry.registerBrowserVideoPresentation({ snapshotPresentation: browserVideoPresentationSnapshot })
+        )
+        const overflowVideo = registry.registerBrowserVideoPresentation({ snapshotPresentation: browserVideoPresentationSnapshot })
+        const media = registry.registerMedia({ snapshot: mediaSnapshot })
+        const motion = registry.registerMotion({ snapshot: motionSnapshot })
+
+        expect(overflowVideo.active).toBe(false)
+        expect(media.active).toBe(true)
+        expect(motion.active).toBe(true)
+        expect(registry.snapshot()).toMatchObject({
+            providerCount: 18,
+            rejectedProviderCount: 0,
+            droppedProviderCount: 1,
+            media: { providerCount: 1, retainedRecordCount: 1 },
+            motion: { providerCount: 1, retainedRecordCount: 1 },
+            browserVideoPresentation: { providerCount: 16, retainedRecordCount: 16 },
+        })
+
+        for (const video of videos) video.unregister()
+        media.unregister()
+        motion.unregister()
     })
 
     it('clears every retained provider without touching the recorder', () => {

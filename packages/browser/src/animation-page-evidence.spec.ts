@@ -235,6 +235,8 @@ describe('automatic animation page evidence', () => {
             } as unknown as Animation
         )
         const mediaSamples: AnimationMediaStatsSample[] = []
+        const registeredVideoProbes: unknown[] = []
+        const videoProbeCleanup = jest.fn()
         const originalGetContext = EvidenceCanvas.prototype.getContext
         const controller = createAutomaticAnimationPageEvidence({
             document: documentValue as unknown as Document,
@@ -246,6 +248,10 @@ describe('automatic animation page evidence', () => {
                 },
             },
             sampleIntervalMs: 500,
+            onVideoProbe: (_video, probe) => {
+                registeredVideoProbes.push(probe)
+                return videoProbeCleanup
+            },
         })
 
         controller.start()
@@ -299,6 +305,7 @@ describe('automatic animation page evidence', () => {
         })
         expect(live.reducedMotion.violationCapability.state).toBe('unsupported')
         expect(mediaSamples).toHaveLength(1)
+        expect(registeredVideoProbes).toHaveLength(1)
         expect(mediaSamples[0]).toMatchObject({
             source: 'video-rvfc',
             playbackQuality: { status: 'measured', totalVideoFramesDelta: 2, droppedVideoFramesDelta: 1 },
@@ -316,6 +323,7 @@ describe('automatic animation page evidence', () => {
         expect(documentValue.listenerCount('animationstart')).toBe(0)
         expect(documentValue.listenerCount('visibilitychange')).toBe(0)
         expect(video.cancelled.length).toBeGreaterThan(0)
+        expect(videoProbeCleanup).toHaveBeenCalledTimes(1)
         jest.useRealTimers()
     })
 
@@ -340,6 +348,34 @@ describe('automatic animation page evidence', () => {
         expect(snapshot.animations.current.total).toBe(0)
         expect(snapshot.animations.capability.observed).toBe(false)
         controller.dispose()
+    })
+
+    it('isolates hostile local video registration and cleanup hooks from sampling lifecycle', () => {
+        jest.useFakeTimers()
+        const windowValue = evidenceWindow(false)
+        const documentValue = new EvidenceDocument(windowValue)
+        documentValue.videos.push(new EvidenceVideo(), new EvidenceVideo())
+        const cleanup = jest.fn(() => {
+            throw new Error('hostile cleanup')
+        })
+        let registrationCount = 0
+        const controller = createAutomaticAnimationPageEvidence({
+            document: documentValue as unknown as Document,
+            window: windowValue,
+            sink: { recordMediaStats: () => true },
+            onVideoProbe: () => {
+                registrationCount += 1
+                if (registrationCount === 1) throw new Error('hostile registration')
+                return cleanup
+            },
+        })
+
+        expect(() => controller.start()).not.toThrow()
+        documentValue.videos.length = 0
+        expect(() => controller.captureBoundary()).not.toThrow()
+        expect(() => controller.dispose()).not.toThrow()
+        expect(cleanup).toHaveBeenCalledTimes(1)
+        jest.useRealTimers()
     })
 
     it('supports a side-effect-free per-family opt-out object', () => {

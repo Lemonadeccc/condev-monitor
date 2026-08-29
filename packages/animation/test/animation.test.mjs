@@ -12,6 +12,7 @@ import {
     createBrowserAnimationRuntime,
     createAnimationElementPicker,
     createAnimationTargetAdapterRegistry,
+    createFrameworkComponentScope,
     createFrameworkCommitProbe,
     deterministicAnimationRumSample,
     projectAnimationLocalEvidenceSnapshot,
@@ -19,6 +20,72 @@ import {
     toAnimationRumSummary,
 } from '../build/esm/index.mjs'
 import { createAnimationDevOverlay, projectAnimationOverlayPageEvidenceSnapshot } from '../build/esm/devtools.mjs'
+
+test('framework component scopes keep closed local evidence in a bounded inspection window', () => {
+    const times = [10, 18, 20, 25, 30, 37]
+    const scope = createFrameworkComponentScope({
+        framework: 'react',
+        label: 'Private component label',
+        maxRecords: 2,
+        now: () => times.shift(),
+    })
+
+    assert.equal(
+        scope.record({
+            kind: 'render',
+            reason: 'react-mount',
+            reasonSource: 'react-profiler-phase',
+            durationMs: 8,
+            baseRenderMs: 11,
+        }),
+        true
+    )
+    assert.equal(
+        scope.record({
+            kind: 'render',
+            reason: 'react-update',
+            reasonSource: 'react-profiler-phase',
+            durationMs: 5,
+            baseRenderMs: 9,
+        }),
+        true
+    )
+    assert.equal(
+        scope.record({
+            kind: 'commit-attested',
+            reason: 'host-independent-commit',
+            reasonSource: 'host-independent-measurement',
+            durationMs: 7,
+        }),
+        true
+    )
+    assert.equal(
+        scope.record({
+            kind: 'commit-attested',
+            reason: 'react-update',
+            reasonSource: 'react-profiler-phase',
+            durationMs: 1,
+        }),
+        false
+    )
+
+    const snapshot = scope.snapshot({ startedAt: 0, endedAt: 40 })
+    assert.equal(snapshot.framework, 'react')
+    assert.equal(snapshot.label, 'Private component label')
+    assert.equal(snapshot.retainedRecordCount, 2)
+    assert.equal(snapshot.droppedRecordCount, 1)
+    assert.deepEqual(
+        snapshot.records.map(record => record.kind),
+        ['render', 'commit-attested']
+    )
+    assert.deepEqual(
+        scope.snapshot({ startedAt: 0, endedAt: 19 }).records.map(record => record.reason),
+        ['react-update']
+    )
+    assert.equal(JSON.stringify(scope.snapshot({ startedAt: 0, endedAt: 40 })).includes('props'), false)
+    scope.dispose()
+    assert.equal(scope.record({ kind: 'render', reason: 'react-update', reasonSource: 'react-profiler-phase', durationMs: 1 }), false)
+})
 
 class FakeRuntime {
     constructor({
@@ -2246,6 +2313,8 @@ test('element selection is a parallel native sidecar with bounded direct evidenc
     const before = collector.snapshot()
     const selection = collector.selectElement(target, { mode: 'subtree', adapters: [registry.adapter] })
     const direct = selection.snapshot()
+    assert.equal(Object.hasOwn(direct, 'frameworkScopes'), false)
+    assert.equal(Object.hasOwn(direct, 'videoPresentations'), false)
     assert.equal(direct.state, 'selected')
     assert.equal(direct.localDescriptor.tagName, 'canvas')
     assert.equal(direct.localDescriptor.role, 'img')
@@ -2321,6 +2390,98 @@ test('element selection is a parallel native sidecar with bounded direct evidenc
     unregisterAdapter()
     assert.equal(registry.adapter.canInspect(target), false)
     collector.destroy()
+})
+
+test('target adapter registry composes owner-scoped framework, Pixi, and renderer evidence without cross-owner disposal', () => {
+    const target = {}
+    const registry = createAnimationTargetAdapterRegistry('composite-host', '1')
+    const frameworkOwner = {}
+    const pixiOwner = {}
+    const rendererOwner = {}
+    const unregisterFramework = registry.register(
+        target,
+        () => ({ inventory: { uiFrameworks: ['react'] }, owners: [{ relation: 'framework-owner', framework: 'react' }] }),
+        { owner: frameworkOwner }
+    )
+    const unregisterPixi = registry.register(
+        target,
+        () => ({
+            inventory: { renderers: ['webgl'] },
+            owners: [{ relation: 'renderer-host', label: 'Pixi sprite target-1' }],
+        }),
+        { owner: pixiOwner }
+    )
+    const unregisterRenderer = registry.register(
+        target,
+        () => ({
+            renderer: { family: 'webgl', capability: { state: 'supported', observed: false, buffered: false } },
+        }),
+        { owner: rendererOwner }
+    )
+    registry.register(
+        target,
+        () => {
+            throw new Error('isolated provider failure')
+        },
+        { owner: {} }
+    )
+
+    const composed = registry.adapter.inspect(target, {
+        inspectionPurpose: 'local',
+        evidenceWindow: { startedAt: 1, endedAt: 2, relation: 'selection-window' },
+    })
+    assert.deepEqual(composed.inventory.uiFrameworks, ['react'])
+    assert.deepEqual(composed.inventory.renderers, ['webgl'])
+    assert.equal(composed.owners.length, 2)
+    assert.equal(composed.renderers.length, 1)
+
+    unregisterPixi()
+    assert.equal(registry.adapter.inspect(target).owners.length, 1)
+    unregisterFramework()
+    assert.equal(registry.adapter.inspect(target).owners.length, 0)
+    assert.equal(registry.adapter.inspect(target).renderers.length, 1)
+    unregisterRenderer()
+    assert.equal(registry.adapter.canInspect(target), true)
+    registry.unregister(target)
+    assert.equal(registry.adapter.canInspect(target), false)
+})
+
+test('target adapter owner replacement retires only the matching owner handle', () => {
+    const target = {}
+    const registry = createAnimationTargetAdapterRegistry('owner-replacement', '1')
+    const firstOwner = {}
+    const secondOwner = {}
+    const stale = registry.register(target, () => ({ owners: [{ relation: 'renderer-host', label: 'stale' }] }), {
+        owner: firstOwner,
+    })
+    const second = registry.register(target, () => ({ owners: [{ relation: 'renderer-host', label: 'second' }] }), {
+        owner: secondOwner,
+    })
+    const replacement = registry.register(target, () => ({ owners: [{ relation: 'renderer-host', label: 'replacement' }] }), {
+        owner: firstOwner,
+    })
+
+    stale()
+    assert.deepEqual(
+        registry.adapter.inspect(target).owners.map(owner => owner.label),
+        ['replacement', 'second']
+    )
+    replacement()
+    assert.deepEqual(
+        registry.adapter.inspect(target).owners.map(owner => owner.label),
+        ['second']
+    )
+    second()
+    assert.equal(registry.adapter.canInspect(target), false)
+})
+
+test('target adapter owner composition is bounded per Element', () => {
+    const target = {}
+    const registry = createAnimationTargetAdapterRegistry('bounded-composition', '1')
+    for (let index = 0; index < 16; index += 1) {
+        registry.register(target, () => ({ owners: [] }), { owner: {} })
+    }
+    assert.throws(() => registry.register(target, () => ({ owners: [] }), { owner: {} }), /at most 16 providers/)
 })
 
 test('adapter inspection purpose defaults local, supports rum, freezes options, and isolates adapter contexts', () => {
@@ -3396,6 +3557,27 @@ test('dev overlay is a collapsed Shadow DOM dock, refreshes only while expanded,
     collector.destroy()
 })
 
+test('local evidence accepts legacy schema-v1 closed snapshots without browser video evidence', () => {
+    const legacy = projectAnimationLocalEvidenceSnapshot({
+        version: 1,
+        providerCount: 0,
+        rejectedProviderCount: 0,
+        droppedProviderCount: 0,
+        truncated: false,
+        media: { providerCount: 0, retainedRecordCount: 0, droppedRecordCount: 0, records: [], truncated: false },
+        motion: { providerCount: 0, retainedRecordCount: 0, droppedRecordCount: 0, records: [], truncated: false },
+    })
+
+    assert.ok(legacy)
+    assert.deepEqual(legacy.browserVideoPresentation, {
+        providerCount: 0,
+        retainedRecordCount: 0,
+        droppedRecordCount: 0,
+        records: [],
+        truncated: false,
+    })
+})
+
 test('dev overlay renders bounded local semantic evidence separately, preserves its scroll, and never polls it while collapsed', () => {
     const runtime = new FakeRuntime()
     const collector = new AnimationCollector({ runtime }).start()
@@ -3470,6 +3652,24 @@ test('dev overlay renders bounded local semantic evidence separately, preserves 
                     ],
                 },
             },
+            {
+                kind: 'browser-video-presentation',
+                snapshot: {
+                    droppedRecordCount: 0,
+                    records: [
+                        {
+                            callbackAt: 240,
+                            callbackIntervalMs: 16.7,
+                            mediaTimeDeltaMs: 16.7,
+                            presentedFramesDelta: 1,
+                            expectedDisplayDeltaMs: 3,
+                            processingDurationMs: 2,
+                            src: 'https://private.example/video.mp4',
+                            gpuUploadMs: 9,
+                        },
+                    ],
+                },
+            },
         ],
     })
     assert.ok(localEvidence)
@@ -3498,6 +3698,9 @@ test('dev overlay renders bounded local semantic evidence separately, preserves 
     assert.match(fakeNodeText(evidencePanel), /caller-attested/)
     assert.match(fakeNodeText(evidencePanel), /explicit temporal correlations/)
     assert.match(fakeNodeText(evidencePanel), /decode ready \+10 ms/)
+    assert.match(fakeNodeText(evidencePanel), /Browser video presentation callbacks/)
+    assert.match(fakeNodeText(evidencePanel), /decode processing 2 ms/)
+    assert.match(fakeNodeText(evidencePanel), /does not prove GPU upload completion/)
     assert.match(fakeNodeText(evidencePanel), /before measured 1\/1 → after measured 1\/1/)
     assert.doesNotMatch(fakeNodeText(evidencePanel), /private|example|motion-id/)
 
@@ -3512,6 +3715,8 @@ test('dev overlay renders bounded local semantic evidence separately, preserves 
     localeButton.click()
     assert.match(fakeNodeText(evidencePanel), /本地语义证据/)
     assert.match(fakeNodeText(evidencePanel), /媒体阶段由调用方声明/)
+    assert.match(fakeNodeText(evidencePanel), /浏览器视频呈现回调/)
+    assert.match(fakeNodeText(evidencePanel), /解码处理 2 ms/)
     assert.match(fakeNodeText(evidencePanel), /之前 measured 1\/1 → 之后 measured 1\/1/)
     assert.equal(evidencePanel.scrollTop, 91)
 

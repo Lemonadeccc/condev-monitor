@@ -1501,6 +1501,24 @@ test('video probe baselines the first frame, survives counter resets, and never 
     video.fire(5_016, { mediaTime: 5.016, presentedFrames: 4 })
     assert.equal(samples.length, 3)
     assert.equal(samples[2].callbackIntervalMs, 16)
+    assert.deepEqual(probe.snapshotPresentation({ startedAt: 5_000, endedAt: 5_016 }).records, [
+        {
+            callbackAt: 5_000,
+            callbackIntervalMs: null,
+            mediaTimeDeltaMs: null,
+            presentedFramesDelta: null,
+            expectedDisplayDeltaMs: null,
+            processingDurationMs: null,
+        },
+        {
+            callbackAt: 5_016,
+            callbackIntervalMs: 16,
+            mediaTimeDeltaMs: 16,
+            presentedFramesDelta: 1,
+            expectedDisplayDeltaMs: null,
+            processingDurationMs: null,
+        },
+    ])
 
     probe.stop()
     probe.stop()
@@ -1539,6 +1557,8 @@ test('video probe can downsample automatic evidence while preserving interval de
         droppedVideoFramesDelta: 2,
         corruptedVideoFramesDelta: 0,
     })
+    assert.equal(probe.snapshotPresentation().acceptedRecordCount, 4)
+    assert.equal(probe.snapshotPresentation().retainedRecordCount, 4)
     probe.dispose()
 })
 
