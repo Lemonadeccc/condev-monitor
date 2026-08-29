@@ -6,12 +6,17 @@ import {
     type LabActionTraceThreadBreakdown,
     type LabAuthoredStackLocation,
     type LabAuthoredStackStatus,
+    type LabMainThreadFrameWindow,
+    type LabMainThreadFrameWindowCollectionLimitation,
+    type LabMainThreadFrameWindowLimitation,
+    type LabMainThreadFrameWindowSummary,
     type LabStackFrame,
     type LabTimelineCategory,
     type LabTimelineChunk,
     type LabTimelineChunkV1,
     type LabTimelineChunkV2,
     type LabTimelineChunkV3,
+    type LabTimelineChunkV4,
     type LabTimelineEvent,
     type LabTraceActionIdentity,
     type LabTraceAuthoredSourceResolver,
@@ -27,6 +32,9 @@ const MAX_STACK_DEPTH = 48
 const TRACE_NAME_LIMIT = 120
 const MAX_ACTION_TRACE_THREADS = 64
 const MAX_ACTION_TRACE_ACTIONS = 128
+const MAX_MAIN_THREAD_FRAME_WINDOWS = 512
+const MAX_MAIN_THREAD_FRAME_WINDOWS_ANALYZED = 4_096
+const MAX_FRAME_WINDOW_ACTION_IDS = 16
 const ACTION_MARKER_PATTERN = /^condev\.lab\.action\.([A-Za-z0-9._:+-]+)$/u
 const TRACE_PHASES: readonly LabTracePhase[] = ['script', 'style-layout', 'paint', 'composite', 'raster-gpu', 'animation', 'gc', 'other']
 const AUTHORED_SOURCE_BASE_LIMITATIONS: readonly LabTraceSourceMapLimitation[] = [
@@ -89,6 +97,11 @@ interface DerivedActionWindow {
     startMs: number
     endMs: number
     source: 'complete-x' | 'paired-be'
+}
+
+interface AttestedActionThread {
+    processId: number
+    threadKey: string
 }
 
 function traceCategoryContains(raw: RawTraceEvent, expected: string): boolean {
@@ -326,6 +339,64 @@ function unambiguousActionWindows(
     const counts = new Map<string, number>()
     for (const window of windows) counts.set(window.label, (counts.get(window.label) ?? 0) + 1)
     return windows.filter(window => !ambiguousLabels.has(window.label) && counts.get(window.label) === 1)
+}
+
+function attestedActionThreads(
+    input: readonly RawTraceEvent[],
+    minimumTimestampUs: number,
+    actionWindows: readonly { label: string; startMs: number; endMs: number }[],
+    ambiguousLabels: ReadonlySet<string>
+): ReadonlyMap<string, AttestedActionThread> {
+    interface ActionInstant {
+        navigationId: string
+        processId: number
+        threadId: number
+        timestampUs: number
+    }
+
+    const startsByLabel = new Map<string, ActionInstant[]>()
+    const endsByLabel = new Map<string, ActionInstant[]>()
+    for (const raw of input) {
+        if (!['I', 'i', 'R'].includes(String(raw.ph)) || !traceCategoryContains(raw, 'blink.user_timing')) continue
+        const match = /^condev\.lab\.action\.([A-Za-z0-9._:+-]+)\.(start|end)$/u.exec(String(raw.name))
+        const documentId = navigationId(raw)
+        const timestampUs = finite(raw.ts)
+        const processId = finite(raw.pid)
+        const threadId = finite(raw.tid)
+        if (!match || !documentId || timestampUs === null || processId === null || threadId === null) continue
+        const target = match[2] === 'start' ? startsByLabel : endsByLabel
+        const entries = target.get(match[1]!) ?? []
+        entries.push({ navigationId: documentId, processId, threadId, timestampUs })
+        target.set(match[1]!, entries)
+    }
+
+    const windowsByLabel = new Map<string, { label: string; startMs: number; endMs: number }[]>()
+    for (const window of actionWindows) {
+        const windows = windowsByLabel.get(window.label) ?? []
+        windows.push(window)
+        windowsByLabel.set(window.label, windows)
+    }
+
+    const attested = new Map<string, AttestedActionThread>()
+    for (const [label, windows] of windowsByLabel) {
+        if (ambiguousLabels.has(label) || windows.length !== 1) continue
+        const window = windows[0]!
+        const expectedStartUs = minimumTimestampUs + window.startMs * 1_000
+        const expectedEndUs = minimumTimestampUs + window.endMs * 1_000
+        const matches = (startsByLabel.get(label) ?? []).flatMap(start =>
+            (endsByLabel.get(label) ?? []).flatMap(end =>
+                Math.abs(start.timestampUs - expectedStartUs) <= 1 &&
+                Math.abs(end.timestampUs - expectedEndUs) <= 1 &&
+                start.processId === end.processId &&
+                start.threadId === end.threadId &&
+                start.navigationId === end.navigationId
+                    ? [{ processId: start.processId, threadKey: `${start.processId}:${start.threadId}` }]
+                    : []
+            )
+        )
+        if (matches.length === 1) attested.set(label, matches[0]!)
+    }
+    return attested
 }
 
 function actionWindowLookup(windows: readonly { label: string; startMs: number; endMs: number }[]): {
@@ -640,6 +711,242 @@ function exclusivePhaseTime(intervals: readonly PhaseInterval[]): Record<LabTrac
     return phases
 }
 
+function mainThreadFrameWindows(
+    input: readonly RawTraceEvent[],
+    minimumTimestampUs: number,
+    threadNames: ReadonlyMap<string, string>,
+    events: readonly LabTimelineEvent[],
+    threadKeys: readonly string[],
+    identities: readonly LabTraceActionIdentity[],
+    actionWindows: readonly { label: string; startMs: number; endMs: number }[],
+    ambiguousLabels: ReadonlySet<string>,
+    actionThreads: ReadonlyMap<string, AttestedActionThread>
+): LabMainThreadFrameWindowSummary {
+    const boundariesByThread = new Map<string, number[]>()
+    for (const raw of input) {
+        if (String(raw.name) !== 'BeginMainThreadFrame') continue
+        const timestampUs = finite(raw.ts)
+        const pid = finite(raw.pid)
+        const tid = finite(raw.tid)
+        if (timestampUs === null || pid === null || tid === null) continue
+        const threadKey = `${pid}:${tid}`
+        if (threadKind(threadNames.get(threadKey) ?? '') !== 'main') continue
+        const boundaries = boundariesByThread.get(threadKey) ?? []
+        boundaries.push(timestampUs)
+        boundariesByThread.set(threadKey, boundaries)
+    }
+
+    const collectionLimitations = new Set<LabMainThreadFrameWindowCollectionLimitation>([
+        'trace-frame-window-is-not-compositor-or-display-frame',
+    ])
+    const rankedThreads = [...boundariesByThread.entries()]
+        .map(([threadKey, timestamps]) => ({
+            threadKey,
+            processId: Number(threadKey.slice(0, threadKey.indexOf(':'))),
+            timestamps: [...new Set(timestamps)].sort((left, right) => left - right),
+        }))
+        .sort((left, right) => left.processId - right.processId || left.threadKey.localeCompare(right.threadKey))
+    const attestedLocations = [...actionThreads.values()]
+    const attestedProcessIds = new Set(attestedLocations.map(location => location.processId))
+    const exactAttestedThreadKeys = new Set(attestedLocations.map(location => location.threadKey))
+    const candidateThreads = rankedThreads.filter(thread => attestedProcessIds.has(thread.processId))
+    const exactCandidates = candidateThreads.filter(thread => exactAttestedThreadKeys.has(thread.threadKey))
+    const selected =
+        attestedProcessIds.size === 1 && exactCandidates.length === 1
+            ? exactCandidates[0]
+            : attestedProcessIds.size === 1 && exactCandidates.length === 0 && candidateThreads.length === 1
+              ? candidateThreads[0]
+              : undefined
+    if (!selected || selected.timestamps.length === 0) {
+        collectionLimitations.add('trace-frame-window-boundary-not-observed')
+        if (rankedThreads.length > 1) collectionLimitations.add('trace-frame-window-multiple-main-threads')
+        return {
+            status: 'not-observed',
+            totalWindows: 0,
+            retainedWindows: 0,
+            droppedWindows: 0,
+            windows: [],
+            limitations: [...collectionLimitations],
+        }
+    }
+    if (candidateThreads.length > 1) collectionLimitations.add('trace-frame-window-multiple-main-threads')
+
+    const actionIdByLabel = new Map<string, string>()
+    const countsByLabel = new Map<string, number>()
+    for (const window of actionWindows) countsByLabel.set(window.label, (countsByLabel.get(window.label) ?? 0) + 1)
+    for (const identity of identities) {
+        if (
+            !ambiguousLabels.has(identity.actionLabel) &&
+            countsByLabel.get(identity.actionLabel) === 1 &&
+            actionThreads.get(identity.actionLabel)?.processId === selected.processId
+        ) {
+            actionIdByLabel.set(identity.actionLabel, identity.actionId)
+        }
+    }
+
+    const indexedEvents = events
+        .map((event, eventIndex) => ({
+            event,
+            eventIndex,
+            threadKey: threadKeys[eventIndex]!,
+            phase: tracePhase(event.category),
+            endMs: event.startMs + event.durationMs,
+        }))
+        .filter(
+            (entry): entry is typeof entry & { phase: LabTracePhase } =>
+                entry.phase !== null &&
+                !ACTION_MARKER_PATTERN.test(entry.event.name) &&
+                (entry.threadKey === selected.threadKey ||
+                    (entry.threadKey.startsWith(`${selected.processId}:`) && (entry.phase === 'composite' || entry.phase === 'raster-gpu')))
+        )
+        .sort((left, right) => left.event.startMs - right.event.startMs || right.endMs - left.endMs || left.eventIndex - right.eventIndex)
+    const prefixMaximumEventEndMs: number[] = []
+    for (let index = 0; index < indexedEvents.length; index += 1) {
+        prefixMaximumEventEndMs[index] = Math.max(
+            prefixMaximumEventEndMs[index - 1] ?? Number.NEGATIVE_INFINITY,
+            indexedEvents[index]!.endMs
+        )
+    }
+
+    const analyzedFrameCount = Math.min(selected.timestamps.length, MAX_MAIN_THREAD_FRAME_WINDOWS_ANALYZED)
+    const windows = Array.from({ length: analyzedFrameCount }, (_, frameIndex): LabMainThreadFrameWindow => {
+        const timestampUs = selected.timestamps[frameIndex]!
+        const startMs = roundMs((timestampUs - minimumTimestampUs) / 1_000)
+        const nextTimestampUs = selected.timestamps[frameIndex + 1]
+        if (nextTimestampUs === undefined || nextTimestampUs <= timestampUs) {
+            return {
+                frameId: `main-frame-${frameIndex.toString(36)}`,
+                startMs,
+                endMs: null,
+                durationMs: null,
+                status: 'partial',
+                boundary: 'begin-main-thread-frame',
+                eventCount: 0,
+                classifiedMainThreadTimeMs: null,
+                phases: null,
+                actionIds: [],
+                droppedActionIds: 0,
+                correlatedCrossThread: null,
+                limitations: ['trace-frame-window-missing-end-boundary'],
+            }
+        }
+        const endMs = roundMs((nextTimestampUs - minimumTimestampUs) / 1_000)
+        const limitations = new Set<LabMainThreadFrameWindowLimitation>()
+        const mainIntervals: PhaseInterval[] = []
+        const correlationByThread = new Map<string, PhaseInterval[]>()
+        let eventCount = 0
+        let correlatedEventCount = 0
+        let low = 0
+        let high = indexedEvents.length
+        while (low < high) {
+            const middle = Math.floor((low + high) / 2)
+            if (prefixMaximumEventEndMs[middle]! <= startMs) low = middle + 1
+            else high = middle
+        }
+        for (let indexedEventIndex = low; indexedEventIndex < indexedEvents.length; indexedEventIndex += 1) {
+            const indexedEvent = indexedEvents[indexedEventIndex]!
+            const { event, eventIndex, phase } = indexedEvent
+            if (event.startMs >= endMs) break
+            const overlapStart = Math.max(startMs, event.startMs)
+            const overlapEnd = Math.min(endMs, indexedEvent.endMs)
+            if (overlapEnd <= overlapStart) continue
+            const interval = { startMs: overlapStart, endMs: overlapEnd, phase, order: eventIndex }
+            if (indexedEvent.threadKey === selected.threadKey) {
+                mainIntervals.push(interval)
+                eventCount += 1
+            } else if (phase === 'composite' || phase === 'raster-gpu') {
+                const correlated = correlationByThread.get(threadKeys[eventIndex]!) ?? []
+                correlated.push(interval)
+                correlationByThread.set(threadKeys[eventIndex]!, correlated)
+                correlatedEventCount += 1
+            }
+        }
+
+        let phases: Record<LabTracePhase, number> | null = null
+        let classifiedMainThreadTimeMs: number | null = null
+        if (mainIntervals.length === 0) {
+            limitations.add('trace-frame-window-main-thread-events-not-observed')
+        } else {
+            phases = exclusivePhaseTime(mainIntervals)
+            classifiedMainThreadTimeMs = roundMs(TRACE_PHASES.reduce((total, phase) => total + phases![phase], 0))
+            if (hasNonLaminarOverlap(mainIntervals)) limitations.add('trace-frame-window-non-laminar-overlap')
+        }
+
+        const overlappingActionIds = identities.flatMap(identity => {
+            const actionId = actionIdByLabel.get(identity.actionLabel)
+            if (!actionId) return []
+            const actionWindow = actionWindows.find(window => window.label === identity.actionLabel)
+            return actionWindow && actionWindow.startMs < endMs && actionWindow.endMs > startMs ? [actionId] : []
+        })
+        const actionIds = overlappingActionIds.slice(0, MAX_FRAME_WINDOW_ACTION_IDS)
+        const droppedActionIds = Math.max(0, overlappingActionIds.length - actionIds.length)
+        if (droppedActionIds > 0) limitations.add('trace-frame-window-action-overlap-truncated')
+
+        let correlatedCrossThread: LabMainThreadFrameWindow['correlatedCrossThread'] = null
+        if (correlationByThread.size > 0) {
+            const correlatedPhases = { composite: 0, 'raster-gpu': 0 }
+            let classifiedTimeMs = 0
+            for (const intervals of correlationByThread.values()) {
+                const threadPhases = exclusivePhaseTime(intervals)
+                correlatedPhases.composite += threadPhases.composite
+                correlatedPhases['raster-gpu'] += threadPhases['raster-gpu']
+                classifiedTimeMs += threadPhases.composite + threadPhases['raster-gpu']
+            }
+            correlatedCrossThread = {
+                eventCount: correlatedEventCount,
+                classifiedTimeMs: roundMs(classifiedTimeMs),
+                phases: {
+                    composite: roundMs(correlatedPhases.composite),
+                    'raster-gpu': roundMs(correlatedPhases['raster-gpu']),
+                },
+            }
+            limitations.add('trace-frame-window-cross-thread-temporal-correlation-only')
+        }
+
+        return {
+            frameId: `main-frame-${frameIndex.toString(36)}`,
+            startMs,
+            endMs,
+            durationMs: roundMs(endMs - startMs),
+            status:
+                limitations.has('trace-frame-window-main-thread-events-not-observed') ||
+                limitations.has('trace-frame-window-non-laminar-overlap') ||
+                limitations.has('trace-frame-window-action-overlap-truncated')
+                    ? 'partial'
+                    : 'measured',
+            boundary: 'begin-main-thread-frame',
+            eventCount,
+            classifiedMainThreadTimeMs,
+            phases,
+            actionIds,
+            droppedActionIds,
+            correlatedCrossThread,
+            limitations: [...limitations],
+        }
+    })
+
+    const retained = [...windows]
+        .sort(
+            (left, right) =>
+                Number(right.actionIds.length > 0) - Number(left.actionIds.length > 0) ||
+                (right.durationMs ?? -1) - (left.durationMs ?? -1) ||
+                left.startMs - right.startMs
+        )
+        .slice(0, MAX_MAIN_THREAD_FRAME_WINDOWS)
+        .sort((left, right) => left.startMs - right.startMs)
+    const droppedWindows = selected.timestamps.length - retained.length
+    if (droppedWindows > 0) collectionLimitations.add('trace-frame-window-summary-truncated')
+    const partial = droppedWindows > 0 || candidateThreads.length > 1 || retained.some(window => window.status === 'partial')
+    return {
+        status: partial ? 'partial' : 'measured',
+        totalWindows: selected.timestamps.length,
+        retainedWindows: retained.length,
+        droppedWindows,
+        windows: retained,
+        limitations: [...collectionLimitations],
+    }
+}
+
 function actionPhaseSummaries(
     identities: readonly LabTraceActionIdentity[],
     windows: readonly { label: string; startMs: number; endMs: number }[],
@@ -836,6 +1143,17 @@ export function normalizeTraceEvents(
         maxRetainedEvents?: number
         actionWindows?: readonly { label: string; startMs: number; endMs: number }[]
         actionIdentities: readonly LabTraceActionIdentity[]
+        frameWindows: true
+        authoredSourceResolver?: LabTraceAuthoredSourceResolver
+        authoredSourceLimitations?: readonly LabTraceSourceMapLimitation[]
+    }
+): LabTimelineChunkV4
+export function normalizeTraceEvents(
+    input: readonly RawTraceEvent[],
+    options: {
+        maxRetainedEvents?: number
+        actionWindows?: readonly { label: string; startMs: number; endMs: number }[]
+        actionIdentities: readonly LabTraceActionIdentity[]
         authoredSourceResolver: LabTraceAuthoredSourceResolver
         authoredSourceLimitations?: readonly LabTraceSourceMapLimitation[]
     }
@@ -858,6 +1176,7 @@ export function normalizeTraceEvents(
         maxRetainedEvents?: number
         actionWindows?: readonly { label: string; startMs: number; endMs: number }[]
         actionIdentities?: readonly LabTraceActionIdentity[]
+        frameWindows?: boolean
         authoredSourceResolver?: LabTraceAuthoredSourceResolver
         authoredSourceLimitations?: readonly LabTraceSourceMapLimitation[]
     } = {}
@@ -893,6 +1212,18 @@ export function normalizeTraceEvents(
             threadNames.set(`${Number(raw.pid)}:${Number(raw.tid)}`, raw.args.name.slice(0, 160))
         }
     }
+    if (options.frameWindows) {
+        for (const raw of input) {
+            if (String(raw.name) !== 'BeginMainThreadFrame') continue
+            const timestampUs = finite(raw.ts)
+            const pid = finite(raw.pid)
+            const tid = finite(raw.tid)
+            if (timestampUs !== null && pid !== null && tid !== null && threadKind(threadNames.get(`${pid}:${tid}`) ?? '') === 'main') {
+                minimumTimestampUs = Math.min(minimumTimestampUs, timestampUs)
+                maximumTimestampUs = Math.max(maximumTimestampUs, timestampUs)
+            }
+        }
+    }
     for (const window of [...completeWindows, ...pairedWindows]) {
         minimumTimestampUs = Math.min(minimumTimestampUs, window.startTimestampUs)
         maximumTimestampUs = Math.max(maximumTimestampUs, window.endTimestampUs)
@@ -918,6 +1249,9 @@ export function normalizeTraceEvents(
         options.actionWindows ?? mergeEquivalentActionWindowRepresentations([...completeActionWindows, ...pairedRelativeWindows])
     if (options.actionIdentities) assertActionWindowsDoNotOverlap(options.actionIdentities, actionWindows, pairedScan.ambiguousLabels)
     const actionWindowsLookup = actionWindowLookup(unambiguousActionWindows(actionWindows, pairedScan.ambiguousLabels))
+    const actionThreads = options.frameWindows
+        ? attestedActionThreads(input, minimumTimestampUs, actionWindows, pairedScan.ambiguousLabels)
+        : new Map<string, AttestedActionThread>()
 
     const events: InternalLabTimelineEvent[] = []
     const tids: string[] = []
@@ -948,6 +1282,19 @@ export function normalizeTraceEvents(
     selfTimes(events, tids)
     const summaries = options.actionIdentities
         ? actionPhaseSummaries(options.actionIdentities, actionWindows, events, tids, pairedScan.ambiguousLabels)
+        : null
+    const frameWindowSummary = options.frameWindows
+        ? mainThreadFrameWindows(
+              input,
+              minimumTimestampUs,
+              threadNames,
+              events,
+              tids,
+              options.actionIdentities ?? [],
+              actionWindows,
+              pairedScan.ambiguousLabels,
+              actionThreads
+          )
         : null
     const totalEligibleEvents = events.length
     const categoryDurationMs = durationByCategory()
@@ -981,14 +1328,22 @@ export function normalizeTraceEvents(
         events: authoredProjection?.events ?? generatedTimelineEvents(events),
         categoryDurationMs,
     }
-    return authoredProjection
+    return frameWindowSummary
         ? {
               ...chunk,
-              schemaVersion: 3,
+              schemaVersion: 4,
               actionPhaseSummaries: summaries ?? [],
-              authoredSource: authoredProjection.evidence,
+              authoredSource: authoredProjection?.evidence ?? null,
+              mainThreadFrameWindows: frameWindowSummary,
           }
-        : summaries
-          ? { ...chunk, schemaVersion: 2, actionPhaseSummaries: summaries }
-          : { ...chunk, schemaVersion: ANIMATION_LAB_SCHEMA_VERSION }
+        : authoredProjection
+          ? {
+                ...chunk,
+                schemaVersion: 3,
+                actionPhaseSummaries: summaries ?? [],
+                authoredSource: authoredProjection.evidence,
+            }
+          : summaries
+            ? { ...chunk, schemaVersion: 2, actionPhaseSummaries: summaries }
+            : { ...chunk, schemaVersion: ANIMATION_LAB_SCHEMA_VERSION }
 }

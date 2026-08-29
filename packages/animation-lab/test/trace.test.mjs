@@ -304,6 +304,175 @@ test('builds mutually exclusive per-thread action phase summaries before event r
     ])
 })
 
+test('builds bounded main-thread frame windows with exclusive phases, action overlap, and correlation-only renderer evidence', () => {
+    const trace = [
+        { ph: 'M', name: 'thread_name', pid: 7, tid: 11, args: { name: 'CrRendererMain' } },
+        { ph: 'M', name: 'thread_name', pid: 7, tid: 12, args: { name: 'CompositorTileWorker1' } },
+        actionMark('hero-hover', 'start', 1_000),
+        { ph: 'X', name: 'condev.lab.action.hero-hover', cat: 'blink.user_timing', pid: 7, tid: 11, ts: 1_000, dur: 18_000 },
+        actionMark('hero-hover', 'end', 19_000),
+        { ph: 'I', name: 'BeginMainThreadFrame', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 1_000 },
+        { ph: 'X', name: 'RunTask', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 1_000, dur: 9_000 },
+        { ph: 'X', name: 'FireAnimationFrame', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 2_000, dur: 7_000 },
+        { ph: 'X', name: 'Layout', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 4_000, dur: 2_000 },
+        { ph: 'X', name: 'Paint', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 7_000, dur: 1_000 },
+        { ph: 'X', name: 'RasterTask', cat: 'devtools.timeline', pid: 7, tid: 12, ts: 8_000, dur: 4_000 },
+        { ph: 'I', name: 'BeginMainThreadFrame', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 11_000 },
+        { ph: 'X', name: 'FunctionCall', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 12_000, dur: 3_000 },
+        { ph: 'I', name: 'BeginMainThreadFrame', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 21_000 },
+    ]
+
+    const result = normalizeTraceEvents(trace, {
+        frameWindows: true,
+        actionIdentities: [{ actionId: 'action-hero', actionLabel: 'hero-hover' }],
+    })
+
+    assert.equal(result.schemaVersion, 4)
+    assert.equal(result.mainThreadFrameWindows.status, 'partial')
+    assert.equal(result.mainThreadFrameWindows.totalWindows, 3)
+    assert.equal(result.mainThreadFrameWindows.retainedWindows, 3)
+    assert.equal(result.mainThreadFrameWindows.droppedWindows, 0)
+    assert.deepEqual(result.mainThreadFrameWindows.windows[0], {
+        frameId: 'main-frame-0',
+        startMs: 0,
+        endMs: 10,
+        durationMs: 10,
+        status: 'measured',
+        boundary: 'begin-main-thread-frame',
+        eventCount: 4,
+        classifiedMainThreadTimeMs: 9,
+        phases: {
+            script: 2,
+            'style-layout': 2,
+            paint: 1,
+            composite: 0,
+            'raster-gpu': 0,
+            animation: 4,
+            gc: 0,
+            other: 0,
+        },
+        actionIds: ['action-hero'],
+        droppedActionIds: 0,
+        correlatedCrossThread: {
+            eventCount: 1,
+            classifiedTimeMs: 3,
+            phases: { composite: 0, 'raster-gpu': 3 },
+        },
+        limitations: ['trace-frame-window-cross-thread-temporal-correlation-only'],
+    })
+    assert.deepEqual(result.mainThreadFrameWindows.windows[2], {
+        frameId: 'main-frame-2',
+        startMs: 20,
+        endMs: null,
+        durationMs: null,
+        status: 'partial',
+        boundary: 'begin-main-thread-frame',
+        eventCount: 0,
+        classifiedMainThreadTimeMs: null,
+        phases: null,
+        actionIds: [],
+        droppedActionIds: 0,
+        correlatedCrossThread: null,
+        limitations: ['trace-frame-window-missing-end-boundary'],
+    })
+})
+
+test('bounds main-thread frame windows independently from retained timeline events', () => {
+    const trace = [
+        { ph: 'M', name: 'thread_name', pid: 7, tid: 11, args: { name: 'CrRendererMain' } },
+        actionMark('bounded-frames', 'start', 1_000),
+        { ph: 'X', name: 'condev.lab.action.bounded-frames', cat: 'blink.user_timing', pid: 7, tid: 11, ts: 1_000, dur: 1_000 },
+        actionMark('bounded-frames', 'end', 2_000),
+    ]
+    for (let index = 0; index < 520; index += 1) {
+        trace.push({
+            ph: 'I',
+            name: 'BeginMainThreadFrame',
+            cat: 'devtools.timeline',
+            pid: 7,
+            tid: 11,
+            ts: 1_000 + index * 10_000,
+        })
+    }
+
+    const result = normalizeTraceEvents(trace, { frameWindows: true, actionIdentities: [] })
+    assert.equal(result.schemaVersion, 4)
+    assert.equal(result.mainThreadFrameWindows.status, 'partial')
+    assert.equal(result.mainThreadFrameWindows.totalWindows, 520)
+    assert.equal(result.mainThreadFrameWindows.retainedWindows, 512)
+    assert.equal(result.mainThreadFrameWindows.droppedWindows, 8)
+    assert.ok(result.mainThreadFrameWindows.limitations.includes('trace-frame-window-summary-truncated'))
+})
+
+test('binds frame windows and action ids to the attested renderer instead of the noisiest renderer process', () => {
+    const trace = [
+        { ph: 'M', name: 'process_name', pid: 7, tid: 0, args: { name: 'Renderer' } },
+        { ph: 'M', name: 'thread_name', pid: 7, tid: 11, args: { name: 'CrRendererMain' } },
+        { ph: 'M', name: 'thread_name', pid: 7, tid: 12, args: { name: 'CompositorTileWorker1' } },
+        { ph: 'M', name: 'process_name', pid: 99, tid: 0, args: { name: 'Renderer' } },
+        { ph: 'M', name: 'thread_name', pid: 99, tid: 101, args: { name: 'CrRendererMain' } },
+        { ph: 'M', name: 'thread_name', pid: 99, tid: 102, args: { name: 'CompositorTileWorker1' } },
+        actionMark('target-action', 'start', 10_000, 7, 11, 'target-document'),
+        {
+            ph: 'X',
+            name: 'condev.lab.action.target-action',
+            cat: 'blink.user_timing',
+            pid: 7,
+            tid: 11,
+            ts: 10_000,
+            dur: 15_000,
+        },
+        actionMark('target-action', 'end', 25_000, 7, 11, 'target-document'),
+        { ph: 'I', name: 'BeginMainThreadFrame', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 10_000 },
+        { ph: 'X', name: 'FunctionCall', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 11_000, dur: 2_000 },
+        { ph: 'X', name: 'RasterTask', cat: 'devtools.timeline', pid: 7, tid: 12, ts: 12_000, dur: 2_000 },
+        { ph: 'I', name: 'BeginMainThreadFrame', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 20_000 },
+        { ph: 'I', name: 'BeginMainThreadFrame', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 30_000 },
+        ...Array.from({ length: 12 }, (_, index) => ({
+            ph: 'I',
+            name: 'BeginMainThreadFrame',
+            cat: 'devtools.timeline',
+            pid: 99,
+            tid: 101,
+            ts: 1_000 + index * 3_000,
+        })),
+        { ph: 'X', name: 'RasterTask', cat: 'devtools.timeline', pid: 99, tid: 102, ts: 12_000, dur: 7_000 },
+    ]
+
+    const result = normalizeTraceEvents(trace, {
+        frameWindows: true,
+        actionIdentities: [{ actionId: 'action-target', actionLabel: 'target-action' }],
+    })
+
+    assert.equal(result.mainThreadFrameWindows.totalWindows, 3)
+    assert.deepEqual(
+        result.mainThreadFrameWindows.windows.map(window => window.actionIds),
+        [['action-target'], ['action-target'], []]
+    )
+    assert.deepEqual(result.mainThreadFrameWindows.windows[0].correlatedCrossThread, {
+        eventCount: 1,
+        classifiedTimeMs: 2,
+        phases: { composite: 0, 'raster-gpu': 2 },
+    })
+    assert.equal(result.mainThreadFrameWindows.limitations.includes('trace-frame-window-multiple-main-threads'), false)
+})
+
+test('does not emit frame windows when renderer ownership cannot be proven by an action or navigation mark', () => {
+    const result = normalizeTraceEvents(
+        [
+            { ph: 'M', name: 'thread_name', pid: 7, tid: 11, args: { name: 'CrRendererMain' } },
+            { ph: 'I', name: 'BeginMainThreadFrame', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 1_000 },
+            { ph: 'I', name: 'BeginMainThreadFrame', cat: 'devtools.timeline', pid: 7, tid: 11, ts: 11_000 },
+        ],
+        { frameWindows: true, actionIdentities: [] }
+    )
+
+    assert.equal(result.mainThreadFrameWindows.status, 'not-observed')
+    assert.equal(result.mainThreadFrameWindows.totalWindows, 0)
+    assert.deepEqual(result.mainThreadFrameWindows.windows, [])
+    assert.ok(result.mainThreadFrameWindows.limitations.includes('trace-frame-window-boundary-not-observed'))
+})
+
 test('marks crossing phase intervals as partial and clips them to the action window', () => {
     const result = normalizeTraceEvents(
         [

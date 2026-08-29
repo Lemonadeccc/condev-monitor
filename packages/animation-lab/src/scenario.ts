@@ -192,6 +192,12 @@ function validateExpectations(value: unknown, errors: string[], index: number): 
                 if (item.idleMs !== undefined && !integer(item.idleMs, 16, 5_000)) errors.push(`${itemLabel}:invalid-idle`)
                 timeout()
                 break
+            case 'registered-outcome':
+                unknownKeys(item, new Set(['kind', 'outcomeKey', 'state', 'timeoutMs']), itemLabel, errors)
+                if (safeToken(item.outcomeKey, '', 120) !== item.outcomeKey) errors.push(`${itemLabel}:invalid-outcome-key`)
+                if (!['completed', 'failed', 'idle'].includes(String(item.state))) errors.push(`${itemLabel}:invalid-state`)
+                timeout()
+                break
             default:
                 errors.push(`${itemLabel}:unsupported-kind`)
         }

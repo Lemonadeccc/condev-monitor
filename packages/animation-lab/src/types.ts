@@ -86,6 +86,13 @@ export type LabActionExpectation =
           idleMs?: number
           timeoutMs?: number
       }
+    | {
+          /** Caller-attested local bridge state; the key is never retained in reports. */
+          kind: 'registered-outcome'
+          outcomeKey: string
+          state: 'completed' | 'failed' | 'idle'
+          timeoutMs?: number
+      }
 
 export interface LabActionBase {
     kind: LabActionKind
@@ -499,6 +506,52 @@ export interface LabActionTraceSummary {
     limitations: readonly LabActionTraceLimitation[]
 }
 
+export type LabMainThreadFrameWindowStatus = 'measured' | 'partial'
+
+export type LabMainThreadFrameWindowLimitation =
+    | 'trace-frame-window-missing-end-boundary'
+    | 'trace-frame-window-main-thread-events-not-observed'
+    | 'trace-frame-window-non-laminar-overlap'
+    | 'trace-frame-window-action-overlap-truncated'
+    | 'trace-frame-window-cross-thread-temporal-correlation-only'
+
+export type LabMainThreadFrameWindowCollectionLimitation =
+    | 'trace-frame-window-boundary-not-observed'
+    | 'trace-frame-window-multiple-main-threads'
+    | 'trace-frame-window-summary-truncated'
+    | 'trace-frame-window-is-not-compositor-or-display-frame'
+
+export interface LabMainThreadFrameWindow {
+    /** Anonymous trace-local identifier; it does not expose Chromium frame ids. */
+    frameId: string
+    startMs: number
+    endMs: number | null
+    durationMs: number | null
+    status: LabMainThreadFrameWindowStatus
+    boundary: 'begin-main-thread-frame'
+    eventCount: number
+    classifiedMainThreadTimeMs: number | null
+    phases: Readonly<Record<LabTracePhase, number>> | null
+    actionIds: readonly string[]
+    droppedActionIds: number
+    correlatedCrossThread: {
+        eventCount: number
+        /** Exclusive per-thread time summed across threads; it may exceed wall time and is correlation only. */
+        classifiedTimeMs: number
+        phases: Readonly<Record<'composite' | 'raster-gpu', number>>
+    } | null
+    limitations: readonly LabMainThreadFrameWindowLimitation[]
+}
+
+export interface LabMainThreadFrameWindowSummary {
+    status: 'measured' | 'partial' | 'not-observed'
+    totalWindows: number
+    retainedWindows: number
+    droppedWindows: number
+    windows: readonly LabMainThreadFrameWindow[]
+    limitations: readonly LabMainThreadFrameWindowCollectionLimitation[]
+}
+
 export interface LabTraceActionIdentity {
     actionId: string
     actionLabel: string
@@ -551,7 +604,14 @@ export interface LabTimelineChunkV3 extends LabTimelineChunkBase {
     authoredSource: LabTraceSourceMapEvidence
 }
 
-export type LabTimelineChunk = LabTimelineChunkV1 | LabTimelineChunkV2 | LabTimelineChunkV3
+export interface LabTimelineChunkV4 extends LabTimelineChunkBase {
+    schemaVersion: 4
+    actionPhaseSummaries: readonly LabActionTraceSummary[]
+    authoredSource: LabTraceSourceMapEvidence | null
+    mainThreadFrameWindows: LabMainThreadFrameWindowSummary
+}
+
+export type LabTimelineChunk = LabTimelineChunkV1 | LabTimelineChunkV2 | LabTimelineChunkV3 | LabTimelineChunkV4
 
 export interface LabLighthouseAudit {
     id: string
@@ -620,6 +680,13 @@ export interface AnimationLabReport {
                 downloadBytesPerSecond?: number
                 uploadBytesPerSecond?: number
             } | null
+            /** Optional on legacy schema-v1 reports; current Runner always emits the complete closed provenance set. */
+            targetKind?: 'playwright-desktop-emulation' | 'real-ios' | 'real-android' | 'webview'
+            driverId?: 'playwright-desktop' | 'custom-browser-driver'
+            authenticated?: boolean
+            crossOriginMode?: 'reject' | 'independent-target' | 'authorized-bridge'
+            powerSampling?: 'unsupported'
+            thermalSampling?: 'unsupported'
         }
         actionLabels: readonly string[]
         actions?: readonly LabReportScenarioActionV2[]

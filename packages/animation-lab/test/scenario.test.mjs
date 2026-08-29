@@ -67,12 +67,13 @@ test('accepts bounded local-only outcome expectations on existing action kinds',
             timeoutMs: 2_000,
         },
         { kind: 'animations-settled', selector: '[data-lab="panel"]', idleMs: 100, timeoutMs: 3_000 },
+        { kind: 'registered-outcome', outcomeKey: 'hero.renderer.ready', state: 'idle', timeoutMs: 3_000 },
     ]
 
     const result = validateAnimationLabScenario(input)
     assert.equal(result.ok, true)
     assert.equal(result.value.schemaVersion, 1)
-    assert.equal(result.value.actions[0].expect.length, 3)
+    assert.equal(result.value.actions[0].expect.length, 4)
 })
 
 test('rejects unbounded, unsafe, or open-ended outcome expectations without echoing private input', () => {
@@ -81,6 +82,7 @@ test('rejects unbounded, unsafe, or open-ended outcome expectations without echo
         { kind: 'element-state', selector: '[data-private="customer-name"]', state: 'opaque' },
         { kind: 'attribute-token', selector: '#private-user', attribute: 'class', value: 'customer name' },
         { kind: 'animations-settled', selector: '#private-animation', idleMs: 0, timeoutMs: 120_001 },
+        { kind: 'registered-outcome', outcomeKey: 'private customer outcome', state: 'success' },
         { kind: 'text', selector: '#private-copy', value: 'private customer text' },
         { kind: 'element-state', selector: '#too-many', state: 'visible' },
     ]
