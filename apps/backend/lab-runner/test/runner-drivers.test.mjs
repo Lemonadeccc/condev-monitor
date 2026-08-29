@@ -339,6 +339,77 @@ test('retains the screenshot privacy flag only when the Chromium trace contains 
     )
 })
 
+test('binds Trace Index v2 action phases to the reviewed scenario identity', async () => {
+    const { driver } = fakeDriver('chromium', {
+        capabilities: {
+            cpuThrottle: true,
+            networkThrottle: true,
+            cacheClear: true,
+            cdpTrace: true,
+            lighthouse: true,
+        },
+        traceEvents: [
+            { ph: 'M', name: 'thread_name', pid: 1, tid: 2, args: { name: 'CrRendererMain' } },
+            {
+                ph: 'I',
+                name: 'condev.lab.action.settle.start',
+                cat: 'blink.user_timing',
+                pid: 1,
+                tid: 2,
+                ts: 1_000,
+                args: { data: { navigationId: 'fixture-document' } },
+            },
+            { ph: 'X', name: 'condev.lab.action.settle', cat: 'blink.user_timing', pid: 1, tid: 2, ts: 1_000, dur: 4_000 },
+            {
+                ph: 'I',
+                name: 'condev.lab.action.settle.end',
+                cat: 'blink.user_timing',
+                pid: 1,
+                tid: 2,
+                ts: 5_000,
+                args: { data: { navigationId: 'fixture-document' } },
+            },
+            { ph: 'X', name: 'RunTask', cat: 'devtools.timeline', pid: 1, tid: 2, ts: 1_000, dur: 4_000 },
+            { ph: 'X', name: 'Layout', cat: 'devtools.timeline', pid: 1, tid: 2, ts: 2_000, dur: 1_000 },
+        ],
+    })
+    const currentScenario = { ...scenario(), lighthouse: { enabled: false } }
+
+    const result = await runAnimationLab(currentScenario, { browser: 'chromium', driver })
+
+    assert.equal(result.report.timeline.schemaVersion, 2)
+    assert.deepEqual(result.report.timeline.actionPhaseSummaries, [
+        {
+            actionId: 'settle',
+            actionLabel: 'settle',
+            startMs: 0,
+            endMs: 4,
+            wallTimeMs: 4,
+            status: 'measured',
+            eventCount: 2,
+            classifiedThreadTimeMs: 4,
+            threads: [
+                {
+                    threadId: 'thread-0',
+                    thread: 'main',
+                    classifiedSelfTimeMs: 4,
+                    phases: {
+                        script: 3,
+                        'style-layout': 1,
+                        paint: 0,
+                        composite: 0,
+                        'raster-gpu': 0,
+                        animation: 0,
+                        gc: 0,
+                        other: 0,
+                    },
+                },
+            ],
+            limitations: ['trace-action-classification-is-correlative'],
+        },
+    ])
+})
+
 test('starts the minimum observation floor after slow navigation completes', async () => {
     const { driver, state } = fakeDriver('webkit', { navigateDelayMs: 300, probeDurationMs: 5_000 })
     const result = await runAnimationLab(

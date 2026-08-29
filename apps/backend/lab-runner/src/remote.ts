@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 
 import {
     type AnimationLabReport,
+    type LabActionTraceSummary,
     type LabAttemptSummary,
     type LabLighthouseSummary,
     type LabMeasurementContractV2,
@@ -25,7 +26,7 @@ const WARMUP_DETAIL_OMITTED_LIMITATION = 'warmup-detail-omitted-from-report'
 const ATTEMPT_METRIC_PROJECTION_LIMITATION = 'attempt-metric-projection-truncated'
 const REPORT_BYTE_BUDGET_LIMITATION = 'report-upload-byte-budget-truncated-attempt-detail'
 const ACTION_SCOPED_COMPACT_SUMMARY_LIMITATION = 'action-scoped-metrics-retained-only-in-animation-report'
-export const LAB_RUNNER_CONTRACT_VERSION = 6 as const
+export const LAB_RUNNER_CONTRACT_VERSION = 7 as const
 
 export interface RemoteLabConnectionOptions {
     server: string
@@ -478,6 +479,35 @@ function highValueRank(event: PlatformTimelineEvent): number {
     return 2
 }
 
+function platformActionPhaseSummary(summary: LabActionTraceSummary): LabActionTraceSummary {
+    return {
+        actionId: safeLabToken(summary.actionId, 'action-unknown', 120),
+        actionLabel: safeLabToken(summary.actionLabel, 'action', 160),
+        startMs: summary.startMs,
+        endMs: summary.endMs,
+        wallTimeMs: summary.wallTimeMs,
+        status: summary.status,
+        eventCount: summary.eventCount,
+        classifiedThreadTimeMs: summary.classifiedThreadTimeMs,
+        threads: summary.threads.map(thread => ({
+            threadId: safeLabToken(thread.threadId, 'thread-unknown', 80),
+            thread: thread.thread,
+            classifiedSelfTimeMs: thread.classifiedSelfTimeMs,
+            phases: {
+                script: thread.phases.script,
+                'style-layout': thread.phases['style-layout'],
+                paint: thread.phases.paint,
+                composite: thread.phases.composite,
+                'raster-gpu': thread.phases['raster-gpu'],
+                animation: thread.phases.animation,
+                gc: thread.phases.gc,
+                other: thread.phases.other,
+            },
+        })),
+        limitations: [...summary.limitations],
+    }
+}
+
 function serializeJson(value: unknown): Buffer {
     return Buffer.from(`${JSON.stringify(value)}\n`, 'utf8')
 }
@@ -501,8 +531,7 @@ function platformTimelineArtifact(timeline: LabTimelineChunk): Buffer {
                     left.event.startMs - right.event.startMs || right.event.durationMs - left.event.durationMs || left.index - right.index
             )
             .map(item => item.event)
-        const projected: LabTimelineChunk = {
-            schemaVersion: timeline.schemaVersion,
+        const projectedBase = {
             startMs: timeline.startMs,
             endMs: timeline.endMs,
             totalInputEvents: timeline.totalInputEvents,
@@ -522,6 +551,14 @@ function platformTimelineArtifact(timeline: LabTimelineChunk): Buffer {
                 other: timeline.categoryDurationMs.other,
             },
         }
+        const projected: LabTimelineChunk =
+            timeline.schemaVersion === 2
+                ? {
+                      ...projectedBase,
+                      schemaVersion: 2,
+                      actionPhaseSummaries: timeline.actionPhaseSummaries.map(platformActionPhaseSummary),
+                  }
+                : { ...projectedBase, schemaVersion: 1 }
         return serializeJson(projected)
     }
 

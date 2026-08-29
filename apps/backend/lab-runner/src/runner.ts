@@ -6,6 +6,7 @@ import {
     type AnimationLabReport,
     type AnimationLabScenario,
     type LabAttemptSummary,
+    type LabTimelineChunkV2,
     normalizeLighthouseResult,
     normalizeTraceEvents,
     validateAnimationLabSemanticsV2,
@@ -273,7 +274,7 @@ async function traceAttempt(
 ): Promise<{
     attempt: LabAttemptSummary
     raw: string
-    timeline: ReturnType<typeof normalizeTraceEvents>
+    timeline: LabTimelineChunkV2
     screenshotsRetained: boolean
 }> {
     const context = await session.createContext(scenario, driverContextOptions(options))
@@ -340,7 +341,13 @@ async function traceAttempt(
             0,
             traceCapped ? traceLimitMs - (observationStartedAt - monotonicStarted) : finishedAt - observationStartedAt
         )
-        const timeline = normalizeTraceEvents(trace.events, { maxRetainedEvents: 4_000 })
+        const timeline = normalizeTraceEvents(trace.events, {
+            maxRetainedEvents: 4_000,
+            actionIdentities: scenario.actions.map((action, actionIndex) => ({
+                actionId: scenarioActionId(action, actionIndex),
+                actionLabel: action.label,
+            })),
+        })
         const screenshotsRequested = scenario.trace?.screenshots === true
         const screenshotsRetained =
             screenshotsRequested &&
@@ -574,7 +581,7 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
         }
 
         let rawTrace: string | null = null
-        let timeline: ReturnType<typeof normalizeTraceEvents> | undefined
+        let timeline: LabTimelineChunkV2 | undefined
         let traceScreenshotsRetained = false
         if (scenario.trace?.enabled !== false) {
             if (!session.capabilities.cdpTrace) {

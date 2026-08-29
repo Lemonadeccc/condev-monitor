@@ -437,8 +437,49 @@ export interface LabTimelineEvent {
     actionLabel?: string
 }
 
-export interface LabTimelineChunk {
-    schemaVersion: 1
+export type LabTracePhase = 'script' | 'style-layout' | 'paint' | 'composite' | 'raster-gpu' | 'animation' | 'gc' | 'other'
+
+export type LabActionTraceSummaryStatus = 'measured' | 'partial' | 'not-observed'
+
+export type LabActionTraceLimitation =
+    | 'trace-action-marker-not-observed'
+    | 'trace-action-marker-ambiguous'
+    | 'trace-action-phase-events-not-observed'
+    | 'trace-action-thread-kind-unknown'
+    | 'trace-action-thread-breakdown-truncated'
+    | 'trace-action-non-laminar-overlap'
+    | 'trace-action-cross-thread-total-may-exceed-wall-time'
+    | 'trace-action-classification-is-correlative'
+    | 'trace-action-raster-gpu-is-not-gpu-completion'
+
+export interface LabActionTraceThreadBreakdown {
+    /** Anonymous trace-local thread token. Raw process and thread identifiers are never retained. */
+    threadId: string
+    thread: LabTimelineEvent['thread']
+    classifiedSelfTimeMs: number
+    phases: Readonly<Record<LabTracePhase, number>>
+}
+
+export interface LabActionTraceSummary {
+    actionId: string
+    actionLabel: string
+    startMs: number | null
+    endMs: number | null
+    wallTimeMs: number | null
+    status: LabActionTraceSummaryStatus
+    eventCount: number
+    /** Sum of mutually exclusive classified time within each thread; it can exceed wall time across threads. */
+    classifiedThreadTimeMs: number | null
+    threads: readonly LabActionTraceThreadBreakdown[]
+    limitations: readonly LabActionTraceLimitation[]
+}
+
+export interface LabTraceActionIdentity {
+    actionId: string
+    actionLabel: string
+}
+
+interface LabTimelineChunkBase {
     startMs: number
     endMs: number
     totalInputEvents: number
@@ -447,6 +488,17 @@ export interface LabTimelineChunk {
     events: readonly LabTimelineEvent[]
     categoryDurationMs: Readonly<Record<LabTimelineCategory, number>>
 }
+
+export interface LabTimelineChunkV1 extends LabTimelineChunkBase {
+    schemaVersion: 1
+}
+
+export interface LabTimelineChunkV2 extends LabTimelineChunkBase {
+    schemaVersion: 2
+    actionPhaseSummaries: readonly LabActionTraceSummary[]
+}
+
+export type LabTimelineChunk = LabTimelineChunkV1 | LabTimelineChunkV2
 
 export interface LabLighthouseAudit {
     id: string

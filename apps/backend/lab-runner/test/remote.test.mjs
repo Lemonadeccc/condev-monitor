@@ -686,11 +686,44 @@ test('deterministically byte-budgets trace indexes while retaining high-value ev
     }))
     fixture.timeline = {
         ...fixture.timeline,
+        schemaVersion: 2,
         endMs: 5_000,
         totalInputEvents: events.length + 7,
         retainedEvents: events.length,
         droppedEvents: 7,
         events,
+        actionPhaseSummaries: [
+            {
+                actionId: 'hero-hover',
+                actionLabel: 'hero-hover',
+                startMs: 0,
+                endMs: 10,
+                wallTimeMs: 10,
+                status: 'measured',
+                eventCount: 2,
+                classifiedThreadTimeMs: 10,
+                threads: [
+                    {
+                        threadId: 'thread-0',
+                        thread: 'main',
+                        classifiedSelfTimeMs: 10,
+                        phases: {
+                            script: 10,
+                            'style-layout': 0,
+                            paint: 0,
+                            composite: 0,
+                            'raster-gpu': 0,
+                            animation: 0,
+                            gc: 0,
+                            other: 0,
+                        },
+                        privateThreadText: 'private-thread-field',
+                    },
+                ],
+                limitations: ['trace-action-classification-is-correlative'],
+                privateSummaryText: 'private-summary-field',
+            },
+        ],
         privateTimelineText: 'private-timeline-field',
     }
 
@@ -732,6 +765,19 @@ test('deterministically byte-budgets trace indexes while retaining high-value ev
     assert.equal(firstBytes.includes(Buffer.from('private-frame-field')), false)
     assert.equal(firstBytes.includes(Buffer.from('private-event-field')), false)
     assert.equal(firstBytes.includes(Buffer.from('private-timeline-field')), false)
+    assert.equal(firstBytes.includes(Buffer.from('private-thread-field')), false)
+    assert.equal(firstBytes.includes(Buffer.from('private-summary-field')), false)
+    assert.equal(uploaded.schemaVersion, 2)
+    assert.deepEqual(uploaded.actionPhaseSummaries[0].threads[0].phases, {
+        script: 10,
+        'style-layout': 0,
+        paint: 0,
+        composite: 0,
+        'raster-gpu': 0,
+        animation: 0,
+        gc: 0,
+        other: 0,
+    })
 })
 
 test('deterministically byte-budgets maximal v2 reports while retaining canonical semantics', async t => {

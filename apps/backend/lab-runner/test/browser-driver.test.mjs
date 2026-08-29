@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
+import { normalizeTraceEvents } from '@condev-monitor/animation-lab'
+
 import { createBrowserDriver, validateBrowserDriverScenario } from '../build/index.js'
 import { browserProbeSource } from '../src/browser-probe.ts'
 import { decodePageProbeResult, decodePageProbeResultWithObserverDrops } from '../src/probe-result.ts'
@@ -544,6 +546,48 @@ test('accepts only standard CSS and capability-sequenced probe commands in a rea
         abortedPage.abort('lab-action-timeout')
         abortedPage.abort('lab-action-timeout')
         await abortedPage.close()
+    } finally {
+        await context.close().catch(() => undefined)
+        await session.close().catch(() => undefined)
+    }
+})
+
+test('derives an action phase window from a real Chromium PerformanceMeasure trace', async t => {
+    const driver = createBrowserDriver('chromium')
+    let session
+    try {
+        session = await driver.launch()
+    } catch (error) {
+        t.skip(`system Chrome is unavailable: ${error instanceof Error ? error.message : String(error)}`)
+        return
+    }
+    const context = await session.createContext(scenario())
+    try {
+        const page = await context.newPage()
+        await page.navigate('data:text/html,<main id="target">trace fixture</main>', 10_000)
+        const stopTrace = await session.startTrace(page, false)
+        await page.markAction('real-trace', 'start')
+        await page.rawPage.evaluate(() => {
+            const target = document.querySelector('#target')
+            if (target instanceof HTMLElement) {
+                target.style.transform = 'translateX(1px)'
+                void target.getBoundingClientRect()
+            }
+            let total = 0
+            for (let index = 0; index < 50_000; index += 1) total += Math.sqrt(index)
+            return total
+        })
+        await page.markAction('real-trace', 'end')
+        const trace = await stopTrace()
+        const timeline = normalizeTraceEvents(trace.events, {
+            actionIdentities: [{ actionId: 'real-trace-action', actionLabel: 'real-trace' }],
+        })
+        const summary = timeline.actionPhaseSummaries[0]
+
+        assert.notEqual(summary.startMs, null)
+        assert.notEqual(summary.endMs, null)
+        assert.ok(summary.wallTimeMs > 0)
+        assert.equal(summary.limitations.includes('trace-action-marker-not-observed'), false)
     } finally {
         await context.close().catch(() => undefined)
         await session.close().catch(() => undefined)
