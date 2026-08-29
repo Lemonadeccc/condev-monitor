@@ -11,6 +11,7 @@ import {
     parseAnimationLabMetricV2,
     parseAnimationLabSemanticsV2FromReport,
 } from './lab-semantics-v2'
+import { type AnimationLabSemanticsV3, parseAnimationLabSemanticsV3FromReport } from './lab-semantics-v3'
 
 export const LAB_PLATFORM_TIMELINE_EVENT_LIMIT = 4_000
 export const LAB_ANIMATION_REPORT_DECODED_MAX_BYTES = 2 * 1024 * 1024
@@ -189,7 +190,7 @@ export type ParsedTimeline = {
 export type ParsedAnimationReport = {
     runId: string
     compactSummary: LabRunSummary
-    analysis: AnimationLabSemanticsV2 | null
+    analysis: AnimationLabSemanticsV2 | AnimationLabSemanticsV3 | null
     /** Private server-side projection used for bounded Before/After evidence. */
     measuredAttempts: Array<{
         attemptId: string
@@ -2057,7 +2058,8 @@ function privacy(value: unknown): void {
 
 export function parseAnimationReportArtifact(value: unknown): ParsedAnimationReport {
     const raw = record(value, 'animation-report')
-    const semanticsV2 = raw.semanticsVersion !== undefined
+    const hasSemantics = raw.semanticsVersion !== undefined
+    const semanticsV3 = raw.semanticsVersion === 3
     exactKeys(
         raw,
         [
@@ -2072,15 +2074,20 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
             'timeline',
             'lighthouse',
             'privacy',
-            ...(semanticsV2 ? ['semanticsVersion', 'measurementContract', 'actionWindows', 'technologyEvidence', 'findings'] : []),
+            ...(hasSemantics ? ['semanticsVersion', 'measurementContract', 'actionWindows', 'technologyEvidence', 'findings'] : []),
+            ...(semanticsV3 ? ['coverage'] : []),
         ],
         'animation-report'
     )
     if (raw.schemaVersion !== 1) throw new BadRequestException('Unsupported animation-report schemaVersion')
-    const analysis = semanticsV2 ? parseAnimationLabSemanticsV2FromReport(raw) : null
+    const analysis = semanticsV3
+        ? parseAnimationLabSemanticsV3FromReport(raw)
+        : hasSemantics
+          ? parseAnimationLabSemanticsV2FromReport(raw)
+          : null
     const metricCatalogVersion = analysis?.measurementContract.metricCatalogVersion ?? 1
     const reportRunId = string(raw.runId, 'animation-report.runId', 160)
-    const parsedScenario = scenario(raw.scenario, semanticsV2)
+    const parsedScenario = scenario(raw.scenario, hasSemantics)
     const browserRaw = record(raw.browser, 'animation-report.browser')
     exactKeys(browserRaw, ['name', 'version', 'headless'], 'animation-report.browser')
     const browserName = token(browserRaw.name, 'animation-report.browser.name', 40)
@@ -2091,7 +2098,7 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
     const durationMs = Math.max(0, Date.parse(endedAt) - Date.parse(startedAt))
     if (durationMs > MAX_REPORT_WINDOW_MS) throw new BadRequestException('animation-report duration is too large')
     const parsedAttempts = boundedArray(raw.attempts, 'animation-report.attempts', 32).map((item, index) =>
-        attempt(item, index, semanticsV2, metricCatalogVersion)
+        attempt(item, index, hasSemantics, metricCatalogVersion)
     )
     if (parsedScenario.execution) {
         const warmupCount = parsedAttempts.filter(item => item.phase === 'warmup').length
@@ -2154,14 +2161,14 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
         raw.aggregateMetrics,
         'animation-report.aggregateMetrics',
         256,
-        semanticsV2,
-        semanticsV2 ? metricCatalogVersion : undefined
+        hasSemantics,
+        hasSemantics ? metricCatalogVersion : undefined
     )
-    const verifiedLegacyOverflowIdentities = semanticsV2
+    const verifiedLegacyOverflowIdentities = hasSemantics
         ? assertV2AggregateMetrics(parsedAggregateMetrics, parsedAttempts)
         : new Set<string>()
-    if (semanticsV2) {
-        assertAnimationLabCanonicalFindings(analysis!)
+    if (hasSemantics) {
+        assertAnimationLabCanonicalFindings({ ...analysis!, semanticsVersion: 2 })
     }
     const aggregateMetrics = parsedAggregateMetrics.map(metricValue =>
         normalizeVerifiedLegacyAggregateSampleOverflow(metricValue, verifiedLegacyOverflowIdentities)
@@ -2175,7 +2182,7 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
           }
         : null
     if (raw.timeline !== undefined) parseTraceIndexArtifact(raw.timeline)
-    const parsedLighthouse = raw.lighthouse === undefined ? null : lighthouse(raw.lighthouse, semanticsV2, metricCatalogVersion)
+    const parsedLighthouse = raw.lighthouse === undefined ? null : lighthouse(raw.lighthouse, hasSemantics, metricCatalogVersion)
     if (parsedScenario.execution) {
         const lighthouseSucceeded = parsedAttempts.some(item => item.phase === 'lighthouse' && item.capabilities.lighthouse === true)
         if ((parsedLighthouse !== null) !== lighthouseSucceeded) {
@@ -2219,9 +2226,9 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
               })
           )
         : undefined
-    const scopedMetricsOmitted = semanticsV2 && aggregateMetrics.some(item => expandedMetric(item) && item.scope.level !== 'run')
+    const scopedMetricsOmitted = hasSemantics && aggregateMetrics.some(item => expandedMetric(item) && item.scope.level !== 'run')
     const summaryMetrics = (
-        semanticsV2 ? aggregateMetrics.filter(item => expandedMetric(item) && item.scope.level === 'run') : aggregateMetrics
+        hasSemantics ? aggregateMetrics.filter(item => expandedMetric(item) && item.scope.level === 'run') : aggregateMetrics
     ).map(item => summaryMetric(item))
     const compactSummary = boundedCompactSummary({
         metrics: summaryMetrics,
@@ -2235,7 +2242,7 @@ export function parseAnimationReportArtifact(value: unknown): ParsedAnimationRep
         limitations: mergedLimitations,
         requiredLimitations: scopedMetricsOmitted ? [LAB_COMPACT_SUMMARY_SCOPED_METRICS_OMITTED] : [],
     })
-    const measuredAttempts = semanticsV2
+    const measuredAttempts = hasSemantics
         ? parsedAttempts
               .filter(item => item.phase === 'measured')
               .map(item => ({

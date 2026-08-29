@@ -584,6 +584,42 @@ function animationReportV2() {
     }
 }
 
+function animationReportSemanticsV3() {
+    const report = animationReportV2()
+    return {
+        ...report,
+        semanticsVersion: 3 as const,
+        coverage: {
+            schemaVersion: 1 as const,
+            manifestHash: 'a'.repeat(64),
+            review: 'matched' as const,
+            totals: { declared: 2, discovered: 1, executed: 1, passed: 1, uncovered: 1 },
+            items: [
+                {
+                    coverageId: 'critical.hero-hover',
+                    kind: 'hover',
+                    actionId: 'hero-hover-01',
+                    origin: 'declared',
+                    critical: true,
+                    authentication: 'none',
+                    status: 'passed',
+                    reasons: [] as string[],
+                },
+                {
+                    coverageId: 'discovered.hero-hover-tail',
+                    kind: 'hover',
+                    actionId: 'hero-hover-01',
+                    origin: 'explorer',
+                    critical: false,
+                    authentication: 'none',
+                    status: 'not-executed',
+                    reasons: ['partial-attempt-coverage'],
+                },
+            ],
+        },
+    }
+}
+
 function candidateFrameTailReportV2(value = 30) {
     const report = animationReportV2()
     report.attempts[0]!.metrics[0]!.value = value
@@ -2937,5 +2973,89 @@ describe('lab platform artifact projections', () => {
         const rawTraceV2 = animationReportV2()
         rawTraceV2.privacy.rawTraceUploaded = true
         expect(() => parseAnimationReportArtifact(rawTraceV2)).toThrow('animation-report cannot upload a raw trace')
+    })
+
+    it('strictly projects semantics v3 coverage while legacy and v2 reports remain coverage-free', () => {
+        const parsedV3 = parseAnimationReportArtifact(animationReportSemanticsV3())
+        expect(parsedV3.analysis).toEqual(
+            expect.objectContaining({
+                semanticsVersion: 3,
+                coverage: {
+                    schemaVersion: 1,
+                    manifestHash: 'a'.repeat(64),
+                    review: 'matched',
+                    totals: { declared: 2, discovered: 1, executed: 1, passed: 1, uncovered: 1 },
+                    items: expect.any(Array),
+                },
+            })
+        )
+        expect(parseAnimationReportArtifact(animationReport()).analysis).toBeNull()
+        expect(parseAnimationReportArtifact(animationReportV2()).analysis).not.toHaveProperty('coverage')
+    })
+
+    it('recomputes semantics v3 coverage totals and rejects unknown or duplicate identities', () => {
+        const forgedTotals = animationReportSemanticsV3()
+        forgedTotals.coverage.totals.passed = 2
+        expect(() => parseAnimationReportArtifact(forgedTotals)).toThrow('totals do not match coverage items')
+
+        const unknownAction = animationReportSemanticsV3()
+        unknownAction.coverage.items[0]!.actionId = 'missing-action'
+        expect(() => parseAnimationReportArtifact(unknownAction)).toThrow('references an unknown actionId')
+
+        const duplicate = animationReportSemanticsV3()
+        duplicate.coverage.items[1]!.coverageId = duplicate.coverage.items[0]!.coverageId
+        expect(() => parseAnimationReportArtifact(duplicate)).toThrow('duplicate coverageId')
+
+        const incompleteInventory = animationReportSemanticsV3()
+        const secondAction = {
+            ...structuredClone(incompleteInventory.scenario.actions[0]!),
+            actionId: 'secondary-action',
+            order: 1,
+            label: 'secondary-action',
+            subject: { scope: 'subject', subjectKey: 'secondary-card', role: 'region', surface: 'dom' },
+            trigger: { source: 'scenario' },
+        }
+        const secondWindow = {
+            ...actionWindow(),
+            actionId: 'secondary-action',
+            order: 1,
+        }
+        incompleteInventory.scenario.actions.push(secondAction)
+        incompleteInventory.scenario.actionLabels.push('secondary-action')
+        incompleteInventory.actionWindows.push(secondWindow)
+        incompleteInventory.attempts[0]!.actionWindows!.push({ ...actionWindow(), actionId: 'secondary-action', order: 1 })
+        expect(() => parseAnimationReportArtifact(incompleteInventory)).toThrow('must inventory every Scenario actionId')
+    })
+
+    it.each(['failed', 'cancelled', 'timed-out', 'unknown'])(
+        'rejects passed semantics v3 coverage when a measured action outcome is %s',
+        status => {
+            const report = animationReportSemanticsV3()
+            report.attempts[0]!.actionWindows![0]!.outcome.status = status
+            expect(() => parseAnimationReportArtifact(report)).toThrow('passed coverage conflicts with measured action outcomes')
+        }
+    )
+
+    it.each(['routeKey', 'selector', 'localScenarioSha256', 'outcomeKey', 'objectKey'])(
+        'rejects local-only semantics v3 coverage field %s',
+        field => {
+            const report = animationReportSemanticsV3()
+            ;(report.coverage.items[0] as unknown as Record<string, unknown>)[field] = 'private-value'
+            expect(() => parseAnimationReportArtifact(report)).toThrow('cannot upload local-only coverage field')
+        }
+    )
+
+    it('rejects semantics v3 coverage extensions, invalid status evidence and missing coverage', () => {
+        const extended = animationReportSemanticsV3()
+        Object.assign(extended.coverage, { declaredRoute: '/private/account' })
+        expect(() => parseAnimationReportArtifact(extended)).toThrow('contains unsupported field')
+
+        const invalidStatus = animationReportSemanticsV3()
+        invalidStatus.coverage.items[0]!.reasons = ['outcome-not-observed']
+        expect(() => parseAnimationReportArtifact(invalidStatus)).toThrow('passed coverage cannot have reasons')
+
+        const missing = animationReportSemanticsV3()
+        delete (missing as Partial<typeof missing>).coverage
+        expect(() => parseAnimationReportArtifact(missing)).toThrow(BadRequestException)
     })
 })

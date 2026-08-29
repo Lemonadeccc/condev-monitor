@@ -76,7 +76,7 @@ const REQUIRED_STORED_LAB_RUN_CONFIG_KEYS = [
     'trace',
     'lighthouse',
 ] as const
-const STORED_LAB_RUN_CONFIG_KEYS = [...REQUIRED_STORED_LAB_RUN_CONFIG_KEYS, 'measurementContract'] as const
+const STORED_LAB_RUN_CONFIG_KEYS = [...REQUIRED_STORED_LAB_RUN_CONFIG_KEYS, 'authenticationMode', 'measurementContract'] as const
 
 function parseStoredLabRunConfig(serialized: string): ReturnType<typeof parseLabRunConfig> {
     const storedConfig = JSON.parse(serialized) as unknown
@@ -88,7 +88,10 @@ function parseStoredLabRunConfig(serialized: string): ReturnType<typeof parseLab
     ) {
         throw new Error('invalid stored config')
     }
-    return parseLabRunConfig(storedConfig)
+    return parseLabRunConfig({
+        ...storedConfig,
+        ...(!Object.prototype.hasOwnProperty.call(storedConfig, 'authenticationMode') ? { authenticationMode: 'none' } : {}),
+    })
 }
 
 function sameMeasurementContract(
@@ -697,7 +700,7 @@ export class LabService {
             execution.network === null &&
             execution.targetKind === 'playwright-desktop-emulation' &&
             execution.driverId === 'playwright-desktop' &&
-            execution.authenticated === false &&
+            execution.authenticated === (config.authenticationMode === 'required-local-storage-state') &&
             execution.crossOriginMode === 'reject' &&
             execution.powerSampling === 'unsupported' &&
             execution.thermalSampling === 'unsupported'

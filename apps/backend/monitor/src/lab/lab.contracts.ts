@@ -8,8 +8,8 @@ import { type AnimationLabMetricV2Projection, parseAnimationLabMetricV2 } from '
 export const LAB_RUN_CONFIG_MAX_BYTES = 16 * 1024
 export const LAB_RUN_SUMMARY_MAX_BYTES = 64 * 1024
 export const LAB_RUN_ARTIFACT_TOTAL_MAX_BYTES = 128 * 1024 * 1024
-export const LAB_RUNNER_CONTRACT_VERSION = 11 as const
-export type LabRunnerContractVersion = 4 | 5 | 6 | 7 | 8 | 9 | 10 | typeof LAB_RUNNER_CONTRACT_VERSION
+export const LAB_RUNNER_CONTRACT_VERSION = 12 as const
+export type LabRunnerContractVersion = 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | typeof LAB_RUNNER_CONTRACT_VERSION
 /** Only the current provenance-complete contract may negotiate, claim, update, or upload a run. */
 export const LAB_RUNNER_CONTRACT_VERSIONS = [LAB_RUNNER_CONTRACT_VERSION] as const satisfies readonly LabRunnerContractVersion[]
 
@@ -67,6 +67,7 @@ export type LabRunConfig = {
     durationMs: number
     trace: boolean
     lighthouse: boolean
+    authenticationMode: 'none' | 'required-local-storage-state'
     measurementContract: LabRunMeasurementContract
 }
 
@@ -443,6 +444,7 @@ export function parseLabRunConfig(raw: unknown): LabRunConfig {
             'durationMs',
             'trace',
             'lighthouse',
+            'authenticationMode',
             'measurementContract',
         ],
         'config'
@@ -464,6 +466,12 @@ export function parseLabRunConfig(raw: unknown): LabRunConfig {
         durationMs: integer(raw.durationMs, 'config.durationMs', 5_000, 120_000, 30_000),
         trace: booleanValue(raw.trace, 'config.trace', true),
         lighthouse: booleanValue(raw.lighthouse, 'config.lighthouse', true),
+        authenticationMode: enumValue(
+            raw.authenticationMode,
+            'config.authenticationMode',
+            ['none', 'required-local-storage-state'] as const,
+            'none'
+        ),
         measurementContract: parseLabRunMeasurementContract(raw.measurementContract),
     }
     if (config.cacheState === 'warm' && config.warmupRuns < 1) {
@@ -479,7 +487,7 @@ export function parseCreateLabRunInput(raw: unknown): CreateLabRunInput {
         if (raw.action !== 'create') {
             throw new BadRequestException('Only streamed runner artifacts can be imported; JSON import is not supported')
         }
-        exactKeys(raw, ['action', 'appId', 'name', 'targetUrl', 'browser'], 'request body')
+        exactKeys(raw, ['action', 'appId', 'name', 'targetUrl', 'browser', 'authenticationMode'], 'request body')
         if (jsonBytes(raw, 'request body') > LAB_RUN_CONFIG_MAX_BYTES) throw new BadRequestException('Request body is too large')
         return {
             appId: requiredString(raw.appId, 'appId', 80, SAFE_APP_ID),
@@ -488,7 +496,11 @@ export function parseCreateLabRunInput(raw: unknown): CreateLabRunInput {
             targetUrl: normalizeTargetUrl(raw.targetUrl),
             release: '',
             buildId: '',
-            config: parseLabRunConfig({ browser: raw.browser, measurementContract: LAB_GENERIC_MEASUREMENT_CONTRACT }),
+            config: parseLabRunConfig({
+                browser: raw.browser,
+                authenticationMode: raw.authenticationMode,
+                measurementContract: LAB_GENERIC_MEASUREMENT_CONTRACT,
+            }),
         }
     }
     exactKeys(raw, ['appId', 'name', 'scenarioKey', 'targetOrigin', 'release', 'buildId', 'config'], 'request body')

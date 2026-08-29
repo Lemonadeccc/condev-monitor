@@ -31,6 +31,7 @@ describe('animation lab contracts', () => {
                     browser: 'chromium',
                     warmupRuns: 1,
                     measuredRuns: 3,
+                    authenticationMode: 'none',
                     measurementContract: {
                         contractVersion: 2,
                         expectedHz: 60,
@@ -104,6 +105,7 @@ describe('animation lab contracts', () => {
                 name: '动画性能实验',
                 targetUrl: 'http://localhost:5173/demo?mode=hover#fixture',
                 browser: 'firefox',
+                authenticationMode: 'required-local-storage-state',
             })
         ).toEqual(
             expect.objectContaining({
@@ -113,6 +115,7 @@ describe('animation lab contracts', () => {
                 targetUrl: 'http://localhost:5173/demo?mode=hover#fixture',
                 config: expect.objectContaining({
                     browser: 'firefox',
+                    authenticationMode: 'required-local-storage-state',
                     measurementContract: {
                         contractVersion: 2,
                         expectedHz: 60,
@@ -143,6 +146,16 @@ describe('animation lab contracts', () => {
                 name: 'invalid browser',
                 targetUrl: 'http://localhost:5173/',
                 browser: 'safari',
+            })
+        ).toThrow(BadRequestException)
+        expect(() =>
+            parseCreateLabRunInput({
+                action: 'create',
+                appId: 'vanillaYl18g4',
+                name: 'invalid authentication mode',
+                targetUrl: 'http://localhost:5173/',
+                browser: 'chromium',
+                authenticationMode: 'upload-storage-state',
             })
         ).toThrow(BadRequestException)
     })
@@ -328,21 +341,47 @@ describe('animation lab contracts', () => {
                 config: { cacheState: 'warm', warmupRuns: 0 },
             })
         ).toThrow('requires at least one warmup run')
+        expect(
+            parseCreateLabRunInput({
+                appId: 'app-123',
+                scenarioKey: 'authenticated',
+                config: { authenticationMode: 'required-local-storage-state' },
+            }).config.authenticationMode
+        ).toBe('required-local-storage-state')
+        for (const authenticationMode of [null, 'storage-state', 'required-cookie']) {
+            expect(() => parseCreateLabRunInput({ appId: 'app-123', scenarioKey: 'invalid-auth', config: { authenticationMode } })).toThrow(
+                BadRequestException
+            )
+        }
     })
 
     it('accepts only the provenance-complete Runner contract and rejects older versions before claim', () => {
-        expect(LAB_RUNNER_CONTRACT_VERSIONS).toEqual([11])
+        expect(LAB_RUNNER_CONTRACT_VERSIONS).toEqual([12])
         for (const version of LAB_RUNNER_CONTRACT_VERSIONS) {
             expect(parseLabRunnerContractVersion(String(version))).toBe(version)
         }
-        for (const version of [undefined, '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', String(LAB_RUNNER_CONTRACT_VERSION + 1)]) {
+        for (const version of [
+            undefined,
+            '1',
+            '2',
+            '3',
+            '4',
+            '5',
+            '6',
+            '7',
+            '8',
+            '9',
+            '10',
+            '11',
+            String(LAB_RUNNER_CONTRACT_VERSION + 1),
+        ]) {
             try {
                 parseLabRunnerContractVersion(version)
                 throw new Error('expected contract rejection')
             } catch (error) {
                 expect(error).toBeInstanceOf(HttpException)
                 expect((error as HttpException).getStatus()).toBe(426)
-                expect((error as Error).message).toMatch(/contract 11 is required/u)
+                expect((error as Error).message).toMatch(/contract 12 is required/u)
             }
         }
     })

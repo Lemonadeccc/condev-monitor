@@ -454,6 +454,7 @@ describe('LabService runner grants and ownership', () => {
                 targetUrl: run.targetOrigin,
                 config: expect.objectContaining({
                     browser: 'webkit',
+                    authenticationMode: 'none',
                     measurementContract: {
                         contractVersion: 2,
                         expectedHz: 60,
@@ -999,6 +1000,8 @@ describe('LabService runner grants and ownership', () => {
         const malformedConfigs = [
             { browser: 'chromium' },
             { ...validConfig, privateSelector: '#account' },
+            { ...validConfig, authenticationMode: null },
+            { ...validConfig, authenticationMode: 'required-cookie' },
             { ...validConfig, measurementContract: null },
             { ...validConfig, measurementContract: {} },
             { ...validConfig, measurementContract: { contractVersion: 2 } },
@@ -1009,6 +1012,10 @@ describe('LabService runner grants and ownership', () => {
             const run = runEntity({ config: JSON.stringify(config) })
             expect(() => (service as any).serializeRunnerClaim(run)).toThrow('invalid stored execution config')
         }
+
+        const { authenticationMode: _legacyMode, ...legacyConfig } = validConfig
+        const legacyRun = runEntity({ config: JSON.stringify(legacyConfig) })
+        expect((service as any).serializeRunnerClaim(legacyRun, LAB_RUNNER_CONTRACT_VERSION).config.authenticationMode).toBe('none')
     })
 
     it('rejects an expired grant without claiming the run', async () => {
@@ -1217,6 +1224,12 @@ describe('LabService runner grants and ownership', () => {
         }
 
         expect(() => (service as any).assertReportMatchesRunConfig(run, report)).not.toThrow()
+        run.config = JSON.stringify({ ...config, authenticationMode: 'required-local-storage-state', measurementContract })
+        expect(() => (service as any).assertReportMatchesRunConfig(run, report)).toThrow(ConflictException)
+        report.context.execution.authenticated = true
+        expect(() => (service as any).assertReportMatchesRunConfig(run, report)).not.toThrow()
+        report.context.execution.authenticated = false
+        run.config = JSON.stringify({ ...config, measurementContract })
         report.runId = '99999999-9999-4999-8999-999999999999'
         expect(() => (service as any).assertReportMatchesRunConfig(run, report)).toThrow(ConflictException)
         report.runId = run.id
