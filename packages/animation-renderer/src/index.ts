@@ -49,6 +49,24 @@ export type {
     PixiObjectTargetInspection,
     PixiObjectTargetInspectionContext,
 } from './pixi-object-target-adapter'
+export {
+    RendererObjectResolverOptionsError,
+    createRendererObjectResolverRegistry,
+    createThreeRaycastObjectResolver,
+} from './renderer-object-resolver'
+export type {
+    RendererObjectClientPoint,
+    RendererObjectHostResolution,
+    RendererObjectNormalizedPoint,
+    RendererObjectResolution,
+    RendererObjectResolutionStatus,
+    RendererObjectResolver,
+    RendererObjectResolverRegistrationOptions,
+    RendererObjectResolverRegistry,
+    ThreeCanvasPublicLike,
+    ThreeRaycastObjectResolverOptions,
+    ThreeRaycasterPublicLike,
+} from './renderer-object-resolver'
 export { R3fPostprocessingPassRecorderOptionsError, createR3fPostprocessingPassRecorder } from './r3f-postprocessing-pass-recorder'
 export type {
     R3fPostprocessingGpuEvidence,

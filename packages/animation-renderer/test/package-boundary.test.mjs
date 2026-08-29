@@ -44,6 +44,10 @@ test('package exports resolve for ESM, CommonJS, and declarations', async () => 
     assert.equal(typeof cjs.createCanvas2dRecorder, 'function')
     assert.equal(typeof esm.createPixiObjectTargetAdapter, 'function')
     assert.equal(typeof cjs.createPixiObjectTargetAdapter, 'function')
+    assert.equal(typeof esm.createRendererObjectResolverRegistry, 'function')
+    assert.equal(typeof cjs.createRendererObjectResolverRegistry, 'function')
+    assert.equal(typeof esm.createThreeRaycastObjectResolver, 'function')
+    assert.equal(typeof cjs.createThreeRaycastObjectResolver, 'function')
     assert.equal(typeof esm.createR3fPostprocessingPassRecorder, 'function')
     assert.equal(typeof cjs.createR3fPostprocessingPassRecorder, 'function')
     assert.equal(typeof esm.createWebGpuTransferRecorder, 'function')
@@ -95,6 +99,16 @@ test('Pixi object target adapter has no Pixi dependency or renderer/event takeov
     assert.doesNotMatch(source, /@pixi|pixi\.js/u)
     assert.doesNotMatch(source, /\.render\s*\(|\.getContext\s*\(|requestAnimationFrame|setInterval|setTimeout/u)
     assert.doesNotMatch(source, /\.addEventListener\s*\(|\.add\s*\(|\.hitTest\s*\(/u)
+})
+
+test('renderer-object bridge has no Three dependency or private scene/object inspection', () => {
+    const source = readFileSync(resolve(packageDirectory, 'src/renderer-object-resolver.ts'), 'utf8')
+    assert.doesNotMatch(source, /from\s+['"]three|@react-three|\.getContext\s*\(|requestAnimationFrame|setInterval|setTimeout/u)
+    assert.doesNotMatch(
+        source,
+        /\b(?:object|intersection|intersections)\s*\.\s*(?:name|material|geometry|texture|shader|userData|children|parent|scene|selector|url)\b/u
+    )
+    assert.doesNotMatch(source, /Object\.(?:keys|entries|getOwnProperty)|Reflect\.get/u)
 })
 
 test('R3F postprocessing recorder has no framework dependency or composer takeover', () => {

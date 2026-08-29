@@ -565,6 +565,36 @@ This first integration is a local selected-target adapter. The current `animatio
 
 Version compatibility is coordinated across packages. The minimum compatible baseline is the first release whose `@condev-monitor/monitor-sdk-animation` inspection context includes and supplies `inspectionPurpose`, whose `@condev-monitor/monitor-sdk-browser` entry marks RUM target sidecars, and whose `@condev-monitor/monitor-sdk-animation-renderer` recorder performs this exact-local check. Upgrade the three packages together for Browser integration. If the revised renderer is paired with an older animation core, no purpose can be supplied and the transfer inspector safely returns `null`; existing one-argument adapters remain source-compatible, but they are not thereby proven local-only. The `inspect()` return type is now nullable, so direct low-level callers must handle `null`.
 
+## Renderer-object resolver and Three raycast helper
+
+The renderer-object bridge lets a host register one opaque, static `subjectKey` and resolve only spatial `hit`, `miss`, or `unavailable` evidence. It does not discover scene objects and never returns names, scene graphs, materials, geometry, textures, shaders, selectors, URLs, application data, or intersection records. A hit means only that the host-owned hit test intersected the declared subject at that point; it is not evidence that the subject caused JavaScript, frame, renderer, or GPU cost.
+
+```ts
+import { createRendererObjectResolverRegistry, createThreeRaycastObjectResolver } from '@condev-monitor/monitor-sdk-animation-renderer'
+
+const objectResolvers = createRendererObjectResolverRegistry()
+const unregisterProduct = objectResolvers.register(
+    'hero.product',
+    createThreeRaycastObjectResolver({
+        canvas,
+        raycaster,
+        camera,
+        object: productGroup,
+        recursive: true,
+    }),
+    // Off by default. This is Canvas-local NDC only, never a selector or object identity.
+    { includeLocalPoint: true }
+)
+
+const evidence = objectResolvers.resolve('hero.product', pointerEvent)
+// { status: 'hit' | 'miss' | 'unavailable', localPoint?: { x, y } }
+
+unregisterProduct()
+objectResolvers.dispose()
+```
+
+The Three helper is structurally typed and adds no `three` dependency. It uses only public `getBoundingClientRect()`, `Raycaster.setFromCamera()`, and `intersectObject(s)` APIs. Dynamic hosts may provide `getCamera`, `getObject`, or `getObjects` callbacks. Duplicate live subject keys are rejected, cleanup is idempotent, and callback failures, re-entry, malformed coordinates, unavailable cameras/objects, and malformed intersection lengths fail closed to `unavailable`.
+
 ## Real Chromium WebGL regression
 
 From the repository root, run `pnpm test:animation-renderer:browser` to build this package and exercise `createWebGlGpuTimer()` against a real local Chromium WebGL context. The explicit test reuses the Lab Runner's existing `chrome-launcher` and `playwright-core` development dependencies; neither dependency is added to this package or its runtime bundle. It serves only a loopback in-memory Canvas fixture, does not initialize the Browser SDK, reads no `.env`, and uploads nothing.

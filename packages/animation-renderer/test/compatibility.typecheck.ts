@@ -11,6 +11,8 @@ import type {
     BabylonAnimationMonitorPort,
     BabylonSceneInstrumentationPublicLike,
     BabylonScenePublicLike,
+    RendererObjectResolution,
+    RendererObjectResolverRegistry,
     WebGlGpuTimer,
     WebGlGpuTimerTargetAdapterInspection,
     WebGlGpuTimerTargetInspectionContext,
@@ -33,12 +35,14 @@ import {
     createBabylonResourceLifecycleRecorder,
     createCanvas2dRecorder,
     createPixiObjectTargetAdapter,
+    createRendererObjectResolverRegistry,
     createR3fPostprocessingPassRecorder,
     createWebGlGpuTimer,
     createWebGpuCommandBatchTimestampTimer,
     createWebGpuMultiPassTimestampTimer,
     createWebGpuTimestampTimer,
     createWebGpuTransferRecorder,
+    createThreeRaycastObjectResolver,
 } from '../src'
 
 declare const babylonAnimation: BabylonAnimationMonitorPort
@@ -86,6 +90,32 @@ const pixiObjectTarget = createPixiObjectTargetAdapter({
 const pixiCaptureStatus: 'hit' | 'miss' | 'unavailable' = pixiObjectTarget.captureTarget({ x: 1, y: 2 }).status
 void pixiCaptureStatus
 pixiObjectTarget.dispose()
+
+declare const rendererObjectCanvas: HTMLCanvasElement
+declare const rendererObjectCamera: object
+declare const rendererObject: object
+const rendererObjectResolvers: RendererObjectResolverRegistry = createRendererObjectResolverRegistry()
+const rendererObjectCleanup = rendererObjectResolvers.register(
+    'hero.product',
+    createThreeRaycastObjectResolver({
+        canvas: rendererObjectCanvas,
+        camera: rendererObjectCamera,
+        object: rendererObject,
+        raycaster: {
+            setFromCamera: () => undefined,
+            intersectObject: () => [],
+            intersectObjects: () => [],
+        },
+    }),
+    { includeLocalPoint: true }
+)
+const rendererObjectResolution: RendererObjectResolution = rendererObjectResolvers.resolve('hero.product', {
+    clientX: 1,
+    clientY: 2,
+})
+void rendererObjectResolution
+rendererObjectCleanup()
+rendererObjectResolvers.dispose()
 
 const postprocessingPasses = createR3fPostprocessingPassRecorder<object>({
     passCoverage: 'caller-attests-complete-postprocessing-pass-boundaries',
