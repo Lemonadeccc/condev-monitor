@@ -8,6 +8,7 @@ import {
     type LabAttemptSummary,
     type LabTimelineChunkV2,
     type LabTimelineChunkV3,
+    type LabTimelineChunkV4,
     normalizeLighthouseResult,
     normalizeTraceEvents,
     validateAnimationLabSemanticsV2,
@@ -27,6 +28,13 @@ import {
     validateBrowserDriverScenario,
 } from './browser-driver'
 import { browserProbeSource } from './browser-probe'
+import {
+    assertExecutionPreflight,
+    DEFAULT_EXECUTION_MANIFEST,
+    type LabExecutionManifestV1,
+    preflightExecutionTarget,
+    UNDECLARED_DESKTOP_EXECUTION_PROFILE,
+} from './execution-preflight'
 import { buildLabLocalBudgetDisplayEvent, type LabLocalDisplayAttempt, type LabLocalDisplaySink, safePublish } from './local-display'
 import { decodePageProbeResultWithObserverDrops } from './probe-result'
 import { createScenarioProtocolHash } from './scenario-protocol'
@@ -64,6 +72,8 @@ export interface LabRunOptions {
     driver?: BrowserDriver
     /** Explicit local-only source-map resolver loaded from a reviewed manifest. */
     authoredSource?: LoadedTraceSourceMapManifest
+    /** Local-only declaration; the report retains only its closed target/driver/auth/cross-origin support tuple. */
+    executionManifest?: LabExecutionManifestV1
 }
 
 export interface LabRunResult {
@@ -185,6 +195,9 @@ async function measuredAttempt(
                 })),
             })
         )
+        if (scenario.actions.some(action => action.expect?.some(expectation => expectation.kind === 'registered-outcome'))) {
+            await page.installRegisteredOutcomeBridge?.()
+        }
         await session.configurePage(page, scenario)
         await page.navigate(scenario.url, 60_000)
         const navigationCompletedAt = performance.now()
@@ -308,7 +321,7 @@ async function traceAttempt(
 ): Promise<{
     attempt: LabAttemptSummary
     raw: string
-    timeline: LabTimelineChunkV2 | LabTimelineChunkV3
+    timeline: LabTimelineChunkV2 | LabTimelineChunkV3 | LabTimelineChunkV4
     screenshotsRetained: boolean
 }> {
     const context = await session.createContext(scenario, driverContextOptions(options))
@@ -319,6 +332,9 @@ async function traceAttempt(
     let traceTimer: ReturnType<typeof setTimeout> | null = null
     let traceCapped = false
     try {
+        if (scenario.actions.some(action => action.expect?.some(expectation => expectation.kind === 'registered-outcome'))) {
+            await page.installRegisteredOutcomeBridge?.()
+        }
         await session.configurePage(page, scenario)
         stopTrace = await session.startTrace(page, scenario.trace?.screenshots === true)
         const traceLimitMs = scenario.trace?.maxDurationMs ?? 60_000
@@ -377,6 +393,7 @@ async function traceAttempt(
         )
         const traceOptions = {
             maxRetainedEvents: 4_000,
+            frameWindows: true as const,
             actionIdentities: scenario.actions.map((action, actionIndex) => ({
                 actionId: scenarioActionId(action, actionIndex),
                 actionLabel: action.label,
@@ -438,12 +455,18 @@ async function traceAttempt(
                 capabilities: { cdpTrace: true, cpuProfile: true, screenshots: screenshotsRetained },
                 limitations: [
                     'Trace category durations may overlap and are not exclusive CPU accounting.',
-                    ...(timeline.schemaVersion === 3
+                    ...(timeline.schemaVersion >= 3 && timeline.authoredSource
                         ? [
                               'Authored stack locations use caller-attested local source maps and remain candidate locations, not causal proof.',
                               'Source-map files and embedded source content are not retained in the report.',
                           ]
                         : ['Generated stack locations require a matching source map before authored-source attribution.']),
+                    ...(timeline.schemaVersion === 4
+                        ? [
+                              'Main-thread frame windows use adjacent BeginMainThreadFrame boundaries; they are not compositor or display frames.',
+                              'Cross-thread Raster/Composite overlap is temporal correlation only without an explicit Trace flow.',
+                          ]
+                        : []),
                     'Trace uses an isolated browser context and does not inherit the warm-up/measured cache.',
                     ...(actionExecutions.some(action => action.crossDocument)
                         ? ['Cross-document action marks are partial; trace timing itself remains on the CDP clock.']
@@ -578,6 +601,20 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
     if (engine !== 'chromium' && options.chromePath && !options.browserPath) {
         throw new Error('--chrome-path is only valid for the Chromium browser driver')
     }
+    const executionManifest =
+        options.executionManifest ??
+        (options.storageState
+            ? {
+                  ...DEFAULT_EXECUTION_MANIFEST,
+                  authentication: { kind: 'playwright-storage-state' as const, file: options.storageState },
+              }
+            : DEFAULT_EXECUTION_MANIFEST)
+    const executionPreflight = preflightExecutionTarget(
+        executionManifest,
+        driver.executionProfile ?? UNDECLARED_DESKTOP_EXECUTION_PROFILE,
+        options.storageState
+    )
+    assertExecutionPreflight(executionPreflight)
     const preflightLimitations = validateBrowserDriverScenario(engine, scenario)
     const session = await driver.launch({
         headed: options.headed,
@@ -587,7 +624,9 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
         if (session.engine !== engine || session.descriptor.name !== engine) {
             throw new Error(`Browser driver launched ${session.descriptor.name} instead of ${engine}`)
         }
-        const driverLimitations = [...new Set([...preflightLimitations, ...session.validateScenario(scenario)])]
+        const driverLimitations = [
+            ...new Set([...preflightLimitations, ...executionPreflight.limitations, ...session.validateScenario(scenario)]),
+        ]
         const attempts: LabAttemptSummary[] = []
         const totalPageAttempts = scenario.warmupRuns + scenario.measuredRuns
         const contextOptions = driverContextOptions(options)
@@ -623,7 +662,7 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
         }
 
         let rawTrace: string | null = null
-        let timeline: LabTimelineChunkV2 | LabTimelineChunkV3 | undefined
+        let timeline: LabTimelineChunkV2 | LabTimelineChunkV3 | LabTimelineChunkV4 | undefined
         let traceScreenshotsRetained = false
         if (scenario.trace?.enabled !== false) {
             if (!session.capabilities.cdpTrace) {
@@ -706,6 +745,7 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
                     colorScheme: scenario.colorScheme ?? 'light',
                     cpuThrottleRate: scenario.cpuThrottleRate ?? 1,
                     network: scenario.network ?? null,
+                    ...executionPreflight.evidence,
                 },
                 actionLabels: scenario.actions.map(action => action.label),
                 actions: reportScenarioActions(scenario),

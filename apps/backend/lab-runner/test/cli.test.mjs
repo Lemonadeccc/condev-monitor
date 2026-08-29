@@ -39,6 +39,8 @@ test('parses the portable browser options and rejects ambiguous or mismatched ex
             '--browser-path',
             '/local/firefox',
             '--local-display',
+            '--execution-manifest',
+            './execution.json',
         ]),
         {
             config: './scenario.json',
@@ -48,6 +50,7 @@ test('parses the portable browser options and rejects ambiguous or mismatched ex
             browserPath: '/local/firefox',
             ignoreHttpsErrors: false,
             localDisplay: true,
+            executionManifest: './execution.json',
         }
     )
     assert.throws(
@@ -82,8 +85,9 @@ test('rejects attached execution modes and browser binaries that are absent from
         { headed: true },
         { headed: false, browserPath: '/custom/browser' },
         { headed: false, chromePath: '/custom/chrome' },
+        { headed: false, executionManifest: '/local/execution.json' },
     ]) {
-        assert.throws(() => assertAttachedCliAuthority(options), /do not allow headed mode or a custom browser executable/u)
+        assert.throws(() => assertAttachedCliAuthority(options), /do not allow headed mode, a custom browser executable/u)
     }
 })
 

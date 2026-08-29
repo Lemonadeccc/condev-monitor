@@ -280,7 +280,12 @@ function fakeDriver(engine, options = {}) {
         },
     }
     return {
-        driver: { engine, capabilities, launch: async () => session },
+        driver: {
+            engine,
+            capabilities,
+            ...(options.executionProfile ? { executionProfile: options.executionProfile } : {}),
+            launch: async () => session,
+        },
         state,
     }
 }
@@ -334,12 +339,50 @@ test('retains the screenshot privacy flag only when the Chromium trace contains 
     assert.equal(retainedAttempt?.capabilities.screenshots, true)
     assert.equal(retainedAttempt?.limitations.includes('trace-screenshots-requested-but-not-observed'), false)
     assert.equal(retainedResult.report.scenario.execution.colorScheme, 'light')
+    assert.deepEqual(
+        {
+            targetKind: retainedResult.report.scenario.execution.targetKind,
+            driverId: retainedResult.report.scenario.execution.driverId,
+            authenticated: retainedResult.report.scenario.execution.authenticated,
+            crossOriginMode: retainedResult.report.scenario.execution.crossOriginMode,
+            powerSampling: retainedResult.report.scenario.execution.powerSampling,
+            thermalSampling: retainedResult.report.scenario.execution.thermalSampling,
+        },
+        {
+            targetKind: 'playwright-desktop-emulation',
+            driverId: 'custom-browser-driver',
+            authenticated: false,
+            crossOriginMode: 'reject',
+            powerSampling: 'unsupported',
+            thermalSampling: 'unsupported',
+        }
+    )
     assert.ok(
         retainedAttempt?.limitations.includes('Trace uses an isolated browser context and does not inherit the warm-up/measured cache.')
     )
 })
 
-test('binds Trace Index v2 action phases to the reviewed scenario identity', async () => {
+test('retains storage-state authentication provenance when no explicit execution manifest is supplied', async () => {
+    const { driver } = fakeDriver('chromium', {
+        executionProfile: {
+            driverId: 'authenticated-fixture-driver',
+            capabilities: ['page-probe', 'actions', 'desktop-emulation', 'playwright-storage-state'],
+        },
+    })
+    const result = await runAnimationLab(
+        { ...scenario(), trace: { enabled: false }, lighthouse: { enabled: false } },
+        {
+            browser: 'chromium',
+            driver,
+            storageState: '/tmp/condev-reviewed-storage-state.json',
+        }
+    )
+
+    assert.equal(result.report.scenario.execution.authenticated, true)
+    assert.equal(result.report.scenario.execution.driverId, 'custom-browser-driver')
+})
+
+test('binds Trace Index v4 action phases and main-thread frame windows to the reviewed scenario identity', async () => {
     const { driver } = fakeDriver('chromium', {
         capabilities: {
             cpuThrottle: true,
@@ -350,6 +393,7 @@ test('binds Trace Index v2 action phases to the reviewed scenario identity', asy
         },
         traceEvents: [
             { ph: 'M', name: 'thread_name', pid: 1, tid: 2, args: { name: 'CrRendererMain' } },
+            { ph: 'I', name: 'BeginMainThreadFrame', cat: 'devtools.timeline', pid: 1, tid: 2, ts: 1_000 },
             {
                 ph: 'I',
                 name: 'condev.lab.action.settle.start',
@@ -371,13 +415,14 @@ test('binds Trace Index v2 action phases to the reviewed scenario identity', asy
             },
             { ph: 'X', name: 'RunTask', cat: 'devtools.timeline', pid: 1, tid: 2, ts: 1_000, dur: 4_000 },
             { ph: 'X', name: 'Layout', cat: 'devtools.timeline', pid: 1, tid: 2, ts: 2_000, dur: 1_000 },
+            { ph: 'I', name: 'BeginMainThreadFrame', cat: 'devtools.timeline', pid: 1, tid: 2, ts: 5_000 },
         ],
     })
     const currentScenario = { ...scenario(), lighthouse: { enabled: false } }
 
     const result = await runAnimationLab(currentScenario, { browser: 'chromium', driver })
 
-    assert.equal(result.report.timeline.schemaVersion, 2)
+    assert.equal(result.report.timeline.schemaVersion, 4)
     assert.deepEqual(result.report.timeline.actionPhaseSummaries, [
         {
             actionId: 'settle',
@@ -408,6 +453,54 @@ test('binds Trace Index v2 action phases to the reviewed scenario identity', asy
             limitations: ['trace-action-classification-is-correlative'],
         },
     ])
+    assert.deepEqual(result.report.timeline.mainThreadFrameWindows, {
+        status: 'partial',
+        totalWindows: 2,
+        retainedWindows: 2,
+        droppedWindows: 0,
+        windows: [
+            {
+                frameId: 'main-frame-0',
+                startMs: 0,
+                endMs: 4,
+                durationMs: 4,
+                status: 'measured',
+                boundary: 'begin-main-thread-frame',
+                eventCount: 2,
+                classifiedMainThreadTimeMs: 4,
+                phases: {
+                    script: 3,
+                    'style-layout': 1,
+                    paint: 0,
+                    composite: 0,
+                    'raster-gpu': 0,
+                    animation: 0,
+                    gc: 0,
+                    other: 0,
+                },
+                actionIds: ['settle'],
+                droppedActionIds: 0,
+                correlatedCrossThread: null,
+                limitations: [],
+            },
+            {
+                frameId: 'main-frame-1',
+                startMs: 4,
+                endMs: null,
+                durationMs: null,
+                status: 'partial',
+                boundary: 'begin-main-thread-frame',
+                eventCount: 0,
+                classifiedMainThreadTimeMs: null,
+                phases: null,
+                actionIds: [],
+                droppedActionIds: 0,
+                correlatedCrossThread: null,
+                limitations: ['trace-frame-window-missing-end-boundary'],
+            },
+        ],
+        limitations: ['trace-frame-window-is-not-compositor-or-display-frame'],
+    })
 })
 
 test('enriches only retained Chromium Trace stacks when an explicit local source-map resolver is present', async () => {
@@ -452,7 +545,7 @@ test('enriches only retained Chromium Trace stacks when an explicit local source
         }
     )
 
-    assert.equal(result.report.timeline.schemaVersion, 3)
+    assert.equal(result.report.timeline.schemaVersion, 4)
     assert.deepEqual(result.report.timeline.authoredSource, {
         status: 'measured',
         coordinateBase: 0,

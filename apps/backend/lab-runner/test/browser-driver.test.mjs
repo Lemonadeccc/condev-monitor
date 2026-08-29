@@ -501,6 +501,54 @@ test('accepts only standard CSS and capability-sequenced probe commands in a rea
             timeoutMs: 1_000,
         })
         await page.assertOutcome({ kind: 'animations-settled', selector: '#valid', idleMs: 20, timeoutMs: 1_000 })
+        await page.installRegisteredOutcomeBridge()
+        await page.rawPage.reload({ waitUntil: 'load' })
+        const staleRegistration = await page.rawPage.evaluate(
+            () => '__CONDEV_ANIMATION_LAB_OUTCOME__' in window && window.__CONDEV_ANIMATION_LAB_OUTCOME__.register('renderer.hero', 'idle')
+        )
+        assert.equal(staleRegistration, true)
+        await page.beginRegisteredOutcomeObservation()
+        await assert.rejects(
+            page.assertOutcome({
+                kind: 'registered-outcome',
+                outcomeKey: 'renderer.hero',
+                state: 'idle',
+                timeoutMs: 50,
+            })
+        )
+        const freshRegistration = await page.rawPage.evaluate(() =>
+            window.__CONDEV_ANIMATION_LAB_OUTCOME__.register('renderer.hero', 'idle')
+        )
+        assert.equal(freshRegistration, true)
+        await page.assertOutcome({
+            kind: 'registered-outcome',
+            outcomeKey: 'renderer.hero',
+            state: 'idle',
+            timeoutMs: 1_000,
+        })
+        await assert.rejects(
+            page.assertOutcome({
+                kind: 'registered-outcome',
+                outcomeKey: 'private.business.checkout',
+                state: 'completed',
+                timeoutMs: 50,
+            }),
+            error => {
+                assert.equal(error.message.includes('private.business.checkout'), false)
+                return true
+            }
+        )
+        await page.beginRegisteredOutcomeObservation()
+        await page.rawPage.reload({ waitUntil: 'load' })
+        await page.rawPage.evaluate(() => window.__CONDEV_ANIMATION_LAB_OUTCOME__.register('renderer.hero', 'idle'))
+        await assert.rejects(
+            page.assertOutcome({
+                kind: 'registered-outcome',
+                outcomeKey: 'renderer.hero',
+                state: 'idle',
+                timeoutMs: 50,
+            })
+        )
         await page.rawPage.evaluate(() => {
             document.querySelector('#valid').animate([{ transform: 'translateX(0)' }, { transform: 'translateX(10px)' }], {
                 duration: 1_000,

@@ -38,6 +38,13 @@ function actionProtocol(action: AnimationLabScenario['actions'][number], order: 
                 timeoutMs: expectation.timeoutMs ?? null,
             }
         }
+        if (expectation.kind === 'registered-outcome') {
+            return {
+                kind: expectation.kind,
+                state: expectation.state,
+                timeoutMs: expectation.timeoutMs ?? null,
+            }
+        }
         return {
             kind: expectation.kind,
             selectorMode: expectation.selector === undefined ? 'page' : 'targeted',

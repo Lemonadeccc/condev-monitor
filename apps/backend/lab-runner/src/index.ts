@@ -2,6 +2,28 @@ export { LAB_RUNNER_CONTRACT_VERSION, RemoteLabClient, remoteFailureCode } from 
 export type { RemoteLabConnectionOptions } from './remote'
 export { LabActionTimeoutError, LabOutcomeAssertionError, runScenarioActions, scenarioActionId } from './actions'
 export type { RunScenarioActionsOptions } from './actions'
+export {
+    assertExecutionPreflight,
+    DEFAULT_EXECUTION_MANIFEST,
+    formatExecutionPreflightError,
+    LabExecutionPreflightError,
+    loadExecutionManifest,
+    PLAYWRIGHT_DESKTOP_EXECUTION_PROFILE,
+    preflightExecutionTarget,
+    UNDECLARED_DESKTOP_EXECUTION_PROFILE,
+    validateExecutionManifest,
+} from './execution-preflight'
+export type {
+    LabCrossOriginPolicy,
+    LabExecutionAuthentication,
+    LabExecutionBlocker,
+    LabExecutionCapability,
+    LabExecutionDriverProfile,
+    LabExecutionEvidenceV1,
+    LabExecutionManifestV1,
+    LabExecutionPreflightResult,
+    LabExecutionTargetKind,
+} from './execution-preflight'
 export { aggregateMeasuredAttempts, projectDiagnosticAttemptMetrics } from './aggregate'
 export { createBrowserDriver, validateBrowserDriverScenario } from './browser-driver'
 export type {

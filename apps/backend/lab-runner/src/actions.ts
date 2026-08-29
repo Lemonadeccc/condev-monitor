@@ -407,12 +407,32 @@ export async function runScenarioActions(
                 },
                 async () => {
                     timeOriginAtStart = await documentTimeOrigin(page)
+                    if (action.expect?.some(expectation => expectation.kind === 'registered-outcome')) {
+                        activeExpectationKind = 'registered-outcome'
+                        try {
+                            if (
+                                page.hasRegisteredOutcomeBridge?.() !== true ||
+                                typeof page.beginRegisteredOutcomeObservation !== 'function'
+                            ) {
+                                throw new LabOutcomeAssertionError('registered-outcome', index)
+                            }
+                            await page.beginRegisteredOutcomeObservation()
+                        } catch (error) {
+                            if (error instanceof LabOutcomeAssertionError) throw error
+                            throw new LabOutcomeAssertionError('registered-outcome', index)
+                        } finally {
+                            activeExpectationKind = null
+                        }
+                    }
                     await mark(page, action, 'start')
                     await notifyProbe(page, options.probeKey, options.probeCapability, options.probeCommandState, actionId, 'start')
                     await execute(page, action, () => !actionDeadlineExpired)
                     for (const expectation of action.expect ?? []) {
                         activeExpectationKind = expectation.kind
                         try {
+                            if (expectation.kind === 'registered-outcome' && page.hasRegisteredOutcomeBridge?.() !== true) {
+                                throw new LabOutcomeAssertionError(expectation.kind, index)
+                            }
                             await page.assertOutcome(expectation)
                         } catch (error) {
                             if (error instanceof LabOutcomeAssertionError) throw error

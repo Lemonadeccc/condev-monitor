@@ -5,6 +5,9 @@ import {
     type LabActionTraceSummary,
     type LabAttemptSummary,
     type LabLighthouseSummary,
+    type LabMainThreadFrameWindow,
+    type LabMainThreadFrameWindowCollectionLimitation,
+    type LabMainThreadFrameWindowSummary,
     type LabMeasurementContractV2,
     type LabTimelineChunk,
     type LabTraceSourceMapLimitation,
@@ -32,7 +35,7 @@ const AUTHORED_SOURCE_FRAME_LIMITATIONS: ReadonlySet<LabTraceSourceMapLimitation
     'authored-source-segment-not-found',
     'authored-source-coordinate-basis-unknown',
 ])
-export const LAB_RUNNER_CONTRACT_VERSION = 9 as const
+export const LAB_RUNNER_CONTRACT_VERSION = 11 as const
 
 export interface RemoteLabConnectionOptions {
     server: string
@@ -527,6 +530,73 @@ function platformActionPhaseSummary(summary: LabActionTraceSummary): LabActionTr
     }
 }
 
+function platformFrameWindow(window: LabMainThreadFrameWindow): LabMainThreadFrameWindow {
+    const phases = window.phases
+        ? {
+              script: window.phases.script,
+              'style-layout': window.phases['style-layout'],
+              paint: window.phases.paint,
+              composite: window.phases.composite,
+              'raster-gpu': window.phases['raster-gpu'],
+              animation: window.phases.animation,
+              gc: window.phases.gc,
+              other: window.phases.other,
+          }
+        : null
+    const classifiedMainThreadTimeMs = phases ? Object.values(phases).reduce((total, durationMs) => total + durationMs, 0) : null
+    const correlatedCrossThread = window.correlatedCrossThread
+        ? {
+              eventCount: window.correlatedCrossThread.eventCount,
+              classifiedTimeMs: window.correlatedCrossThread.phases.composite + window.correlatedCrossThread.phases['raster-gpu'],
+              phases: {
+                  composite: window.correlatedCrossThread.phases.composite,
+                  'raster-gpu': window.correlatedCrossThread.phases['raster-gpu'],
+              },
+          }
+        : null
+    const actionIds = window.actionIds.slice(0, 16).map(actionId => safeLabToken(actionId, 'action-unknown', 120))
+    return {
+        frameId: safeLabToken(window.frameId, 'main-frame-unknown', 80),
+        startMs: window.startMs,
+        endMs: window.endMs,
+        durationMs: window.endMs === null ? null : Math.max(0, window.endMs - window.startMs),
+        status: window.status,
+        boundary: 'begin-main-thread-frame',
+        eventCount: window.eventCount,
+        classifiedMainThreadTimeMs,
+        phases,
+        actionIds,
+        droppedActionIds: window.droppedActionIds + Math.max(0, window.actionIds.length - actionIds.length),
+        correlatedCrossThread,
+        limitations: [...window.limitations],
+    }
+}
+
+function platformFrameWindowSummary(summary: LabMainThreadFrameWindowSummary): LabMainThreadFrameWindowSummary {
+    const windows = summary.windows.slice(0, 512).map(platformFrameWindow)
+    const droppedWindows = summary.droppedWindows + Math.max(0, summary.windows.length - windows.length)
+    const totalWindows = windows.length + droppedWindows
+    const limitations = new Set<LabMainThreadFrameWindowCollectionLimitation>(summary.limitations)
+    if (droppedWindows > 0) limitations.add('trace-frame-window-summary-truncated')
+    limitations.add('trace-frame-window-is-not-compositor-or-display-frame')
+    const status =
+        totalWindows === 0
+            ? 'not-observed'
+            : droppedWindows > 0 ||
+                windows.some(window => window.status === 'partial') ||
+                limitations.has('trace-frame-window-multiple-main-threads')
+              ? 'partial'
+              : 'measured'
+    return {
+        status,
+        totalWindows,
+        retainedWindows: windows.length,
+        droppedWindows,
+        windows,
+        limitations: [...limitations],
+    }
+}
+
 function projectedAuthoredSourceLimitations(
     limitations: readonly LabTraceSourceMapLimitation[],
     frames: readonly PlatformTimelineEvent['stack'][number][]
@@ -588,38 +658,71 @@ function platformTimelineArtifact(timeline: LabTimelineChunk): Buffer {
             },
         }
         const projected: LabTimelineChunk =
-            timeline.schemaVersion === 3
+            timeline.schemaVersion === 4
                 ? (() => {
                       const frames = retained.flatMap(event => event.stack)
-                      const eligibleFrameCount = frames.filter(frame => frame.authoredStatus !== 'not-eligible').length
-                      const mappedFrameCount = frames.filter(frame => frame.authoredStatus === 'mapped' && frame.authored != null).length
-                      const status =
-                          eligibleFrameCount > 0 && mappedFrameCount === eligibleFrameCount
-                              ? 'measured'
-                              : mappedFrameCount > 0
-                                ? 'partial'
-                                : 'not-observed'
+                      const authoredSource = timeline.authoredSource
+                          ? (() => {
+                                const eligibleFrameCount = frames.filter(frame => frame.authoredStatus !== 'not-eligible').length
+                                const mappedFrameCount = frames.filter(
+                                    frame => frame.authoredStatus === 'mapped' && frame.authored != null
+                                ).length
+                                const status: 'measured' | 'partial' | 'not-observed' =
+                                    eligibleFrameCount > 0 && mappedFrameCount === eligibleFrameCount
+                                        ? 'measured'
+                                        : mappedFrameCount > 0
+                                          ? 'partial'
+                                          : 'not-observed'
+                                return {
+                                    status,
+                                    coordinateBase: 0 as const,
+                                    frameCount: frames.length,
+                                    eligibleFrameCount,
+                                    mappedFrameCount,
+                                    limitations: projectedAuthoredSourceLimitations(timeline.authoredSource.limitations, frames),
+                                }
+                            })()
+                          : null
                       return {
                           ...projectedBase,
-                          schemaVersion: 3,
+                          schemaVersion: 4,
                           actionPhaseSummaries: timeline.actionPhaseSummaries.map(platformActionPhaseSummary),
-                          authoredSource: {
-                              status,
-                              coordinateBase: 0,
-                              frameCount: frames.length,
-                              eligibleFrameCount,
-                              mappedFrameCount,
-                              limitations: projectedAuthoredSourceLimitations(timeline.authoredSource.limitations, frames),
-                          },
+                          authoredSource,
+                          mainThreadFrameWindows: platformFrameWindowSummary(timeline.mainThreadFrameWindows),
                       }
                   })()
-                : timeline.schemaVersion === 2
-                  ? {
-                        ...projectedBase,
-                        schemaVersion: 2,
-                        actionPhaseSummaries: timeline.actionPhaseSummaries.map(platformActionPhaseSummary),
-                    }
-                  : { ...projectedBase, schemaVersion: 1 }
+                : timeline.schemaVersion === 3
+                  ? (() => {
+                        const frames = retained.flatMap(event => event.stack)
+                        const eligibleFrameCount = frames.filter(frame => frame.authoredStatus !== 'not-eligible').length
+                        const mappedFrameCount = frames.filter(frame => frame.authoredStatus === 'mapped' && frame.authored != null).length
+                        const status =
+                            eligibleFrameCount > 0 && mappedFrameCount === eligibleFrameCount
+                                ? 'measured'
+                                : mappedFrameCount > 0
+                                  ? 'partial'
+                                  : 'not-observed'
+                        return {
+                            ...projectedBase,
+                            schemaVersion: 3,
+                            actionPhaseSummaries: timeline.actionPhaseSummaries.map(platformActionPhaseSummary),
+                            authoredSource: {
+                                status,
+                                coordinateBase: 0,
+                                frameCount: frames.length,
+                                eligibleFrameCount,
+                                mappedFrameCount,
+                                limitations: projectedAuthoredSourceLimitations(timeline.authoredSource.limitations, frames),
+                            },
+                        }
+                    })()
+                  : timeline.schemaVersion === 2
+                    ? {
+                          ...projectedBase,
+                          schemaVersion: 2,
+                          actionPhaseSummaries: timeline.actionPhaseSummaries.map(platformActionPhaseSummary),
+                      }
+                    : { ...projectedBase, schemaVersion: 1 }
         return serializeJson(projected)
     }
 

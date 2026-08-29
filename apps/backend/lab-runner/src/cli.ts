@@ -9,6 +9,12 @@ import { gzip } from 'node:zlib'
 import { type AnimationLabScenario, validateAnimationLabScenario } from '@condev-monitor/animation-lab'
 
 import type { LabBrowserEngine } from './browser-driver'
+import {
+    formatExecutionPreflightError,
+    type LabExecutionManifestV1,
+    LabExecutionPreflightError,
+    loadExecutionManifest,
+} from './execution-preflight'
 import { createTerminalLabLocalDisplaySink } from './local-display'
 import { ensurePrivateDirectory, writePrivateFile } from './private-files'
 import { type RemoteClaimedLabRun, remoteFailureCode, RemoteLabClient } from './remote'
@@ -29,6 +35,7 @@ interface CliOptions {
     token?: string
     storageState?: string
     sourceMapManifest?: string
+    executionManifest?: string
     ignoreHttpsErrors: boolean
     localDisplay: boolean
 }
@@ -40,6 +47,7 @@ Usage:
   condev-animation-lab --config ./scenario.json --out-dir ./lab-results
     [--browser chromium|firefox|webkit] [--headed] [--browser-path /path/to/browser]
     [--storage-state ./playwright-auth.json] [--source-map-manifest ./condev-sourcemaps.json]
+    [--execution-manifest ./condev-execution.json]
     [--ignore-https-errors] [--local-display]
   condev-animation-lab --config ./scenario.json --out-dir ./lab-results \\
     --server http://localhost:3000 --run-id <uuid>
@@ -52,6 +60,9 @@ The opt-in local display prints only allowlisted action and budget status to thi
 terminal. It never exposes selectors, URLs, coordinates, credentials, or raw metrics.
 The optional source-map manifest is local-only and exact-release matched. Source-map
 files, embedded source content, raw generated URLs, and manifest paths are never uploaded.
+The optional execution manifest is local-only and fail-closed. It distinguishes
+desktop emulation from real iOS/Android/WebView targets, power/thermal requirements,
+authentication file references, and explicit cross-origin target or bridge policy.
 
 For an attached run, prefer CONDEV_LAB_RUNNER_TOKEN over --token so the grant is
 not retained in shell history or exposed in command arguments.`
@@ -93,6 +104,7 @@ export function parseArgs(argv: string[]): CliOptions {
         else if (value === '--token') result.token = next
         else if (value === '--storage-state') result.storageState = next
         else if (value === '--source-map-manifest') result.sourceMapManifest = next
+        else if (value === '--execution-manifest') result.executionManifest = next
         else throw new Error(`Unknown option ${value}`)
         index += 1
     }
@@ -119,9 +131,11 @@ export function resolveClaimedBrowser(requested: LabBrowserEngine | undefined, c
     return claimed ?? requested ?? 'chromium'
 }
 
-export function assertAttachedCliAuthority(options: Pick<CliOptions, 'headed' | 'browserPath' | 'chromePath'>): void {
-    if (options.headed || options.browserPath || options.chromePath) {
-        throw new Error('Attached runs do not allow headed mode or a custom browser executable because the platform does not declare them')
+export function assertAttachedCliAuthority(options: Pick<CliOptions, 'headed' | 'browserPath' | 'chromePath' | 'executionManifest'>): void {
+    if (options.headed || options.browserPath || options.chromePath || options.executionManifest) {
+        throw new Error(
+            'Attached runs do not allow headed mode, a custom browser executable, or a local execution manifest because the platform does not declare them'
+        )
     }
 }
 
@@ -188,6 +202,16 @@ async function main(): Promise<void> {
     let scenario = validation.value
     const outputRoot = path.resolve(options.outDir)
     await ensurePrivateDirectory(outputRoot, true)
+    let executionManifest: LabExecutionManifestV1 | undefined
+    if (options.executionManifest) {
+        executionManifest = await loadExecutionManifest(options.executionManifest)
+        if (options.storageState && executionManifest.authentication?.kind === 'playwright-storage-state') {
+            throw new Error('Use either --storage-state or execution manifest authentication, not both')
+        }
+        if (executionManifest.authentication?.kind === 'playwright-storage-state') {
+            options.storageState = executionManifest.authentication.file
+        }
+    }
     if (options.storageState) {
         const storageStatePath = path.resolve(options.storageState)
         const storageStateStat = await fs.stat(storageStatePath)
@@ -226,6 +250,7 @@ async function main(): Promise<void> {
             storageState: options.storageState ? path.resolve(options.storageState) : undefined,
             ignoreHTTPSErrors: options.ignoreHttpsErrors,
             authoredSource,
+            executionManifest,
             localDisplay: options.localDisplay ? createTerminalLabLocalDisplaySink() : undefined,
             onProgress(event) {
                 process.stderr.write(`[${event.phase}] ${event.message}\n`)
@@ -325,7 +350,9 @@ async function isDirectExecution(): Promise<boolean> {
 
 if (await isDirectExecution()) {
     await main().catch(error => {
-        process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`)
+        process.stderr.write(
+            `${error instanceof LabExecutionPreflightError ? formatExecutionPreflightError(error) : error instanceof Error ? error.message : String(error)}\n`
+        )
         process.exitCode = 1
     })
 }

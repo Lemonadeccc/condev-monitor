@@ -35,6 +35,7 @@ function fakePage() {
         penDown: async point => calls.push(['pen-down', point]),
         penUp: async point => calls.push(['pen-up', point]),
         pressKey: async key => calls.push(['press', key]),
+        beginRegisteredOutcomeObservation: async () => calls.push(['outcome-baseline']),
         assertOutcome: async expectation => calls.push(['expect', expectation.kind]),
         abort: reason => calls.push(['abort', reason]),
         close: async () => {},
@@ -409,6 +410,29 @@ test('evaluates local-only outcome expectations before closing the probe window'
     assert.equal(JSON.stringify(events).includes('aria-expanded'), false)
 })
 
+test('captures a registered-outcome revision baseline before executing the action', async () => {
+    const page = fakePage()
+    page.hasRegisteredOutcomeBridge = () => true
+
+    await runScenarioActions(
+        page,
+        scenario([
+            {
+                kind: 'click',
+                label: 'complete-checkout',
+                selector: '#checkout',
+                expect: [{ kind: 'registered-outcome', outcomeKey: 'private.checkout', state: 'completed' }],
+            },
+        ]),
+        probeOptions()
+    )
+
+    const baselineCall = page.calls.findIndex(call => call[0] === 'outcome-baseline')
+    const actionCall = page.calls.findIndex(call => call[0] === 'click')
+    const expectationCall = page.calls.findIndex(call => call[0] === 'expect')
+    assert.ok(baselineCall >= 0 && actionCall > baselineCall && expectationCall > actionCall)
+})
+
 test('classifies an outcome mismatch separately without leaking selector or expected value', async () => {
     const page = fakePage()
     page.assertOutcome = async () => {
@@ -470,6 +494,32 @@ test('classifies an outcome mismatch separately without leaking selector or expe
     })
     assert.equal(JSON.stringify(events).includes('customer'), false)
     assert.equal(JSON.stringify(events).includes('secret-token'), false)
+})
+
+test('fails a registered outcome as an outcome assertion when the controlled bridge is missing', async () => {
+    const page = fakePage()
+    const privateKey = 'private.renderer.hero'
+
+    await assert.rejects(
+        runScenarioActions(
+            page,
+            scenario([
+                {
+                    kind: 'wait',
+                    label: 'renderer-ready',
+                    durationMs: 1,
+                    expect: [{ kind: 'registered-outcome', outcomeKey: privateKey, state: 'completed' }],
+                },
+            ]),
+            probeOptions()
+        ),
+        error => {
+            assert.equal(error instanceof LabOutcomeAssertionError, true)
+            assert.equal(error.expectationKind, 'registered-outcome')
+            assert.equal(error.message.includes(privateKey), false)
+            return true
+        }
+    )
 })
 
 test('classifies a whole-action deadline reached during an outcome gate as an outcome timeout', async () => {

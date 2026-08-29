@@ -1,7 +1,10 @@
+import { randomBytes, randomUUID } from 'node:crypto'
+
 import type { AnimationLabScenario, LabActionExpectation, RawTraceEvent } from '@condev-monitor/animation-lab'
 import * as chromeLauncher from 'chrome-launcher'
 import { type Browser, type BrowserContext, type BrowserType, type CDPSession, chromium, firefox, type Page, webkit } from 'playwright-core'
 
+import { type LabExecutionDriverProfile, PLAYWRIGHT_DESKTOP_EXECUTION_PROFILE } from './execution-preflight'
 import { startTrace } from './trace'
 
 export type LabBrowserEngine = 'chromium' | 'firefox' | 'webkit'
@@ -88,6 +91,12 @@ export interface LabAutomationPage {
     setViewportSize(width: number, height: number): Promise<void>
     /** Evaluates one local-only outcome gate without retaining its selector or expected value. */
     assertOutcome(expectation: LabActionExpectation): Promise<void>
+    /** Installs the Runner-owned caller-attested outcome bridge before navigation. */
+    installRegisteredOutcomeBridge?(): Promise<void>
+    /** Reports only bridge availability; no registered key or state leaves the page adapter. */
+    hasRegisteredOutcomeBridge?(): boolean
+    /** Captures a selector-free, Runner-private revision baseline before an action executes. */
+    beginRegisteredOutcomeObservation?(): Promise<void>
     /**
      * Fail-closed termination for a page whose automation channel exceeded a
      * runner-owned deadline. This must initiate disposal without waiting for
@@ -117,6 +126,8 @@ export interface BrowserDriverSession {
 export interface BrowserDriver {
     readonly engine: LabBrowserEngine
     readonly capabilities: Readonly<BrowserDriverCapabilities>
+    /** Closed local-only execution capability SPI. Omission means only the default desktop path may run. */
+    readonly executionProfile?: Readonly<LabExecutionDriverProfile>
     launch(options?: BrowserDriverLaunchOptions): Promise<BrowserDriverSession>
 }
 
@@ -181,6 +192,8 @@ export function validateBrowserDriverScenario(engine: LabBrowserEngine, scenario
 class PlaywrightAutomationPage implements LabAutomationPage {
     private terminationRequested = false
     private chromiumInputSession: Promise<CDPSession> | null = null
+    private registeredOutcomeBridge: { privateKey: string; capability: string } | null = null
+    private registeredOutcomeObservation: { documentId: string; revision: number } | null = null
 
     constructor(
         readonly rawPage: Page,
@@ -394,9 +407,78 @@ class PlaywrightAutomationPage implements LabAutomationPage {
         await this.rawPage.setViewportSize({ width, height })
     }
 
+    async installRegisteredOutcomeBridge(): Promise<void> {
+        if (this.registeredOutcomeBridge) return
+        const privateKey = `__condevLabOutcome_${randomUUID().replaceAll('-', '')}`
+        const capability = randomBytes(32).toString('base64url')
+        const publicKey = '__CONDEV_ANIMATION_LAB_OUTCOME__'
+        await this.rawPage.addInitScript({
+            content: `(() => {
+                const states = new Map();
+                const documentId = globalThis.crypto?.randomUUID?.() ?? Array.from(globalThis.crypto.getRandomValues(new Uint32Array(4)), value => value.toString(16)).join('-');
+                let revision = 0;
+                const tokenPattern = /^[a-z0-9][a-z0-9._:-]{0,119}$/;
+                const statuses = new Set(['completed', 'failed', 'idle']);
+                const register = (key, status) => {
+                    if (typeof key !== 'string' || !tokenPattern.test(key) || !statuses.has(status)) return false;
+                    if (!states.has(key) && states.size >= 128) return false;
+                    revision += 1;
+                    states.set(key, { status, revision });
+                    return true;
+                };
+                Object.defineProperty(window, ${JSON.stringify(publicKey)}, {
+                    configurable: false,
+                    enumerable: false,
+                    writable: false,
+                    value: Object.freeze({ register }),
+                });
+                Object.defineProperty(window, ${JSON.stringify(privateKey)}, {
+                    configurable: false,
+                    enumerable: false,
+                    writable: false,
+                    value: Object.freeze({
+                        snapshot: capability => capability === ${JSON.stringify(capability)}
+                            ? Object.freeze({ documentId, revision })
+                            : null,
+                        read: (capability, key) => capability === ${JSON.stringify(capability)} && typeof key === 'string'
+                            ? (states.get(key) ?? null)
+                            : null,
+                    }),
+                });
+            })();`,
+        })
+        this.registeredOutcomeBridge = { privateKey, capability }
+        this.registeredOutcomeObservation = null
+    }
+
+    hasRegisteredOutcomeBridge(): boolean {
+        return this.registeredOutcomeBridge !== null
+    }
+
+    async beginRegisteredOutcomeObservation(): Promise<void> {
+        const bridge = this.registeredOutcomeBridge
+        if (!bridge) throw new Error('Registered outcome bridge is unavailable')
+        const snapshot = await this.rawPage.evaluate(({ privateKey, capability }) => {
+            const candidate = (window as unknown as Record<string, unknown>)[privateKey]
+            if (!candidate || typeof candidate !== 'object') return null
+            const readSnapshot = (candidate as { snapshot?: unknown }).snapshot
+            return typeof readSnapshot === 'function' ? readSnapshot(capability) : null
+        }, bridge)
+        if (
+            !snapshot ||
+            typeof snapshot !== 'object' ||
+            typeof snapshot.documentId !== 'string' ||
+            !Number.isSafeInteger(snapshot.revision) ||
+            snapshot.revision < 0
+        ) {
+            throw new Error('Registered outcome bridge baseline is unavailable')
+        }
+        this.registeredOutcomeObservation = { documentId: snapshot.documentId, revision: snapshot.revision }
+    }
+
     async assertOutcome(expectation: LabActionExpectation): Promise<void> {
         const timeoutMs = expectation.timeoutMs ?? 5_000
-        if (expectation.selector) await this.assertStandardCssSelector(expectation.selector)
+        if ('selector' in expectation && expectation.selector) await this.assertStandardCssSelector(expectation.selector)
         try {
             if (expectation.kind === 'element-state') {
                 await this.rawPage.waitForFunction(
@@ -424,6 +506,33 @@ class PlaywrightAutomationPage implements LabAutomationPage {
                         attribute: expectation.attribute,
                         value: expectation.value,
                     },
+                    { timeout: timeoutMs }
+                )
+                return
+            }
+            if (expectation.kind === 'registered-outcome') {
+                const bridge = this.registeredOutcomeBridge
+                const observation = this.registeredOutcomeObservation
+                if (!bridge || !observation) throw new Error('Registered outcome bridge observation is unavailable')
+                await this.rawPage.waitForFunction(
+                    ({ privateKey, capability, outcomeKey, state, documentId, revision }) => {
+                        const candidate = (window as unknown as Record<string, unknown>)[privateKey]
+                        if (!candidate || typeof candidate !== 'object') return false
+                        const read = (candidate as { read?: unknown }).read
+                        const readSnapshot = (candidate as { snapshot?: unknown }).snapshot
+                        const current = typeof read === 'function' ? read(capability, outcomeKey) : null
+                        const snapshot = typeof readSnapshot === 'function' ? readSnapshot(capability) : null
+                        return (
+                            current !== null &&
+                            typeof current === 'object' &&
+                            snapshot !== null &&
+                            typeof snapshot === 'object' &&
+                            snapshot.documentId === documentId &&
+                            current.status === state &&
+                            current.revision > revision
+                        )
+                    },
+                    { ...bridge, ...observation, outcomeKey: expectation.outcomeKey, state: expectation.state },
                     { timeout: timeoutMs }
                 )
                 return
@@ -574,6 +683,7 @@ class PlaywrightBrowserDriverSession implements BrowserDriverSession {
 
 class PlaywrightBrowserDriver implements BrowserDriver {
     readonly capabilities: Readonly<BrowserDriverCapabilities>
+    readonly executionProfile = PLAYWRIGHT_DESKTOP_EXECUTION_PROFILE
 
     constructor(readonly engine: LabBrowserEngine) {
         this.capabilities = capabilitiesFor(engine)

@@ -977,6 +977,84 @@ test('rebuilds Trace Index v3 authored-source limitations after platform event r
     assert.equal(uploaded.authoredSource.limitations.includes('authored-source-segment-not-found'), false)
 })
 
+test('recomputes and bounds Trace Index v4 main-thread frame windows for platform upload', async t => {
+    const requests = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (url, init = {}) => {
+        requests.push({ url: String(url), init })
+        return new Response(JSON.stringify({ success: true, data: {} }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })
+    }
+    t.after(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    const fixture = report()
+    const windows = Array.from({ length: 513 }, (_, index) => ({
+        frameId: `main-frame-${index.toString(36)}`,
+        startMs: index * 10,
+        endMs: index * 10 + 10,
+        durationMs: 999,
+        status: 'measured',
+        boundary: 'begin-main-thread-frame',
+        eventCount: 1,
+        classifiedMainThreadTimeMs: 999,
+        phases: {
+            script: 4,
+            'style-layout': 1,
+            paint: 1,
+            composite: 0,
+            'raster-gpu': 0,
+            animation: 1,
+            gc: 0,
+            other: 0,
+        },
+        actionIds: [],
+        droppedActionIds: 0,
+        correlatedCrossThread: {
+            eventCount: 1,
+            classifiedTimeMs: 999,
+            phases: { composite: 1, 'raster-gpu': 2 },
+        },
+        limitations: ['trace-frame-window-cross-thread-temporal-correlation-only'],
+    }))
+    fixture.timeline = {
+        ...fixture.timeline,
+        schemaVersion: 4,
+        actionPhaseSummaries: [],
+        authoredSource: null,
+        mainThreadFrameWindows: {
+            status: 'measured',
+            totalWindows: windows.length,
+            retainedWindows: windows.length,
+            droppedWindows: 0,
+            windows,
+            limitations: [],
+        },
+    }
+
+    const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
+    await client.uploadDerivedReport(fixture)
+
+    const upload = requests.find(request => request.url.endsWith('/artifacts/trace-index'))
+    const uploaded = JSON.parse(Buffer.from(upload.init.body).toString('utf8'))
+    assert.equal(uploaded.schemaVersion, 4)
+    assert.equal(uploaded.authoredSource, null)
+    assert.equal(uploaded.mainThreadFrameWindows.status, 'partial')
+    assert.equal(uploaded.mainThreadFrameWindows.totalWindows, 513)
+    assert.equal(uploaded.mainThreadFrameWindows.retainedWindows, 512)
+    assert.equal(uploaded.mainThreadFrameWindows.droppedWindows, 1)
+    assert.equal(uploaded.mainThreadFrameWindows.windows[0].durationMs, 10)
+    assert.equal(uploaded.mainThreadFrameWindows.windows[0].classifiedMainThreadTimeMs, 7)
+    assert.equal(uploaded.mainThreadFrameWindows.windows[0].correlatedCrossThread.classifiedTimeMs, 3)
+    assert.deepEqual(
+        new Set(uploaded.mainThreadFrameWindows.limitations),
+        new Set(['trace-frame-window-summary-truncated', 'trace-frame-window-is-not-compositor-or-display-frame'])
+    )
+})
+
 test('deterministically byte-budgets maximal v2 reports while retaining canonical semantics', async t => {
     const requests = []
     const originalFetch = globalThis.fetch

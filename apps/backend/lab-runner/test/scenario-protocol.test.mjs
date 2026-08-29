@@ -89,6 +89,20 @@ test('treats outcome expectation changes as protocol drift without hashing raw s
     assert.notEqual(createScenarioProtocolHash(changedKind), createScenarioProtocolHash(baseline))
 })
 
+test('hashes registered outcome semantics without retaining its local outcome key', () => {
+    const baseline = scenario()
+    baseline.actions[0].expect = [{ kind: 'registered-outcome', outcomeKey: 'private.renderer.hero', state: 'completed', timeoutMs: 2_000 }]
+    const keyOnly = structuredClone(baseline)
+    keyOnly.actions[0].expect[0].outcomeKey = 'private.business.checkout'
+    const changedState = structuredClone(baseline)
+    changedState.actions[0].expect[0].state = 'failed'
+
+    const hash = createScenarioProtocolHash(baseline)
+    assert.equal(createScenarioProtocolHash(keyOnly), hash)
+    assert.notEqual(createScenarioProtocolHash(changedState), hash)
+    assert.equal(hash.includes('private.renderer.hero'), false)
+})
+
 test('hashes gesture semantics without retaining raw gesture selectors', () => {
     const touch = scenario()
     touch.actions = [
