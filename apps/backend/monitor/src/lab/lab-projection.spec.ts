@@ -114,6 +114,66 @@ function traceIndexV3() {
     }
 }
 
+function traceIndexV4() {
+    const value = traceIndexV3()
+    return {
+        ...value,
+        schemaVersion: 4,
+        mainThreadFrameWindows: {
+            status: 'partial',
+            totalWindows: 2,
+            retainedWindows: 2,
+            droppedWindows: 0,
+            windows: [
+                {
+                    frameId: 'main-frame-0',
+                    startMs: 10,
+                    endMs: 20,
+                    durationMs: 10,
+                    status: 'measured',
+                    boundary: 'begin-main-thread-frame',
+                    eventCount: 2,
+                    classifiedMainThreadTimeMs: 7,
+                    phases: {
+                        script: 4,
+                        'style-layout': 1,
+                        paint: 1,
+                        composite: 0,
+                        'raster-gpu': 0,
+                        animation: 1,
+                        gc: 0,
+                        other: 0,
+                    },
+                    actionIds: ['hero-hover-01'],
+                    droppedActionIds: 0,
+                    correlatedCrossThread: {
+                        eventCount: 1,
+                        classifiedTimeMs: 2,
+                        phases: { composite: 0, 'raster-gpu': 2 },
+                    },
+                    limitations: ['trace-frame-window-cross-thread-temporal-correlation-only'],
+                },
+                {
+                    frameId: 'main-frame-1',
+                    startMs: 20,
+                    endMs: null,
+                    durationMs: null,
+                    status: 'partial',
+                    boundary: 'begin-main-thread-frame',
+                    eventCount: 0,
+                    classifiedMainThreadTimeMs: null,
+                    phases: null,
+                    actionIds: [],
+                    droppedActionIds: 0,
+                    correlatedCrossThread: null,
+                    limitations: ['trace-frame-window-missing-end-boundary'],
+                },
+            ],
+            limitations: ['trace-frame-window-is-not-compositor-or-display-frame'],
+        },
+    }
+}
+
 function metric(overrides: Record<string, unknown> = {}) {
     return {
         family: 'frameCadence',
@@ -1044,6 +1104,89 @@ describe('lab platform artifact projections', () => {
         }
     })
 
+    it('strictly validates Trace Index v4 main-thread frame windows without promoting correlation to causation', () => {
+        const parsed = parseTraceIndexArtifact(traceIndexV4())
+        expect(parsed).toEqual(
+            expect.objectContaining({
+                schemaVersion: 4,
+                mainThreadFrameWindows: expect.objectContaining({
+                    status: 'partial',
+                    totalWindows: 2,
+                    retainedWindows: 2,
+                    droppedWindows: 0,
+                    windows: [
+                        expect.objectContaining({
+                            frameId: 'main-frame-0',
+                            classifiedMainThreadTimeMs: 7,
+                            actionIds: ['hero-hover-01'],
+                            correlatedCrossThread: {
+                                eventCount: 1,
+                                classifiedTimeMs: 2,
+                                phases: { composite: 0, 'raster-gpu': 2 },
+                            },
+                            limitations: ['trace-frame-window-cross-thread-temporal-correlation-only'],
+                        }),
+                        expect.objectContaining({ status: 'partial', endMs: null }),
+                    ],
+                    limitations: ['trace-frame-window-is-not-compositor-or-display-frame'],
+                }),
+            })
+        )
+
+        const mutations: Array<(value: ReturnType<typeof traceIndexV4>) => void> = [
+            value => {
+                value.mainThreadFrameWindows.retainedWindows = 1
+            },
+            value => {
+                value.mainThreadFrameWindows.windows[0]!.classifiedMainThreadTimeMs = 6
+            },
+            value => {
+                value.mainThreadFrameWindows.windows[0]!.actionIds = ['forged-action']
+            },
+            value => {
+                value.mainThreadFrameWindows.windows[0]!.correlatedCrossThread!.classifiedTimeMs = 1
+            },
+            value => {
+                value.mainThreadFrameWindows.windows[0]!.limitations = []
+            },
+            value => {
+                value.mainThreadFrameWindows.windows[1]!.status = 'measured'
+            },
+            value => {
+                value.mainThreadFrameWindows.limitations = []
+            },
+        ]
+        for (const mutate of mutations) {
+            const value = traceIndexV4()
+            mutate(value)
+            expect(() => parseTraceIndexArtifact(value)).toThrow(BadRequestException)
+        }
+    })
+
+    it('keeps Trace Index v4 valid without a source-map resolver while older schemas remain readable', () => {
+        const value = traceIndexV4()
+        const withoutSourceMap = {
+            ...value,
+            authoredSource: null,
+            events: value.events.map(event => ({
+                ...event,
+                stack: event.stack.map(frame => ({
+                    functionName: frame.functionName,
+                    source: frame.source,
+                    line: frame.line,
+                    column: frame.column,
+                })),
+            })),
+        }
+
+        expect(parseTraceIndexArtifact(withoutSourceMap)).toEqual(
+            expect.objectContaining({ schemaVersion: 4, authoredSource: null, mainThreadFrameWindows: expect.any(Object) })
+        )
+        expect(parseTraceIndexArtifact(traceIndex())).toEqual(expect.objectContaining({ schemaVersion: 1 }))
+        expect(parseTraceIndexArtifact(traceIndexV2())).toEqual(expect.objectContaining({ schemaVersion: 2 }))
+        expect(parseTraceIndexArtifact(traceIndexV3())).toEqual(expect.objectContaining({ schemaVersion: 3 }))
+    })
+
     it('rejects forged, duplicate, inconsistent, or extended Trace Index v2 summaries', () => {
         const mutations: Array<(value: ReturnType<typeof traceIndexV2>) => void> = [
             value => Object.assign(value.actionPhaseSummaries[0]!, { privateSelector: '#account' }),
@@ -1217,7 +1360,38 @@ describe('lab platform artifact projections', () => {
             })),
         }
 
-        expect(parseAnimationReportArtifact(report).context.execution).toEqual(execution)
+        expect(parseAnimationReportArtifact(report).context.execution).toEqual({
+            ...execution,
+            targetKind: 'unknown',
+            driverId: 'unknown',
+            authenticated: null,
+            crossOriginMode: 'unknown',
+            powerSampling: 'unknown',
+            thermalSampling: 'unknown',
+        })
+
+        const withExecutionProvenance = structuredClone(report)
+        Object.assign(withExecutionProvenance.scenario.execution, {
+            targetKind: 'playwright-desktop-emulation',
+            driverId: 'playwright-desktop',
+            authenticated: true,
+            crossOriginMode: 'reject',
+            powerSampling: 'unsupported',
+            thermalSampling: 'unsupported',
+        })
+        expect(parseAnimationReportArtifact(withExecutionProvenance).context.execution).toEqual({
+            ...execution,
+            targetKind: 'playwright-desktop-emulation',
+            driverId: 'playwright-desktop',
+            authenticated: true,
+            crossOriginMode: 'reject',
+            powerSampling: 'unsupported',
+            thermalSampling: 'unsupported',
+        })
+
+        const partialExecutionProvenance = structuredClone(withExecutionProvenance)
+        delete (partialExecutionProvenance.scenario.execution as Record<string, unknown>).driverId
+        expect(() => parseAnimationReportArtifact(partialExecutionProvenance)).toThrow('provenance must be complete or absent')
 
         const drift = structuredClone(report)
         drift.scenario.execution.measuredRuns = 4
@@ -1299,7 +1473,20 @@ describe('lab platform artifact projections', () => {
             attempts: [...measured, unavailableTrace],
         }
 
-        expect(parseAnimationReportArtifact(report).context).toEqual(expect.objectContaining({ browserName, execution }))
+        expect(parseAnimationReportArtifact(report).context).toEqual(
+            expect.objectContaining({
+                browserName,
+                execution: {
+                    ...execution,
+                    targetKind: 'unknown',
+                    driverId: 'unknown',
+                    authenticated: null,
+                    crossOriginMode: 'unknown',
+                    powerSampling: 'unknown',
+                    thermalSampling: 'unknown',
+                },
+            })
+        )
 
         const forgedUnsupportedTrace = structuredClone(report)
         ;(forgedUnsupportedTrace.attempts as unknown as Array<Record<string, unknown>>)[3] = {

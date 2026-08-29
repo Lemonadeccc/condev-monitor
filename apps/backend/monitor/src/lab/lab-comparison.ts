@@ -76,6 +76,12 @@ export type LabComparisonMismatchField =
     | 'color-scheme'
     | 'cpu-throttle-rate'
     | 'network-profile'
+    | 'execution-target'
+    | 'execution-driver'
+    | 'authenticated-context'
+    | 'cross-origin-mode'
+    | 'power-sampling'
+    | 'thermal-sampling'
     | 'measurement-contract-version'
     | 'expected-refresh-rate'
     | 'target-frame-duration'
@@ -456,6 +462,12 @@ function comparisonMismatches(before: LabComparisonCandidate, after: LabComparis
         ['color-scheme', left.execution.colorScheme, right.execution.colorScheme],
         ['cpu-throttle-rate', left.execution.cpuThrottleRate, right.execution.cpuThrottleRate],
         ['network-profile', normalizedNetwork(left.execution.network), normalizedNetwork(right.execution.network)],
+        ['execution-target', left.execution.targetKind, right.execution.targetKind],
+        ['execution-driver', left.execution.driverId, right.execution.driverId],
+        ['authenticated-context', left.execution.authenticated, right.execution.authenticated],
+        ['cross-origin-mode', left.execution.crossOriginMode, right.execution.crossOriginMode],
+        ['power-sampling', left.execution.powerSampling, right.execution.powerSampling],
+        ['thermal-sampling', left.execution.thermalSampling, right.execution.thermalSampling],
         ['measurement-contract-version', left.measurementContract.contractVersion, right.measurementContract.contractVersion],
         ['expected-refresh-rate', left.measurementContract.expectedHz, right.measurementContract.expectedHz],
         ['target-frame-duration', left.measurementContract.targetFrameMs, right.measurementContract.targetFrameMs],

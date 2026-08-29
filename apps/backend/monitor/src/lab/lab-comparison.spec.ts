@@ -61,6 +61,12 @@ function candidate(runId: string, values: readonly number[] = [16, 20, 24]): Lab
                 colorScheme: 'light',
                 cpuThrottleRate: 1,
                 network: null,
+                targetKind: 'playwright-desktop-emulation',
+                driverId: 'playwright-desktop',
+                authenticated: false,
+                crossOriginMode: 'reject',
+                powerSampling: 'unsupported',
+                thermalSampling: 'unsupported',
             },
             measurementContract: {
                 contractVersion: 2,
@@ -391,6 +397,15 @@ describe('animation Lab Before/After comparison core', () => {
             field: 'network-profile',
             mutate: value => void (value.comparisonContext.execution.network = { latencyMs: 80, offline: false }),
         },
+        { field: 'execution-target', mutate: value => void (value.comparisonContext.execution.targetKind = 'real-ios') },
+        { field: 'execution-driver', mutate: value => void (value.comparisonContext.execution.driverId = 'custom-browser-driver') },
+        { field: 'authenticated-context', mutate: value => void (value.comparisonContext.execution.authenticated = true) },
+        {
+            field: 'cross-origin-mode',
+            mutate: value => void (value.comparisonContext.execution.crossOriginMode = 'independent-target'),
+        },
+        { field: 'power-sampling', mutate: value => void (value.comparisonContext.execution.powerSampling = 'unknown') },
+        { field: 'thermal-sampling', mutate: value => void (value.comparisonContext.execution.thermalSampling = 'unknown') },
         {
             field: 'expected-refresh-rate',
             mutate: value => {

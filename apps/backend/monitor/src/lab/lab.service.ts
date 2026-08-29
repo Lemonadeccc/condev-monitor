@@ -669,7 +669,13 @@ export class LabService {
             execution.lighthouse === config.lighthouse &&
             execution.colorScheme === 'light' &&
             execution.cpuThrottleRate === 1 &&
-            execution.network === null
+            execution.network === null &&
+            execution.targetKind === 'playwright-desktop-emulation' &&
+            execution.driverId === 'playwright-desktop' &&
+            execution.authenticated === false &&
+            execution.crossOriginMode === 'reject' &&
+            execution.powerSampling === 'unsupported' &&
+            execution.thermalSampling === 'unsupported'
         if (!matches) throw new ConflictException('Animation report execution config does not match the claimed platform run')
     }
 

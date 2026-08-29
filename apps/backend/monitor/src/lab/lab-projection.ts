@@ -76,6 +76,20 @@ const TRACE_ACTION_LIMITATIONS = [
     'trace-action-classification-is-correlative',
     'trace-action-raster-gpu-is-not-gpu-completion',
 ] as const
+const TRACE_FRAME_PHASES = ['script', 'style-layout', 'paint', 'composite', 'raster-gpu', 'animation', 'gc', 'other'] as const
+const TRACE_FRAME_WINDOW_LIMITATIONS = [
+    'trace-frame-window-missing-end-boundary',
+    'trace-frame-window-main-thread-events-not-observed',
+    'trace-frame-window-non-laminar-overlap',
+    'trace-frame-window-action-overlap-truncated',
+    'trace-frame-window-cross-thread-temporal-correlation-only',
+] as const
+const TRACE_FRAME_COLLECTION_LIMITATIONS = [
+    'trace-frame-window-boundary-not-observed',
+    'trace-frame-window-multiple-main-threads',
+    'trace-frame-window-summary-truncated',
+    'trace-frame-window-is-not-compositor-or-display-frame',
+] as const
 
 export type ParsedTraceActionPhaseSummary = {
     actionId: string
@@ -95,8 +109,35 @@ export type ParsedTraceActionPhaseSummary = {
     limitations: Array<(typeof TRACE_ACTION_LIMITATIONS)[number]>
 }
 
+export type ParsedMainThreadFrameWindowSummary = {
+    status: 'measured' | 'partial' | 'not-observed'
+    totalWindows: number
+    retainedWindows: number
+    droppedWindows: number
+    windows: Array<{
+        frameId: string
+        startMs: number
+        endMs: number | null
+        durationMs: number | null
+        status: 'measured' | 'partial'
+        boundary: 'begin-main-thread-frame'
+        eventCount: number
+        classifiedMainThreadTimeMs: number | null
+        phases: Record<(typeof TRACE_FRAME_PHASES)[number], number> | null
+        actionIds: string[]
+        droppedActionIds: number
+        correlatedCrossThread: {
+            eventCount: number
+            classifiedTimeMs: number
+            phases: Record<'composite' | 'raster-gpu', number>
+        } | null
+        limitations: Array<(typeof TRACE_FRAME_WINDOW_LIMITATIONS)[number]>
+    }>
+    limitations: Array<(typeof TRACE_FRAME_COLLECTION_LIMITATIONS)[number]>
+}
+
 export type ParsedTimeline = {
-    schemaVersion: 1 | 2 | 3
+    schemaVersion: 1 | 2 | 3 | 4
     durationMs: number
     events: Array<{
         eventId: string
@@ -142,6 +183,7 @@ export type ParsedTimeline = {
         mappedFrameCount: number
         limitations: string[]
     } | null
+    mainThreadFrameWindows: ParsedMainThreadFrameWindowSummary | null
 }
 
 export type ParsedAnimationReport = {
@@ -183,6 +225,12 @@ export type ParsedAnimationReport = {
                 downloadBytesPerSecond?: number
                 uploadBytesPerSecond?: number
             } | null
+            targetKind: 'playwright-desktop-emulation' | 'real-ios' | 'real-android' | 'webview' | 'unknown'
+            driverId: 'playwright-desktop' | 'custom-browser-driver' | 'unknown'
+            authenticated: boolean | null
+            crossOriginMode: 'reject' | 'independent-target' | 'authorized-bridge' | 'unknown'
+            powerSampling: 'unsupported' | 'unknown'
+            thermalSampling: 'unsupported' | 'unknown'
         } | null
     }
     lighthouse: {
@@ -1023,9 +1071,9 @@ function redactedStackSource(value: unknown, label: string): string {
     return source
 }
 
-function stackFrame(value: unknown, label: string, schemaVersion: 1 | 2 | 3) {
+function stackFrame(value: unknown, label: string, authoredSourceExpected: boolean) {
     const raw = record(value, label)
-    exactKeys(raw, ['functionName', 'source', 'line', 'column', ...(schemaVersion === 3 ? ['authoredStatus', 'authored'] : [])], label)
+    exactKeys(raw, ['functionName', 'source', 'line', 'column', ...(authoredSourceExpected ? ['authoredStatus', 'authored'] : [])], label)
     const source = redactedStackSource(raw.source, `${label}.source`)
     const generated = {
         functionName: string(raw.functionName, `${label}.functionName`, 120, true) || null,
@@ -1033,7 +1081,7 @@ function stackFrame(value: unknown, label: string, schemaVersion: 1 | 2 | 3) {
         lineNumber: raw.line === null ? null : integer(raw.line, `${label}.line`, 0, 100_000_000),
         columnNumber: raw.column === null ? null : integer(raw.column, `${label}.column`, 0, 100_000_000),
     }
-    if (schemaVersion !== 3) return generated
+    if (!authoredSourceExpected) return generated
     const authoredStatus = enumeration(raw.authoredStatus, `${label}.authoredStatus`, TRACE_AUTHORED_STATUSES)
     const authoredRaw = raw.authored === null ? null : record(raw.authored, `${label}.authored`)
     if ((authoredStatus === 'mapped') !== (authoredRaw !== null)) {
@@ -1324,9 +1372,244 @@ function parseTraceActionPhaseSummaries(
     })
 }
 
+function parseMainThreadFrameWindows(
+    value: unknown,
+    traceStartMs: number,
+    traceEndMs: number,
+    actionPhaseSummaries: readonly ParsedTraceActionPhaseSummary[]
+): ParsedMainThreadFrameWindowSummary {
+    const raw = record(value, 'trace-index.mainThreadFrameWindows')
+    exactKeys(
+        raw,
+        ['status', 'totalWindows', 'retainedWindows', 'droppedWindows', 'windows', 'limitations'],
+        'trace-index.mainThreadFrameWindows'
+    )
+    const status = enumeration(raw.status, 'trace-index.mainThreadFrameWindows.status', TRACE_ACTION_STATUSES)
+    const totalWindows = integer(raw.totalWindows, 'trace-index.mainThreadFrameWindows.totalWindows', 0, MAX_TRACE_INPUT_EVENTS)
+    const retainedWindows = integer(raw.retainedWindows, 'trace-index.mainThreadFrameWindows.retainedWindows', 0, 512)
+    const droppedWindows = integer(raw.droppedWindows, 'trace-index.mainThreadFrameWindows.droppedWindows', 0, MAX_TRACE_INPUT_EVENTS)
+    const sourceWindows = boundedArray(raw.windows, 'trace-index.mainThreadFrameWindows.windows', 512)
+    if (retainedWindows !== sourceWindows.length || totalWindows !== retainedWindows + droppedWindows) {
+        throw new BadRequestException('trace-index.mainThreadFrameWindows counts are inconsistent')
+    }
+    const validActionIds = new Set(actionPhaseSummaries.map(summary => summary.actionId))
+    const seenFrameIds = new Set<string>()
+    let previousStartMs = Number.NEGATIVE_INFINITY
+    const windows = sourceWindows.map((item, index) => {
+        const label = `trace-index.mainThreadFrameWindows.windows[${index}]`
+        const window = record(item, label)
+        exactKeys(
+            window,
+            [
+                'frameId',
+                'startMs',
+                'endMs',
+                'durationMs',
+                'status',
+                'boundary',
+                'eventCount',
+                'classifiedMainThreadTimeMs',
+                'phases',
+                'actionIds',
+                'droppedActionIds',
+                'correlatedCrossThread',
+                'limitations',
+            ],
+            label
+        )
+        const frameId = token(window.frameId, `${label}.frameId`, 80)
+        if (!/^main-frame-[0-9a-z]+$/u.test(frameId) || seenFrameIds.has(frameId)) {
+            throw new BadRequestException(`Invalid or duplicate ${label}.frameId`)
+        }
+        seenFrameIds.add(frameId)
+        const startMs = finite(window.startMs, `${label}.startMs`, traceStartMs, traceEndMs)
+        if (startMs < previousStartMs) throw new BadRequestException(`${label}.startMs is not ordered`)
+        previousStartMs = startMs
+        const endMs = nullableFinite(window.endMs, `${label}.endMs`, startMs, traceEndMs)
+        const durationMs = nullableFinite(window.durationMs, `${label}.durationMs`, 0, MAX_DURATION_MS)
+        if ((endMs === null) !== (durationMs === null)) throw new BadRequestException(`${label} boundary fields are inconsistent`)
+        if (endMs !== null && durationMs !== null && !approximatelyEqual(endMs - startMs, durationMs)) {
+            throw new BadRequestException(`${label}.durationMs does not match its frame window`)
+        }
+        const windowStatus = enumeration(window.status, `${label}.status`, ['measured', 'partial'] as const)
+        if (window.boundary !== 'begin-main-thread-frame') throw new BadRequestException(`${label}.boundary is unsupported`)
+        const eventCount = integer(window.eventCount, `${label}.eventCount`, 0, MAX_TRACE_INPUT_EVENTS)
+        const classifiedMainThreadTimeMs = nullableFinite(
+            window.classifiedMainThreadTimeMs,
+            `${label}.classifiedMainThreadTimeMs`,
+            0,
+            durationMs ?? MAX_DURATION_MS
+        )
+        const phases =
+            window.phases === null
+                ? null
+                : (() => {
+                      const phasesRaw = record(window.phases, `${label}.phases`)
+                      exactKeys(phasesRaw, TRACE_FRAME_PHASES, `${label}.phases`)
+                      const parsed = Object.fromEntries(
+                          TRACE_FRAME_PHASES.map(phase => [
+                              phase,
+                              finite(phasesRaw[phase], `${label}.phases.${phase}`, 0, durationMs ?? MAX_DURATION_MS),
+                          ])
+                      ) as Record<(typeof TRACE_FRAME_PHASES)[number], number>
+                      const total = TRACE_FRAME_PHASES.reduce((sum, phase) => sum + parsed[phase], 0)
+                      if (classifiedMainThreadTimeMs === null || !approximatelyEqual(total, classifiedMainThreadTimeMs)) {
+                          throw new BadRequestException(`${label}.classifiedMainThreadTimeMs does not match phases`)
+                      }
+                      return parsed
+                  })()
+        if ((phases === null) !== (classifiedMainThreadTimeMs === null)) {
+            throw new BadRequestException(`${label} phase evidence is inconsistent`)
+        }
+        const actionIds = boundedArray(window.actionIds, `${label}.actionIds`, 16).map((actionId, actionIndex) => {
+            const parsed = token(actionId, `${label}.actionIds[${actionIndex}]`, 120)
+            if (!validActionIds.has(parsed)) throw new BadRequestException(`${label}.actionIds contains an unknown action`)
+            return parsed
+        })
+        if (new Set(actionIds).size !== actionIds.length) throw new BadRequestException(`${label}.actionIds contains duplicates`)
+        const droppedActionIds = integer(window.droppedActionIds, `${label}.droppedActionIds`, 0, 128)
+        const correlatedCrossThread =
+            window.correlatedCrossThread === null
+                ? null
+                : (() => {
+                      const correlated = record(window.correlatedCrossThread, `${label}.correlatedCrossThread`)
+                      exactKeys(correlated, ['eventCount', 'classifiedTimeMs', 'phases'], `${label}.correlatedCrossThread`)
+                      const correlatedEventCount = integer(
+                          correlated.eventCount,
+                          `${label}.correlatedCrossThread.eventCount`,
+                          1,
+                          MAX_TRACE_INPUT_EVENTS
+                      )
+                      const correlatedPhasesRaw = record(correlated.phases, `${label}.correlatedCrossThread.phases`)
+                      exactKeys(correlatedPhasesRaw, ['composite', 'raster-gpu'], `${label}.correlatedCrossThread.phases`)
+                      const correlatedPhases = {
+                          composite: finite(
+                              correlatedPhasesRaw.composite,
+                              `${label}.correlatedCrossThread.phases.composite`,
+                              0,
+                              MAX_DURATION_MS * 64
+                          ),
+                          'raster-gpu': finite(
+                              correlatedPhasesRaw['raster-gpu'],
+                              `${label}.correlatedCrossThread.phases.raster-gpu`,
+                              0,
+                              MAX_DURATION_MS * 64
+                          ),
+                      }
+                      const classifiedTimeMs = finite(
+                          correlated.classifiedTimeMs,
+                          `${label}.correlatedCrossThread.classifiedTimeMs`,
+                          0,
+                          MAX_DURATION_MS * 64
+                      )
+                      if (!approximatelyEqual(correlatedPhases.composite + correlatedPhases['raster-gpu'], classifiedTimeMs)) {
+                          throw new BadRequestException(`${label}.correlatedCrossThread.classifiedTimeMs does not match phases`)
+                      }
+                      return { eventCount: correlatedEventCount, classifiedTimeMs, phases: correlatedPhases }
+                  })()
+        const seenLimitations = new Set<string>()
+        const limitations = boundedArray(window.limitations, `${label}.limitations`, TRACE_FRAME_WINDOW_LIMITATIONS.length).map(
+            (limitation, limitationIndex) => {
+                const parsed = enumeration(limitation, `${label}.limitations[${limitationIndex}]`, TRACE_FRAME_WINDOW_LIMITATIONS)
+                if (seenLimitations.has(parsed)) throw new BadRequestException(`${label}.limitations contains duplicates`)
+                seenLimitations.add(parsed)
+                return parsed
+            }
+        )
+        const missingBoundary = seenLimitations.has('trace-frame-window-missing-end-boundary')
+        const missingEvents = seenLimitations.has('trace-frame-window-main-thread-events-not-observed')
+        const nonLaminar = seenLimitations.has('trace-frame-window-non-laminar-overlap')
+        const truncatedActions = seenLimitations.has('trace-frame-window-action-overlap-truncated')
+        const correlationOnly = seenLimitations.has('trace-frame-window-cross-thread-temporal-correlation-only')
+        if (missingBoundary) {
+            if (
+                endMs !== null ||
+                durationMs !== null ||
+                windowStatus !== 'partial' ||
+                eventCount !== 0 ||
+                phases !== null ||
+                actionIds.length !== 0 ||
+                droppedActionIds !== 0 ||
+                correlatedCrossThread !== null ||
+                limitations.length !== 1
+            ) {
+                throw new BadRequestException(`${label} missing boundary has contradictory evidence`)
+            }
+        } else {
+            if (endMs === null || durationMs === null) throw new BadRequestException(`${label} measured boundary is incomplete`)
+            if (missingEvents !== (eventCount === 0 || phases === null)) {
+                throw new BadRequestException(`${label} main-thread event limitation does not match evidence`)
+            }
+            if (eventCount > 0 && (phases === null || classifiedMainThreadTimeMs === null || classifiedMainThreadTimeMs <= 0)) {
+                throw new BadRequestException(`${label} observed events require positive exclusive phase evidence`)
+            }
+            if (truncatedActions !== droppedActionIds > 0) {
+                throw new BadRequestException(`${label} action truncation limitation does not match evidence`)
+            }
+            if (correlationOnly !== (correlatedCrossThread !== null)) {
+                throw new BadRequestException(`${label} cross-thread correlation limitation does not match evidence`)
+            }
+            const partial = missingEvents || nonLaminar || truncatedActions
+            if ((windowStatus === 'partial') !== partial) throw new BadRequestException(`${label}.status does not match partial evidence`)
+        }
+        return {
+            frameId,
+            startMs,
+            endMs,
+            durationMs,
+            status: windowStatus,
+            boundary: 'begin-main-thread-frame' as const,
+            eventCount,
+            classifiedMainThreadTimeMs,
+            phases,
+            actionIds,
+            droppedActionIds,
+            correlatedCrossThread,
+            limitations,
+        }
+    })
+    const seenCollectionLimitations = new Set<string>()
+    const limitations = boundedArray(
+        raw.limitations,
+        'trace-index.mainThreadFrameWindows.limitations',
+        TRACE_FRAME_COLLECTION_LIMITATIONS.length
+    ).map((limitation, index) => {
+        const parsed = enumeration(
+            limitation,
+            `trace-index.mainThreadFrameWindows.limitations[${index}]`,
+            TRACE_FRAME_COLLECTION_LIMITATIONS
+        )
+        if (seenCollectionLimitations.has(parsed)) {
+            throw new BadRequestException('trace-index.mainThreadFrameWindows.limitations contains duplicates')
+        }
+        seenCollectionLimitations.add(parsed)
+        return parsed
+    })
+    const boundaryMissing = seenCollectionLimitations.has('trace-frame-window-boundary-not-observed')
+    const multipleMainThreads = seenCollectionLimitations.has('trace-frame-window-multiple-main-threads')
+    const truncated = seenCollectionLimitations.has('trace-frame-window-summary-truncated')
+    if (!seenCollectionLimitations.has('trace-frame-window-is-not-compositor-or-display-frame')) {
+        throw new BadRequestException('trace-index.mainThreadFrameWindows must retain the display-frame limitation')
+    }
+    if (totalWindows === 0) {
+        if (status !== 'not-observed' || retainedWindows !== 0 || droppedWindows !== 0 || !boundaryMissing) {
+            throw new BadRequestException('trace-index.mainThreadFrameWindows empty evidence is contradictory')
+        }
+    } else {
+        if (boundaryMissing || status === 'not-observed' || truncated !== droppedWindows > 0) {
+            throw new BadRequestException('trace-index.mainThreadFrameWindows measured evidence is contradictory')
+        }
+        const partial = droppedWindows > 0 || multipleMainThreads || windows.some(window => window.status === 'partial')
+        if ((status === 'partial') !== partial) {
+            throw new BadRequestException('trace-index.mainThreadFrameWindows status does not match partial evidence')
+        }
+    }
+    return { status, totalWindows, retainedWindows, droppedWindows, windows, limitations }
+}
+
 export function parseTraceIndexArtifact(value: unknown): ParsedTimeline {
     const raw = record(value, 'trace-index')
-    if (raw.schemaVersion !== 1 && raw.schemaVersion !== 2 && raw.schemaVersion !== 3) {
+    if (raw.schemaVersion !== 1 && raw.schemaVersion !== 2 && raw.schemaVersion !== 3 && raw.schemaVersion !== 4) {
         throw new BadRequestException('Unsupported trace-index schemaVersion')
     }
     const schemaVersion = raw.schemaVersion
@@ -1342,7 +1625,8 @@ export function parseTraceIndexArtifact(value: unknown): ParsedTimeline {
             'events',
             'categoryDurationMs',
             ...(schemaVersion >= 2 ? ['actionPhaseSummaries'] : []),
-            ...(schemaVersion === 3 ? ['authoredSource'] : []),
+            ...(schemaVersion >= 3 ? ['authoredSource'] : []),
+            ...(schemaVersion === 4 ? ['mainThreadFrameWindows'] : []),
         ],
         'trace-index'
     )
@@ -1358,6 +1642,7 @@ export function parseTraceIndexArtifact(value: unknown): ParsedTimeline {
     }
 
     const durationMs = Math.max(0, endMs - startMs)
+    const authoredSourceExpected = schemaVersion === 3 || (schemaVersion === 4 && raw.authoredSource !== null)
     const events = sourceEvents.map((item, index) => {
         const label = `trace-index.events[${index}]`
         const event = record(item, label)
@@ -1383,7 +1668,7 @@ export function parseTraceIndexArtifact(value: unknown): ParsedTimeline {
             severity,
             description: actionLabel ? `场景动作：${actionLabel}` : null,
             stack: boundedArray(event.stack, `${label}.stack`, 48).map((frame, frameIndex) =>
-                stackFrame(frame, `${label}.stack[${frameIndex}]`, schemaVersion)
+                stackFrame(frame, `${label}.stack[${frameIndex}]`, authoredSourceExpected)
             ),
             attributes: {
                 thread,
@@ -1401,7 +1686,9 @@ export function parseTraceIndexArtifact(value: unknown): ParsedTimeline {
 
     const actionPhaseSummaries =
         schemaVersion >= 2 ? parseTraceActionPhaseSummaries(raw.actionPhaseSummaries, startMs, endMs, retainedEvents + droppedEvents) : []
-    const authoredSource = schemaVersion === 3 ? parseTraceAuthoredSource(raw.authoredSource, events) : null
+    const authoredSource = authoredSourceExpected ? parseTraceAuthoredSource(raw.authoredSource, events) : null
+    const mainThreadFrameWindows =
+        schemaVersion === 4 ? parseMainThreadFrameWindows(raw.mainThreadFrameWindows, startMs, endMs, actionPhaseSummaries) : null
 
     return {
         schemaVersion,
@@ -1412,6 +1699,7 @@ export function parseTraceIndexArtifact(value: unknown): ParsedTimeline {
         maxEvents: LAB_PLATFORM_TIMELINE_EVENT_LIMIT,
         actionPhaseSummaries,
         authoredSource,
+        mainThreadFrameWindows,
     }
 }
 
@@ -1444,7 +1732,22 @@ function scenario(value: unknown, semanticsV2: boolean) {
         const executionRaw = record(raw.execution, 'animation-report.scenario.execution')
         exactKeys(
             executionRaw,
-            ['warmupRuns', 'measuredRuns', 'durationMs', 'trace', 'lighthouse', 'colorScheme', 'cpuThrottleRate', 'network'],
+            [
+                'warmupRuns',
+                'measuredRuns',
+                'durationMs',
+                'trace',
+                'lighthouse',
+                'colorScheme',
+                'cpuThrottleRate',
+                'network',
+                'targetKind',
+                'driverId',
+                'authenticated',
+                'crossOriginMode',
+                'powerSampling',
+                'thermalSampling',
+            ],
             'animation-report.scenario.execution'
         )
         let network: NonNullable<ParsedAnimationReport['context']['execution']>['network'] = null
@@ -1486,6 +1789,45 @@ function scenario(value: unknown, semanticsV2: boolean) {
                       }),
             }
         }
+        const provenanceFields = ['targetKind', 'driverId', 'authenticated', 'crossOriginMode', 'powerSampling', 'thermalSampling'] as const
+        const provenanceFieldCount = provenanceFields.filter(field => executionRaw[field] !== undefined).length
+        if (provenanceFieldCount !== 0 && provenanceFieldCount !== provenanceFields.length) {
+            throw new BadRequestException('animation-report.scenario.execution provenance must be complete or absent')
+        }
+        const provenance =
+            provenanceFieldCount === 0
+                ? ({
+                      targetKind: 'unknown',
+                      driverId: 'unknown',
+                      authenticated: null,
+                      crossOriginMode: 'unknown',
+                      powerSampling: 'unknown',
+                      thermalSampling: 'unknown',
+                  } as const)
+                : ({
+                      targetKind: enumeration(executionRaw.targetKind, 'animation-report.scenario.execution.targetKind', [
+                          'playwright-desktop-emulation',
+                          'real-ios',
+                          'real-android',
+                          'webview',
+                      ] as const),
+                      driverId: enumeration(executionRaw.driverId, 'animation-report.scenario.execution.driverId', [
+                          'playwright-desktop',
+                          'custom-browser-driver',
+                      ] as const),
+                      authenticated: boolean(executionRaw.authenticated, 'animation-report.scenario.execution.authenticated'),
+                      crossOriginMode: enumeration(executionRaw.crossOriginMode, 'animation-report.scenario.execution.crossOriginMode', [
+                          'reject',
+                          'independent-target',
+                          'authorized-bridge',
+                      ] as const),
+                      powerSampling: enumeration(executionRaw.powerSampling, 'animation-report.scenario.execution.powerSampling', [
+                          'unsupported',
+                      ] as const),
+                      thermalSampling: enumeration(executionRaw.thermalSampling, 'animation-report.scenario.execution.thermalSampling', [
+                          'unsupported',
+                      ] as const),
+                  } as const)
         execution = {
             warmupRuns: integer(executionRaw.warmupRuns, 'animation-report.scenario.execution.warmupRuns', 0, 10),
             measuredRuns: integer(executionRaw.measuredRuns, 'animation-report.scenario.execution.measuredRuns', 3, 20),
@@ -1501,6 +1843,7 @@ function scenario(value: unknown, semanticsV2: boolean) {
                     : enumeration(executionRaw.colorScheme, 'animation-report.scenario.execution.colorScheme', ['light', 'dark'] as const),
             cpuThrottleRate: finite(executionRaw.cpuThrottleRate, 'animation-report.scenario.execution.cpuThrottleRate', 1, 20),
             network,
+            ...provenance,
         }
     }
     const reducedMotion = enumeration(raw.reducedMotion, 'animation-report.scenario.reducedMotion', ['no-preference', 'reduce'] as const)

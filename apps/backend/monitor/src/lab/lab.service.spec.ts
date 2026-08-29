@@ -1175,6 +1175,12 @@ describe('LabService runner grants and ownership', () => {
                     colorScheme: 'light',
                     cpuThrottleRate: 1,
                     network: null,
+                    targetKind: 'playwright-desktop-emulation',
+                    driverId: 'playwright-desktop',
+                    authenticated: false,
+                    crossOriginMode: 'reject',
+                    powerSampling: 'unsupported',
+                    thermalSampling: 'unsupported',
                 },
             },
             lighthouse: null,
@@ -1187,6 +1193,9 @@ describe('LabService runner grants and ownership', () => {
         report.context.viewport.width += 1
         expect(() => (service as any).assertReportMatchesRunConfig(run, report)).toThrow(ConflictException)
         report.context.viewport.width -= 1
+        report.context.execution.targetKind = 'real-ios'
+        expect(() => (service as any).assertReportMatchesRunConfig(run, report)).toThrow(ConflictException)
+        report.context.execution.targetKind = 'playwright-desktop-emulation'
         report.analysis = null
         expect(() => (service as any).assertReportMatchesRunConfig(run, report)).toThrow(ConflictException)
 
@@ -1247,6 +1256,12 @@ describe('LabService runner grants and ownership', () => {
                     colorScheme: 'light',
                     cpuThrottleRate: 1,
                     network: null,
+                    targetKind: 'playwright-desktop-emulation',
+                    driverId: 'playwright-desktop',
+                    authenticated: false,
+                    crossOriginMode: 'reject',
+                    powerSampling: 'unsupported',
+                    thermalSampling: 'unsupported',
                 },
             },
             lighthouse: null,
@@ -1385,6 +1400,12 @@ function comparisonReport(
                 colorScheme: 'light' as const,
                 cpuThrottleRate: 1,
                 network: null,
+                targetKind: 'playwright-desktop-emulation' as const,
+                driverId: 'playwright-desktop' as const,
+                authenticated: false,
+                crossOriginMode: 'reject' as const,
+                powerSampling: 'unsupported' as const,
+                thermalSampling: 'unsupported' as const,
             },
         },
         lighthouse: null,

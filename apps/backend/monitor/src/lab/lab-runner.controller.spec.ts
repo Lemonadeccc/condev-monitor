@@ -16,7 +16,7 @@ function request(contract: string | undefined) {
 }
 
 describe('LabRunnerController contract negotiation', () => {
-    it.each([undefined, '1', '2', '3', String(LAB_RUNNER_CONTRACT_VERSION + 1)])(
+    it.each([undefined, '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', String(LAB_RUNNER_CONTRACT_VERSION + 1)])(
         'rejects runner contract %s before claiming or changing run state',
         async contract => {
             const labService = {

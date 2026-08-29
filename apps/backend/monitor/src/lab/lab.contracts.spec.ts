@@ -264,7 +264,7 @@ describe('animation lab contracts', () => {
         expect(() => assertLabRunnerSupportsMeasurementContract(6, measurementContract)).not.toThrow()
     })
 
-    it('accepts catalog v5 caller-attested media stages only on Runner contract v9', () => {
+    it('accepts catalog v5 caller-attested media stages on Runner contract v9 and later', () => {
         const measurementContract = parseCreateLabRunInput({
             appId: 'app-123',
             scenarioKey: 'media.stage.v5',
@@ -288,6 +288,8 @@ describe('animation lab contracts', () => {
             expect(() => assertLabRunnerSupportsMeasurementContract(version, measurementContract)).toThrow(HttpException)
         }
         expect(() => assertLabRunnerSupportsMeasurementContract(9, measurementContract)).not.toThrow()
+        expect(() => assertLabRunnerSupportsMeasurementContract(10, measurementContract)).not.toThrow()
+        expect(() => assertLabRunnerSupportsMeasurementContract(11, measurementContract)).not.toThrow()
 
         expect(() =>
             parseCreateLabRunInput({
@@ -328,24 +330,24 @@ describe('animation lab contracts', () => {
         ).toThrow('requires at least one warmup run')
     })
 
-    it('accepts the rolling Runner contracts and rejects unsupported versions before claim', () => {
-        expect(LAB_RUNNER_CONTRACT_VERSIONS).toEqual([4, 5, 6, 7, 8, 9])
+    it('accepts only the provenance-complete Runner contract and rejects older versions before claim', () => {
+        expect(LAB_RUNNER_CONTRACT_VERSIONS).toEqual([11])
         for (const version of LAB_RUNNER_CONTRACT_VERSIONS) {
             expect(parseLabRunnerContractVersion(String(version))).toBe(version)
         }
-        for (const version of [undefined, '1', '2', '3', String(LAB_RUNNER_CONTRACT_VERSION + 1)]) {
+        for (const version of [undefined, '1', '2', '3', '4', '5', '6', '7', '8', '9', '10', String(LAB_RUNNER_CONTRACT_VERSION + 1)]) {
             try {
                 parseLabRunnerContractVersion(version)
                 throw new Error('expected contract rejection')
             } catch (error) {
                 expect(error).toBeInstanceOf(HttpException)
                 expect((error as HttpException).getStatus()).toBe(426)
-                expect((error as Error).message).toMatch(/contract 4 or 5 or 6 or 7 or 8 or 9 is required/u)
+                expect((error as Error).message).toMatch(/contract 11 is required/u)
             }
         }
     })
 
-    it('keeps trace-index v1 compatible and gates v2/v3 on Runner contracts 7/8', () => {
+    it('keeps trace-index v1 compatible and gates v2/v3/v4 on Runner contracts 7/8/10', () => {
         for (const version of LAB_RUNNER_CONTRACT_VERSIONS) {
             expect(() => assertLabRunnerSupportsTraceIndexVersion(version, 1)).not.toThrow()
         }
@@ -359,6 +361,9 @@ describe('animation lab contracts', () => {
         expect(() => assertLabRunnerSupportsTraceIndexVersion(8, 4)).toThrow(HttpException)
         expect(() => assertLabRunnerSupportsTraceIndexVersion(9, 3)).not.toThrow()
         expect(() => assertLabRunnerSupportsTraceIndexVersion(9, 4)).toThrow(HttpException)
+        expect(() => assertLabRunnerSupportsTraceIndexVersion(10, 3)).not.toThrow()
+        expect(() => assertLabRunnerSupportsTraceIndexVersion(10, 4)).not.toThrow()
+        expect(() => assertLabRunnerSupportsTraceIndexVersion(10, 5)).toThrow(HttpException)
     })
 
     it('accepts only the closed, bounded summary shape', () => {

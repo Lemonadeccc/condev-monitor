@@ -8,9 +8,10 @@ import { type AnimationLabMetricV2Projection, parseAnimationLabMetricV2 } from '
 export const LAB_RUN_CONFIG_MAX_BYTES = 16 * 1024
 export const LAB_RUN_SUMMARY_MAX_BYTES = 64 * 1024
 export const LAB_RUN_ARTIFACT_TOTAL_MAX_BYTES = 128 * 1024 * 1024
-export const LAB_RUNNER_CONTRACT_VERSION = 9 as const
-export const LAB_RUNNER_CONTRACT_VERSIONS = [4, 5, 6, 7, 8, LAB_RUNNER_CONTRACT_VERSION] as const
-export type LabRunnerContractVersion = (typeof LAB_RUNNER_CONTRACT_VERSIONS)[number]
+export const LAB_RUNNER_CONTRACT_VERSION = 11 as const
+export type LabRunnerContractVersion = 4 | 5 | 6 | 7 | 8 | 9 | 10 | typeof LAB_RUNNER_CONTRACT_VERSION
+/** Only the current provenance-complete contract may negotiate, claim, update, or upload a run. */
+export const LAB_RUNNER_CONTRACT_VERSIONS = [LAB_RUNNER_CONTRACT_VERSION] as const satisfies readonly LabRunnerContractVersion[]
 
 const LAB_RUNNER_V5_ACTION_KINDS: ReadonlySet<string> = new Set([
     'wait',
@@ -152,7 +153,8 @@ export function assertLabRunnerSupportsTraceIndexVersion(
     if (
         traceIndexSchemaVersion === 1 ||
         (runnerContractVersion >= 7 && traceIndexSchemaVersion === 2) ||
-        (runnerContractVersion >= 8 && traceIndexSchemaVersion === 3)
+        (runnerContractVersion >= 8 && traceIndexSchemaVersion === 3) ||
+        (runnerContractVersion >= 10 && traceIndexSchemaVersion === 4)
     ) {
         return
     }
