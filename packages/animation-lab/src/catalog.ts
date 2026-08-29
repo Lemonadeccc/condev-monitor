@@ -251,16 +251,57 @@ export const ANIMATION_LAB_METRIC_CATALOG_V4: readonly LabMetricCatalogEntryV1[]
     ...ANIMATION_LAB_METRIC_CATALOG_V4_ADDITIONS,
 ])
 
+const ANIMATION_LAB_METRIC_CATALOG_V5_ADDITIONS: readonly LabMetricCatalogEntryV1[] = Object.freeze([
+    metric('media.declared-completed.count', 'resourcesMedia', 'declaredMediaCompletedAttempts', 'count', 'count', 'samples', 'count'),
+    metric('media.declared-cancelled.count', 'resourcesMedia', 'declaredMediaCancelledAttempts', 'count', 'count', 'samples', 'count'),
+    metric('media.declared-begin-to-decode.p95', 'resourcesMedia', 'declaredMediaBeginToDecodeMs', 'p95', 'ms', 'samples', 'nearest-rank'),
+    metric(
+        'media.declared-decode-to-upload.p95',
+        'resourcesMedia',
+        'declaredMediaDecodeToUploadMs',
+        'p95',
+        'ms',
+        'samples',
+        'nearest-rank'
+    ),
+    metric(
+        'media.declared-upload-to-first-visible.p95',
+        'resourcesMedia',
+        'declaredMediaUploadToFirstVisibleMs',
+        'p95',
+        'ms',
+        'samples',
+        'nearest-rank'
+    ),
+    metric(
+        'media.declared-begin-to-first-visible.p95',
+        'resourcesMedia',
+        'declaredMediaBeginToFirstVisibleMs',
+        'p95',
+        'ms',
+        'samples',
+        'nearest-rank'
+    ),
+])
+
+/** Additive catalog: v5 preserves v4 and adds caller-attested media stage aggregates. */
+export const ANIMATION_LAB_METRIC_CATALOG_V5: readonly LabMetricCatalogEntryV1[] = Object.freeze([
+    ...ANIMATION_LAB_METRIC_CATALOG_V4,
+    ...ANIMATION_LAB_METRIC_CATALOG_V5_ADDITIONS,
+])
+
 const METRIC_BY_ID_V1 = new Map(ANIMATION_LAB_METRIC_CATALOG_V1.map(entry => [entry.metricId, entry] as const))
 const METRIC_BY_ID_V2 = new Map(ANIMATION_LAB_METRIC_CATALOG_V2.map(entry => [entry.metricId, entry] as const))
 const METRIC_BY_ID_V3 = new Map(ANIMATION_LAB_METRIC_CATALOG_V3.map(entry => [entry.metricId, entry] as const))
 const METRIC_BY_ID_V4 = new Map(ANIMATION_LAB_METRIC_CATALOG_V4.map(entry => [entry.metricId, entry] as const))
+const METRIC_BY_ID_V5 = new Map(ANIMATION_LAB_METRIC_CATALOG_V5.map(entry => [entry.metricId, entry] as const))
 
 export function getAnimationLabMetricCatalog(version: LabMetricCatalogVersion): readonly LabMetricCatalogEntryV1[] {
     if (version === 1) return ANIMATION_LAB_METRIC_CATALOG_V1
     if (version === 2) return ANIMATION_LAB_METRIC_CATALOG_V2
     if (version === 3) return ANIMATION_LAB_METRIC_CATALOG_V3
     if (version === 4) return ANIMATION_LAB_METRIC_CATALOG_V4
+    if (version === 5) return ANIMATION_LAB_METRIC_CATALOG_V5
     throw new RangeError(`Unsupported animation lab metric catalog version: ${String(version)}`)
 }
 
@@ -272,6 +313,7 @@ export function getAnimationLabMetricCatalogEntry(
     if (version === 2) return METRIC_BY_ID_V2.get(metricId)
     if (version === 3) return METRIC_BY_ID_V3.get(metricId)
     if (version === 4) return METRIC_BY_ID_V4.get(metricId)
+    if (version === 5) return METRIC_BY_ID_V5.get(metricId)
     throw new RangeError(`Unsupported animation lab metric catalog version: ${String(version)}`)
 }
 
@@ -297,6 +339,12 @@ export const DEFAULT_ANIMATION_LAB_BUDGET_REF_V4: Readonly<LabBudgetRefV1> = Obj
     catalogVersion: ANIMATION_LAB_BUDGET_CATALOG_VERSION,
     budgetId: 'condev.animation.default',
     budgetVersion: 4,
+})
+
+export const DEFAULT_ANIMATION_LAB_BUDGET_REF_V5: Readonly<LabBudgetRefV1> = Object.freeze({
+    catalogVersion: ANIMATION_LAB_BUDGET_CATALOG_VERSION,
+    budgetId: 'condev.animation.default',
+    budgetVersion: 5,
 })
 
 /** Unchanged budget v1 diagnostic defaults, not universal UX grades. */
@@ -437,11 +485,18 @@ export const DEFAULT_ANIMATION_LAB_BUDGET_V4: Readonly<LabBudgetDefinitionV1> = 
     ]),
 })
 
+/** Catalog-compatibility budget v5; media stage evidence has no universal absolute threshold. */
+export const DEFAULT_ANIMATION_LAB_BUDGET_V5: Readonly<LabBudgetDefinitionV1> = Object.freeze({
+    ...DEFAULT_ANIMATION_LAB_BUDGET_REF_V5,
+    rules: Object.freeze(DEFAULT_ANIMATION_LAB_BUDGET_V4.rules.map(rule => Object.freeze({ ...rule }))),
+})
+
 export const ANIMATION_LAB_BUDGET_CATALOG_V1: readonly Readonly<LabBudgetDefinitionV1>[] = Object.freeze([
     DEFAULT_ANIMATION_LAB_BUDGET_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_V3,
     DEFAULT_ANIMATION_LAB_BUDGET_V4,
+    DEFAULT_ANIMATION_LAB_BUDGET_V5,
 ])
 
 export function getAnimationLabBudgetV1(budgetId: string, budgetVersion: number): Readonly<LabBudgetDefinitionV1> | undefined {

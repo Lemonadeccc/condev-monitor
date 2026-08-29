@@ -234,6 +234,20 @@ test('accepts metric catalog v4 as an explicit additive measurement contract', (
     assert.equal(validateAnimationLabScenario(input).ok, true)
 })
 
+test('accepts metric catalog v5 as an explicit additive measurement contract', () => {
+    const input = scenario()
+    input.measurementContract = {
+        contractVersion: 2,
+        expectedHz: 60,
+        targetFrameMs: 16.666667,
+        source: 'explicit',
+        confidence: 'explicit',
+        budgetRef: DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
+        metricCatalogVersion: 5,
+    }
+    assert.equal(validateAnimationLabScenario(input).ok, true)
+})
+
 test('rejects credentials, unknown configuration, and invalid capability options', () => {
     const input = scenario()
     input.url = 'http://user:password@localhost:5173/'

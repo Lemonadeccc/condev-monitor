@@ -6,14 +6,17 @@ import {
     ANIMATION_LAB_METRIC_CATALOG_V2,
     ANIMATION_LAB_METRIC_CATALOG_V3,
     ANIMATION_LAB_METRIC_CATALOG_V4,
+    ANIMATION_LAB_METRIC_CATALOG_V5,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V3,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V4,
+    DEFAULT_ANIMATION_LAB_BUDGET_REF_V5,
     DEFAULT_ANIMATION_LAB_BUDGET_V1,
     DEFAULT_ANIMATION_LAB_BUDGET_V2,
     DEFAULT_ANIMATION_LAB_BUDGET_V3,
     DEFAULT_ANIMATION_LAB_BUDGET_V4,
+    DEFAULT_ANIMATION_LAB_BUDGET_V5,
     evaluateAnimationLabBudgetRule,
     getAnimationLabBudgetV1,
     getAnimationLabMetricCatalogEntry,
@@ -246,6 +249,7 @@ test('adds explicit budget versions without changing earlier rule tuples', () =>
     assert.equal(getAnimationLabBudgetV1('condev.animation.default', 2), DEFAULT_ANIMATION_LAB_BUDGET_V2)
     assert.equal(getAnimationLabBudgetV1('condev.animation.default', 3), DEFAULT_ANIMATION_LAB_BUDGET_V3)
     assert.equal(getAnimationLabBudgetV1('condev.animation.default', 4), DEFAULT_ANIMATION_LAB_BUDGET_V4)
+    assert.equal(getAnimationLabBudgetV1('condev.animation.default', 5), DEFAULT_ANIMATION_LAB_BUDGET_V5)
     assert.deepEqual(
         DEFAULT_ANIMATION_LAB_BUDGET_V3.rules.slice(0, DEFAULT_ANIMATION_LAB_BUDGET_V2.rules.length),
         DEFAULT_ANIMATION_LAB_BUDGET_V2.rules
@@ -256,7 +260,7 @@ test('adds explicit budget versions without changing earlier rule tuples', () =>
         DEFAULT_ANIMATION_LAB_BUDGET_V3.rules
     )
     assert.equal(DEFAULT_ANIMATION_LAB_BUDGET_V4.rules.length, DEFAULT_ANIMATION_LAB_BUDGET_V3.rules.length + 1)
-    assert.equal(getAnimationLabBudgetV1('condev.animation.default', 5), undefined)
+    assert.deepEqual(DEFAULT_ANIMATION_LAB_BUDGET_V5.rules, DEFAULT_ANIMATION_LAB_BUDGET_V4.rules)
 })
 
 test('adds renderer evidence only in catalog v4 and gates GPU budget evaluation', () => {
@@ -303,6 +307,34 @@ test('adds renderer evidence only in catalog v4 and gates GPU budget evaluation'
         evaluateAnimationLabBudgetRule(rule, { metricId: rule.metricId, value: 17, samples: 29, status: 'measured' }, contract).status,
         'insufficient-evidence'
     )
+})
+
+test('adds caller-attested media stages only in catalog v5 without universal thresholds', () => {
+    assert.deepEqual(ANIMATION_LAB_METRIC_CATALOG_V5.slice(0, ANIMATION_LAB_METRIC_CATALOG_V4.length), ANIMATION_LAB_METRIC_CATALOG_V4)
+    assert.equal(ANIMATION_LAB_METRIC_CATALOG_V5.length, ANIMATION_LAB_METRIC_CATALOG_V4.length + 6)
+    assert.deepEqual(DEFAULT_ANIMATION_LAB_BUDGET_V5.rules, DEFAULT_ANIMATION_LAB_BUDGET_V4.rules)
+
+    const expected = [
+        ['media.declared-completed.count', 'declaredMediaCompletedAttempts', 'count', 'count'],
+        ['media.declared-cancelled.count', 'declaredMediaCancelledAttempts', 'count', 'count'],
+        ['media.declared-begin-to-decode.p95', 'declaredMediaBeginToDecodeMs', 'p95', 'ms'],
+        ['media.declared-decode-to-upload.p95', 'declaredMediaDecodeToUploadMs', 'p95', 'ms'],
+        ['media.declared-upload-to-first-visible.p95', 'declaredMediaUploadToFirstVisibleMs', 'p95', 'ms'],
+        ['media.declared-begin-to-first-visible.p95', 'declaredMediaBeginToFirstVisibleMs', 'p95', 'ms'],
+    ]
+    for (const [metricId, name, stat, unit] of expected) {
+        assert.equal(getAnimationLabMetricCatalogEntry(metricId, 4), undefined)
+        assert.deepEqual(getAnimationLabMetricCatalogEntry(metricId, 5), {
+            metricId,
+            family: 'resourcesMedia',
+            name,
+            stat,
+            unit,
+            defaultScope: 'attempt',
+            defaultAggregation: { population: 'samples', method: stat === 'count' ? 'count' : 'nearest-rank' },
+            defaultBudgetRuleIds: [],
+        })
+    }
 })
 
 test('evaluates expanded v3 diagnostics only from sufficient measured evidence', () => {
@@ -462,7 +494,7 @@ test('keeps catalog v2 unchanged while catalog v3 adds windowed video playback q
         defaultAggregation: { population: 'media-frames', method: 'ratio' },
         defaultBudgetRuleIds: [],
     })
-    assert.throws(() => getAnimationLabMetricCatalogEntry('frame.duration.p95', 5), RangeError)
+    assert.throws(() => getAnimationLabMetricCatalogEntry('frame.duration.p95', 6), RangeError)
 })
 
 test('accepts additive v2 metrics only when the measurement contract selects catalog v2', () => {
@@ -602,7 +634,7 @@ test('rejects a budget reference that the local runner cannot execute', () => {
     assert.equal(validateLabMeasurementContract(value).ok, true)
     value.budgetRef = DEFAULT_ANIMATION_LAB_BUDGET_REF_V3
     assert.equal(validateLabMeasurementContract(value).ok, true)
-    value.budgetRef = { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 5 }
+    value.budgetRef = { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 6 }
     const unknownVersion = validateLabMeasurementContract(value)
     assert.equal(unknownVersion.ok, false)
     assert.ok(unknownVersion.errors.includes('measurementContract.budgetRef:unknown-local-budget'))
@@ -618,6 +650,22 @@ test('requires metric catalog v4 for budget v4 without blocking older budgets on
     assert.ok(incompatible.errors.includes('measurementContract:budget-v4-requires-metric-catalog-v4'))
 
     value.metricCatalogVersion = 4
+    assert.equal(validateLabMeasurementContract(value).ok, true)
+
+    value.budgetRef = DEFAULT_ANIMATION_LAB_BUDGET_REF_V3
+    assert.equal(validateLabMeasurementContract(value).ok, true)
+})
+
+test('requires metric catalog v5 for budget v5 while allowing older budgets on catalog v5', () => {
+    const value = semantics().measurementContract
+    value.budgetRef = DEFAULT_ANIMATION_LAB_BUDGET_REF_V5
+    value.metricCatalogVersion = 4
+
+    const incompatible = validateLabMeasurementContract(value)
+    assert.equal(incompatible.ok, false)
+    assert.ok(incompatible.errors.includes('measurementContract:budget-v5-requires-metric-catalog-v5'))
+
+    value.metricCatalogVersion = 5
     assert.equal(validateLabMeasurementContract(value).ok, true)
 
     value.budgetRef = DEFAULT_ANIMATION_LAB_BUDGET_REF_V3

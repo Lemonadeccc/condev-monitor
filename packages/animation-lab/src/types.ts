@@ -3,9 +3,9 @@ export const ANIMATION_LAB_SEMANTICS_VERSION = 2 as const
 export const ANIMATION_LAB_BUDGET_CATALOG_VERSION = 1 as const
 /** Compatibility default for scenarios that do not opt into a newer catalog. */
 export const ANIMATION_LAB_METRIC_CATALOG_VERSION = 1 as const
-export const ANIMATION_LAB_LATEST_METRIC_CATALOG_VERSION = 4 as const
+export const ANIMATION_LAB_LATEST_METRIC_CATALOG_VERSION = 5 as const
 
-export type LabMetricCatalogVersion = 1 | 2 | 3 | 4
+export type LabMetricCatalogVersion = 1 | 2 | 3 | 4 | 5
 
 export type LabActionKind =
     | 'wait'
@@ -180,7 +180,7 @@ export interface AnimationLabScenario {
     }
 }
 
-export type LabEvidenceLevel = 'controlled-lab-measurement' | 'runtime-observation' | 'unsupported-or-unknown'
+export type LabEvidenceLevel = 'controlled-lab-measurement' | 'runtime-observation' | 'caller-attested' | 'unsupported-or-unknown'
 export type LabMetricStatus = 'measured' | 'partial' | 'not-observed' | 'unsupported' | 'unknown'
 export type LabMetricFamily =
     | 'userOutcome'

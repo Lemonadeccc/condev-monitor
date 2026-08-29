@@ -82,7 +82,7 @@ const AGGREGATION_METHODS = new Set([
     'max',
 ])
 const METRIC_STATUSES = new Set(['measured', 'partial', 'not-observed', 'unsupported', 'unknown'])
-const EVIDENCE_LEVELS = new Set(['controlled-lab-measurement', 'runtime-observation', 'unsupported-or-unknown'])
+const EVIDENCE_LEVELS = new Set(['controlled-lab-measurement', 'runtime-observation', 'caller-attested', 'unsupported-or-unknown'])
 const TECHNOLOGY_AXES = new Set(['ui-framework', 'meta-runtime', 'motion-engine', 'renderer', 'graphics-api', 'media', 'browser-runtime'])
 const TECHNOLOGY_SOURCES = new Set(['scenario-declaration', 'runtime-probe', 'host-adapter', 'cdp-trace', 'lighthouse', 'unknown'])
 const TECHNOLOGY_STATUSES = new Set(['observed', 'declared', 'inferred', 'unsupported', 'unknown'])
@@ -287,12 +287,16 @@ function parseMeasurementContract(value: unknown, label: string, errors: string[
         value.metricCatalogVersion !== 1 &&
         value.metricCatalogVersion !== 2 &&
         value.metricCatalogVersion !== 3 &&
-        value.metricCatalogVersion !== 4
+        value.metricCatalogVersion !== 4 &&
+        value.metricCatalogVersion !== 5
     ) {
         add(errors, `${label}:invalid-metric-catalog-version`)
     }
     if (record(value.budgetRef) && value.budgetRef.budgetVersion === 4 && value.metricCatalogVersion !== 4) {
         add(errors, `${label}:budget-v4-requires-metric-catalog-v4`)
+    }
+    if (record(value.budgetRef) && value.budgetRef.budgetVersion === 5 && value.metricCatalogVersion !== 5) {
+        add(errors, `${label}:budget-v5-requires-metric-catalog-v5`)
     }
     if (finite(value.expectedHz, 1, 1_000) && finite(value.targetFrameMs, 1, 1_000)) {
         const expectedTarget = 1_000 / value.expectedHz
@@ -584,7 +588,8 @@ export function validateAnimationLabSemanticsV2(value: unknown): LabContractVali
         record(value.measurementContract) &&
         (value.measurementContract.metricCatalogVersion === 2 ||
             value.measurementContract.metricCatalogVersion === 3 ||
-            value.measurementContract.metricCatalogVersion === 4)
+            value.measurementContract.metricCatalogVersion === 4 ||
+            value.measurementContract.metricCatalogVersion === 5)
             ? value.measurementContract.metricCatalogVersion
             : ANIMATION_LAB_METRIC_CATALOG_VERSION
 
