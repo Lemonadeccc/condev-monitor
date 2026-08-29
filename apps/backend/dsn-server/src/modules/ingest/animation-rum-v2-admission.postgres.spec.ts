@@ -6,7 +6,7 @@ import { Pool } from 'pg'
 
 import { AnimationRumV2AdmissionService } from './animation-rum-v2-admission.service'
 
-// cspell:ignore regclass
+// cspell:ignore regclass conrelid conname convalidated constraintdef
 
 const describePostgres = process.env.RUN_POSTGRES_INTEGRATION === '1' ? describe : describe.skip
 const WRITE_SENTINEL = 'condev-animation-rum-v2-admission'
@@ -53,10 +53,19 @@ describePostgres('AnimationRumV2AdmissionService PostgreSQL integration', () => 
                     WHERE table_schema = 'public'
                       AND table_name = 'animation_rum_v2_capture_receipt'
                       AND column_name = 'payload_hash_version'
+                )
+                AND EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conrelid = 'public.animation_rum_v2_capture_receipt'::regclass
+                      AND conname = 'animation_rum_v2_receipt_version_check'
+                      AND convalidated
+                      AND position('contract_version = 2' IN pg_get_constraintdef(oid)) > 0
+                      AND position('ARRAY[1, 2]' IN pg_get_constraintdef(oid)) > 0
                 ) AS ready
         `)
         if (preflight.rows.length !== 1 || preflight.rows[0]?.ready !== true) {
-            throw new Error('Animation RUM v2 PostgreSQL migrations 003 and 004 are required before integration writes')
+            throw new Error('Animation RUM v2 PostgreSQL migrations 003, 004, and 008 are required before integration writes')
         }
         service = new AnimationRumV2AdmissionService(pool, { get: () => undefined } as never)
     })
@@ -191,6 +200,71 @@ describePostgres('AnimationRumV2AdmissionService PostgreSQL integration', () => 
             response: expect.objectContaining({ error: 'RUM_V2_IDENTITY_CONFLICT' }),
             status: 409,
         })
+    })
+
+    it('persists a schema 2 caller-attested media capture and its canonical outbox envelope', async () => {
+        const report = createAnimationRumV2GoldenReport()
+        report.snapshotSchemaVersion = 2
+        report.capabilities = {
+            ...report.capabilities,
+            'media-stage-attestation': 'supported',
+        }
+        report.coverage.resourcesMedia = { status: 'measured', evidenceLevel: 'runtime-observation' }
+        report.providerEvidence['media-stage-adapter'] = {
+            resourcesMedia: {
+                version: '0.1.0',
+                accepted: 1,
+                retained: 1,
+                evidence: 1,
+                dropped: 0,
+                rejected: 0,
+                truncated: false,
+            },
+        }
+        report.metrics.push({
+            metricId: 'media.stage.video.begin-to-first-visible.p95',
+            relation: 'adapter',
+            owner: 'media-stage-adapter',
+            value: 24,
+            samples: 1,
+            status: 'measured',
+        })
+
+        await expect(service.admitBatch(appId, [trackingPayload(report)], { nowEpochMs: ANIMATION_RUM_V2_GOLDEN_NOW })).resolves.toEqual(
+            expect.objectContaining({ accepted: 1, queued: 1, duplicates: 0 })
+        )
+
+        const state = await pool.query<{
+            snapshotSchemaVersion: number
+            envelopeText: string
+        }>(
+            `
+                SELECT receipt.snapshot_schema_version AS "snapshotSchemaVersion",
+                       outbox.envelope_text AS "envelopeText"
+                FROM public.animation_rum_v2_capture_receipt receipt
+                JOIN public.animation_rum_v2_outbox outbox
+                  ON outbox.application_id = receipt.application_id
+                 AND outbox.capture_id = receipt.capture_id
+                WHERE receipt.application_id = $1
+                  AND receipt.capture_id = $2
+            `,
+            [applicationId, report.captureId]
+        )
+        expect(state.rows).toHaveLength(1)
+        expect(Number(state.rows[0]!.snapshotSchemaVersion)).toBe(2)
+        expect(JSON.parse(state.rows[0]!.envelopeText)).toEqual(
+            expect.objectContaining({
+                info: expect.objectContaining({
+                    animationRum: expect.objectContaining({
+                        snapshotSchemaVersion: 2,
+                        capabilities: expect.objectContaining({ 'media-stage-attestation': 'supported' }),
+                        metrics: expect.arrayContaining([
+                            expect.objectContaining({ metricId: 'media.stage.video.begin-to-first-visible.p95' }),
+                        ]),
+                    }),
+                }),
+            })
+        )
     })
 
     it('topologically inserts a target-first batch while preserving response order', async () => {

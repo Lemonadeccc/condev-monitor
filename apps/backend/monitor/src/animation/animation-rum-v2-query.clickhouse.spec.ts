@@ -223,6 +223,93 @@ function gpuFixtureRows(appId: string, suffix: string, capturedAt: Date, receive
     return { captures, metrics, providers, mismatchCaptureId }
 }
 
+function mediaStageFixtureRows(appId: string, suffix: string, capturedAt: Date, receivedAt: Date) {
+    const capturedTimestamp = clickHouseTimestamp(capturedAt)
+    const receivedTimestamp = clickHouseTimestamp(receivedAt)
+    const eventId = `event_media_${suffix.slice(0, 16)}`
+    const captureId = `capture_media_${suffix.slice(0, 16)}`
+    const common = {
+        event_id: eventId,
+        capture_id: captureId,
+        app_id: appId,
+        scope: 'page',
+        captured_at: capturedTimestamp,
+        received_at: receivedTimestamp,
+        release: 'media-stage-1.0.0',
+        environment: 'integration',
+        route_key: 'media-stage-gate',
+        target_key: '',
+    }
+
+    return {
+        captureId,
+        capture: {
+            ...common,
+            parent_capture_id: '',
+            contract_version: 2,
+            snapshot_schema_version: 2,
+            dist: '1',
+            sdk_version: '0.1.0',
+            monitor_version: '0.1.0',
+            sample_rate: 1,
+            sampling_policy_version: 1,
+            visibility_state: 'visible',
+            reduced_motion: 0,
+            viewport_bucket: 'large',
+            dpr_bucket: '2',
+            refresh_hz: 60,
+            refresh_budget_source: 'explicit',
+            refresh_budget_confidence: 'explicit',
+            window_duration_ms: 10_000,
+            window_duration_capped: 0,
+            runtime_framework: 'vanilla',
+            runtime_renderer: 'canvas',
+            runtime_backend: 'webgl',
+            capabilities_json: JSON.stringify({ 'media-stage-attestation': 'supported' }),
+            coverage_json: JSON.stringify({
+                resourcesMedia: { status: 'measured', evidenceLevel: 'runtime-observation' },
+            }),
+            capture_sufficiency: 'sufficient',
+            capture_integrity: 'complete',
+            capture_quality_reasons: [],
+            adapter_error_count: 0,
+            provider_evidence_count: 1,
+            metric_count: 1,
+        },
+        metric: {
+            ...common,
+            dist: '1',
+            sample_rate: 1,
+            sampling_policy_version: 1,
+            runtime_framework: 'vanilla',
+            runtime_renderer: 'canvas',
+            runtime_backend: 'webgl',
+            metric_id: 'media.stage.webgl.begin-to-first-visible.p95',
+            family: 'resourcesMedia',
+            name: 'declaredWebglBeginToFirstVisibleMs',
+            stat: 'p95',
+            unit: 'ms',
+            relation: 'adapter',
+            owner: 'media-stage-adapter',
+            value: 12.5,
+            samples: 2,
+            status: 'measured',
+        },
+        provider: {
+            ...common,
+            owner: 'media-stage-adapter',
+            family: 'resourcesMedia',
+            provider_version: '0.1.0',
+            accepted: 2,
+            retained: 2,
+            evidence: 2,
+            dropped: 0,
+            rejected: 0,
+            truncated: 0,
+        },
+    }
+}
+
 async function cleanupApp(client: ReturnType<typeof createClient>, database: string, appId: string): Promise<void> {
     const errors: unknown[] = []
     for (const table of CLICKHOUSE_TABLES) {
@@ -404,6 +491,62 @@ describeIntegration('Animation RUM v2 query ClickHouse syntax', () => {
                 status: 409,
                 response: expect.objectContaining({ error: 'ANIMATION_RUM_V2_PROJECTION_INCOMPLETE' }),
             })
+        } finally {
+            await cleanupApp(client, database, appId)
+        }
+    })
+
+    it('reads schema 2 caller-attested media evidence from the real ClickHouse tables', async () => {
+        const suffix = randomUUID().replaceAll('-', '')
+        const appId = `rumV2MediaGate${suffix.slice(0, 16)}`
+        const receivedAt = new Date()
+        const capturedAt = new Date(receivedAt.getTime() - 60_000)
+        const rows = mediaStageFixtureRows(appId, suffix, capturedAt, receivedAt)
+        const service = new AnimationRumV2QueryService(client, { get: () => database } as any, applications as any)
+
+        try {
+            await client.insert({
+                table: `${database}.animation_rum_provider_evidence_v2`,
+                values: [rows.provider],
+                format: 'JSONEachRow',
+            })
+            await client.insert({
+                table: `${database}.animation_rum_metrics_v2`,
+                values: [rows.metric],
+                format: 'JSONEachRow',
+            })
+            await client.insert({
+                table: `${database}.animation_rum_captures_v2`,
+                values: [rows.capture],
+                format: 'JSONEachRow',
+            })
+
+            await expect(service.capture(41, appId, rows.captureId)).resolves.toEqual(
+                expect.objectContaining({
+                    snapshotSchemaVersion: 2,
+                    capture: expect.objectContaining({
+                        snapshotSchemaVersion: 2,
+                        capabilities: expect.objectContaining({ 'media-stage-attestation': 'supported' }),
+                    }),
+                    metrics: [
+                        expect.objectContaining({
+                            metricId: 'media.stage.webgl.begin-to-first-visible.p95',
+                            relation: 'adapter',
+                            owner: 'media-stage-adapter',
+                            value: 12.5,
+                        }),
+                    ],
+                    providerEvidence: [
+                        expect.objectContaining({
+                            owner: 'media-stage-adapter',
+                            family: 'resourcesMedia',
+                            accepted: 2,
+                            retained: 2,
+                            evidence: 2,
+                        }),
+                    ],
+                })
+            )
         } finally {
             await cleanupApp(client, database, appId)
         }

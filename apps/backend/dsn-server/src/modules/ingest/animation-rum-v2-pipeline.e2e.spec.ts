@@ -5,7 +5,7 @@ import type { AnimationRumV2Report } from '@condev-monitor/animation-rum-contrac
 import { createAnimationRumV2GoldenReport } from '@condev-monitor/animation-rum-contract/testing'
 import { Pool } from 'pg'
 
-// cspell:ignore pipelinee regclass
+// cspell:ignore pipelinee regclass conrelid conname convalidated constraintdef
 
 // This test writes to every durable pipeline store. It is intentionally more
 // restrictive than the PostgreSQL-only integration suites.
@@ -245,6 +245,36 @@ function addUnsupportedGpuFrame(report: AnimationRumV2Report): void {
     })
 }
 
+function useMediaStageSchema(report: AnimationRumV2Report, withCallerAttestedStage = false): void {
+    report.snapshotSchemaVersion = 2
+    report.capabilities = {
+        ...report.capabilities,
+        'media-stage-attestation': withCallerAttestedStage ? 'supported' : 'unknown',
+    }
+    if (!withCallerAttestedStage) return
+
+    report.coverage.resourcesMedia = { status: 'measured', evidenceLevel: 'runtime-observation' }
+    report.providerEvidence['media-stage-adapter'] = {
+        resourcesMedia: {
+            version: '0.1.0',
+            accepted: 1,
+            retained: 1,
+            evidence: 1,
+            dropped: 0,
+            rejected: 0,
+            truncated: false,
+        },
+    }
+    report.metrics.push({
+        metricId: 'media.stage.video.begin-to-first-visible.p95',
+        relation: 'adapter',
+        owner: 'media-stage-adapter',
+        value: 24,
+        samples: 1,
+        status: 'measured',
+    })
+}
+
 describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
     jest.setTimeout(120_000)
 
@@ -303,10 +333,19 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
                     WHERE table_schema = 'public'
                       AND table_name = 'animation_rum_v2_capture_receipt'
                       AND column_name = 'payload_hash_version'
+                )
+                AND EXISTS (
+                    SELECT 1
+                    FROM pg_constraint
+                    WHERE conrelid = 'public.animation_rum_v2_capture_receipt'::regclass
+                      AND conname = 'animation_rum_v2_receipt_version_check'
+                      AND convalidated
+                      AND position('contract_version = 2' IN pg_get_constraintdef(oid)) > 0
+                      AND position('ARRAY[1, 2]' IN pg_get_constraintdef(oid)) > 0
                 ) AS ready
         `)
         if (postgresPreflight.rows.length !== 1 || postgresPreflight.rows[0]?.ready !== true) {
-            throw new Error('Animation RUM v2 PostgreSQL migrations 003 and 004 are required before pipeline writes')
+            throw new Error('Animation RUM v2 PostgreSQL migrations 003, 004, and 008 are required before pipeline writes')
         }
 
         const clickhousePreflightResult = await clickhouse.query({
@@ -476,7 +515,7 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
         if (cleanupErrors.length > 0) throw new AggregateError(cleanupErrors, 'Animation RUM v2 pipeline cleanup failed')
     })
 
-    it('delivers page before target and projects both reports into all v2 ClickHouse tables', async () => {
+    it('delivers schema 2 page before target and projects caller-attested media stages into every v2 ClickHouse table', async () => {
         if (!pool || !clickhouse || !dsnBaseUrl) throw new Error('Pipeline E2E clients were not initialized')
 
         const suffix = randomUUID().replaceAll('-', '')
@@ -485,6 +524,7 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
         page.captureId = `capture_page_${suffix.slice(0, 24)}`
         page.capturedAt = new Date(Date.now() - 2_000).toISOString()
         addMeasuredGpuFrame(page)
+        useMediaStageSchema(page, true)
 
         const target = createAnimationRumV2GoldenReport()
         target.eventId = `event_target_${suffix.slice(0, 24)}`
@@ -495,6 +535,7 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
         target.capturedAt = new Date(Date.now() - 1_000).toISOString()
         target.metrics[0]!.relation = 'target-temporal-overlap'
         addUnsupportedGpuFrame(target)
+        useMediaStageSchema(target)
 
         const response = await fetch(new URL(`/dsn-api/tracking/${appId}`, dsnBaseUrl), {
             method: 'POST',
@@ -639,8 +680,8 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
                 const expectedCaptureIds = new Set([page.captureId, target.captureId])
                 return (
                     state.captures.length === 2 &&
-                    state.metrics.length === 4 &&
-                    state.providers.length === 3 &&
+                    state.metrics.length === 5 &&
+                    state.providers.length === 4 &&
                     state.captures.every(row => expectedCaptureIds.has(row.capture_id)) &&
                     state.metrics.every(row => expectedCaptureIds.has(row.capture_id)) &&
                     state.providers.every(row => expectedCaptureIds.has(row.capture_id))
@@ -668,16 +709,18 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
             })
         )
         expect(Number(pageCapture.contract_version)).toBe(2)
-        expect(Number(pageCapture.snapshot_schema_version)).toBe(1)
+        expect(Number(pageCapture.snapshot_schema_version)).toBe(2)
         expect(pageCapture.captured_at).toBe(clickHouseTimestamp(page.capturedAt))
-        expect(Number(pageCapture.provider_evidence_count)).toBe(2)
-        expect(Number(pageCapture.metric_count)).toBe(2)
+        expect(Number(pageCapture.provider_evidence_count)).toBe(3)
+        expect(Number(pageCapture.metric_count)).toBe(3)
         expect(JSON.parse(pageCapture.capabilities_json)).toMatchObject({
             'renderer-adapter': 'supported',
             'gpu-timer-query': 'supported',
+            'media-stage-attestation': 'supported',
         })
         expect(JSON.parse(pageCapture.coverage_json)).toMatchObject({
             renderer: { status: 'measured', evidenceLevel: 'runtime-observation' },
+            resourcesMedia: { status: 'measured', evidenceLevel: 'runtime-observation' },
         })
         expect(targetCapture).toEqual(
             expect.objectContaining({
@@ -695,12 +738,14 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
                 runtime_backend: 'webgpu',
             })
         )
+        expect(Number(targetCapture.snapshot_schema_version)).toBe(2)
         expect(targetCapture.captured_at).toBe(clickHouseTimestamp(target.capturedAt))
         expect(Number(targetCapture.provider_evidence_count)).toBe(1)
         expect(Number(targetCapture.metric_count)).toBe(2)
         expect(JSON.parse(targetCapture.capabilities_json)).toMatchObject({
             'renderer-adapter': 'supported',
             'gpu-timer-query': 'unsupported',
+            'media-stage-attestation': 'unknown',
         })
         expect(JSON.parse(targetCapture.coverage_json)).toMatchObject({
             renderer: { status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' },
@@ -778,6 +823,24 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
             })
         )
 
+        const pageMediaStageMetric = rowForMetric(clickhouseState.metrics, page.captureId, 'media.stage.video.begin-to-first-visible.p95')
+        expect(pageMediaStageMetric).toEqual(
+            expect.objectContaining({
+                event_id: page.eventId,
+                app_id: appId,
+                scope: 'page',
+                family: 'resourcesMedia',
+                name: 'declaredVideoBeginToFirstVisibleMs',
+                stat: 'p95',
+                unit: 'ms',
+                relation: 'adapter',
+                owner: 'media-stage-adapter',
+                status: 'measured',
+                value: 24,
+                samples: 1,
+            })
+        )
+
         for (const [captureId, eventId, scope] of [
             [page.captureId, page.eventId, 'page'],
             [target.captureId, target.eventId, 'target'],
@@ -816,5 +879,21 @@ describePipeline('Animation RUM v2 real DSN-to-ClickHouse pipeline', () => {
         expect(Number(rendererProvider.dropped)).toBe(0)
         expect(Number(rendererProvider.rejected)).toBe(0)
         expect(Number(rendererProvider.truncated)).toBe(0)
+
+        const mediaStageProvider = rowForProvider(clickhouseState.providers, page.captureId, 'media-stage-adapter', 'resourcesMedia')
+        expect(mediaStageProvider).toEqual(
+            expect.objectContaining({
+                event_id: page.eventId,
+                app_id: appId,
+                scope: 'page',
+                provider_version: '0.1.0',
+            })
+        )
+        expect(Number(mediaStageProvider.accepted)).toBe(1)
+        expect(Number(mediaStageProvider.retained)).toBe(1)
+        expect(Number(mediaStageProvider.evidence)).toBe(1)
+        expect(Number(mediaStageProvider.dropped)).toBe(0)
+        expect(Number(mediaStageProvider.rejected)).toBe(0)
+        expect(Number(mediaStageProvider.truncated)).toBe(0)
     })
 })
