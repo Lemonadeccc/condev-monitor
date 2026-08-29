@@ -6,7 +6,7 @@
         "dev": "next dev -p 3000",
         "start:dev": "next dev -p ${CONDEV_MONITOR_FRONTEND_PORT:-3000}",
         "build": "next build",
-        "test": "tsx --test lib/*.test.ts",
+        "test": "tsx --test lib/*.test.ts components/lab/*.test.ts",
         "start": "next start",
         "lint": "next lint",
         "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",

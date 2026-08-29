@@ -2,7 +2,7 @@ export type LabRunStatus = 'queued' | 'running' | 'completed' | 'partial' | 'fai
 
 export type LabRunSource = 'local-runner' | 'ci' | 'import' | 'unknown'
 
-/** These semantic API types mirror `@condev-monitor/animation-lab` v2. */
+/** These semantic API types mirror `@condev-monitor/animation-lab` v2/v3. */
 export type LabEvidenceLevel = 'controlled-lab-measurement' | 'runtime-observation' | 'caller-attested' | 'unsupported-or-unknown'
 export type LabEvidenceConfidence = 'explicit' | 'high' | 'medium' | 'low' | 'unknown'
 export type LabActionKind =
@@ -153,14 +153,71 @@ export type LabFinding = {
     limitations: string[]
 }
 
+export type LabAnimationCoverageItemKind =
+    | 'load'
+    | 'click'
+    | 'hover'
+    | 'scroll'
+    | 'drag'
+    | 'resize'
+    | 'keyboard'
+    | 'touch'
+    | 'pointer-path'
+    | 'renderer-object'
+    | 'business-state'
+
+export type LabAnimationCoverageItemStatus = 'passed' | 'failed' | 'not-executed'
+
+export type LabAnimationCoverageReason =
+    | 'review-required'
+    | 'no-reviewed-scenario'
+    | 'action-id-not-found'
+    | 'action-not-executed'
+    | 'action-failed'
+    | 'action-timed-out'
+    | 'outcome-contract-missing'
+    | 'outcome-not-observed'
+    | 'renderer-object-adapter-missing'
+    | 'renderer-object-not-resolved'
+    | 'authentication-required'
+    | 'driver-capability-unavailable'
+    | 'partial-attempt-coverage'
+
+export type LabAnimationCoverageItem = {
+    coverageId: string
+    kind: LabAnimationCoverageItemKind
+    actionId: string
+    origin: 'declared' | 'explorer' | 'recorder'
+    critical: boolean
+    authentication: 'none' | 'required-local-storage-state'
+    status: LabAnimationCoverageItemStatus
+    reasons: LabAnimationCoverageReason[]
+}
+
+export type LabAnimationCoverage = {
+    schemaVersion: 1
+    manifestHash: string
+    review: 'matched'
+    totals: {
+        declared: number
+        discovered: number
+        executed: number
+        passed: number
+        uncovered: number
+    }
+    items: LabAnimationCoverageItem[]
+}
+
 export type LabRunAnalysis = {
-    semanticsVersion: 2
+    semanticsVersion: 2 | 3
     measurementContract: LabMeasurementContract
     scenarioActions: LabScenarioAction[]
     actionWindows: LabActionWindow[]
     metrics: LabMetric[]
     technologyEvidence: LabTechnologyEvidence[]
     findings: LabFinding[]
+    /** Present only on semantics-v3 reports with a reviewed, matched critical-animation inventory. */
+    coverage?: LabAnimationCoverage
 }
 
 export type LabRun = {
@@ -210,7 +267,7 @@ export type LabRunsApiResponse = LabApiResponse<{
 
 export type LabRunApiResponse = LabApiResponse<{
     run: LabRun
-    /** Optional schema-v2 semantic projection. Missing or null on legacy reports. */
+    /** Optional semantic projection. Coverage is available only on semantics-v3 reports. */
     analysis?: LabRunAnalysis | null
 }>
 
@@ -220,6 +277,7 @@ export type LabCreateRequest = {
     name: string
     targetUrl: string
     browser: 'chromium' | 'firefox' | 'webkit'
+    authenticationMode: 'none' | 'required-local-storage-state'
 }
 
 export type LabRunnerGrant = {

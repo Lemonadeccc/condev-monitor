@@ -8,6 +8,7 @@ import { useParams, useSearchParams } from 'next/navigation'
 import { useMemo } from 'react'
 
 import { AIMonitorHeader, AIMonitorPage, AIPanelCard, AIStatCard, AIStateMessage } from '@/components/ai/page-shell'
+import { LabAnimationCoverageCard } from '@/components/lab/lab-animation-coverage-card'
 import { LabRunMetricTable } from '@/components/lab/lab-metric-table'
 import { LabProjectBudgetEvaluations } from '@/components/lab/lab-project-budget-evaluations'
 import { LabStatusBadge } from '@/components/lab/lab-status-badge'
@@ -206,13 +207,16 @@ export default function LabRunPage() {
                         ) : tab === 'animation' || tab === 'performance' ? (
                             <>
                                 {tab === 'animation' ? (
-                                    <AIPanelCard
-                                        title="运行级指标 / Run metrics"
-                                        description="跨测量尝试聚合的页面级证据；它与动作级指标分开显示，不能自动归因给某个动作或元素。"
-                                        headerBorder
-                                    >
-                                        <LabRunMetricTable run={run} analysis={analysis} />
-                                    </AIPanelCard>
+                                    <>
+                                        <LabAnimationCoverageCard analysis={analysis} />
+                                        <AIPanelCard
+                                            title="运行级指标 / Run metrics"
+                                            description="跨测量尝试聚合的页面级证据；它与动作级指标分开显示，不能自动归因给某个动作或元素。"
+                                            headerBorder
+                                        >
+                                            <LabRunMetricTable run={run} analysis={analysis} />
+                                        </AIPanelCard>
+                                    </>
                                 ) : null}
                                 {timelineQuery.isLoading ? (
                                     <AIPanelCard contentClassName="px-0">

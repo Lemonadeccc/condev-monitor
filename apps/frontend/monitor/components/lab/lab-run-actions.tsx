@@ -12,7 +12,7 @@ import { copyToClipboard } from '@/lib/clipboard'
 import { formatDateTime } from '@/lib/datetime'
 import type { LabCreateApiResponse, LabCreateRequest } from '@/types/lab'
 
-const GENERIC_SCENARIO_PATH = 'apps/backend/lab-runner/examples/generic-page.scenario.json'
+import { buildRunnerCommand, GENERIC_SCENARIO_PATH } from './lab-run-command'
 
 async function postLabRun(payload: LabCreateRequest): Promise<LabCreateApiResponse> {
     const response = await fetch('/api/labs', {
@@ -28,6 +28,7 @@ async function postLabRun(payload: LabCreateRequest): Promise<LabCreateApiRespon
 }
 
 type LabBrowserEngine = LabCreateRequest['browser']
+type LabAuthenticationMode = LabCreateRequest['authenticationMode']
 
 const BROWSER_OPTIONS: ReadonlyArray<{ value: LabBrowserEngine; label: string; note: string }> = [
     { value: 'chromium', label: 'Chromium（完整诊断）', note: '页面指标、CDP 时间线和 Lighthouse' },
@@ -35,27 +36,15 @@ const BROWSER_OPTIONS: ReadonlyArray<{ value: LabBrowserEngine; label: string; n
     { value: 'webkit', label: 'WebKit（通用指标）', note: '页面指标与动作重放；并非真机 Safari' },
 ]
 
-function buildRunnerCommand(runId: string, serverOrigin: string, browser: LabBrowserEngine) {
-    return [
-        `printf 'Paste the one-time Runner Grant: ' >&2`,
-        'IFS= read -r -s CONDEV_LAB_RUNNER_TOKEN',
-        `printf '\\n' >&2`,
-        "pnpm --filter '@condev-monitor/animation-lab-runner...' build && \\",
-        'CONDEV_LAB_RUNNER_TOKEN="$CONDEV_LAB_RUNNER_TOKEN" node apps/backend/lab-runner/build/cli.js \\',
-        `  --config ${GENERIC_SCENARIO_PATH} \\`,
-        `  --browser ${browser} \\`,
-        '  --out-dir ./lab-results \\',
-        `  --server ${serverOrigin} \\`,
-        `  --run-id ${runId}`,
-    ].join('\n')
-}
-
 export function LabRunActions({ appId }: { appId: string }) {
     const queryClient = useQueryClient()
     const [createOpen, setCreateOpen] = useState(false)
     const [name, setName] = useState('动画性能实验')
     const [targetUrl, setTargetUrl] = useState('')
     const [browser, setBrowser] = useState<LabBrowserEngine>('chromium')
+    const [authenticationMode, setAuthenticationMode] = useState<LabAuthenticationMode>('none')
+    const [scenarioPath, setScenarioPath] = useState(GENERIC_SCENARIO_PATH)
+    const [coverageManifestPath, setCoverageManifestPath] = useState('')
     const [submitting, setSubmitting] = useState(false)
     const [requestError, setRequestError] = useState('')
     const [created, setCreated] = useState<LabCreateApiResponse['data'] | null>(null)
@@ -84,7 +73,14 @@ export function LabRunActions({ appId }: { appId: string }) {
         setRequestError('')
         setCopyState(null)
         try {
-            const response = await postLabRun({ action: 'create', appId, name: name.trim(), targetUrl: targetUrl.trim(), browser })
+            const response = await postLabRun({
+                action: 'create',
+                appId,
+                name: name.trim(),
+                targetUrl: targetUrl.trim(),
+                browser,
+                authenticationMode,
+            })
             setCreated(response.data)
             void queryClient.invalidateQueries({ queryKey: ['lab-runs'] })
         } catch (error) {
@@ -103,7 +99,16 @@ export function LabRunActions({ appId }: { appId: string }) {
     const createdBrowser = BROWSER_OPTIONS.some(option => option.value === created?.run.browser)
         ? (created?.run.browser as LabBrowserEngine)
         : browser
-    const runnerCommand = created ? buildRunnerCommand(created.run.runId, serverOrigin, createdBrowser) : ''
+    const runnerCommand = created
+        ? buildRunnerCommand({
+              runId: created.run.runId,
+              serverOrigin,
+              browser: createdBrowser,
+              authenticationMode,
+              scenarioPath,
+              coverageManifestPath,
+          })
+        : ''
 
     return (
         <Dialog open={createOpen} onOpenChange={updateOpen}>
@@ -129,6 +134,9 @@ export function LabRunActions({ appId }: { appId: string }) {
                                 <p className="mt-1 break-all text-xs text-muted-foreground">Run ID：{created.run.runId}</p>
                                 <p className="mt-1 text-xs text-muted-foreground">
                                     Grant 过期时间：{formatDateTime(created.runnerGrant.expiresAt)}
+                                </p>
+                                <p className="mt-1 text-xs text-muted-foreground">
+                                    登录态：{authenticationMode === 'required-local-storage-state' ? '需要本地 storage-state' : '不需要'}
                                 </p>
                             </div>
                         </div>
@@ -240,12 +248,62 @@ export function LabRunActions({ appId }: { appId: string }) {
                                 hash，登录态请留在本地 storage-state。
                             </p>
                         </div>
+                        <div className="grid gap-2">
+                            <Label htmlFor="lab-authentication-mode">页面登录态</Label>
+                            <select
+                                id="lab-authentication-mode"
+                                value={authenticationMode}
+                                onChange={event => setAuthenticationMode(event.target.value as LabAuthenticationMode)}
+                                disabled={submitting}
+                                className="h-10 rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                                <option value="none">无需登录</option>
+                                <option value="required-local-storage-state">需要本地 storage-state</option>
+                            </select>
+                            <p className="text-xs text-muted-foreground">
+                                登录文件只由本地 Runner 读取，不上传到 Monitor。请放在仓库外的私有绝对路径，并限制文件权限。
+                            </p>
+                        </div>
+                        <div className="grid gap-2">
+                            <Label htmlFor="lab-scenario-path">本地 Scenario 路径</Label>
+                            <Input
+                                id="lab-scenario-path"
+                                value={scenarioPath}
+                                onChange={event => setScenarioPath(event.target.value)}
+                                required
+                                maxLength={4096}
+                                autoComplete="off"
+                                spellCheck={false}
+                                disabled={submitting}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                只用于生成本地 Runner 命令，不会发送给 Monitor 后端。默认使用 generic
+                                场景；可填写仓库相对路径或本地绝对路径。
+                            </p>
+                        </div>
+                        <div className="grid gap-2">
+                            <Label htmlFor="lab-coverage-manifest-path">本地 Coverage Manifest 路径（可选）</Label>
+                            <Input
+                                id="lab-coverage-manifest-path"
+                                value={coverageManifestPath}
+                                onChange={event => setCoverageManifestPath(event.target.value)}
+                                maxLength={4096}
+                                placeholder="apps/backend/lab-runner/examples/example.coverage.json"
+                                autoComplete="off"
+                                spellCheck={false}
+                                disabled={submitting}
+                            />
+                            <p className="text-xs text-muted-foreground">
+                                只保留在当前页面内存并加入本地命令；不上传路径或文件内容。提供已审核 manifest 后，Runner 才能生成 semantics
+                                v3 覆盖投影。
+                            </p>
+                        </div>
                         {requestError ? <p className="text-sm text-destructive">{requestError}</p> : null}
                         <DialogFooter>
                             <Button type="button" variant="outline" onClick={() => updateOpen(false)} disabled={submitting}>
                                 取消
                             </Button>
-                            <Button type="submit" disabled={disabled || !name.trim() || !targetUrl.trim()}>
+                            <Button type="submit" disabled={disabled || !name.trim() || !targetUrl.trim() || !scenarioPath.trim()}>
                                 {submitting ? '正在创建…' : '创建并生成 Grant'}
                             </Button>
                         </DialogFooter>
