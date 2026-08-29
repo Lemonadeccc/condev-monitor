@@ -28,11 +28,20 @@ export class LabAlertStateEntity {
     @Column({ type: 'uuid' })
     lastEvaluationId: string
 
+    @Column({ type: 'uuid', nullable: true })
+    transitionEventId: string | null
+
     @Column({ type: 'timestamptz', nullable: true })
     openedAt: Date | null
 
     @Column({ type: 'timestamptz', nullable: true })
     resolvedAt: Date | null
+
+    @Column({ type: 'integer', nullable: true })
+    acknowledgedBy: number | null
+
+    @Column({ type: 'timestamptz', nullable: true })
+    acknowledgedAt: Date | null
 
     @Column({ type: 'timestamptz', default: () => 'CURRENT_TIMESTAMP' })
     updatedAt: Date

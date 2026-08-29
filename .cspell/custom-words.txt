@@ -113,3 +113,7 @@ regclass
 lookback
 metatype
 sublabel
+cooldown
+hashtextextended
+transactionally
+xact
