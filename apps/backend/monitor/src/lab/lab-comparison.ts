@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto'
+
 import type { LabRunStatus } from './lab.contracts'
 import type { ParsedAnimationReport } from './lab-projection'
 import {
@@ -505,6 +507,23 @@ function copyContext(context: LabComparisonCandidate['comparisonContext']): LabC
             budgetRef: { ...context.measurementContract.budgetRef },
         },
     }
+}
+
+/**
+ * Binds a pinned baseline to the exact validated comparison envelope. The
+ * digest excludes metric values and run ids; it includes the scenario,
+ * execution contract, and normalized capability tuple that must remain stable
+ * for a later comparison.
+ */
+export function digestAnimationLabComparisonCandidate(candidate: LabComparisonCandidate): string | null {
+    if (invalidCandidateReasons(candidate, 'before').length > 0) return null
+    const payload = {
+        appId: candidate.appId,
+        scenarioKey: candidate.scenarioKey,
+        comparisonContext: copyContext(candidate.comparisonContext),
+        capabilities: normalizedCapabilities(candidate.measuredAttempts[0]!.capabilities),
+    }
+    return createHash('sha256').update(JSON.stringify(payload)).digest('hex')
 }
 
 function collectMetricGroups(attempts: readonly LabComparisonMeasuredAttempt[]): Map<string, MetricGroup> {

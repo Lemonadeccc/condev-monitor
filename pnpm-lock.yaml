@@ -281,6 +281,9 @@ importers:
       '@clickhouse/client':
         specifier: ^1.13.0
         version: 1.13.0
+      '@condev-monitor/animation-lab':
+        specifier: workspace:*
+        version: link:../../../packages/animation-lab
       '@condev-monitor/animation-rum-contract':
         specifier: workspace:*
         version: link:../../../packages/animation-rum-contract

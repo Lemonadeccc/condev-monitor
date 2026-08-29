@@ -40,11 +40,13 @@ import {
     ANIMATION_LAB_COMPARISON_SCHEMA_VERSION,
     type AnimationLabComparisonResult,
     compareAnimationLabCandidates,
+    digestAnimationLabComparisonCandidate,
     type LabComparisonCandidate,
     type LabComparisonRejectionReason,
     type LabComparisonUnavailableReason,
     unavailableAnimationLabComparison,
 } from './lab-comparison'
+import { LabPolicyJobService } from './lab-policy-job.service'
 import {
     LAB_ANIMATION_REPORT_DECODED_MAX_BYTES,
     LAB_PLATFORM_TIMELINE_EVENT_LIMIT,
@@ -132,7 +134,8 @@ export class LabService {
         @InjectRepository(LabRunnerGrantEntity) private readonly grantRepository: Repository<LabRunnerGrantEntity>,
         private readonly dataSource: DataSource,
         private readonly applicationService: ApplicationService,
-        private readonly storage: LabStorageService
+        private readonly storage: LabStorageService,
+        private readonly policyJobs: LabPolicyJobService
     ) {}
 
     async createRun(userId: number, input: CreateLabRunInput) {
@@ -255,6 +258,26 @@ export class LabService {
         return compareAnimationLabCandidates(beforeCandidate!, afterCandidate!)
     }
 
+    async getComparisonCandidateForPolicy(
+        userId: number,
+        runId: string
+    ): Promise<{
+        candidate: LabComparisonCandidate
+        contextDigest: string
+    }> {
+        const run = await this.requireRun(runId)
+        await this.applicationService.assertOwned(run.appId, userId)
+        if (run.status !== 'completed') throw new ConflictException('A baseline must be a completed Lab run')
+        const artifact = await this.latestComparisonArtifact(run)
+        if (!artifact || this.isExpired(artifact)) throw new NotFoundException('Current animation report evidence is unavailable')
+        const report = await this.readAnimationReport(artifact)
+        const candidate = this.comparisonCandidate(run, report)
+        if (!candidate) throw new ConflictException('Lab run does not contain a valid comparison candidate')
+        const contextDigest = digestAnimationLabComparisonCandidate(candidate)
+        if (!contextDigest) throw new ConflictException('Lab run comparison evidence is invalid')
+        return { candidate, contextDigest }
+    }
+
     async getTimeline(userId: number, runId: string) {
         const run = await this.requireRun(runId)
         await this.applicationService.assertOwned(run.appId, userId)
@@ -338,11 +361,13 @@ export class LabService {
             if (input.status === 'failed' && !input.errorCode && !run.errorCode) {
                 throw new BadRequestException('A failed lab run requires errorCode')
             }
+            const wasCompleted = run.status === 'completed'
             updateLabRunState(run, input)
             if (run.status === 'completed') run.errorCode = null
             grant.lastUsedAt = new Date()
             await manager.getRepository(LabRunnerGrantEntity).save(grant)
             await manager.getRepository(LabRunEntity).save(run)
+            if (!wasCompleted && run.status === 'completed') await this.policyJobs.enqueueForCompletedRun(manager, run)
             return this.serializeRun(run)
         })
     }

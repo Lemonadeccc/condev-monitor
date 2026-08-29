@@ -192,7 +192,8 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             {} as never,
             applications as never,
-            storage as never
+            storage as never,
+            {} as never
         )
         Object.defineProperty(service, 'readAnimationReport', {
             value: jest.fn().mockResolvedValue({
@@ -232,7 +233,8 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             {} as never,
             applications as never,
-            storage as never
+            storage as never,
+            {} as never
         )
         const readAnimationReport = jest.fn().mockResolvedValue({
             analysis: { scenarioActions: [{ actionId: 'hero-hover-01', label: 'hover-card' }] },
@@ -280,6 +282,7 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             {} as never,
             { assertOwned: jest.fn() } as never,
+            {} as never,
             {} as never
         )
         Object.defineProperty(service, 'readAnimationReport', {
@@ -318,6 +321,7 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             {} as never,
             { assertOwned: jest.fn() } as never,
+            {} as never,
             {} as never
         )
         const timeline = { schemaVersion: 2, actionPhaseSummaries: [] }
@@ -347,6 +351,7 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             dataSource as never,
             applications as never,
+            {} as never,
             {} as never
         )
 
@@ -411,6 +416,7 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             dataSource as never,
             { assertOwned: jest.fn() } as never,
+            {} as never,
             {} as never
         )
 
@@ -519,6 +525,7 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             dataSource as never,
             { assertOwned: jest.fn() } as never,
+            {} as never,
             {} as never
         )
 
@@ -596,7 +603,8 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             dataSource as never,
             { assertOwned: jest.fn() } as never,
-            storage as never
+            storage as never,
+            {} as never
         )
 
         await expect(service.updateRunFromRunner(run.id, rawToken, 4, { phase: 'processing', progress: 0.75 })).rejects.toMatchObject({
@@ -699,7 +707,8 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             dataSource as never,
             { assertOwned: jest.fn() } as never,
-            storage as never
+            storage as never,
+            {} as never
         )
 
         await expect(
@@ -818,7 +827,8 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             dataSource as never,
             { assertOwned: jest.fn() } as never,
-            storage as never
+            storage as never,
+            {} as never
         )
         Object.defineProperty(service, 'readAnimationReport', {
             value: jest.fn().mockResolvedValue({
@@ -928,7 +938,8 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             dataSource as never,
             { assertOwned: jest.fn() } as never,
-            storage as never
+            storage as never,
+            {} as never
         )
 
         await expect(service.negotiateRunnerContract(run.id, rawToken, 4)).resolves.toEqual({
@@ -981,6 +992,7 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             {} as never,
             { assertOwned: jest.fn() } as never,
+            {} as never,
             {} as never
         )
         const validConfig = parseCreateLabRunInput({ appId: 'app-123', scenarioKey: 'pointer.follow.v1' }).config
@@ -1031,6 +1043,7 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             dataSource as never,
             { assertOwned: jest.fn() } as never,
+            {} as never,
             {} as never
         )
 
@@ -1048,7 +1061,15 @@ describe('LabService runner grants and ownership', () => {
         runs.findOne.mockResolvedValue(run)
         artifacts.find.mockResolvedValue([artifact])
         const applications = { assertOwned: jest.fn().mockResolvedValue(undefined) }
-        const service = new LabService(runs as never, artifacts as never, grants as never, {} as never, applications as never, {} as never)
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            {} as never,
+            applications as never,
+            {} as never,
+            {} as never
+        )
         const analysis = {
             semanticsVersion: 2 as const,
             measurementContract: {
@@ -1108,6 +1129,7 @@ describe('LabService runner grants and ownership', () => {
             grants as never,
             {} as never,
             { assertOwned: jest.fn().mockResolvedValue(undefined) } as never,
+            {} as never,
             {} as never
         )
         Object.defineProperty(service, 'readAnimationReport', {
@@ -1150,7 +1172,15 @@ describe('LabService runner grants and ownership', () => {
             metricCatalogVersion: 1 as const,
         }
         const run = runEntity({ config: JSON.stringify({ ...config, measurementContract }) })
-        const service = new LabService(runs as never, artifacts as never, grants as never, {} as never, {} as never, {} as never)
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            {} as never,
+            {} as never,
+            {} as never,
+            {} as never
+        )
         const report: any = {
             runId: run.id,
             compactSummary: {},
@@ -1231,7 +1261,15 @@ describe('LabService runner grants and ownership', () => {
             config: { browser, durationMs: 15_000, trace: true, lighthouse: false },
         }).config
         const run = runEntity({ config: JSON.stringify(config) })
-        const service = new LabService(runs as never, artifacts as never, grants as never, {} as never, {} as never, {} as never)
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            {} as never,
+            {} as never,
+            {} as never,
+            {} as never
+        )
         const parsedReport = {
             runId: run.id,
             compactSummary: { limitations: [`cdp-trace-unavailable-browser-${browser}`] },
@@ -1277,7 +1315,15 @@ describe('LabService runner grants and ownership', () => {
         const runs = repository<LabRunEntity>()
         const artifacts = repository<LabArtifactEntity>()
         const grants = repository<LabRunnerGrantEntity>()
-        const service = new LabService(runs as never, artifacts as never, grants as never, {} as never, {} as never, {} as never)
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            {} as never,
+            {} as never,
+            {} as never,
+            {} as never
+        )
         const enabled = parseCreateLabRunInput({
             appId: 'app-123',
             scenarioKey: 'pointer.follow.v1',
@@ -1418,7 +1464,15 @@ function comparisonHarness() {
     const grants = repository<LabRunnerGrantEntity>()
     const applications = { assertOwned: jest.fn().mockResolvedValue(undefined) }
     const storage = { readStoredJson: jest.fn() }
-    const service = new LabService(runs as never, artifacts as never, grants as never, {} as never, applications as never, storage as never)
+    const service = new LabService(
+        runs as never,
+        artifacts as never,
+        grants as never,
+        {} as never,
+        applications as never,
+        storage as never,
+        {} as never
+    )
     return { service, runs, artifacts, applications, storage }
 }
 
@@ -1595,5 +1649,64 @@ describe('LabService Before/After comparisons', () => {
 
         await expect(service.compareRuns(7, { beforeRunId: beforeId, afterRunId: beforeId })).rejects.toBeInstanceOf(BadRequestException)
         expect(runs.findOne).not.toHaveBeenCalled()
+    })
+})
+
+describe('LabService project policy scheduling', () => {
+    it('enqueues project policy evaluation only on the first transition to completed', async () => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const rawToken = `labg_${'z'.repeat(43)}`
+        const config = parseCreateLabRunInput({ appId: 'app-123', scenarioKey: 'hero.hover' }).config
+        const run = runEntity({ status: 'running', phase: 'uploading', progress: 0.9, config: JSON.stringify(config) })
+        const grant: LabRunnerGrantEntity = {
+            id: '22222222-2222-4222-8222-222222222222',
+            runId: run.id,
+            appId: run.appId,
+            tokenHash: createHash(rawToken),
+            expiresAt: new Date(Date.now() + 60_000),
+            consumedAt: new Date(),
+            lastUsedAt: new Date(),
+            revokedAt: null,
+            createdAt: new Date(),
+        }
+        runs.findOne.mockResolvedValue(run)
+        grants.findOne.mockResolvedValue(grant)
+        const repositories = new Map<unknown, unknown>([
+            [LabRunEntity, runs],
+            [LabArtifactEntity, artifacts],
+            [LabRunnerGrantEntity, grants],
+        ])
+        const manager = { getRepository: (entity: unknown) => repositories.get(entity) }
+        const dataSource = { transaction: jest.fn(async callback => callback(manager)) }
+        const policyJobs = { enqueueForCompletedRun: jest.fn().mockResolvedValue(1) }
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            dataSource as never,
+            { assertOwned: jest.fn() } as never,
+            {} as never,
+            policyJobs as never
+        )
+
+        await expect(
+            service.updateRunFromRunner(run.id, rawToken, LAB_RUNNER_CONTRACT_VERSION, {
+                status: 'completed',
+                phase: 'done',
+                progress: 100,
+            })
+        ).resolves.toEqual(expect.objectContaining({ status: 'completed', phase: 'done', progress: 100 }))
+        expect(policyJobs.enqueueForCompletedRun).toHaveBeenCalledWith(manager, run)
+
+        await expect(
+            service.updateRunFromRunner(run.id, rawToken, LAB_RUNNER_CONTRACT_VERSION, {
+                status: 'completed',
+                phase: 'done',
+                progress: 100,
+            })
+        ).resolves.toEqual(expect.objectContaining({ status: 'completed' }))
+        expect(policyJobs.enqueueForCompletedRun).toHaveBeenCalledTimes(1)
     })
 })
