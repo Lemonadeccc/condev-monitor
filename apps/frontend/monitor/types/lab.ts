@@ -253,6 +253,12 @@ export type LabTimelineStackFrame = {
     fileName?: string | null
     lineNumber?: number | null
     columnNumber?: number | null
+    authoredStatus?: 'mapped' | 'not-eligible' | 'map-not-supplied' | 'segment-not-found'
+    authored?: {
+        fileName: string
+        lineNumber: number
+        columnNumber: number
+    } | null
 }
 
 export type LabTimelineEvent = {
@@ -298,15 +304,25 @@ export type LabTraceActionPhaseSummary = {
     limitations: string[]
 }
 
+export type LabTimelineAuthoredSource = {
+    status: 'measured' | 'partial' | 'not-observed'
+    coordinateBase: 0
+    frameCount: number
+    eligibleFrameCount: number
+    mappedFrameCount: number
+    limitations: string[]
+}
+
 export type LabTimelineApiResponse = LabApiResponse<{
     runId: string
-    schemaVersion: 1 | 2
+    schemaVersion: 1 | 2 | 3
     durationMs: number
     events: LabTimelineEvent[]
     totalEvents: number
     truncated: boolean
     maxEvents: number
     actionPhaseSummaries?: LabTraceActionPhaseSummary[]
+    authoredSource?: LabTimelineAuthoredSource | null
 }>
 
 export type LabLighthouseCategory = {

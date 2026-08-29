@@ -5,7 +5,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { boundTimelineEvents, formatLabDuration } from '@/lib/lab'
-import type { LabTimelineCategory, LabTimelineEvent } from '@/types/lab'
+import { formatLabTimelineStackFrame, labAuthoredSourceStatusLabel } from '@/lib/lab-trace-display'
+import type { LabTimelineAuthoredSource, LabTimelineCategory, LabTimelineEvent } from '@/types/lab'
 
 const CATEGORY_COLORS: Record<LabTimelineCategory, string> = {
     frame: '#0ea5e9',
@@ -52,13 +53,6 @@ function eventLane(event: LabTimelineEvent) {
     return event.lane?.trim() || CATEGORY_LABELS[event.category]
 }
 
-function formatStackFrame(frame: NonNullable<LabTimelineEvent['stack']>[number]) {
-    const location = frame.fileName
-        ? `${frame.fileName}${frame.lineNumber == null ? '' : `:${frame.lineNumber}${frame.columnNumber == null ? '' : `:${frame.columnNumber}`}`}`
-        : '未知位置'
-    return `${frame.functionName || '(anonymous)'} · ${location}`
-}
-
 type TimelineRecommendation = {
     durationContext: string
     nextStep: string
@@ -70,7 +64,7 @@ function recommendForTimelineEvent(event: LabTimelineEvent): TimelineRecommendat
     const formattedDuration = formatLabDuration(duration)
     const firstFrame = event.stack?.[0]
     const sourceContext = firstFrame
-        ? `首个可用栈帧是 ${formatStackFrame(firstFrame)}。可先从这里向调用方回溯，但它只是候选入口，不等同于已确认根因。`
+        ? `首个可用栈帧是 ${formatLabTimelineStackFrame(firstFrame)}。可先从这里向调用方回溯，但它只是候选入口，不等同于已确认根因。`
         : '这个事件没有可用栈帧，暂时无法定位到具体源码；可在本地原始 trace 中结合相邻事件和浏览器调用树继续排查。'
 
     switch (event.category) {
@@ -158,11 +152,13 @@ export function LabTimeline({
     durationMs,
     totalEvents,
     truncated,
+    authoredSource,
 }: {
     events: LabTimelineEvent[]
     durationMs: number
     totalEvents: number
     truncated: boolean
+    authoredSource?: LabTimelineAuthoredSource | null
 }) {
     const orderedEvents = useMemo(
         () => boundTimelineEvents([...events].sort((left, right) => left.startTimeMs - right.startTimeMs)),
@@ -301,10 +297,22 @@ export function LabTimeline({
         <div className="grid min-w-0 grid-cols-1 xl:grid-cols-[minmax(0,1fr)_22rem]">
             <div className="min-w-0 border-b xl:border-r xl:border-b-0">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3 text-xs text-muted-foreground">
-                    <span>
-                        显示 {orderedEvents.length.toLocaleString()} / {totalEvents.toLocaleString()} 个事件
-                        {truncated || events.length > orderedEvents.length ? '（已做有界采样）' : ''}
-                    </span>
+                    <div className="grid gap-1">
+                        <span>
+                            显示 {orderedEvents.length.toLocaleString()} / {totalEvents.toLocaleString()} 个事件
+                            {truncated || events.length > orderedEvents.length ? '（已做有界采样）' : ''}
+                        </span>
+                        {authoredSource ? (
+                            <>
+                                <span>
+                                    Source map 源码候选 {authoredSource.mappedFrameCount.toLocaleString()} /{' '}
+                                    {authoredSource.eligibleFrameCount.toLocaleString()} 个可映射保留栈帧 ·{' '}
+                                    {labAuthoredSourceStatusLabel(authoredSource.status)}
+                                </span>
+                                <span>仅使用本地显式 manifest；source map 与源码不会上传。源码候选用于定位，不等同于性能根因。</span>
+                            </>
+                        ) : null}
+                    </div>
                     <span className="inline-flex items-center gap-1.5">
                         <MousePointer2 className="h-3.5 w-3.5" aria-hidden="true" /> 点击事件，或聚焦后使用 ← / →
                     </span>
@@ -408,7 +416,7 @@ export function LabTimeline({
                                     {selectedEvent.stack.slice(0, 100).map((frame, index) => (
                                         <li key={`${index}:${frame.fileName ?? ''}:${frame.lineNumber ?? ''}`} className="break-all">
                                             <span className="mr-2 text-muted-foreground">{index + 1}.</span>
-                                            {formatStackFrame(frame)}
+                                            {formatLabTimelineStackFrame(frame)}
                                         </li>
                                     ))}
                                 </ol>

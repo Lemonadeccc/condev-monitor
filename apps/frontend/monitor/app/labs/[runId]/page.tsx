@@ -254,6 +254,7 @@ export default function LabRunPage() {
                                                           ).length
                                                 }
                                                 truncated={timeline.truncated}
+                                                authoredSource={timeline.authoredSource}
                                             />
                                         </AIPanelCard>
                                     </>

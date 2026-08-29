@@ -13,6 +13,7 @@ import {
     resolveLabBudgetRule,
 } from '@/lib/lab-actions'
 import { formatLabMetricValue, getLabLimitationLabel, labBudgetRefLabel } from '@/lib/lab-metrics'
+import { formatLabActionStackCandidate } from '@/lib/lab-trace-display'
 import { cn } from '@/lib/utils'
 import type {
     LabBudgetRuleRef,
@@ -727,9 +728,7 @@ function ActionDetail({
                                             <span>{confidenceLabel(event.confidence)}</span>
                                         </div>
                                         <p className="mt-2 break-all font-mono text-xs text-muted-foreground">
-                                            {firstFrame
-                                                ? `候选首栈：${firstFrame.functionName || '(anonymous)'} · ${firstFrame.fileName || '未知位置'}${firstFrame.lineNumber == null ? '' : `:${firstFrame.lineNumber}`}`
-                                                : '未采集可用调用栈。'}
+                                            {firstFrame ? formatLabActionStackCandidate(firstFrame) : '未采集可用调用栈。'}
                                         </p>
                                     </li>
                                 )
