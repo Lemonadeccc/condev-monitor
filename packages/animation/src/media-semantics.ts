@@ -72,6 +72,11 @@ export interface MediaSemanticStageRecorderOptions {
     maximumActiveAttempts?: number
 }
 
+/** Optional observer for closed, immutable attempts. Observer failures never affect recorder state. */
+export interface MediaSemanticStageRecorderObserver {
+    onAttemptSettled(record: Readonly<MediaSemanticAttemptRecord>): void
+}
+
 interface AttemptController {
     recordStage(stage: MediaSemanticStageKind, input: MediaSemanticStageInput): boolean
     settle(outcome: MediaSemanticAttemptOutcome, timestampMs: number): Readonly<MediaSemanticAttemptRecord>
@@ -166,7 +171,10 @@ function validTerminalTimestamp(value: unknown, startedAt: number, minimumTimest
  * It never opens a collector interaction, reads or controls a media host, or
  * projects these records into a RUM contract.
  */
-export function createMediaSemanticStageRecorder(options: MediaSemanticStageRecorderOptions = {}): MediaSemanticStageRecorder {
+export function createMediaSemanticStageRecorder(
+    options: MediaSemanticStageRecorderOptions = {},
+    observer?: MediaSemanticStageRecorderObserver
+): MediaSemanticStageRecorder {
     const capacity = boundedCapacity(options.capacity)
     const maximumActiveAttempts = boundedMaximumActiveAttempts(options.maximumActiveAttempts)
     const attempts = new BoundedRing<MediaSemanticAttemptRecord>(capacity)
@@ -248,6 +256,11 @@ export function createMediaSemanticStageRecorder(options: MediaSemanticStageReco
                     active.delete(controller)
                     handleState.result = record
                     handleState.controller = null
+                    try {
+                        observer?.onAttemptSettled(record)
+                    } catch {
+                        // Diagnostics observers cannot alter caller-owned media lifecycle state.
+                    }
                     return record
                 },
                 cancelFromDispose(): void {

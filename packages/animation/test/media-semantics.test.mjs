@@ -195,3 +195,26 @@ test('hostile stage projection cannot add evidence during reentrant disposal', (
     assert.equal(recorder.snapshot().attempts[0].decodeReady, null)
     assert.equal(recorder.snapshot().status, 'disposed')
 })
+
+test('notifies an isolated observer exactly once for each immutable settled attempt', () => {
+    const observed = []
+    const recorder = createMediaSemanticStageRecorder(
+        {},
+        {
+            onAttemptSettled(record) {
+                observed.push(record)
+                throw new Error('observer failure must stay isolated')
+            },
+        }
+    )
+    const completed = recorder.begin('image', 10)
+    const completedRecord = completed.end(20)
+    assert.equal(completed.end(30), completedRecord)
+    const cancelled = recorder.begin('video', 30)
+    recorder.dispose()
+
+    assert.equal(observed.length, 2)
+    assert.equal(observed[0], completedRecord)
+    assert.equal(observed[1], cancelled.cancel(40))
+    assert.equal(Object.isFrozen(observed[1]), true)
+})
