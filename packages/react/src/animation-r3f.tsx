@@ -34,9 +34,9 @@ export interface CondevR3FSetupError {
 export interface CondevR3FObserverProps {
     /** The same client returned by `@condev-monitor/react/animation` `init()`. */
     client: Pick<AnimationBrowserClient, 'animation'>
-    /** Explicit renderer provenance; getContext() is read only for opt-in GPU timing. */
-    backend: WebGlGpuTimerBackend
-    /** Explicit sparse GPU timing. Disabled unless exclusive query ownership is attested. */
+    /** Explicit renderer provenance; WebGPU records public host counters without claiming GPU timing. */
+    backend: WebGlGpuTimerBackend | 'webgpu'
+    /** Explicit sparse WebGL GPU timing. Disabled unless exclusive query ownership is attested. */
     gpuTiming?: false | CondevR3FGpuTimingOptions
     /** Local-only setup diagnostics; callback failures are isolated from the app. */
     onSetupError?: (error: CondevR3FSetupError) => void
@@ -55,6 +55,55 @@ function CondevR3FGpuFrameBoundary({ adapterRef }: { adapterRef: { current: Thre
         adapterRef.current?.beginExternalFrame()
     }, gpuFramePriority)
     return null
+}
+
+type ThreeCommonRendererPublicLike = ThreeRendererPublicLike & {
+    info?: {
+        autoReset?: boolean
+        /** Three's common WebGPU/WebGL backend frame sequence. */
+        frame?: number
+        render?: {
+            frame?: number
+            calls?: number
+            /** Three's common backend per-frame draw-call counter. */
+            drawCalls?: number
+            triangles?: number
+            lines?: number
+            points?: number
+        }
+        memory?: {
+            geometries?: number
+            textures?: number
+        }
+        programs?: ArrayLike<unknown> | null
+    }
+}
+
+function readThreeRendererCounters(renderer: ThreeCommonRendererPublicLike, backend: CondevR3FObserverProps['backend']) {
+    const info = renderer.info
+    const render = info?.autoReset === false ? undefined : info?.render
+    const memory = info?.memory
+    const programs = info?.programs
+    const drawCalls = backend === 'webgpu' ? render?.drawCalls : render?.calls
+    return {
+        gpuTimerCapability: 'disabled' as const,
+        ...(drawCalls === undefined ? {} : { drawCalls }),
+        ...(render?.triangles === undefined ? {} : { triangles: render.triangles }),
+        ...(render?.lines === undefined ? {} : { lines: render.lines }),
+        ...(render?.points === undefined ? {} : { points: render.points }),
+        ...(memory?.geometries === undefined ? {} : { geometries: memory.geometries }),
+        ...(memory?.textures === undefined ? {} : { textures: memory.textures }),
+        ...(programs?.length === undefined ? {} : { programs: programs.length }),
+    }
+}
+
+function publicFrameSequence(renderer: ThreeCommonRendererPublicLike, backend: CondevR3FObserverProps['backend']): number | undefined {
+    try {
+        const frame = backend === 'webgpu' ? renderer.info?.frame : renderer.info?.render?.frame
+        return Number.isSafeInteger(frame) && (frame as number) > 0 ? (frame as number) : undefined
+    } catch {
+        return undefined
+    }
 }
 
 /**
@@ -87,6 +136,7 @@ export function CondevR3FObserver({ client, backend, gpuTiming, onSetupError }: 
 
     useEffect(() => {
         let adapter: ThreeRendererAdapter | undefined
+        let webGpuProbe: ReturnType<AnimationBrowserClient['animation']['createRendererProbe']> | undefined
         let unregister: (() => void) | undefined
         let gpuTimer: ReturnType<typeof createWebGlGpuTimer> | undefined
         const gpuTimingOwner = renderer as unknown as object
@@ -95,6 +145,45 @@ export function CondevR3FObserver({ client, backend, gpuTiming, onSetupError }: 
             if (!ownsGpuTiming) return
             ownsGpuTiming = false
             gpuTimingOwners.delete(gpuTimingOwner)
+        }
+        if (backend === 'webgpu') {
+            if (gpuTimingEnabled) {
+                notifySetupError(onSetupError, {
+                    stage: 'gpu-timer-create',
+                    cause: new TypeError('R3F WebGPU timing requires an explicit command-encoder timestamp adapter'),
+                })
+                return
+            }
+            const publicRenderer = renderer as unknown as ThreeCommonRendererPublicLike
+            try {
+                webGpuProbe = client.animation.createRendererProbe({
+                    backend,
+                    read: () => readThreeRendererCounters(publicRenderer, backend),
+                })
+            } catch (cause) {
+                notifySetupError(onSetupError, { stage: 'adapter-create', cause })
+                return
+            }
+            try {
+                let lastFrame: number | undefined
+                unregister = afterRenderRegistry.register({
+                    captureFrame: () => {
+                        const frame = publicFrameSequence(publicRenderer, backend)
+                        if (frame === undefined || frame === lastFrame) return false
+                        lastFrame = frame
+                        return webGpuProbe?.capture() !== null
+                    },
+                })
+            } catch (cause) {
+                webGpuProbe?.dispose()
+                notifySetupError(onSetupError, { stage: 'after-render-subscribe', cause })
+                return
+            }
+
+            return () => {
+                unregister?.()
+                webGpuProbe?.dispose()
+            }
         }
         if (gpuTimingEnabled) {
             try {
@@ -173,5 +262,5 @@ export function CondevR3FObserver({ client, backend, gpuTiming, onSetupError }: 
         sampleEvery,
     ])
 
-    return gpuTimingEnabled ? <CondevR3FGpuFrameBoundary adapterRef={adapterRef} /> : null
+    return gpuTimingEnabled && backend !== 'webgpu' ? <CondevR3FGpuFrameBoundary adapterRef={adapterRef} /> : null
 }

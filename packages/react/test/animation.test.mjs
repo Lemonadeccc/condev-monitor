@@ -12,6 +12,7 @@ import {
     MonitorUser,
     createCondevReactComponentScope,
     init,
+    useCondevReactComponentScope,
     useMonitorUser,
 } from '@condev-monitor/react/animation'
 import { CondevR3FObserver } from '@condev-monitor/react/animation/r3f'
@@ -162,6 +163,132 @@ test('the React component scope keeps Profiler and independent commit evidence l
     component.dispose()
 })
 
+test('the React component scope hook replays render-before-effect evidence into the surviving StrictMode scope', async () => {
+    const react = require('react')
+    const commonJs = require('@condev-monitor/react/animation')
+    const originalUseEffect = react.useEffect
+    const originalUseRef = react.useRef
+    const effects = []
+    const scopeRecords = []
+    const inspectors = []
+    let scopeDisposals = 0
+    let targetDisposals = 0
+    const targetRef = { current: {} }
+    const client = {
+        animation: {
+            createFrameworkComponentScope() {
+                const records = []
+                scopeRecords.push(records)
+                return {
+                    record(value) {
+                        records.push(value)
+                        return true
+                    },
+                    snapshot() {
+                        return { schemaVersion: 1, scopeId: 'framework-scope-hook', framework: 'react' }
+                    },
+                    dispose() {
+                        scopeDisposals += 1
+                    },
+                }
+            },
+            registerTarget(_element, provider) {
+                inspectors.push(provider)
+                return () => {
+                    targetDisposals += 1
+                }
+            },
+        },
+    }
+
+    try {
+        react.useRef = initialValue => ({ current: initialValue })
+        react.useEffect = effect => effects.push(effect)
+
+        const monitor = commonJs.useCondevReactComponentScope({ client, label: 'Menu', targetRef })
+        assert.equal(typeof useCondevReactComponentScope, 'function')
+        monitor.onRender('private-id', 'mount', 3, 5, 1, 12)
+        assert.equal(scopeRecords.length, 0)
+
+        const firstCleanup = effects[0]()
+        assert.equal(scopeRecords.length, 1)
+        assert.equal(scopeRecords[0][0].reason, 'react-mount')
+        assert.equal(JSON.stringify(scopeRecords[0]).includes('private-id'), false)
+        assert.equal(inspectors[0]({ inspectionPurpose: 'local' }).frameworkScopes[0].scopeId, 'framework-scope-hook')
+
+        firstCleanup()
+        assert.equal(scopeDisposals, 1)
+        assert.equal(targetDisposals, 1)
+
+        const survivingCleanup = effects[0]()
+        assert.equal(scopeRecords.length, 2)
+        assert.equal(scopeRecords[1][0].reason, 'react-mount')
+        await Promise.resolve()
+
+        survivingCleanup()
+        const laterCleanup = effects[0]()
+        assert.equal(scopeRecords.length, 3)
+        assert.deepEqual(scopeRecords[2], [])
+        assert.equal(monitor.recordUpdateCause('state'), true)
+        monitor.onRender('private-id', 'update', 2, 4, 13, 18)
+        assert.deepEqual(scopeRecords[2][0].updateCauses, ['state'])
+        laterCleanup()
+        assert.equal(scopeDisposals, 3)
+        assert.equal(targetDisposals, 3)
+    } finally {
+        react.useEffect = originalUseEffect
+        react.useRef = originalUseRef
+    }
+})
+
+test('the React component scope hook bounds and sanitizes render evidence queued before effects', () => {
+    const react = require('react')
+    const commonJs = require('@condev-monitor/react/animation')
+    const originalUseEffect = react.useEffect
+    const originalUseRef = react.useRef
+    const effects = []
+    const records = []
+    const client = {
+        animation: {
+            createFrameworkComponentScope() {
+                return {
+                    record(value) {
+                        records.push(value)
+                        return true
+                    },
+                    snapshot() {
+                        return { schemaVersion: 1, scopeId: 'framework-scope-bounded', framework: 'react' }
+                    },
+                    dispose() {},
+                }
+            },
+            registerTarget() {
+                return () => {}
+            },
+        },
+    }
+
+    try {
+        react.useRef = initialValue => ({ current: initialValue })
+        react.useEffect = effect => effects.push(effect)
+
+        const monitor = commonJs.useCondevReactComponentScope({ client })
+        for (let index = 0; index < 40; index += 1) {
+            monitor.onRender(`private-${index}`, index === 39 ? 'private-phase-value' : 'update', index, index + 1, index + 2, index + 3)
+        }
+
+        const cleanup = effects[0]()
+        assert.equal(records.length, 32)
+        assert.equal(records[0].durationMs, 8)
+        assert.equal(records.at(-1).reason, 'react-other')
+        assert.equal(JSON.stringify(records).includes('private-'), false)
+        cleanup()
+    } finally {
+        react.useEffect = originalUseEffect
+        react.useRef = originalUseRef
+    }
+})
+
 test('the R3F observer shares one after-render subscription and cleans up renderer roots', () => {
     const fiber = require('@react-three/fiber')
     const react = require('react')
@@ -241,6 +368,148 @@ test('the R3F observer shares one after-render subscription and cleans up render
     } finally {
         fiber.useThree = originalUseThree
         fiber.addAfterEffect = originalAddAfterEffect
+        react.useEffect = originalUseEffect
+        react.useRef = originalUseRef
+    }
+})
+
+test('the R3F observer records WebGPU public counters without claiming GPU timing', () => {
+    const fiber = require('@react-three/fiber')
+    const react = require('react')
+    const commonJs = require('@condev-monitor/react/animation/r3f')
+    const originalUseThree = fiber.useThree
+    const originalAddAfterEffect = fiber.addAfterEffect
+    const originalUseEffect = react.useEffect
+    const originalUseRef = react.useRef
+    const readings = []
+    let afterRender
+    let cleanup
+    let probeDisposals = 0
+    let afterStops = 0
+    const renderer = {
+        info: {
+            frame: 0,
+            render: { calls: 99, drawCalls: 0, triangles: 0, lines: 0, points: 0 },
+            memory: { geometries: 2, textures: 3 },
+            programs: [1, 2],
+        },
+        render() {},
+    }
+    const client = {
+        animation: {
+            createRendererProbe({ backend, read }) {
+                assert.equal(backend, 'webgpu')
+                return {
+                    capture() {
+                        const reading = read()
+                        readings.push(reading)
+                        return reading
+                    },
+                    dispose() {
+                        probeDisposals += 1
+                    },
+                }
+            },
+        },
+    }
+
+    try {
+        fiber.useThree = selector => selector({ gl: renderer })
+        fiber.addAfterEffect = callback => {
+            afterRender = callback
+            return () => {
+                afterStops += 1
+            }
+        }
+        react.useEffect = effect => {
+            cleanup = effect()
+        }
+        react.useRef = initialValue => ({ current: initialValue })
+
+        assert.equal(commonJs.CondevR3FObserver({ client, backend: 'webgpu' }), null)
+        afterRender()
+        assert.equal(readings.length, 0)
+
+        renderer.info.frame = 1
+        renderer.info.render = { calls: 100, drawCalls: 4, triangles: 12, lines: 2, points: 1 }
+        afterRender()
+        afterRender()
+        assert.deepEqual(readings, [
+            {
+                gpuTimerCapability: 'disabled',
+                drawCalls: 4,
+                triangles: 12,
+                lines: 2,
+                points: 1,
+                geometries: 2,
+                textures: 3,
+                programs: 2,
+            },
+        ])
+
+        cleanup()
+        assert.equal(probeDisposals, 1)
+        assert.equal(afterStops, 1)
+    } finally {
+        fiber.useThree = originalUseThree
+        fiber.addAfterEffect = originalAddAfterEffect
+        react.useEffect = originalUseEffect
+        react.useRef = originalUseRef
+    }
+})
+
+test('the R3F observer refuses WebGPU timing without touching a WebGL context', () => {
+    const fiber = require('@react-three/fiber')
+    const react = require('react')
+    const commonJs = require('@condev-monitor/react/animation/r3f')
+    const originalUseThree = fiber.useThree
+    const originalUseFrame = fiber.useFrame
+    const originalUseEffect = react.useEffect
+    const originalUseRef = react.useRef
+    const setupErrors = []
+    let contextReads = 0
+    let probeCreates = 0
+    const renderer = {
+        info: { frame: 0, render: { drawCalls: 0 } },
+        render() {},
+        getContext() {
+            contextReads += 1
+            throw new Error('WebGPU must not request a WebGL context')
+        },
+    }
+    const client = {
+        animation: {
+            createRendererProbe() {
+                probeCreates += 1
+                throw new Error('probe must not be created for an unsupported timing request')
+            },
+        },
+    }
+
+    try {
+        fiber.useThree = selector => selector({ gl: renderer })
+        fiber.useFrame = () => {}
+        react.useEffect = effect => effect()
+        react.useRef = initialValue => ({ current: initialValue })
+
+        const boundary = commonJs.CondevR3FObserver({
+            client,
+            backend: 'webgpu',
+            gpuTiming: { disjointQueryOwnership: 'exclusive' },
+            onSetupError(error) {
+                setupErrors.push(error)
+            },
+        })
+
+        assert.equal(boundary, null)
+        assert.equal(setupErrors.length, 1)
+        assert.equal(setupErrors[0].stage, 'gpu-timer-create')
+        assert.match(setupErrors[0].cause.message, /command-encoder timestamp adapter/)
+        assert.equal(contextReads, 0)
+        assert.equal(probeCreates, 0)
+    } finally {
+        fiber.useThree = originalUseThree
+        fiber.useFrame = originalUseFrame
         react.useEffect = originalUseEffect
         react.useRef = originalUseRef
     }
