@@ -5,9 +5,11 @@ import test from 'node:test'
 import { validateAnimationLabScenario } from '@condev-monitor/animation-lab'
 
 const fixtures = [
-    { name: 'lemon-bureau', port: '43101' },
-    { name: 'nico-palmer', port: '43102' },
-    { name: 'salle-blanche', port: '43103' },
+    { name: 'lemon-bureau', port: '43101', metricCatalogVersion: 3, budgetVersion: 2 },
+    { name: 'nico-palmer', port: '43102', metricCatalogVersion: 3, budgetVersion: 2 },
+    { name: 'salle-blanche', port: '43103', metricCatalogVersion: 3, budgetVersion: 2 },
+    { name: 'aegis', port: '43104', metricCatalogVersion: 4, budgetVersion: 4 },
+    { name: 'silencio', port: '43105', metricCatalogVersion: 4, budgetVersion: 4 },
 ]
 
 async function readJson(url) {
@@ -15,7 +17,7 @@ async function readJson(url) {
 }
 
 function devServerPort(script, fixtureName) {
-    const match = /(?:^|\s)--port(?:=|\s+)(\d+)(?:\s|$)/u.exec(script)
+    const match = /(?:^|\s)(?:--port|-p)(?:=|\s+)(\d+)(?:\s|$)/u.exec(script)
     assert.ok(match, `${fixtureName} dev script must declare an explicit --port`)
     return match[1]
 }
@@ -30,8 +32,16 @@ test('keeps animation fixture scenarios aligned with their root launch ports and
         assert.equal(scenarioUrl.port, fixture.port, `${fixture.name} scenario must use its assigned fixture port`)
         assert.equal(packagePort, fixture.port, `${fixture.name} dev script must use its assigned fixture port`)
         assert.equal(scenarioUrl.port, packagePort, `${fixture.name} scenario and dev script ports must match`)
-        assert.equal(scenario.measurementContract?.metricCatalogVersion, 3, `${fixture.name} must use metric catalog v3`)
-        assert.equal(scenario.measurementContract?.budgetRef?.budgetVersion, 2, `${fixture.name} must use budget v2`)
+        assert.equal(
+            scenario.measurementContract?.metricCatalogVersion,
+            fixture.metricCatalogVersion,
+            `${fixture.name} must use metric catalog v${fixture.metricCatalogVersion}`
+        )
+        assert.equal(
+            scenario.measurementContract?.budgetRef?.budgetVersion,
+            fixture.budgetVersion,
+            `${fixture.name} must use budget v${fixture.budgetVersion}`
+        )
         assert.ok(scenario.measuredRuns >= 3, `${fixture.name} must have at least three measured runs`)
 
         const validation = validateAnimationLabScenario(scenario)
