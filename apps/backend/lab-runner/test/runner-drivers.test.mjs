@@ -410,6 +410,76 @@ test('binds Trace Index v2 action phases to the reviewed scenario identity', asy
     ])
 })
 
+test('enriches only retained Chromium Trace stacks when an explicit local source-map resolver is present', async () => {
+    const generatedSource = 'https://private.example/assets/app.js?release=secret#fragment'
+    const { driver } = fakeDriver('chromium', {
+        capabilities: {
+            cpuThrottle: true,
+            networkThrottle: true,
+            cacheClear: true,
+            cdpTrace: true,
+            lighthouse: true,
+        },
+        traceEvents: [
+            {
+                ph: 'X',
+                name: 'FunctionCall',
+                cat: 'devtools.timeline',
+                pid: 1,
+                tid: 2,
+                ts: 1_000,
+                dur: 4_000,
+                args: {
+                    data: {
+                        stackTrace: [{ functionName: 'render', url: generatedSource, lineNumber: 1, columnNumber: 1 }],
+                    },
+                },
+            },
+        ],
+    })
+    const result = await runAnimationLab(
+        { ...scenario(), lighthouse: { enabled: false } },
+        {
+            browser: 'chromium',
+            driver,
+            authoredSource: {
+                authoredSourceLimitations: [],
+                authoredSourceResolver(input) {
+                    assert.equal(input.generatedSource, generatedSource)
+                    return { status: 'mapped', authored: { source: 'webpack:///Users/private/src/app.ts', line: 0, column: 0 } }
+                },
+            },
+        }
+    )
+
+    assert.equal(result.report.timeline.schemaVersion, 3)
+    assert.deepEqual(result.report.timeline.authoredSource, {
+        status: 'measured',
+        coordinateBase: 0,
+        frameCount: 1,
+        eligibleFrameCount: 1,
+        mappedFrameCount: 1,
+        limitations: [
+            'authored-source-caller-attested-map-match',
+            'authored-source-retained-stack-only',
+            'authored-source-is-location-not-causation',
+            'authored-source-content-not-retained',
+            'authored-source-path-redacted',
+        ],
+    })
+    assert.deepEqual(result.report.timeline.events[0].stack[0].authored, {
+        source: '/Users/:redacted/src/app.ts',
+        line: 0,
+        column: 0,
+    })
+    assert.equal(JSON.stringify(result.report.timeline).includes('private.example'), false)
+    assert.ok(
+        result.report.attempts
+            .find(attempt => attempt.phase === 'diagnostic-trace')
+            ?.limitations.includes('Source-map files and embedded source content are not retained in the report.')
+    )
+})
+
 test('starts the minimum observation floor after slow navigation completes', async () => {
     const { driver, state } = fakeDriver('webkit', { navigateDelayMs: 300, probeDurationMs: 5_000 })
     const result = await runAnimationLab(

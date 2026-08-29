@@ -40,6 +40,8 @@ export type {
 export { lighthouseSkipReason, runAnimationLab } from './runner'
 export type { LabRunOptions, LabRunResult, LighthouseSkipReason } from './runner'
 export { createScenarioProtocolHash } from './scenario-protocol'
+export { loadTraceSourceMapManifest, TraceSourceMapManifestError } from './trace-source-maps'
+export type { LoadedTraceSourceMapManifest, LoadTraceSourceMapManifestOptions } from './trace-source-maps'
 export {
     actionWindowFromProbe,
     buildAnimationLabSemantics,

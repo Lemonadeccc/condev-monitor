@@ -780,6 +780,170 @@ test('deterministically byte-budgets trace indexes while retaining high-value ev
     })
 })
 
+test('projects Trace Index v3 authored locations and recomputes retained coverage', async t => {
+    const requests = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (url, init = {}) => {
+        requests.push({ url: String(url), init })
+        return new Response(JSON.stringify({ success: true, data: {} }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })
+    }
+    t.after(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    const fixture = report()
+    const statuses = ['mapped', 'segment-not-found', 'not-eligible']
+    const events = statuses.map((authoredStatus, index) => ({
+        id: `trace-authored-${index}`,
+        category: 'script',
+        name: index === 2 ? 'RunTask' : 'FunctionCall',
+        startMs: index,
+        durationMs: 1,
+        selfTimeMs: 1,
+        thread: 'main',
+        stack: [
+            {
+                functionName: 'render',
+                source: '/assets/app.js',
+                line: index + 1,
+                column: 1,
+                authoredStatus,
+                authored:
+                    authoredStatus === 'mapped'
+                        ? { source: 'webpack:///Users/private/src/render.ts?token=secret', line: 0, column: 0 }
+                        : null,
+            },
+        ],
+    }))
+    fixture.timeline = {
+        ...fixture.timeline,
+        schemaVersion: 3,
+        endMs: 10,
+        totalInputEvents: events.length,
+        retainedEvents: events.length,
+        events,
+        actionPhaseSummaries: [
+            {
+                actionId: 'hero-hover',
+                actionLabel: 'hero-hover',
+                startMs: null,
+                endMs: null,
+                wallTimeMs: null,
+                status: 'not-observed',
+                eventCount: 0,
+                classifiedThreadTimeMs: null,
+                threads: [],
+                limitations: ['trace-action-marker-not-observed'],
+            },
+        ],
+        authoredSource: {
+            status: 'partial',
+            coordinateBase: 0,
+            frameCount: 3,
+            eligibleFrameCount: 2,
+            mappedFrameCount: 1,
+            limitations: [
+                'authored-source-caller-attested-map-match',
+                'authored-source-retained-stack-only',
+                'authored-source-is-location-not-causation',
+                'authored-source-content-not-retained',
+                'authored-source-segment-not-found',
+                'authored-source-coordinate-basis-unknown',
+                'authored-source-path-redacted',
+            ],
+        },
+    }
+
+    const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
+    await client.uploadDerivedReport(fixture)
+
+    const upload = requests.find(request => request.url.endsWith('/artifacts/trace-index'))
+    const uploaded = JSON.parse(Buffer.from(upload.init.body).toString('utf8'))
+    assert.equal(uploaded.schemaVersion, 3)
+    assert.deepEqual({ ...uploaded.authoredSource, limitations: undefined }, { ...fixture.timeline.authoredSource, limitations: undefined })
+    assert.deepEqual(new Set(uploaded.authoredSource.limitations), new Set(fixture.timeline.authoredSource.limitations))
+    assert.deepEqual(uploaded.events[0].stack[0].authored, { source: '/Users/:redacted/src/render.ts', line: 0, column: 0 })
+    assert.equal(JSON.stringify(uploaded).includes('token=secret'), false)
+    assert.equal(JSON.stringify(uploaded).includes('private.example'), false)
+})
+
+test('rebuilds Trace Index v3 authored-source limitations after platform event retention', async t => {
+    const requests = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (url, init = {}) => {
+        requests.push({ url: String(url), init })
+        return new Response(JSON.stringify({ success: true, data: {} }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })
+    }
+    t.after(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    const fixture = report()
+    const events = Array.from({ length: 4_001 }, (_, index) => {
+        const mapped = index < 4_000
+        return {
+            id: `trace-authored-retention-${index}`,
+            category: 'script',
+            name: 'FunctionCall',
+            startMs: index,
+            durationMs: mapped ? 2 : 1,
+            selfTimeMs: 1,
+            thread: 'main',
+            stack: [
+                {
+                    functionName: 'render',
+                    source: '/assets/app.js',
+                    line: index + 1,
+                    column: 1,
+                    authoredStatus: mapped ? 'mapped' : 'segment-not-found',
+                    authored: mapped ? { source: '/src/render.ts', line: index, column: 0 } : null,
+                },
+            ],
+        }
+    })
+    fixture.timeline = {
+        ...fixture.timeline,
+        schemaVersion: 3,
+        endMs: 5_000,
+        totalInputEvents: events.length,
+        retainedEvents: events.length,
+        events,
+        actionPhaseSummaries: [],
+        authoredSource: {
+            status: 'partial',
+            coordinateBase: 0,
+            frameCount: events.length,
+            eligibleFrameCount: events.length,
+            mappedFrameCount: 4_000,
+            limitations: [
+                'authored-source-caller-attested-map-match',
+                'authored-source-retained-stack-only',
+                'authored-source-is-location-not-causation',
+                'authored-source-content-not-retained',
+                'authored-source-segment-not-found',
+            ],
+        },
+    }
+
+    const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
+    await client.uploadDerivedReport(fixture)
+
+    const upload = requests.find(request => request.url.endsWith('/artifacts/trace-index'))
+    const uploaded = JSON.parse(Buffer.from(upload.init.body).toString('utf8'))
+    assert.equal(uploaded.retainedEvents, 4_000)
+    assert.equal(uploaded.authoredSource.status, 'measured')
+    assert.equal(uploaded.authoredSource.frameCount, 4_000)
+    assert.equal(uploaded.authoredSource.eligibleFrameCount, 4_000)
+    assert.equal(uploaded.authoredSource.mappedFrameCount, 4_000)
+    assert.equal(uploaded.authoredSource.limitations.includes('authored-source-segment-not-found'), false)
+})
+
 test('deterministically byte-budgets maximal v2 reports while retaining canonical semantics', async t => {
     const requests = []
     const originalFetch = globalThis.fetch

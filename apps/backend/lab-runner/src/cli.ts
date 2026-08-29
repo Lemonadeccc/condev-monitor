@@ -13,6 +13,7 @@ import { createTerminalLabLocalDisplaySink } from './local-display'
 import { ensurePrivateDirectory, writePrivateFile } from './private-files'
 import { type RemoteClaimedLabRun, remoteFailureCode, RemoteLabClient } from './remote'
 import { runAnimationLab } from './runner'
+import { loadTraceSourceMapManifest } from './trace-source-maps'
 
 const gzipAsync = promisify(gzip)
 
@@ -27,6 +28,7 @@ interface CliOptions {
     runId?: string
     token?: string
     storageState?: string
+    sourceMapManifest?: string
     ignoreHttpsErrors: boolean
     localDisplay: boolean
 }
@@ -37,7 +39,8 @@ function usage(): string {
 Usage:
   condev-animation-lab --config ./scenario.json --out-dir ./lab-results
     [--browser chromium|firefox|webkit] [--headed] [--browser-path /path/to/browser]
-    [--storage-state ./playwright-auth.json] [--ignore-https-errors] [--local-display]
+    [--storage-state ./playwright-auth.json] [--source-map-manifest ./condev-sourcemaps.json]
+    [--ignore-https-errors] [--local-display]
   condev-animation-lab --config ./scenario.json --out-dir ./lab-results \\
     --server http://localhost:3000 --run-id <uuid>
 
@@ -47,6 +50,8 @@ and are never copied into the retained report. Optional target-page authenticati
 uses a local Playwright storage-state file; it is never copied into the report.
 The opt-in local display prints only allowlisted action and budget status to this
 terminal. It never exposes selectors, URLs, coordinates, credentials, or raw metrics.
+The optional source-map manifest is local-only and exact-release matched. Source-map
+files, embedded source content, raw generated URLs, and manifest paths are never uploaded.
 
 For an attached run, prefer CONDEV_LAB_RUNNER_TOKEN over --token so the grant is
 not retained in shell history or exposed in command arguments.`
@@ -87,6 +92,7 @@ export function parseArgs(argv: string[]): CliOptions {
         else if (value === '--run-id') result.runId = next
         else if (value === '--token') result.token = next
         else if (value === '--storage-state') result.storageState = next
+        else if (value === '--source-map-manifest') result.sourceMapManifest = next
         else throw new Error(`Unknown option ${value}`)
         index += 1
     }
@@ -201,6 +207,16 @@ async function main(): Promise<void> {
             scenario = claimedAuthority.scenario
             await remote.update({ status: 'running', phase: 'preparing', progress: 2 })
         }
+        if (options.sourceMapManifest && (selectedBrowser !== 'chromium' || scenario.trace?.enabled === false)) {
+            throw new Error('A source-map manifest requires an enabled Chromium diagnostic trace')
+        }
+        const authoredSource = options.sourceMapManifest
+            ? await loadTraceSourceMapManifest({
+                  manifestPath: path.resolve(options.sourceMapManifest),
+                  release: scenario.release ?? '',
+                  dist: scenario.dist ?? '',
+              })
+            : undefined
         const result = await runAnimationLab(scenario, {
             runId: options.runId,
             headed: options.headed,
@@ -209,6 +225,7 @@ async function main(): Promise<void> {
             chromePath: options.chromePath,
             storageState: options.storageState ? path.resolve(options.storageState) : undefined,
             ignoreHTTPSErrors: options.ignoreHttpsErrors,
+            authoredSource,
             localDisplay: options.localDisplay ? createTerminalLabLocalDisplaySink() : undefined,
             onProgress(event) {
                 process.stderr.write(`[${event.phase}] ${event.message}\n`)

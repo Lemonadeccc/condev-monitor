@@ -7,6 +7,7 @@ import {
     type AnimationLabScenario,
     type LabAttemptSummary,
     type LabTimelineChunkV2,
+    type LabTimelineChunkV3,
     normalizeLighthouseResult,
     normalizeTraceEvents,
     validateAnimationLabSemanticsV2,
@@ -40,6 +41,7 @@ import {
     projectAttemptsForReport,
     reportScenarioActions,
 } from './semantics'
+import type { LoadedTraceSourceMapManifest } from './trace-source-maps'
 
 export interface LabRunOptions {
     /** Platform-owned UUID when the runner is attached to a Labs control-plane run. */
@@ -59,6 +61,8 @@ export interface LabRunOptions {
     localDisplay?: LabLocalDisplaySink
     /** Test/embedding seam; normal callers should select `browser` instead. */
     driver?: BrowserDriver
+    /** Explicit local-only source-map resolver loaded from a reviewed manifest. */
+    authoredSource?: LoadedTraceSourceMapManifest
 }
 
 export interface LabRunResult {
@@ -270,11 +274,11 @@ async function measuredAttempt(
 async function traceAttempt(
     session: BrowserDriverSession,
     scenario: AnimationLabScenario,
-    options: Pick<LabRunOptions, 'storageState' | 'ignoreHTTPSErrors' | 'localDisplay'> = {}
+    options: Pick<LabRunOptions, 'storageState' | 'ignoreHTTPSErrors' | 'localDisplay' | 'authoredSource'> = {}
 ): Promise<{
     attempt: LabAttemptSummary
     raw: string
-    timeline: LabTimelineChunkV2
+    timeline: LabTimelineChunkV2 | LabTimelineChunkV3
     screenshotsRetained: boolean
 }> {
     const context = await session.createContext(scenario, driverContextOptions(options))
@@ -341,13 +345,16 @@ async function traceAttempt(
             0,
             traceCapped ? traceLimitMs - (observationStartedAt - monotonicStarted) : finishedAt - observationStartedAt
         )
-        const timeline = normalizeTraceEvents(trace.events, {
+        const traceOptions = {
             maxRetainedEvents: 4_000,
             actionIdentities: scenario.actions.map((action, actionIndex) => ({
                 actionId: scenarioActionId(action, actionIndex),
                 actionLabel: action.label,
             })),
-        })
+        }
+        const timeline = options.authoredSource
+            ? normalizeTraceEvents(trace.events, { ...traceOptions, ...options.authoredSource })
+            : normalizeTraceEvents(trace.events, traceOptions)
         const screenshotsRequested = scenario.trace?.screenshots === true
         const screenshotsRetained =
             screenshotsRequested &&
@@ -401,7 +408,12 @@ async function traceAttempt(
                 capabilities: { cdpTrace: true, cpuProfile: true, screenshots: screenshotsRetained },
                 limitations: [
                     'Trace category durations may overlap and are not exclusive CPU accounting.',
-                    'Generated stack locations require a matching source map before authored-source attribution.',
+                    ...(timeline.schemaVersion === 3
+                        ? [
+                              'Authored stack locations use caller-attested local source maps and remain candidate locations, not causal proof.',
+                              'Source-map files and embedded source content are not retained in the report.',
+                          ]
+                        : ['Generated stack locations require a matching source map before authored-source attribution.']),
                     'Trace uses an isolated browser context and does not inherit the warm-up/measured cache.',
                     ...(actionExecutions.some(action => action.crossDocument)
                         ? ['Cross-document action marks are partial; trace timing itself remains on the CDP clock.']
@@ -581,7 +593,7 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
         }
 
         let rawTrace: string | null = null
-        let timeline: LabTimelineChunkV2 | undefined
+        let timeline: LabTimelineChunkV2 | LabTimelineChunkV3 | undefined
         let traceScreenshotsRetained = false
         if (scenario.trace?.enabled !== false) {
             if (!session.capabilities.cdpTrace) {

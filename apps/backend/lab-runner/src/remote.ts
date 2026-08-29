@@ -7,6 +7,7 @@ import {
     type LabLighthouseSummary,
     type LabMeasurementContractV2,
     type LabTimelineChunk,
+    type LabTraceSourceMapLimitation,
     safeDisplayText,
     safeToken as safeLabToken,
     sanitizeTraceSource,
@@ -26,7 +27,12 @@ const WARMUP_DETAIL_OMITTED_LIMITATION = 'warmup-detail-omitted-from-report'
 const ATTEMPT_METRIC_PROJECTION_LIMITATION = 'attempt-metric-projection-truncated'
 const REPORT_BYTE_BUDGET_LIMITATION = 'report-upload-byte-budget-truncated-attempt-detail'
 const ACTION_SCOPED_COMPACT_SUMMARY_LIMITATION = 'action-scoped-metrics-retained-only-in-animation-report'
-export const LAB_RUNNER_CONTRACT_VERSION = 7 as const
+const AUTHORED_SOURCE_FRAME_LIMITATIONS: ReadonlySet<LabTraceSourceMapLimitation> = new Set([
+    'authored-source-map-not-supplied',
+    'authored-source-segment-not-found',
+    'authored-source-coordinate-basis-unknown',
+])
+export const LAB_RUNNER_CONTRACT_VERSION = 8 as const
 
 export interface RemoteLabConnectionOptions {
     server: string
@@ -463,12 +469,24 @@ function platformEvent(event: PlatformTimelineEvent, index: number): PlatformTim
         durationMs: event.durationMs,
         selfTimeMs: event.selfTimeMs,
         thread: event.thread,
-        stack: event.stack.slice(0, MAX_PLATFORM_STACK_DEPTH).map(frame => ({
-            functionName: safeDisplayText(frame.functionName, '(anonymous)', 120) || '(anonymous)',
-            source: sanitizeTraceSource(frame.source).slice(0, MAX_PLATFORM_STACK_SOURCE_LENGTH),
-            line: boundedStackLocation(frame.line),
-            column: boundedStackLocation(frame.column),
-        })),
+        stack: event.stack.slice(0, MAX_PLATFORM_STACK_DEPTH).map(frame => {
+            const generated = {
+                functionName: safeDisplayText(frame.functionName, '(anonymous)', 120) || '(anonymous)',
+                source: sanitizeTraceSource(frame.source).slice(0, MAX_PLATFORM_STACK_SOURCE_LENGTH),
+                line: boundedStackLocation(frame.line),
+                column: boundedStackLocation(frame.column),
+            }
+            if (frame.authoredStatus === undefined) return generated
+            const authored =
+                frame.authoredStatus === 'mapped' && frame.authored
+                    ? {
+                          source: sanitizeTraceSource(frame.authored.source).slice(0, MAX_PLATFORM_STACK_SOURCE_LENGTH),
+                          line: boundedStackLocation(frame.authored.line) ?? 0,
+                          column: boundedStackLocation(frame.authored.column) ?? 0,
+                      }
+                    : null
+            return { ...generated, authoredStatus: frame.authoredStatus, authored }
+        }),
     }
     return actionLabel ? { ...bounded, actionLabel } : bounded
 }
@@ -506,6 +524,23 @@ function platformActionPhaseSummary(summary: LabActionTraceSummary): LabActionTr
         })),
         limitations: [...summary.limitations],
     }
+}
+
+function projectedAuthoredSourceLimitations(
+    limitations: readonly LabTraceSourceMapLimitation[],
+    frames: readonly PlatformTimelineEvent['stack'][number][]
+): LabTraceSourceMapLimitation[] {
+    const projected = new Set(limitations.filter(limitation => !AUTHORED_SOURCE_FRAME_LIMITATIONS.has(limitation)))
+    if (frames.some(frame => frame.authoredStatus === 'map-not-supplied')) {
+        projected.add('authored-source-map-not-supplied')
+    }
+    if (frames.some(frame => frame.authoredStatus === 'segment-not-found')) {
+        projected.add('authored-source-segment-not-found')
+    }
+    if (frames.some(frame => frame.authoredStatus === 'not-eligible')) {
+        projected.add('authored-source-coordinate-basis-unknown')
+    }
+    return [...projected]
 }
 
 function serializeJson(value: unknown): Buffer {
@@ -552,13 +587,38 @@ function platformTimelineArtifact(timeline: LabTimelineChunk): Buffer {
             },
         }
         const projected: LabTimelineChunk =
-            timeline.schemaVersion === 2
-                ? {
-                      ...projectedBase,
-                      schemaVersion: 2,
-                      actionPhaseSummaries: timeline.actionPhaseSummaries.map(platformActionPhaseSummary),
-                  }
-                : { ...projectedBase, schemaVersion: 1 }
+            timeline.schemaVersion === 3
+                ? (() => {
+                      const frames = retained.flatMap(event => event.stack)
+                      const eligibleFrameCount = frames.filter(frame => frame.authoredStatus !== 'not-eligible').length
+                      const mappedFrameCount = frames.filter(frame => frame.authoredStatus === 'mapped' && frame.authored != null).length
+                      const status =
+                          eligibleFrameCount > 0 && mappedFrameCount === eligibleFrameCount
+                              ? 'measured'
+                              : mappedFrameCount > 0
+                                ? 'partial'
+                                : 'not-observed'
+                      return {
+                          ...projectedBase,
+                          schemaVersion: 3,
+                          actionPhaseSummaries: timeline.actionPhaseSummaries.map(platformActionPhaseSummary),
+                          authoredSource: {
+                              status,
+                              coordinateBase: 0,
+                              frameCount: frames.length,
+                              eligibleFrameCount,
+                              mappedFrameCount,
+                              limitations: projectedAuthoredSourceLimitations(timeline.authoredSource.limitations, frames),
+                          },
+                      }
+                  })()
+                : timeline.schemaVersion === 2
+                  ? {
+                        ...projectedBase,
+                        schemaVersion: 2,
+                        actionPhaseSummaries: timeline.actionPhaseSummaries.map(platformActionPhaseSummary),
+                    }
+                  : { ...projectedBase, schemaVersion: 1 }
         return serializeJson(projected)
     }
 

@@ -62,6 +62,11 @@ test('parses the portable browser options and rejects ambiguous or mismatched ex
         () => parseArgs(['--config', 'scenario.json', '--out-dir', 'results', '--browser', 'webkit', '--chrome-path', '/chrome']),
         /only valid with --browser chromium/u
     )
+    assert.equal(
+        parseArgs(['--config', 'scenario.json', '--out-dir', 'results', '--source-map-manifest', './condev-sourcemaps.json'])
+            .sourceMapManifest,
+        './condev-sourcemaps.json'
+    )
 })
 
 test('uses the platform browser as authority and fails closed on a local mismatch', () => {
