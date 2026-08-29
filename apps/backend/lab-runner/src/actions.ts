@@ -19,6 +19,8 @@ export interface RunScenarioActionsOptions {
     clockOriginMs?: number
     /** Runner-owned, selector-free local lifecycle projection. */
     onActionLifecycle?: (event: ScenarioActionLifecycleEvent) => void | PromiseLike<void>
+    /** Coverage runs retain failed outcome gates so later reviewed actions can still be classified. */
+    continueOnOutcomeAssertionFailure?: boolean
 }
 
 export type ScenarioActionLifecycleEvent =
@@ -448,7 +450,7 @@ export async function runScenarioActions(
             outcomeAssertionFailed = error instanceof LabOutcomeAssertionError
             timedOut = error instanceof LabActionTimeoutError || (error instanceof LabOutcomeAssertionError && error.timedOut)
             if (timedOut) page.abort('lab-action-timeout')
-            throw error
+            if (!outcomeAssertionFailed || timedOut || options.continueOnOutcomeAssertionFailure !== true) throw error
         } finally {
             // A timed-out automation command may have wedged the browser
             // channel. Do not issue follow-up evaluate/mark/probe commands to

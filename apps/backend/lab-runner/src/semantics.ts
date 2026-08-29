@@ -1,11 +1,13 @@
 import {
     ANIMATION_LAB_METRIC_CATALOG_V5,
     ANIMATION_LAB_METRIC_CATALOG_VERSION,
-    ANIMATION_LAB_SEMANTICS_VERSION,
+    ANIMATION_LAB_SEMANTICS_V2_VERSION,
+    ANIMATION_LAB_SEMANTICS_V3_VERSION,
     type AnimationLabMetric,
     type AnimationLabMetricV2,
     type AnimationLabScenario,
     type AnimationLabSemanticsV2,
+    type AnimationLabSemanticsV3,
     DEFAULT_ANIMATION_LAB_BUDGET_REF_V1,
     evaluateAnimationLabBudgetRule,
     getAnimationLabBudgetV1,
@@ -13,6 +15,7 @@ import {
     type LabAttemptSummary,
     type LabBudgetRefV1,
     type LabFindingV2,
+    type LabAnimationCoverageV1,
     type LabMeasurementContractV2,
     type LabMetricScopeV2,
     type LabReportScenarioActionV2,
@@ -118,7 +121,7 @@ export function decorateLighthouseLabMetric(
 export function measurementContractForReport(scenario: AnimationLabScenario): LabMeasurementContractV2 {
     if (scenario.measurementContract) return scenario.measurementContract
     return {
-        contractVersion: ANIMATION_LAB_SEMANTICS_VERSION,
+        contractVersion: ANIMATION_LAB_SEMANTICS_V2_VERSION,
         expectedHz: 60,
         targetFrameMs: round(1_000 / 60),
         source: 'package-default',
@@ -518,7 +521,8 @@ export function buildAnimationLabSemantics(options: {
     browser: { name: string; version: string }
     attempts: readonly LabAttemptSummary[]
     aggregateMetrics: readonly AnimationLabMetric[]
-}): AnimationLabSemanticsV2 {
+    coverage?: LabAnimationCoverageV1
+}): AnimationLabSemanticsV2 | AnimationLabSemanticsV3 {
     const scenarioActions = reportScenarioActions(options.scenario)
     const measurementContract = measurementContractForReport(options.scenario)
     const projection = canonicalMetricProjection(options.aggregateMetrics, scenarioActions)
@@ -527,8 +531,7 @@ export function buildAnimationLabSemantics(options: {
             ? { ...window, limitations: [...new Set([...window.limitations, 'canonical-action-metrics-truncated'])] }
             : window
     )
-    return {
-        semanticsVersion: ANIMATION_LAB_SEMANTICS_VERSION,
+    const base = {
         measurementContract,
         scenarioActions,
         actionWindows,
@@ -543,4 +546,7 @@ export function buildAnimationLabSemantics(options: {
         ),
         findings: findings(projection.metrics, measurementContract),
     }
+    return options.coverage
+        ? { ...base, semanticsVersion: ANIMATION_LAB_SEMANTICS_V3_VERSION, coverage: options.coverage }
+        : { ...base, semanticsVersion: ANIMATION_LAB_SEMANTICS_V2_VERSION }
 }

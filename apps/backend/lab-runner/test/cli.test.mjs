@@ -5,6 +5,7 @@ import path from 'node:path'
 import test from 'node:test'
 
 import {
+    assertAttachedAuthenticationMode,
     assertAttachedCliAuthority,
     applyClaimedRunAuthority,
     parseArgs,
@@ -41,6 +42,8 @@ test('parses the portable browser options and rejects ambiguous or mismatched ex
             '--local-display',
             '--execution-manifest',
             './execution.json',
+            '--coverage-manifest',
+            './animation-coverage.json',
         ]),
         {
             config: './scenario.json',
@@ -51,6 +54,7 @@ test('parses the portable browser options and rejects ambiguous or mismatched ex
             ignoreHttpsErrors: false,
             localDisplay: true,
             executionManifest: './execution.json',
+            coverageManifest: './animation-coverage.json',
         }
     )
     assert.throws(
@@ -89,6 +93,13 @@ test('rejects attached execution modes and browser binaries that are absent from
     ]) {
         assert.throws(() => assertAttachedCliAuthority(options), /do not allow headed mode, a custom browser executable/u)
     }
+})
+
+test('requires local storage state exactly when the platform authentication mode requires it', () => {
+    assert.doesNotThrow(() => assertAttachedAuthenticationMode(undefined, 'none'))
+    assert.doesNotThrow(() => assertAttachedAuthenticationMode('./reviewed-auth.json', 'required-local-storage-state'))
+    assert.throws(() => assertAttachedAuthenticationMode(undefined, 'required-local-storage-state'), /requires --storage-state/u)
+    assert.throws(() => assertAttachedAuthenticationMode('./unexpected-auth.json', 'none'), /does not allow --storage-state/u)
 })
 
 test('uses the closed platform execution config while preserving only local reviewed actions and diagnostics detail', () => {
@@ -130,6 +141,7 @@ test('uses the closed platform execution config while preserving only local revi
             durationMs: 20_000,
             trace: false,
             lighthouse: true,
+            authenticationMode: 'none',
             measurementContract: {
                 contractVersion: 2,
                 expectedHz: 60,
@@ -189,6 +201,7 @@ test('fails before navigation when the local reviewed trace cap cannot cover the
             durationMs: 20_000,
             trace: true,
             lighthouse: false,
+            authenticationMode: 'none',
             measurementContract: platformMeasurementContract(),
         },
     }
@@ -225,6 +238,7 @@ test('ships the generic scenario with enough bounded Trace headroom for the defa
             durationMs: 30_000,
             trace: true,
             lighthouse: true,
+            authenticationMode: 'none',
             measurementContract: platformMeasurementContract({
                 source: 'explicit',
                 confidence: 'explicit',
@@ -277,6 +291,7 @@ test('keeps the maximum platform observation duration executable with a bounded 
             durationMs: 120_000,
             trace: true,
             lighthouse: true,
+            authenticationMode: 'none',
             measurementContract: platformMeasurementContract(),
         },
     }
@@ -314,6 +329,7 @@ test('fails before navigation for controlled conditions absent from the platform
             durationMs: 10_000,
             trace: false,
             lighthouse: false,
+            authenticationMode: 'none',
             measurementContract: platformMeasurementContract(),
         },
     }

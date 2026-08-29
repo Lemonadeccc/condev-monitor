@@ -496,6 +496,43 @@ test('classifies an outcome mismatch separately without leaking selector or expe
     assert.equal(JSON.stringify(events).includes('secret-token'), false)
 })
 
+test('coverage mode retains a failed outcome and continues later reviewed actions', async () => {
+    const page = fakePage()
+    let expectations = 0
+    page.assertOutcome = async () => {
+        expectations += 1
+        if (expectations === 1) throw new Error('private assertion detail')
+    }
+
+    const windows = await runScenarioActions(
+        page,
+        scenario([
+            {
+                kind: 'click',
+                label: 'first-outcome',
+                selector: '#first',
+                expect: [{ kind: 'element-state', selector: '#private', state: 'visible' }],
+            },
+            {
+                kind: 'click',
+                label: 'second-outcome',
+                selector: '#second',
+                expect: [{ kind: 'animations-settled' }],
+            },
+        ]),
+        { ...probeOptions(), continueOnOutcomeAssertionFailure: true }
+    )
+
+    assert.deepEqual(
+        windows.map(window => ({ outcome: window.outcome, limitations: window.limitations })),
+        [
+            { outcome: 'failed', limitations: ['outcome-assertion-failed'] },
+            { outcome: 'completed', limitations: [] },
+        ]
+    )
+    assert.ok(page.calls.some(call => call[0] === 'click' && call[1] === '#second'))
+})
+
 test('fails a registered outcome as an outcome assertion when the controlled bridge is missing', async () => {
     const page = fakePage()
     const privateKey = 'private.renderer.hero'

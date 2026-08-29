@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto'
 
 import {
     ANIMATION_LAB_SCHEMA_VERSION,
+    type AnimationCoverageManifestV1,
     type AnimationLabMetric,
     type AnimationLabReport,
     type AnimationLabScenario,
@@ -11,7 +12,9 @@ import {
     type LabTimelineChunkV4,
     normalizeLighthouseResult,
     normalizeTraceEvents,
+    projectAnimationCoverageManifestV1,
     validateAnimationLabSemanticsV2,
+    validateAnimationLabSemanticsV3,
 } from '@condev-monitor/animation-lab'
 import * as chromeLauncher from 'chrome-launcher'
 import lighthouse from 'lighthouse'
@@ -28,6 +31,7 @@ import {
     validateBrowserDriverScenario,
 } from './browser-driver'
 import { browserProbeSource } from './browser-probe'
+import { coverageResultsFromAttempts, validateCoverageManifestForScenario } from './coverage'
 import {
     assertExecutionPreflight,
     DEFAULT_EXECUTION_MANIFEST,
@@ -74,6 +78,10 @@ export interface LabRunOptions {
     authoredSource?: LoadedTraceSourceMapManifest
     /** Local-only declaration; the report retains only its closed target/driver/auth/cross-origin support tuple. */
     executionManifest?: LabExecutionManifestV1
+    /** Reviewed local-only denominator. Its route, local digest and contracts are never uploaded. */
+    coverageManifest?: AnimationCoverageManifestV1
+    /** Original reviewed Scenario when an attached platform run overrides only the execution envelope. */
+    coverageReviewedScenario?: AnimationLabScenario
 }
 
 export interface LabRunResult {
@@ -167,7 +175,8 @@ async function measuredAttempt(
     index: number,
     driverLimitations: readonly string[],
     displayAttempt: LabLocalDisplayAttempt,
-    localDisplay?: LabLocalDisplaySink
+    localDisplay?: LabLocalDisplaySink,
+    coverageMode = false
 ): Promise<LabAttemptSummary> {
     const page = await context.newPage()
     const probeKey = `__condevLabProbe_${randomUUID().replaceAll('-', '')}`
@@ -227,6 +236,7 @@ async function measuredAttempt(
                     },
                 })
             },
+            continueOnOutcomeAssertionFailure: coverageMode,
         })
         const observationStartedAt = observationStartAfterCrossDocumentActions(navigationCompletedAt, startedAt, actionExecutions)
         await waitForObservationFloor(page, observationStartedAt, scenario.durationMs)
@@ -317,7 +327,8 @@ async function measuredAttempt(
 async function traceAttempt(
     session: BrowserDriverSession,
     scenario: AnimationLabScenario,
-    options: Pick<LabRunOptions, 'storageState' | 'ignoreHTTPSErrors' | 'localDisplay' | 'authoredSource'> = {}
+    options: Pick<LabRunOptions, 'storageState' | 'ignoreHTTPSErrors' | 'localDisplay' | 'authoredSource'> = {},
+    coverageMode = false
 ): Promise<{
     attempt: LabAttemptSummary
     raw: string
@@ -370,6 +381,7 @@ async function traceAttempt(
                     },
                 })
             },
+            continueOnOutcomeAssertionFailure: coverageMode,
         })
         const observationStartedAt = observationStartAfterCrossDocumentActions(navigationCompletedAt, monotonicStarted, actionExecutions)
         const requiredObservationWaitMs = observationFloorWaitMs(observationStartedAt, scenario.durationMs)
@@ -597,6 +609,9 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
     const startedAt = new Date()
     const engine = options.browser ?? options.driver?.engine ?? 'chromium'
     const driver = options.driver ?? createBrowserDriver(engine)
+    const coverageManifest = options.coverageManifest
+        ? validateCoverageManifestForScenario(options.coverageManifest, options.coverageReviewedScenario ?? scenario)
+        : undefined
     if (driver.engine !== engine) throw new Error(`Selected browser ${engine} does not match driver ${driver.engine}`)
     if (engine !== 'chromium' && options.chromePath && !options.browserPath) {
         throw new Error('--chrome-path is only valid for the Chromium browser driver')
@@ -650,7 +665,8 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
                                 current: phase === 'warmup' ? index + 1 : index - scenario.warmupRuns + 1,
                                 total: phase === 'warmup' ? scenario.warmupRuns : scenario.measuredRuns,
                             },
-                            options.localDisplay
+                            options.localDisplay,
+                            Boolean(coverageManifest)
                         )
                     )
                 } finally {
@@ -670,7 +686,7 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
                 attempts.push(unavailableDiagnosticAttempt('diagnostic-trace', session.engine))
             } else {
                 progress(options, 'diagnostic-trace', 1, 1, 'Recording a separate Chromium diagnostic trace')
-                const trace = await traceAttempt(session, scenario, options)
+                const trace = await traceAttempt(session, scenario, options, Boolean(coverageManifest))
                 rawTrace = trace.raw
                 timeline = trace.timeline
                 traceScreenshotsRetained = trace.screenshotsRetained
@@ -707,13 +723,25 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
         const endedAt = new Date()
         const aggregateMetrics = [...aggregateMeasuredAttempts(attempts), ...projectDiagnosticAttemptMetrics(attempts)]
         const browserDescriptor = session.descriptor
+        const coverage = coverageManifest
+            ? await projectAnimationCoverageManifestV1(
+                  coverageManifest,
+                  coverageResultsFromAttempts({
+                      manifest: coverageManifest,
+                      scenario,
+                      attempts,
+                      authenticated: Boolean(options.storageState),
+                  })
+              )
+            : undefined
         const semantics = buildAnimationLabSemantics({
             scenario,
             browser: browserDescriptor,
             attempts,
             aggregateMetrics,
+            coverage,
         })
-        const semanticValidation = validateAnimationLabSemanticsV2(semantics)
+        const semanticValidation = coverage ? validateAnimationLabSemanticsV3(semantics) : validateAnimationLabSemanticsV2(semantics)
         if (!semanticValidation.ok) {
             throw new Error(`Animation lab semantic report failed validation: ${semanticValidation.errors.join(', ')}`)
         }
@@ -760,6 +788,7 @@ export async function runAnimationLab(scenario: AnimationLabScenario, options: L
             actionWindows: semantics.actionWindows,
             technologyEvidence: semantics.technologyEvidence,
             findings: semantics.findings,
+            ...(coverage ? { coverage } : {}),
             ...(timeline ? { timeline } : {}),
             ...(lighthouseSummary ? { lighthouse: lighthouseSummary } : {}),
             privacy: {

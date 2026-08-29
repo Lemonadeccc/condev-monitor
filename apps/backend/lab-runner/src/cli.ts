@@ -9,6 +9,7 @@ import { gzip } from 'node:zlib'
 import { type AnimationLabScenario, validateAnimationLabScenario } from '@condev-monitor/animation-lab'
 
 import type { LabBrowserEngine } from './browser-driver'
+import { loadAnimationCoverageManifest } from './coverage'
 import {
     formatExecutionPreflightError,
     type LabExecutionManifestV1,
@@ -36,6 +37,7 @@ interface CliOptions {
     storageState?: string
     sourceMapManifest?: string
     executionManifest?: string
+    coverageManifest?: string
     ignoreHttpsErrors: boolean
     localDisplay: boolean
 }
@@ -48,6 +50,7 @@ Usage:
     [--browser chromium|firefox|webkit] [--headed] [--browser-path /path/to/browser]
     [--storage-state ./playwright-auth.json] [--source-map-manifest ./condev-sourcemaps.json]
     [--execution-manifest ./condev-execution.json]
+    [--coverage-manifest ./animation-coverage.json]
     [--ignore-https-errors] [--local-display]
   condev-animation-lab --config ./scenario.json --out-dir ./lab-results \\
     --server http://localhost:3000 --run-id <uuid>
@@ -63,6 +66,8 @@ files, embedded source content, raw generated URLs, and manifest paths are never
 The optional execution manifest is local-only and fail-closed. It distinguishes
 desktop emulation from real iOS/Android/WebView targets, power/thermal requirements,
 authentication file references, and explicit cross-origin target or bridge policy.
+The optional coverage manifest is a reviewed local-only denominator bound to the
+complete Scenario digest. Only closed counts, statuses, and reason codes are uploaded.
 
 For an attached run, prefer CONDEV_LAB_RUNNER_TOKEN over --token so the grant is
 not retained in shell history or exposed in command arguments.`
@@ -105,6 +110,7 @@ export function parseArgs(argv: string[]): CliOptions {
         else if (value === '--storage-state') result.storageState = next
         else if (value === '--source-map-manifest') result.sourceMapManifest = next
         else if (value === '--execution-manifest') result.executionManifest = next
+        else if (value === '--coverage-manifest') result.coverageManifest = next
         else throw new Error(`Unknown option ${value}`)
         index += 1
     }
@@ -136,6 +142,19 @@ export function assertAttachedCliAuthority(options: Pick<CliOptions, 'headed' | 
         throw new Error(
             'Attached runs do not allow headed mode, a custom browser executable, or a local execution manifest because the platform does not declare them'
         )
+    }
+}
+
+/** Binds local authentication material to the platform-declared mode without exposing the file or its contents. */
+export function assertAttachedAuthenticationMode(
+    storageState: string | undefined,
+    authenticationMode: RemoteClaimedLabRun['config']['authenticationMode']
+): void {
+    if (authenticationMode === 'required-local-storage-state' && !storageState) {
+        throw new Error('This attached run requires --storage-state with a reviewed local Playwright storage-state file')
+    }
+    if (authenticationMode === 'none' && storageState) {
+        throw new Error('This attached run does not allow --storage-state because the platform authentication mode is none')
     }
 }
 
@@ -200,6 +219,10 @@ async function main(): Promise<void> {
     const validation = validateAnimationLabScenario(parsed)
     if (!validation.ok) throw new Error(`Invalid scenario: ${validation.errors.join(', ')}`)
     let scenario = validation.value
+    const reviewedScenario = scenario
+    const coverageManifest = options.coverageManifest
+        ? await loadAnimationCoverageManifest(options.coverageManifest, reviewedScenario)
+        : undefined
     const outputRoot = path.resolve(options.outDir)
     await ensurePrivateDirectory(outputRoot, true)
     let executionManifest: LabExecutionManifestV1 | undefined
@@ -212,13 +235,6 @@ async function main(): Promise<void> {
             options.storageState = executionManifest.authentication.file
         }
     }
-    if (options.storageState) {
-        const storageStatePath = path.resolve(options.storageState)
-        const storageStateStat = await fs.stat(storageStatePath)
-        if (!storageStateStat.isFile() || storageStateStat.size > 1024 * 1024) {
-            throw new Error('Playwright storage state must be a local file no larger than 1 MiB')
-        }
-    }
     let remoteProgress = Promise.resolve()
     let claimed = false
     let selectedBrowser = resolveClaimedBrowser(options.browser, null)
@@ -226,10 +242,18 @@ async function main(): Promise<void> {
         if (remote) {
             const claimResult = await remote.claim()
             claimed = true
+            assertAttachedAuthenticationMode(options.storageState, claimResult.config.authenticationMode)
             const claimedAuthority = applyClaimedRunAuthority(scenario, claimResult, options.browser)
             selectedBrowser = claimedAuthority.browser
             scenario = claimedAuthority.scenario
             await remote.update({ status: 'running', phase: 'preparing', progress: 2 })
+        }
+        if (options.storageState) {
+            const storageStatePath = path.resolve(options.storageState)
+            const storageStateStat = await fs.stat(storageStatePath)
+            if (!storageStateStat.isFile() || storageStateStat.size > 1024 * 1024) {
+                throw new Error('Playwright storage state must be a local file no larger than 1 MiB')
+            }
         }
         if (options.sourceMapManifest && (selectedBrowser !== 'chromium' || scenario.trace?.enabled === false)) {
             throw new Error('A source-map manifest requires an enabled Chromium diagnostic trace')
@@ -251,6 +275,8 @@ async function main(): Promise<void> {
             ignoreHTTPSErrors: options.ignoreHttpsErrors,
             authoredSource,
             executionManifest,
+            coverageManifest,
+            coverageReviewedScenario: reviewedScenario,
             localDisplay: options.localDisplay ? createTerminalLabLocalDisplaySink() : undefined,
             onProgress(event) {
                 process.stderr.write(`[${event.phase}] ${event.message}\n`)

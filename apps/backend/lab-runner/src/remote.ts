@@ -35,7 +35,7 @@ const AUTHORED_SOURCE_FRAME_LIMITATIONS: ReadonlySet<LabTraceSourceMapLimitation
     'authored-source-segment-not-found',
     'authored-source-coordinate-basis-unknown',
 ])
-export const LAB_RUNNER_CONTRACT_VERSION = 11 as const
+export const LAB_RUNNER_CONTRACT_VERSION = 12 as const
 
 export interface RemoteLabConnectionOptions {
     server: string
@@ -75,6 +75,7 @@ export interface RemoteClaimedLabRunConfig {
     durationMs: number
     trace: boolean
     lighthouse: boolean
+    authenticationMode: 'none' | 'required-local-storage-state'
     measurementContract: LabMeasurementContractV2
 }
 
@@ -228,6 +229,7 @@ function claimedConfig(value: unknown): RemoteClaimedLabRunConfig {
             'durationMs',
             'trace',
             'lighthouse',
+            'authenticationMode',
             'measurementContract',
         ],
         'config'
@@ -243,6 +245,9 @@ function claimedConfig(value: unknown): RemoteClaimedLabRunConfig {
     if (!['cold', 'warm'].includes(String(config.cacheState))) {
         throw new Error('Lab server returned an invalid platform config cacheState')
     }
+    if (!['none', 'required-local-storage-state'].includes(String(config.authenticationMode))) {
+        throw new Error('Lab server returned an invalid platform config authenticationMode')
+    }
     return {
         browser: config.browser as RemoteClaimedLabRunConfig['browser'],
         viewport: {
@@ -257,6 +262,7 @@ function claimedConfig(value: unknown): RemoteClaimedLabRunConfig {
         durationMs: claimedInteger(config.durationMs, 5_000, 120_000, 'durationMs'),
         trace: claimedBoolean(config.trace, 'trace'),
         lighthouse: claimedBoolean(config.lighthouse, 'lighthouse'),
+        authenticationMode: config.authenticationMode as RemoteClaimedLabRunConfig['authenticationMode'],
         measurementContract: claimedMeasurementContract(config.measurementContract),
     }
 }
@@ -387,7 +393,7 @@ function attemptLimitations(
 function platformAttempt(
     attempt: LabAttemptSummary,
     metricLimit: number,
-    includeActionWindows: boolean,
+    actionWindowMode: 'all' | 'measured' | 'none',
     byteBudgetApplied: boolean,
     allowedOriginalLimitations: ReadonlySet<string>
 ): LabAttemptSummary {
@@ -408,21 +414,23 @@ function platformAttempt(
         metrics: warmup ? [] : attempt.metrics.slice(0, Math.min(MAX_PLATFORM_ATTEMPT_METRICS, metricLimit)),
         capabilities: attempt.capabilities,
         limitations: attemptLimitations(attempt.limitations, requiredLimitations, allowedOriginalLimitations),
-        ...(!warmup && includeActionWindows && attempt.actionWindows ? { actionWindows: attempt.actionWindows } : {}),
+        ...(!warmup && actionWindowMode !== 'none' && (actionWindowMode === 'all' || attempt.phase === 'measured') && attempt.actionWindows
+            ? { actionWindows: attempt.actionWindows }
+            : {}),
     }
 }
 
 function reportForAttemptLimit(
     report: AnimationLabReport,
     metricLimit: number,
-    includeActionWindows: boolean,
+    actionWindowMode: 'all' | 'measured' | 'none',
     byteBudgetApplied: boolean
 ): AnimationLabReport {
     const allowedOriginalLimitations = reportOriginalLimitations(report, byteBudgetApplied)
     const bounded = {
         ...report,
         attempts: report.attempts.map(attempt =>
-            platformAttempt(attempt, metricLimit, includeActionWindows, byteBudgetApplied, allowedOriginalLimitations)
+            platformAttempt(attempt, metricLimit, actionWindowMode, byteBudgetApplied, allowedOriginalLimitations)
         ),
     }
     delete bounded.timeline
@@ -430,23 +438,28 @@ function reportForAttemptLimit(
 }
 
 function platformReportArtifact(report: AnimationLabReport): Buffer {
-    const bounded = reportForAttemptLimit(report, MAX_PLATFORM_ATTEMPT_METRICS, true, false)
+    const bounded = reportForAttemptLimit(report, MAX_PLATFORM_ATTEMPT_METRICS, 'all', false)
     const initialArtifact = serializeJson(bounded)
     if (initialArtifact.byteLength <= MAX_PLATFORM_REPORT_BYTES) return initialArtifact
 
-    const withoutAttemptWindows = reportForAttemptLimit(report, MAX_PLATFORM_ATTEMPT_METRICS, false, true)
-    const windowsOmittedArtifact = serializeJson(withoutAttemptWindows)
-    if (windowsOmittedArtifact.byteLength <= MAX_PLATFORM_REPORT_BYTES) return windowsOmittedArtifact
+    const compactWindowMode = report.semanticsVersion === 3 ? 'measured' : 'none'
+    const boundedAttemptDetail = reportForAttemptLimit(report, MAX_PLATFORM_ATTEMPT_METRICS, compactWindowMode, true)
+    const boundedAttemptArtifact = serializeJson(boundedAttemptDetail)
+    if (boundedAttemptArtifact.byteLength <= MAX_PLATFORM_REPORT_BYTES) return boundedAttemptArtifact
 
     let lower = 0
     let upper = MAX_PLATFORM_ATTEMPT_METRICS - 1
-    let best = serializeJson(reportForAttemptLimit(report, 0, false, true))
+    let best = serializeJson(reportForAttemptLimit(report, 0, compactWindowMode, true))
     if (best.byteLength > MAX_PLATFORM_REPORT_BYTES) {
-        throw new RangeError('Animation report canonical fields exceed the platform byte budget')
+        throw new RangeError(
+            report.semanticsVersion === 3
+                ? 'Animation report coverage action windows exceed the platform byte budget'
+                : 'Animation report canonical fields exceed the platform byte budget'
+        )
     }
     while (lower <= upper) {
         const middle = Math.floor((lower + upper) / 2)
-        const candidate = serializeJson(reportForAttemptLimit(report, middle, false, true))
+        const candidate = serializeJson(reportForAttemptLimit(report, middle, compactWindowMode, true))
         if (candidate.byteLength <= MAX_PLATFORM_REPORT_BYTES) {
             best = candidate
             lower = middle + 1

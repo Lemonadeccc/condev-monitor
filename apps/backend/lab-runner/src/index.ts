@@ -44,6 +44,12 @@ export type { DiscoverAnimationCandidatesOptions, DiscoveredAnimationProposal } 
 export { decodePageProbeResult } from './probe-result'
 export type { DecodedPageProbeResult, ExpectedPageProbeAction } from './probe-result'
 export {
+    coverageResultsFromAttempts,
+    createLocalScenarioSha256,
+    loadAnimationCoverageManifest,
+    validateCoverageManifestForScenario,
+} from './coverage'
+export {
     buildLabLocalBudgetDisplayEvent,
     createTerminalLabLocalDisplaySink,
     projectLabLocalDisplayEvent,

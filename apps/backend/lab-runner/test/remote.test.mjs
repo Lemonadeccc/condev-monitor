@@ -3,7 +3,7 @@ import { once } from 'node:events'
 import { createServer } from 'node:http'
 import test from 'node:test'
 
-import { validateAnimationLabSemanticsV2 } from '@condev-monitor/animation-lab'
+import { validateAnimationLabSemanticsV2, validateAnimationLabSemanticsV3 } from '@condev-monitor/animation-lab'
 
 import { LAB_RUNNER_CONTRACT_VERSION, LabOutcomeAssertionError, RemoteLabClient, remoteFailureCode } from '../build/index.js'
 
@@ -26,6 +26,7 @@ function claimedConfig(overrides = {}) {
         durationMs: 15_000,
         trace: false,
         lighthouse: true,
+        authenticationMode: 'none',
         measurementContract: {
             contractVersion: 2,
             expectedHz: 60,
@@ -193,6 +194,32 @@ function maximalV2Report() {
             rawTraceUploaded: false,
         },
     }
+}
+
+function maximalV3Report() {
+    const fixture = maximalV2Report()
+    fixture.semanticsVersion = 3
+    fixture.attempts = fixture.attempts.map(attempt => ({
+        ...attempt,
+        actionWindows: attempt.actionWindows.map(window => ({ ...window, limitations: [] })),
+    }))
+    fixture.coverage = {
+        schemaVersion: 1,
+        manifestHash: 'a'.repeat(64),
+        review: 'matched',
+        totals: { declared: 100, discovered: 0, executed: 100, passed: 100, uncovered: 0 },
+        items: Array.from({ length: 100 }, (_, index) => ({
+            coverageId: `coverage-${index.toString().padStart(3, '0')}`,
+            kind: 'business-state',
+            actionId: `action-${index.toString().padStart(3, '0')}`,
+            origin: 'declared',
+            critical: false,
+            authentication: 'none',
+            status: 'passed',
+            reasons: [],
+        })),
+    }
+    return fixture
 }
 
 function report() {
@@ -501,6 +528,8 @@ test('fails closed when a platform claim omits, extends, or corrupts execution a
     const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
     const missingMeasurementContract = claimedConfig()
     delete missingMeasurementContract.measurementContract
+    const missingAuthenticationMode = claimedConfig()
+    delete missingAuthenticationMode.authenticationMode
     const validMeasurementContract = claimedConfig().measurementContract
 
     for (const data of [
@@ -508,6 +537,9 @@ test('fails closed when a platform claim omits, extends, or corrupts execution a
         { runId, targetUrl: 'http://localhost:5173/', config: claimedConfig({ measuredRuns: 2 }) },
         { runId, targetUrl: 'http://localhost:5173/', config: claimedConfig({ privateSelector: '#account' }) },
         { runId, targetUrl: 'http://localhost:5173/', config: { browser: 'chromium' } },
+        { runId, targetUrl: 'http://localhost:5173/', config: missingAuthenticationMode },
+        { runId, targetUrl: 'http://localhost:5173/', config: claimedConfig({ authenticationMode: null }) },
+        { runId, targetUrl: 'http://localhost:5173/', config: claimedConfig({ authenticationMode: 'required-cookie' }) },
         { runId, targetUrl: 'http://localhost:5173/', config: missingMeasurementContract },
         { runId, targetUrl: 'http://localhost:5173/', config: claimedConfig({ measurementContract: null }) },
         { runId, targetUrl: 'http://localhost:5173/', config: claimedConfig({ measurementContract: {} }) },
@@ -1134,6 +1166,55 @@ test('deterministically byte-budgets maximal v2 reports while retaining canonica
         findings: uploaded.findings,
     })
     assert.deepEqual(semanticValidation, { ok: true, value: semanticValidation.value })
+})
+
+test('preserves every measured action window while byte-budgeting maximal semantics v3 reports', async t => {
+    const requests = []
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = async (url, init = {}) => {
+        requests.push({ url: String(url), init })
+        return new Response(JSON.stringify({ success: true, data: {} }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+        })
+    }
+    t.after(() => {
+        globalThis.fetch = originalFetch
+    })
+
+    const fixture = maximalV3Report()
+    assert.ok(Buffer.byteLength(`${JSON.stringify(fixture)}\n`, 'utf8') > animationReportMaxBytes)
+    const client = new RemoteLabClient({ server: 'http://localhost:3000/', runId, token })
+    await client.uploadDerivedReport(fixture)
+
+    const upload = requests.find(request => request.url.endsWith('/artifacts/animation-report'))
+    const bytes = Buffer.from(upload.init.body)
+    assert.ok(bytes.byteLength <= animationReportMaxBytes)
+    const uploaded = JSON.parse(bytes.toString('utf8'))
+    const warmups = uploaded.attempts.filter(attempt => attempt.phase === 'warmup')
+    const measured = uploaded.attempts.filter(attempt => attempt.phase === 'measured')
+    assert.ok(warmups.every(attempt => !('actionWindows' in attempt)))
+    assert.ok(measured.every(attempt => attempt.actionWindows.length === 100))
+    assert.ok(
+        measured.every(attempt => {
+            const source = fixture.attempts.find(candidate => candidate.attemptId === attempt.attemptId)
+            return JSON.stringify(attempt.actionWindows) === JSON.stringify(source.actionWindows)
+        })
+    )
+    assert.ok(measured.every(attempt => attempt.limitations.includes(reportByteBudgetLimitation)))
+    assert.ok(measured.every(attempt => attempt.metrics.length < 256))
+
+    const semanticValidation = validateAnimationLabSemanticsV3({
+        semanticsVersion: uploaded.semanticsVersion,
+        measurementContract: uploaded.measurementContract,
+        scenarioActions: uploaded.scenario.actions,
+        actionWindows: uploaded.actionWindows,
+        metrics: uploaded.aggregateMetrics,
+        technologyEvidence: uploaded.technologyEvidence,
+        findings: uploaded.findings,
+        coverage: uploaded.coverage,
+    })
+    assert.equal(semanticValidation.ok, true)
 })
 
 test('omits per-attempt windows before reducing already bounded metric prefixes', async t => {
