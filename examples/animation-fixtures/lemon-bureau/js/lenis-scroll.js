@@ -21,9 +21,6 @@ const monitorClient = init({
 
 let lenis = null;
 let motionSession = null;
-let scrollWindow = null;
-let scrollWindowTimer = null;
-let removeLenisScrollListener = null;
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -56,15 +53,7 @@ function initLenisScroll() {
     scrollTrigger: { scrollTrigger: ScrollTrigger },
   });
 
-  removeLenisScrollListener = lenis.on("scroll", () => {
-    ScrollTrigger.update();
-    scrollWindow ??= motionSession.begin("scroll", "lenis-smooth-scroll");
-    window.clearTimeout(scrollWindowTimer);
-    scrollWindowTimer = window.setTimeout(() => {
-      scrollWindow?.end();
-      scrollWindow = null;
-    }, 180);
-  });
+  lenis.on("scroll", ScrollTrigger.update);
   gsap.ticker.add((time) => lenis.raf(time * 1000));
   gsap.ticker.lagSmoothing(0);
 
@@ -76,27 +65,10 @@ function initLenisScroll() {
   window.addEventListener("load", () => ScrollTrigger.refresh(), { once: true });
 }
 
-function disposeHostObservers() {
-  window.clearTimeout(scrollWindowTimer);
-  scrollWindowTimer = null;
-  scrollWindow?.cancel();
-  scrollWindow = null;
-  removeLenisScrollListener?.();
-  removeLenisScrollListener = null;
-  motionSession?.dispose();
-  motionSession = null;
-}
-
-const handlePageHide = (event) => {
-  if (!event.persisted) disposeHostObservers();
-};
-
-window.addEventListener("pagehide", handlePageHide);
-
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
-    window.removeEventListener("pagehide", handlePageHide);
-    disposeHostObservers();
+    motionSession?.dispose();
+    motionSession = null;
   });
 }
 

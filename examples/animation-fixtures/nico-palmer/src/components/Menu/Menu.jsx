@@ -23,7 +23,6 @@ const Menu = () => {
     targetRef: menuContainer,
   });
   const [isMenuOpen, setIsMenuOpen] = useState(false);
-  const isMenuOpenRef = useRef(false);
   const menuAnimation = useRef();
   const menuLinksAnimation = useRef();
   const menuBarAnimation = useRef();
@@ -31,10 +30,8 @@ const Menu = () => {
   const lastScrollY = useRef(0);
   const menuBarRef = useRef();
 
-  const windowWidthRef = useRef(window.innerWidth);
-  const [windowWidth, setWindowWidth] = useState(windowWidthRef.current);
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
   const [shouldDelayClose, setShouldDelayClose] = useState(false);
-  const shouldDelayCloseRef = useRef(false);
   const previousPathRef = useRef(location.pathname);
   const scrollPositionRef = useRef(0);
 
@@ -56,17 +53,15 @@ const Menu = () => {
 
   const toggleMenu = () => {
     document.querySelector(".hamburger-icon").classList.toggle("active");
-    const newMenuState = !isMenuOpenRef.current;
-    isMenuOpenRef.current = newMenuState;
+    const newMenuState = !isMenuOpen;
     menuMonitor.recordUpdateCause("state");
     setIsMenuOpen(newMenuState);
     toggleBodyScroll(newMenuState);
   };
 
   const closeMenu = () => {
-    if (isMenuOpenRef.current) {
+    if (isMenuOpen) {
       document.querySelector(".hamburger-icon").classList.toggle("active");
-      isMenuOpenRef.current = false;
       menuMonitor.recordUpdateCause("state");
       setIsMenuOpen(false);
       toggleBodyScroll(false);
@@ -74,9 +69,7 @@ const Menu = () => {
   };
 
   const handleLinkClick = (path) => {
-    if (path !== location.pathname && !shouldDelayCloseRef.current) {
-      shouldDelayCloseRef.current = true;
-      menuMonitor.recordUpdateCause("state");
+    if (path !== location.pathname) {
       setShouldDelayClose(true);
     }
   };
@@ -84,20 +77,8 @@ const Menu = () => {
   useEffect(() => {
     if (location.pathname !== previousPathRef.current && shouldDelayClose) {
       const timer = setTimeout(() => {
-        let updateCount = 0;
-        if (isMenuOpenRef.current) {
-          document.querySelector(".hamburger-icon").classList.toggle("active");
-          isMenuOpenRef.current = false;
-          setIsMenuOpen(false);
-          toggleBodyScroll(false);
-          updateCount += 1;
-        }
-        if (shouldDelayCloseRef.current) {
-          shouldDelayCloseRef.current = false;
-          setShouldDelayClose(false);
-          updateCount += 1;
-        }
-        if (updateCount > 0) menuMonitor.recordUpdateCause("state", updateCount);
+        closeMenu();
+        setShouldDelayClose(false);
       }, 700);
 
       previousPathRef.current = location.pathname;
@@ -109,11 +90,7 @@ const Menu = () => {
 
   useEffect(() => {
     const handleResize = () => {
-      const nextWidth = window.innerWidth;
-      if (windowWidthRef.current === nextWidth) return;
-      windowWidthRef.current = nextWidth;
-      menuMonitor.recordUpdateCause("state");
-      setWindowWidth(nextWidth);
+      setWindowWidth(window.innerWidth);
     };
 
     window.addEventListener("resize", handleResize);
@@ -214,41 +191,41 @@ const Menu = () => {
   return (
     <Profiler id="condev-nico-primary-navigation" onRender={menuMonitor.onRender}>
       <div className="menu-container" ref={menuContainer}>
-      <div className="menu-bar" ref={menuBarRef}>
-        <div className="menu-bar-container">
-          <div className="menu-logo" onClick={closeMenu}>
-            <Link to="/">
-              <h4>Palmer</h4>
-            </Link>
-          </div>
-          <div className="menu-actions">
-            <div className="menu-toggle">
-              <button className="hamburger-icon" onClick={toggleMenu}></button>
+        <div className="menu-bar" ref={menuBarRef}>
+          <div className="menu-bar-container">
+            <div className="menu-logo" onClick={closeMenu}>
+              <Link to="/">
+                <h4>Palmer</h4>
+              </Link>
+            </div>
+            <div className="menu-actions">
+              <div className="menu-toggle">
+                <button className="hamburger-icon" onClick={toggleMenu}></button>
+              </div>
             </div>
           </div>
         </div>
-      </div>
-      <div className="menu">
-        <div className="menu-col">
-          <div className="menu-sub-col">
-            <div className="menu-links">
-              {menuLinks.map((link, index) => (
-                <div key={index} className="menu-link-item">
-                  <div className="menu-link-item-holder">
-                    <Link
-                      className="menu-link"
-                      to={link.path}
-                      onClick={() => handleLinkClick(link.path)}
-                    >
-                      {link.label}
-                    </Link>
+        <div className="menu">
+          <div className="menu-col">
+            <div className="menu-sub-col">
+              <div className="menu-links">
+                {menuLinks.map((link, index) => (
+                  <div key={index} className="menu-link-item">
+                    <div className="menu-link-item-holder">
+                      <Link
+                        className="menu-link"
+                        to={link.path}
+                        onClick={() => handleLinkClick(link.path)}
+                      >
+                        {link.label}
+                      </Link>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
             </div>
           </div>
         </div>
-      </div>
       </div>
     </Profiler>
   );

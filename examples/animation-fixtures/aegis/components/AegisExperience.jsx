@@ -336,65 +336,28 @@ export function AegisExperience() {
     targetRef: pageRef,
   });
   const [contactOpen, setContactOpen] = useState(false);
-  const contactOpenRef = useRef(false);
   const [hudVisible, setHudVisible] = useState(false);
-  const hudVisibleRef = useRef(false);
   const [bootStatus, setBootStatus] = useState("loading");
-  const bootStatusRef = useRef("loading");
   const [rendererState, setRendererState] = useState({
     backend: "",
     ready: false,
   });
-  const rendererStateRef = useRef(rendererState);
 
-  const handleSceneReady = useCallback(
-    (backend) => {
-      const current = rendererStateRef.current;
-      if (current.ready && current.backend === backend) {
-        return;
-      }
-      const next = {
-        backend,
-        ready: true,
-      };
-      rendererStateRef.current = next;
-      pageMonitor.recordUpdateCause("state");
-      setRendererState(next);
-    },
-    [pageMonitor]
-  );
-  const handleBootState = useCallback(
-    (status) => {
-      if (bootStatusRef.current === status) {
-        return;
-      }
-      bootStatusRef.current = status;
-      pageMonitor.recordUpdateCause("state");
-      setBootStatus(status);
-    },
-    [pageMonitor]
-  );
+  const handleSceneReady = useCallback((backend) => {
+    setRendererState({
+      backend,
+      ready: true,
+    });
+  }, []);
   const handleRevealStart = useCallback(() => {
-    if (hudVisibleRef.current) {
-      return;
-    }
-    hudVisibleRef.current = true;
     pageMonitor.recordUpdateCause("state");
     setHudVisible(true);
   }, [pageMonitor]);
   const handleOpenContact = useCallback(() => {
-    if (contactOpenRef.current) {
-      return;
-    }
-    contactOpenRef.current = true;
     pageMonitor.recordUpdateCause("state");
     setContactOpen(true);
   }, [pageMonitor]);
   const handleCloseContact = useCallback(() => {
-    if (!contactOpenRef.current) {
-      return;
-    }
-    contactOpenRef.current = false;
     pageMonitor.recordUpdateCause("state");
     setContactOpen(false);
   }, [pageMonitor]);
@@ -404,7 +367,7 @@ export function AegisExperience() {
       <main className="aegis-page" ref={pageRef}>
         <AegisCanvas
           introStarted={hudVisible}
-          onBootState={handleBootState}
+          onBootState={setBootStatus}
           onReady={handleSceneReady}
         />
         {hudVisible ? (
