@@ -297,7 +297,15 @@ test('Vue records only closed development render-trigger operations in the local
     scope.beforeUpdate()
     scope.updated()
     assert.deepEqual(localRecords, [
-        { kind: 'update', reason: 'vue-get', reasonSource: 'vue-render-trigger', durationMs: 8, timestampMs: 18 },
+        {
+            kind: 'update',
+            reason: 'vue-get',
+            reasonSource: 'vue-render-trigger',
+            durationMs: 8,
+            timestampMs: 18,
+            updateCauses: ['dependency'],
+            observedCauseCount: 1,
+        },
     ])
     assert.equal(inspection({ inspectionPurpose: 'local', evidenceWindow: { startedAt: 0, endedAt: 20 } }).frameworkScopes.length, 1)
     assert.equal('frameworkScopes' in inspection({ inspectionPurpose: 'rum', evidenceWindow: { startedAt: 0, endedAt: 20 } }), false)

@@ -60,6 +60,7 @@ export function createCondevVueAnimationScope(options: CondevVueAnimationOptions
     let probe: VueFrameworkProbe | undefined
     let componentScope: FrameworkComponentScope | undefined
     let renderTrigger: 'get' | 'has' | 'iterate' | undefined
+    let observedRenderTriggerCount = 0
     let updateStartedAt: number | undefined
     let registeredTarget: Element | undefined
     let unregisterTarget: (() => void) | undefined
@@ -132,6 +133,7 @@ export function createCondevVueAnimationScope(options: CondevVueAnimationOptions
         active = false
         updateStartedAt = undefined
         renderTrigger = undefined
+        observedRenderTriggerCount = 0
         clearTarget()
         safeDispose(() => probe?.dispose())
         safeDispose(() => componentScope?.dispose())
@@ -141,7 +143,10 @@ export function createCondevVueAnimationScope(options: CondevVueAnimationOptions
 
     return {
         renderTriggered(operation): void {
-            if (operation === 'get' || operation === 'has' || operation === 'iterate') renderTrigger = operation
+            if (operation === 'get' || operation === 'has' || operation === 'iterate') {
+                renderTrigger = operation
+                observedRenderTriggerCount = Math.min(1_024, observedRenderTriggerCount + 1)
+            }
         },
         beforeUpdate(): void {
             if (disposed || !active) return
@@ -151,12 +156,15 @@ export function createCondevVueAnimationScope(options: CondevVueAnimationOptions
             if (disposed || !active) {
                 updateStartedAt = undefined
                 renderTrigger = undefined
+                observedRenderTriggerCount = 0
                 return false
             }
             const startedAt = updateStartedAt
             updateStartedAt = undefined
             const operation = renderTrigger
             renderTrigger = undefined
+            const observedCauseCount = observedRenderTriggerCount
+            observedRenderTriggerCount = 0
             const endedAt = readMonotonicNow(now)
             syncTarget()
             if (startedAt === undefined || endedAt === undefined || endedAt < startedAt) return false
@@ -167,6 +175,8 @@ export function createCondevVueAnimationScope(options: CondevVueAnimationOptions
                     reasonSource: 'vue-render-trigger',
                     durationMs: endedAt - startedAt,
                     timestampMs: endedAt,
+                    updateCauses: ['dependency'],
+                    observedCauseCount,
                 })
             }
             try {
@@ -190,6 +200,7 @@ export function createCondevVueAnimationScope(options: CondevVueAnimationOptions
             active = false
             updateStartedAt = undefined
             renderTrigger = undefined
+            observedRenderTriggerCount = 0
             clearTarget()
         },
         unmounted: dispose,
