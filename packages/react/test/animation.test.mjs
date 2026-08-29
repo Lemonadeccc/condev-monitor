@@ -145,6 +145,8 @@ test('the React component scope keeps Profiler and independent commit evidence l
         },
         label: 'Private card',
     })
+    assert.equal(component.recordUpdateCause('state', 2), true)
+    assert.equal(component.recordUpdateCause('private-value'), false)
     component.onRender('private-id', 'update', 4, 7, 1, 20)
     component.recordIndependentCommit(2, 22)
     component.bindTarget({})
@@ -152,6 +154,8 @@ test('the React component scope keeps Profiler and independent commit evidence l
         records.map(record => record.kind),
         ['render', 'commit-attested']
     )
+    assert.deepEqual(records[0].updateCauses, ['state'])
+    assert.equal(records[0].observedCauseCount, 2)
     assert.equal(inspect({ inspectionPurpose: 'local', evidenceWindow: { startedAt: 0, endedAt: 30 } }).frameworkScopes.length, 1)
     assert.equal('frameworkScopes' in inspect({ inspectionPurpose: 'rum', evidenceWindow: { startedAt: 0, endedAt: 30 } }), false)
     assert.equal(JSON.stringify(records).includes('private-id'), false)
