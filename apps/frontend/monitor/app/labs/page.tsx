@@ -7,6 +7,7 @@ import { useSearchParams } from 'next/navigation'
 import { useMemo } from 'react'
 
 import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions, AIPanelCard, AIStatCard, AIStateMessage } from '@/components/ai/page-shell'
+import { LabPolicyManager } from '@/components/lab/lab-policy-manager'
 import { LabRunActions } from '@/components/lab/lab-run-actions'
 import { LabStatusBadge } from '@/components/lab/lab-status-badge'
 import { useAuth } from '@/components/providers'
@@ -178,6 +179,8 @@ export default function LabsPage() {
                     </AIStateMessage>
                 )}
             </AIPanelCard>
+
+            {effectiveAppId ? <LabPolicyManager appId={effectiveAppId} runs={runs} /> : null}
         </AIMonitorPage>
     )
 }

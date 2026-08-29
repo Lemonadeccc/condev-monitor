@@ -9,6 +9,7 @@ import { useMemo } from 'react'
 
 import { AIMonitorHeader, AIMonitorPage, AIPanelCard, AIStatCard, AIStateMessage } from '@/components/ai/page-shell'
 import { LabRunMetricTable } from '@/components/lab/lab-metric-table'
+import { LabProjectBudgetEvaluations } from '@/components/lab/lab-project-budget-evaluations'
 import { LabStatusBadge } from '@/components/lab/lab-status-badge'
 import { useAuth } from '@/components/providers'
 import { Badge } from '@/components/ui/badge'
@@ -195,7 +196,13 @@ export default function LabRunPage() {
                         className="grid gap-4 focus-visible:outline-none"
                     >
                         {tab === 'overview' ? (
-                            <Overview run={run} />
+                            <>
+                                <Overview run={run} />
+                                <LabProjectBudgetEvaluations
+                                    runId={runId}
+                                    enabled={run.status === 'completed' || run.status === 'partial'}
+                                />
+                            </>
                         ) : tab === 'animation' || tab === 'performance' ? (
                             <>
                                 {tab === 'animation' ? (

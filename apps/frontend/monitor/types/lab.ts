@@ -598,3 +598,182 @@ export type IncomparableAnimationLabResult = {
 export type AnimationLabComparisonResult = ComparableAnimationLabResult | IncomparableAnimationLabResult
 
 export type LabComparisonApiResponse = LabApiResponse<AnimationLabComparisonResult>
+
+export type LabPolicySeverity = 'warning' | 'critical'
+export type LabPolicyComparator = '<=' | '<' | '>=' | '>'
+export type LabPolicyVerdict = 'within-policy' | 'breach' | 'indeterminate'
+
+export type LabProjectPolicyDefinition = {
+    schemaVersion: 1
+    metricCatalogVersion: 1 | 2 | 3 | 4 | 5
+    absoluteRules: Array<{
+        ruleId: string
+        metricId: string
+        comparator: LabPolicyComparator
+        target: { kind: 'absolute'; value: number; unit: string } | { kind: 'target-frame-multiple'; value: number; unit: 'ratio' }
+        minimumSamples: number
+        severity: LabPolicySeverity
+    }>
+    comparisonRules: Array<{
+        ruleId: string
+        metricId: string
+        scope: { level: 'run' } | { level: 'action'; actionId: string } | { level: 'subject'; actionId?: string; subjectKey: string }
+        operand: 'after-median' | 'signed-delta' | 'percent-change'
+        comparator: LabPolicyComparator
+        target: { value: number; unit: string }
+        minimumAttemptsPerSide: number
+        minimumUnderlyingSamples: number
+        severity: LabPolicySeverity
+    }>
+}
+
+export type LabProjectPolicy = {
+    policyId: string
+    appId: string
+    policyKey: string
+    version: number
+    name: string
+    metricCatalogVersion: number
+    digest: string
+    definition: LabProjectPolicyDefinition
+    createdAt: string
+}
+
+export type LabPolicyRef = { policyKey: string; version: number; digest: string }
+
+export type LabBaselineBinding = {
+    bindingId: string
+    appId: string
+    bindingKey: string
+    version: number
+    scenarioKey: string
+    routeKey: string
+    baselineRunId: string
+    policyId: string
+    policyRef?: LabPolicyRef
+    comparisonContextDigest: string
+    active: boolean
+    createdAt: string
+}
+
+export type LabPolicyRuleEvaluation = {
+    ruleId: string
+    metricId: string
+    severity: LabPolicySeverity
+    status: LabPolicyVerdict
+    reasonCodes: string[]
+    observed: {
+        scope: LabComparisonScope
+        beforeMedian: number | null
+        afterMedian: number | null
+        signedDelta: number | null
+        percentChange: number | null
+        attemptsBefore: number
+        attemptsAfter: number
+        minimumUnderlyingSamples: number | null
+    }
+    decision: {
+        operand: 'after-median' | 'signed-delta' | 'percent-change'
+        comparator: LabPolicyComparator
+        target: { value: number; unit: string }
+    }
+}
+
+export type LabPolicyEvaluationResult = {
+    schemaVersion: 1
+    kind: 'animation-lab-deterministic-policy-evaluation'
+    policyRef: LabPolicyRef
+    beforeRunId: string
+    afterRunId: string
+    verdict: LabPolicyVerdict
+    coverage: { totalRules: number; evaluatedRules: number; breachedRules: number; indeterminateRules: number }
+    rules: LabPolicyRuleEvaluation[]
+    caveats: Array<
+        'project-policy-is-not-measurement-evidence' | 'attempt-distribution-is-descriptive' | 'no-statistical-significance-inference'
+    >
+}
+
+export type LabPolicyEvaluation = {
+    evaluationId: string
+    appId: string
+    bindingId: string
+    policyId: string
+    beforeRunId: string
+    afterRunId: string
+    policyDigest: string
+    verdict: LabPolicyVerdict
+    result: LabPolicyEvaluationResult
+    createdAt: string
+}
+
+export type LabAlertState = {
+    stateId: string
+    appId: string
+    bindingKey: string
+    bindingId: string
+    ruleId: string
+    status: 'healthy' | 'open' | 'unknown' | 'superseded'
+    severity: LabPolicySeverity
+    lastEvaluationId: string
+    openedAt: string | null
+    resolvedAt: string | null
+    updatedAt: string
+}
+
+export type LabAlertEvent = {
+    eventId: string
+    appId: string
+    stateId: string
+    evaluationId: string
+    ruleId: string
+    eventType: 'opened' | 'resolved' | 'superseded'
+    severity: LabPolicySeverity
+    fromState: string
+    toState: string
+    evidence: unknown
+    createdAt: string
+}
+
+export type LabAbsoluteBudgetEvaluation = {
+    schemaVersion: 1
+    kind: 'animation-lab-project-budget-evaluation'
+    policyRef: LabPolicyRef
+    evidence: 'measured' | 'partial' | 'not-measured'
+    verdict: LabPolicyVerdict
+    rules: Array<{
+        ruleId: string
+        metricId: string
+        severity: LabPolicySeverity
+        status: LabPolicyVerdict
+        value: number | null
+        valueUnit: string
+        target: number | null
+        targetUnit: string
+        samples: number | null
+        reason?: string
+    }>
+    caveats: Array<'project-policy-is-not-measurement-evidence'>
+}
+
+export type LabPolicyEvaluationJob = {
+    jobId: string
+    runId: string
+    bindingKey: string
+    state: 'pending' | 'completed' | 'quarantined'
+    attemptCount: number
+    lastErrorCode: string | null
+    createdAt: string
+    updatedAt: string
+}
+
+export type LabPoliciesApiResponse = LabApiResponse<{ policies: LabProjectPolicy[] }>
+export type LabBaselineBindingsApiResponse = LabApiResponse<{ bindings: LabBaselineBinding[] }>
+export type LabPolicyEvaluationsApiResponse = LabApiResponse<{ evaluations: LabPolicyEvaluation[] }>
+export type LabAlertStatesApiResponse = LabApiResponse<{ states: LabAlertState[] }>
+export type LabAlertEventsApiResponse = LabApiResponse<{ events: LabAlertEvent[] }>
+export type LabPolicyEvaluationJobsApiResponse = LabApiResponse<{ jobs: LabPolicyEvaluationJob[] }>
+export type LabProjectBudgetEvaluationsApiResponse = LabApiResponse<{
+    runId: string
+    evaluations: LabAbsoluteBudgetEvaluation[]
+    unavailable: string | null
+}>
