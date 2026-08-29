@@ -1,0 +1,121 @@
+{
+    "schemaVersion": 1,
+    "name": "aegis-home-motion",
+    "url": "http://127.0.0.1:43104/",
+    "routeKey": "aegis.home",
+    "environment": "development",
+    "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+    },
+    "reducedMotion": "no-preference",
+    "cacheMode": "warm",
+    "warmupRuns": 1,
+    "measuredRuns": 3,
+    "measurementContract": {
+        "contractVersion": 2,
+        "expectedHz": 60,
+        "targetFrameMs": 16.666667,
+        "source": "explicit",
+        "confidence": "explicit",
+        "budgetRef": {
+            "catalogVersion": 1,
+            "budgetId": "condev.animation.default",
+            "budgetVersion": 2
+        },
+        "metricCatalogVersion": 3
+    },
+    "actions": [
+        {
+            "kind": "wait",
+            "label": "scene-load-window",
+            "actionId": "scene-load-window",
+            "subject": { "scope": "subject", "subjectKey": "hero-scene", "role": "scene-load", "surface": "unknown" },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "meta-runtime", "technologyKey": "next" },
+                { "axis": "renderer", "technologyKey": "three" }
+            ],
+            "durationMs": 6000
+        },
+        {
+            "kind": "pointer-path",
+            "label": "hero-scene-pointer-path",
+            "actionId": "hero-scene-pointer-path",
+            "subject": { "scope": "subject", "subjectKey": "hero-scene", "role": "pointer-follow", "surface": "unknown" },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "renderer", "technologyKey": "three" }
+            ],
+            "selector": ".scene-canvas canvas",
+            "durationMs": 1800,
+            "points": [
+                { "xRatio": 0.2, "yRatio": 0.25 },
+                { "xRatio": 0.75, "yRatio": 0.3 },
+                { "xRatio": 0.65, "yRatio": 0.75 },
+                { "xRatio": 0.3, "yRatio": 0.6 }
+            ]
+        },
+        {
+            "kind": "scroll",
+            "label": "scene-scroll",
+            "actionId": "scene-scroll",
+            "subject": { "scope": "route", "role": "scroll-scrub", "surface": "unknown" },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "motion-engine", "technologyKey": "gsap" },
+                { "axis": "renderer", "technologyKey": "three" }
+            ],
+            "deltaY": 2600,
+            "durationMs": 2600
+        },
+        {
+            "kind": "click",
+            "label": "contact-open",
+            "actionId": "contact-open",
+            "subject": { "scope": "subject", "subjectKey": "contact-dialog", "role": "dialog-open", "surface": "dom" },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "motion-engine", "technologyKey": "gsap" }
+            ],
+            "selector": ".hud-action .hud-button",
+            "durationMs": 1800,
+            "expect": [
+                { "kind": "element-state", "selector": ".contact-overlay", "state": "visible", "timeoutMs": 5000 }
+            ]
+        },
+        {
+            "kind": "press",
+            "label": "contact-close",
+            "actionId": "contact-close",
+            "subject": { "scope": "subject", "subjectKey": "contact-dialog", "role": "dialog-close", "surface": "dom" },
+            "trigger": { "source": "scenario" },
+            "technologies": [{ "axis": "ui-framework", "technologyKey": "react" }],
+            "key": "Escape",
+            "expect": [{ "kind": "element-state", "selector": ".contact-overlay", "state": "detached", "timeoutMs": 5000 }]
+        },
+        {
+            "kind": "resize",
+            "label": "desktop-layout-resize",
+            "actionId": "desktop-layout-resize",
+            "subject": { "scope": "route", "role": "responsive-layout", "surface": "dom" },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "renderer", "technologyKey": "three" }
+            ],
+            "width": 1180,
+            "height": 760
+        }
+    ],
+    "trace": { "enabled": true, "screenshots": false, "maxDurationMs": 60000 },
+    "lighthouse": {
+        "enabled": true,
+        "categories": ["performance", "accessibility", "best-practices"],
+        "formFactor": "desktop"
+    }
+}

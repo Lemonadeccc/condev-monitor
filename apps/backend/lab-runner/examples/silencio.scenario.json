@@ -1,0 +1,93 @@
+{
+    "schemaVersion": 1,
+    "name": "silencio-home-motion",
+    "url": "http://127.0.0.1:43105/",
+    "routeKey": "silencio.home",
+    "environment": "development",
+    "viewport": {
+        "width": 1440,
+        "height": 900,
+        "deviceScaleFactor": 1
+    },
+    "reducedMotion": "no-preference",
+    "cacheMode": "warm",
+    "warmupRuns": 1,
+    "measuredRuns": 3,
+    "measurementContract": {
+        "contractVersion": 2,
+        "expectedHz": 60,
+        "targetFrameMs": 16.666667,
+        "source": "explicit",
+        "confidence": "explicit",
+        "budgetRef": {
+            "catalogVersion": 1,
+            "budgetId": "condev.animation.default",
+            "budgetVersion": 2
+        },
+        "metricCatalogVersion": 3
+    },
+    "actions": [
+        {
+            "kind": "wait",
+            "label": "preloader-window",
+            "actionId": "preloader-window",
+            "subject": { "scope": "subject", "subjectKey": "preloader", "role": "asset-load", "surface": "dom" },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "meta-runtime", "technologyKey": "next" },
+                { "axis": "motion-engine", "technologyKey": "gsap" },
+                { "axis": "renderer", "technologyKey": "three" }
+            ],
+            "durationMs": 6000
+        },
+        {
+            "kind": "pointer-path",
+            "label": "product-scene-pointer-path",
+            "actionId": "product-scene-pointer-path",
+            "subject": { "scope": "subject", "subjectKey": "product-scene", "role": "pointer-follow", "surface": "webgl" },
+            "trigger": { "source": "scenario" },
+            "technologies": [{ "axis": "renderer", "technologyKey": "three" }],
+            "selector": "#root canvas",
+            "durationMs": 1800,
+            "points": [
+                { "xRatio": 0.2, "yRatio": 0.25 },
+                { "xRatio": 0.75, "yRatio": 0.3 },
+                { "xRatio": 0.65, "yRatio": 0.75 },
+                { "xRatio": 0.3, "yRatio": 0.6 }
+            ]
+        },
+        {
+            "kind": "scroll",
+            "label": "product-sections-scroll",
+            "actionId": "product-sections-scroll",
+            "subject": { "scope": "route", "role": "smooth-scroll", "surface": "dom" },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "motion-engine", "technologyKey": "gsap" },
+                { "axis": "renderer", "technologyKey": "three" }
+            ],
+            "deltaY": 4200,
+            "durationMs": 3200
+        },
+        {
+            "kind": "resize",
+            "label": "desktop-layout-resize",
+            "actionId": "desktop-layout-resize",
+            "subject": { "scope": "route", "role": "responsive-layout", "surface": "dom" },
+            "trigger": { "source": "scenario" },
+            "technologies": [
+                { "axis": "ui-framework", "technologyKey": "react" },
+                { "axis": "renderer", "technologyKey": "three" }
+            ],
+            "width": 1180,
+            "height": 760
+        }
+    ],
+    "trace": { "enabled": true, "screenshots": false, "maxDurationMs": 60000 },
+    "lighthouse": {
+        "enabled": true,
+        "categories": ["performance", "accessibility", "best-practices"],
+        "formFactor": "desktop"
+    }
+}
