@@ -124,6 +124,43 @@ Catalog v5 is another explicit additive opt-in. It adds completed/cancelled medi
 
 Every catalog-v5 media metric is labelled `caller-attested` and references `lab-media-stage-attestation`. The report states that these checkpoints are not browser decoder timing, GPU timing, compositor presentation proof, or proof of the first physical pixel. They are aggregated across the closed media-kind enum and intentionally have no default budget threshold or automatic finding. Catalog v5 requires Runner contract v9 and a Monitor that advertises catalog/budget v5 support; the v5 budget inherits the v4 rule set without adding media rules.
 
+### Safe project budget evaluation core
+
+`validateAnimationLabProjectBudgetProfile()` and `evaluateAnimationLabProjectBudgetProfile()` provide a package-level core for project-owned diagnostic thresholds. A project profile deliberately reuses `LabBudgetDefinitionV1`: `budgetId` is the project profile id, `budgetVersion` is its version, and `rules` contain only an existing catalog `metricId`, one closed comparator (`<=`, `<`, `>=`, or `>`), one numeric absolute or target-frame-multiple threshold, and an integer minimum sample count. Bundled `condev.animation.default` definitions pass through this same validator unchanged when evaluated against their required metric catalog version.
+
+```ts
+import { evaluateAnimationLabProjectBudgetProfile } from '@condev-monitor/animation-lab'
+
+const projectBudget = {
+    catalogVersion: 1,
+    budgetId: 'project.checkout.animation',
+    budgetVersion: 1,
+    rules: [
+        {
+            ruleId: 'checkout-frame-tail',
+            metricId: 'frame.duration.p95',
+            comparator: '<=',
+            target: { kind: 'target-frame-multiple', value: 1.25, unit: 'ratio' },
+            minimumSamples: 120,
+        },
+    ],
+}
+
+const result = evaluateAnimationLabProjectBudgetProfile(projectBudget, selectedMetrics, { targetFrameMs: 16.666667 }, 1)
+```
+
+Validation is strict and non-executable. Unknown fields, expression strings/callback channels, unknown metric ids for the selected catalog, duplicate rule ids, duplicate metric-plus-comparator rules, invalid comparators, non-finite/negative thresholds, ratio/score thresholds outside 0–1, fractional discrete-unit thresholds, unit mismatches, target-frame multiples on non-millisecond metrics, and invalid sample bounds fail closed. The core never uses `eval`, `Function`, template interpolation, property paths, or caller callbacks. Multiple input metrics with the same id are ambiguous and therefore not evaluated; callers must first select the intended scope/aggregate.
+
+Evaluation separates evidence from outcome. Each rule and the profile report `measured`, `partial`, or `not-measured` evidence independently from `pass`, `breach`, or `not-evaluated`. A measured value with too few samples remains measured evidence but is not evaluated. A partial value over the threshold is a partial-evidence breach; a partial value within the threshold is not a pass. Missing, unsupported, unknown, malformed, ambiguous, or invalid-target-frame evidence remains not evaluated. This core does not register project profiles in Scenario, Runner, backend, or UI contracts by itself; those layers must add a separately versioned authority/storage contract before accepting or uploading custom budgets.
+
+The Monitor platform supplies that separate authority layer. Project policies are immutable versions stored outside the Runner report and are never copied into `measurementContract.budgetRef`; changing a project threshold therefore does not rewrite measurement evidence or make an otherwise identical run incomparable. A baseline binding pins one completed run, one exact policy version, and a server-derived comparison-context digest. The platform evaluates absolute run evidence and deterministic Before/After rules only after the validated report is stored.
+
+Comparison verdicts are `within-policy`, `breach`, or `indeterminate`. Any definite breach wins the overall verdict; otherwise missing, partial, ambiguous, zero-baseline percent-change, insufficient-attempt, insufficient-sample, stale-context, or incomparable evidence stays indeterminate. These are project threshold decisions over descriptive repeated attempts. They do not calculate or imply a p-value, confidence interval, probability of regression, or statistical significance.
+
+When an attached run first becomes complete, the Monitor transaction writes an idempotent policy-evaluation job for every matching active binding. A leased worker executes the exact immutable binding and policy digest, retries with bounded backoff, and quarantines after the fifth failure. Replacing a binding supersedes its old alert states; indeterminate evidence never resolves an open alert, and a superseded state is terminal. The platform exposes bounded policy, binding, evaluation, job-state, alert-state, and alert-event APIs behind the existing JWT and application-ownership checks. It stores only closed metric/rule ids, numeric aggregates, digests, run ids, and state codes—never selectors, DOM text, target URLs, input values, props, state, raw traces, or arbitrary error text.
+
+The first platform tranche persists alert state and events only. Email, chat, webhook delivery, recipient routing, cooldown policy, and notification acknowledgements are intentionally separate transports and are not implied by an `opened` event.
+
 The bundled `condev.animation.default@1` rules are:
 
 | Rule               | Diagnostic threshold                      | Minimum samples |

@@ -20,6 +20,17 @@ export {
     getAnimationLabMetricCatalogEntry,
 } from './catalog'
 export { evaluateAnimationLabBudgetRule, resolveAnimationLabBudgetTarget } from './budget'
+export {
+    evaluateAnimationLabProjectBudgetProfile,
+    validateAnimationLabProjectBudgetProfile,
+    type LabProjectBudgetEvaluationResult,
+    type LabProjectBudgetEvidenceStatus,
+    type LabProjectBudgetNotEvaluatedReason,
+    type LabProjectBudgetOutcome,
+    type LabProjectBudgetProfileEvaluationV1,
+    type LabProjectBudgetRuleEvaluationV1,
+    type LabProjectBudgetValidationResult,
+} from './project-budget'
 export { normalizeLighthouseResult } from './lighthouse'
 export { sanitizeTraceSource, safeDisplayText, safeToken } from './privacy'
 export { resolveLabActionId, validateAnimationLabScenario, type ScenarioValidationResult } from './scenario'
