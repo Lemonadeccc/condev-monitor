@@ -32,6 +32,21 @@ export {
     type LabProjectBudgetValidationResult,
 } from './project-budget'
 export { normalizeLighthouseResult } from './lighthouse'
+export {
+    LAB_EXECUTION_CAPABILITIES,
+    LAB_EXECUTION_TARGET_CAPABILITY,
+    LAB_EXECUTION_TARGET_KINDS,
+    validateLabExecutionManifest,
+} from './execution'
+export type {
+    LabCrossOriginPolicy,
+    LabExecutionAuthentication,
+    LabExecutionCapability,
+    LabExecutionDriverProfile,
+    LabExecutionEvidenceV1,
+    LabExecutionManifestV1,
+    LabExecutionTargetKind,
+} from './execution'
 export { sanitizeTraceSource, safeDisplayText, safeToken } from './privacy'
 export { resolveLabActionId, validateAnimationLabScenario, type ScenarioValidationResult } from './scenario'
 export { validateAnimationLabSemanticsV2, validateLabMeasurementContract, type LabContractValidationResult } from './semantics'
