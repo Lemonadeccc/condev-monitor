@@ -1,8 +1,8 @@
 # Condev Monitor Animation Renderer
 
-Optional, framework-neutral renderer instrumentation for Condev Monitor animation monitoring. It supplies an explicit Canvas2D logical-frame recorder, a public-counter Three.js adapter, GPU command-interval timers for WebGL 1/2, host-attested single- or multi-pass WebGPU renderer-frame command intervals, and explicit WebGPU transfer/readback observation.
+Optional, framework-neutral renderer instrumentation for Condev Monitor animation monitoring. It supplies an explicit Canvas2D logical-frame recorder, public-counter and explicit resource-lifecycle Babylon/Three adapters, local host-owned Pixi object attribution, GPU command-interval timers for WebGL 1/2, host-attested single- or multi-pass WebGPU renderer-frame command intervals, and explicit WebGPU transfer/readback observation.
 
-This package is intentionally separate from the Browser SDK. A Browser client cannot know an application's real renderer boundaries, so the application owns the integration: Canvas2D explicitly brackets one logical frame and reports only commands/transfers it can attest, WebGL places explicit begin/end calls around its render, while WebGPU instruments either one complete pass or the first/last pass boundaries of one command buffer, encodes resolve/copy, and confirms the associated submit. `pnpm build:sdk` already includes this package through the existing `@condev-monitor/monitor-sdk-*` filter; no extra root build script is required.
+This package is intentionally separate from the Browser SDK. A Browser client cannot know an application's real renderer boundaries, so the application owns the integration: Canvas2D explicitly brackets one logical frame and reports only commands/transfers it can attest, WebGL places explicit begin/end calls around its render, while WebGPU instruments either one complete pass, the first/last pass boundaries of one command buffer, or boundary passes in distinct command buffers submitted together in one explicitly attested ordered `queue.submit([...])` batch. Each timer encodes its own resolve/copy and waits for the matching caller submission attestation. `pnpm build:sdk` already includes this package through the existing `@condev-monitor/monitor-sdk-*` filter; no extra root build script is required.
 
 ## Canvas2D logical-frame recorder
 
@@ -164,7 +164,7 @@ const monitor = createThreeRendererAdapter({
     renderer,
     backend: 'webgl2',
     gpuTimer: { timer: gpuTimer, ownership: 'adapter' },
-    // Explicit: registering replaces an older provider for this Element.
+    // Explicit owner-scoped registration composes with other owners on this Element.
     target: { element: renderer.domElement },
 })
 
@@ -185,7 +185,44 @@ For an externally owned loop, call `captureFrame()` only after that owner has re
 
 When an external owner exposes balanced public callbacks, `beginExternalFrame()` and `completeExternalFrame()` can bracket its render without calling it; `cancelExternalFrame()` discards an incomplete boundary. The packaged R3F observer uses this path only for explicit `gpuTiming` with `disjointQueryOwnership: 'exclusive'`: a root-scoped public `useFrame()` callback begins only when that Canvas is updating, while the shared public `addAfterEffect()` registry completes or cancels the active boundary. It obtains Three's already-created context through public `renderer.getContext()`, owns only its sparse query objects, and never calls `gl.finish()`. Default R3F observation remains counter-only and installs no `useFrame()` callback or GPU timer.
 
-R3F GPU timing covers WebGL commands submitted after Condev's earliest-priority root `useFrame()` callback through the public global after-render callback. It cannot include commands submitted by a global `addEffect()` callback or an equal-priority root callback that ran earlier. Another root's tick does not consume this root's `sampleEvery` attempt, and an unchanged public Three frame sequence cancels the boundary. It is not compositor presentation time and cannot separate meshes, components, post-processing passes, or work from another owner using the same context inside that interval. An R3F `frameloop="demand"` or `"never"` root produces no sample until R3F actually renders. Without exclusive disjoint-query ownership, or when another Condev observer already owns GPU timing for the same renderer, omit GPU timing rather than risking a query-owner conflict.
+R3F GPU timing covers WebGL commands submitted after Condev's earliest-priority root `useFrame()` callback through the public global after-render callback. It cannot include commands submitted by a global `addEffect()` callback or an equal-priority root callback that ran earlier. Another root's tick does not consume this root's `sampleEvery` attempt, and an unchanged public Three frame sequence cancels the boundary. It is not compositor presentation time and cannot separate meshes, components, or work from another owner using the same context inside that interval. An R3F `frameloop="demand"` or `"never"` root produces no sample until R3F actually renders. Without exclusive disjoint-query ownership, or when another Condev observer already owns GPU timing for the same renderer, omit GPU timing rather than risking a query-owner conflict. Explicit postprocessing pass boundaries can be recorded separately as described below; the normal observer does not discover them.
+
+### Explicit R3F / React postprocessing pass recorder
+
+`createR3fPostprocessingPassRecorder()` records only pass boundaries explicitly owned by the application or a composer integration. It imports no React, R3F, Three, or postprocessing package; it does not inspect a composer list, patch `render()`, add passes, schedule a frame, or promise automatic coverage of every pass.
+
+```ts
+import { createR3fPostprocessingPassRecorder } from '@condev-monitor/monitor-sdk-animation-renderer'
+
+const passes = createR3fPostprocessingPassRecorder<object>({
+    passCoverage: 'caller-attests-complete-postprocessing-pass-boundaries',
+})
+
+function renderPostprocessingFrame() {
+    if (!passes.beginFrame()) return renderWithoutRecording()
+
+    const ticket = passes.beginPass(bloomPass, 'effect')
+    try {
+        bloomPass.render(renderer, writeBuffer, readBuffer)
+    } finally {
+        if (ticket) passes.endPass(ticket, 'will-report-existing-timestamp-result')
+    }
+
+    passes.endFrame()
+
+    // This result must come from a separately owned query that covered only
+    // the associated pass. The recorder never starts or resolves GPU queries.
+    if (ticket && bloomGpuResult) {
+        passes.recordGpuEvidence(ticket, 'caller-attests-existing-timestamp-result-covers-only-associated-pass', bloomGpuResult)
+    }
+}
+```
+
+The host supplies a stable pass object identity and one closed kind: `render`, `effect`, `mask`, `clear`, `copy`, `resolve`, `output`, or `other`. The object is used only as a `WeakMap` key and becomes an anonymous `r3f-pass-N`; the recorder never reads or stores pass names, materials, scenes, cameras, shaders, props, or React component data. Reusing one identity with a different kind invalidates that frame instead of silently changing attribution.
+
+`cpuCallbackMsP95` is the host-clock duration between `beginPass()` and `endPass()`. It includes synchronous JavaScript callback work and clock/dispatch boundaries; it is not GPU execution, queue time, composition, or presentation. GPU timing is a separate optional channel. `recordGpuEvidence()` accepts only WebGL/WebGPU timestamp evidence plus an explicit, unverified assertion that the result covers only the associated pass. Pending, rejected, disjoint, context-lost, mixed-source, and not-reported states remain distinct and never become CPU or GPU zeroes.
+
+Completed frames are bounded by `maxRetainedFrames`; pass executions, stable identities, and unresolved GPU correlations have independent bounds. A frame that exceeds complete pass coverage is unavailable rather than partially aggregated. `inspectWindow()` includes only frames wholly contained in the caller's local clock-domain window and rejects windows intersecting evicted history. This recorder has no RUM publisher or target provider; snapshots remain local programmatic diagnostics until a future versioned privacy contract explicitly adds pass aggregates.
 
 Without `gpuTimer`, the adapter still promotes public draw-call and triangle counters to the existing page RUM v2 metrics and reports GPU timing as disabled. With the timer, page RUM can additionally receive resolved GPU p95. The optional explicit target registration reuses the timer's whole-canvas target-window evidence; it does not add per-mesh attribution. The current target renderer contract has one shared sample-count family, so this first adapter deliberately does not merge every-frame Three counters with sparse target GPU queries. Target draw-call/triangle correlation needs a future per-family composite contract rather than fabricated shared counts.
 
@@ -229,7 +266,62 @@ window.addEventListener('pagehide', event => {
 
 `readPerfCounterEnabled` reads Babylon's public static flag before and after each counter snapshot. If the flag is false, throws, or changes while the snapshot is read, the adapter emits no sample and does not advance its deduplication sequence, so a runtime-disabled counter cannot look like a measured zero. The adapter never mutates that flag. It also permits at most one active adapter for the same monitor/scene pair. Default instrumentation ownership is `caller`; `adapter` ownership disposes the supplied instrumentation exactly once during explicit adapter disposal, scene disposal, or setup rollback.
 
-This first adapter reports only Babylon's sanctioned per-scene draw-call count into the existing page renderer/RUM v2 metric. It does not infer triangles from active indices, treat scene array lengths as GPU resource allocation, or read Babylon's private `_drawCalls`. It also does not enable or sample `EngineInstrumentation` GPU queries: engine-frame GPU timing has a different boundary and asynchronous lifecycle from a scene's after-render callback. WebGL/WebGPU draw accounting can therefore be compared only as Babylon engine command accounting, not as equivalent hardware work. Mesh/display-object attribution, per-pass timing, built-in GPU timing coordination, resource lifecycle, target-window evidence, context/device loss, browser presentation, and Pixi remain separate work.
+This first adapter reports only Babylon's sanctioned per-scene draw-call count into the existing page renderer/RUM v2 metric. It does not infer triangles from active indices, treat scene array lengths as GPU resource allocation, or read Babylon's private `_drawCalls`. It also does not enable or sample `EngineInstrumentation` GPU queries: engine-frame GPU timing has a different boundary and asynchronous lifecycle from a scene's after-render callback. WebGL/WebGPU draw accounting can therefore be compared only as Babylon engine command accounting, not as equivalent hardware work. Mesh attribution, per-pass timing, built-in GPU timing coordination, automatic resource discovery, target-window evidence, context/device loss, browser presentation, and Pixi performance counters remain separate work.
+
+### Explicit Babylon resource lifecycle recorder
+
+`createBabylonResourceLifecycleRecorder()` is a local, programmatic recorder for applications that own the real creation and release boundaries. It does not inspect Babylon scene arrays, patch constructors or `dispose()`, subscribe to timers, infer GPU allocation, or publish to RUM.
+
+```ts
+import { createBabylonResourceLifecycleRecorder } from '@condev-monitor/monitor-sdk-animation-renderer'
+
+const resources = createBabylonResourceLifecycleRecorder({
+    lifecycleCoverage: 'caller-attests-complete-resource-lifecycle-from-empty-scene',
+    candidateAfterCheckpoints: 2,
+})
+
+const texture = createSceneTexture()
+resources.recordCreated(texture, 'texture')
+
+// A checkpoint is a host-defined stable business boundary, not elapsed time.
+console.table(resources.captureCheckpoint())
+
+texture.dispose()
+resources.recordReleased(texture)
+```
+
+The required coverage string is an unverified caller attestation: create the recorder before any scene resource and call it for every relevant creation/release. Accepted kinds are the closed set `geometry`, `texture`, `render-target`, `material`, `effect`, `buffer`, and `other`. The recorder reads no resource property and stores object identity only as a weak key; live bookkeeping contains anonymous numeric records with kind and creation checkpoint, never names, URLs, shader text, texture pixels, labels, scene data, or application identifiers.
+
+Snapshots expose current and peak host-recorded counts, accepted/rejected lifecycle events, and resources still live across a configured number of explicit checkpoints. Those are `leakCandidates`, not proven leaks: a cache, pool, shared asset, delayed disposal, or intentionally persistent scene resource may remain live correctly. Checkpoints have no wall-clock duration and establish no timing or performance causality.
+
+`maxLiveResources` bounds anonymous live records (default 4096, maximum 65536). Any duplicate, untracked, invalid, or rejected lifecycle event means complete coverage can no longer be proven; capability permanently becomes `incomplete`, and current, peak, and candidate aggregates become `null` instead of partial totals. `dispose()` clears recorder-owned anonymous live records without calling application resource methods or pretending those resources were released.
+
+## Pixi host-owned object target adapter
+
+`createPixiObjectTargetAdapter()` provides local identity attribution for a Pixi object only after the application explicitly runs its own hit test. A browser sees the Canvas surface, not Pixi's display tree; this adapter does not walk the stage, patch Pixi's event system, guess coordinates, or claim automatic Canvas object discovery.
+
+```ts
+import { createPixiObjectTargetAdapter } from '@condev-monitor/monitor-sdk-animation-renderer'
+
+const objectTarget = createPixiObjectTargetAdapter({
+    animation: client.animation,
+    element: app.canvas,
+    backend: 'webgl2',
+    hitTest: point => hitTestPixiStage(point),
+    classifyObject: object => classifyPixiObjectIntoClosedKind(object),
+})
+
+app.canvas.addEventListener('pointerdown', event => {
+    // The host owns DOM-to-Pixi coordinate conversion and passes a Pixi global point.
+    objectTarget.captureTarget(toPixiGlobalPoint(event))
+})
+```
+
+The hit-test callback is invoked exactly once per `captureTarget()` attempt. The adapter passes it a fresh frozen `{ x, y }`, retains neither coordinates nor the returned object, and never reads properties from that object. A `WeakMap` assigns the same object an anonymous local token such as `pixi-object-1`; only that token and one closed kind (`container`, `sprite`, `graphics`, `mesh`, `text`, `particle-container`, or `other`) remain selected. New tokens are bounded by `maxIdentities` (default 2048), while weak keys do not prevent application objects from being collected.
+
+The registered target provider responds only when the SDK supplies `inspectionPurpose: 'local'`. Missing context, RUM inspection, callback failure, invalid coordinates/kinds, re-entry, disposal, identity exhaustion, and a hit-test miss all fail closed and cannot publish stale attribution. The local owner label is composed entirely from SDK-owned closed text and the anonymous token; it contains no Pixi object name, text, class, texture, URL, selector, coordinates, props, or state.
+
+This slice adds object identity to the selected Canvas detail, not per-object performance metrics. Draw calls, GPU duration, uploads, resource lifecycle, and presentation remain surface/frame evidence from their respective explicit renderer adapters. A future per-object metric path needs an engine-owned work boundary or counter that can prove which commands belong to that object.
 
 ## WebGPU frame timers
 
@@ -338,6 +430,59 @@ function renderFrame() {
 }
 ```
 
+For one renderer frame whose first and last boundary passes are encoded into distinct command buffers, use the command-batch factory. This path requires one explicit ordered `queue.submit([...])` batch. The timer cannot inspect command-buffer identity or submission order, so both completion strings are caller attestations and invalid strings fail closed before mapping.
+
+```ts
+import { createWebGpuCommandBatchTimestampTimer } from '@condev-monitor/monitor-sdk-animation-renderer'
+
+const gpuTimer = createWebGpuCommandBatchTimestampTimer({
+    device,
+    frameBoundary: 'multi-command-buffer-ordered-submit-complete-frame',
+    sampleEvery: 60,
+})
+
+function renderFrame() {
+    const ticket = gpuTimer.beginFrame()
+    const firstEncoder = device.createCommandEncoder()
+    const lastEncoder = device.createCommandEncoder()
+    const resolveEncoder = device.createCommandEncoder()
+    const firstBase = createFirstPassDescriptor()
+    const lastBase = createLastPassDescriptor()
+    const boundaries = ticket ? gpuTimer.instrumentFrameBoundaryPasses(ticket, firstBase, lastBase) : null
+    let submitted = false
+
+    try {
+        const firstPass = firstEncoder.beginComputePass(boundaries?.firstPassDescriptor ?? firstBase)
+        encodeFirstPass(firstPass)
+        firstPass.end()
+
+        const lastPass = lastEncoder.beginRenderPass(boundaries?.lastPassDescriptor ?? lastBase)
+        encodeLastPass(lastPass)
+        lastPass.end()
+
+        const timerEncoded =
+            ticket && boundaries
+                ? gpuTimer.endFrame(
+                      ticket,
+                      resolveEncoder,
+                      'boundary-passes-ended-in-distinct-command-buffers-and-resolve-encoded-after-final-pass'
+                  )
+                : false
+        const commandBuffers = [firstEncoder.finish(), lastEncoder.finish()]
+        if (timerEncoded) commandBuffers.push(resolveEncoder.finish())
+        device.queue.submit(commandBuffers)
+        submitted = true
+
+        if (ticket && timerEncoded) {
+            gpuTimer.notifySubmitted(ticket, 'caller-attests-associated-command-buffers-submitted-as-one-ordered-batch')
+        }
+    } catch (error) {
+        if (ticket && !submitted) gpuTimer.cancelFrame(ticket, 'will-not-submit')
+        throw error
+    }
+}
+```
+
 Modern browser WebGPU writes timestamps only through a render/compute pass descriptor's `timestampWrites`; it has no standard `GPUCommandEncoder.writeTimestamp()` and no browser `timestampPeriod` multiplier. `instrumentPassDescriptor()` and `instrumentFrameBoundaryPasses()` return shallow copies and never overwrite existing host `timestampWrites`. Multi-pass instrumentation is one atomic transaction: a conflict, invalid pair, throwing accessor, or re-entrant callback returns neither descriptor. A conflict skips that sample so the application or engine remains the owner.
 
 `endFrame()` encodes `resolveQuerySet` followed by a copy into a separate `MAP_READ | COPY_DST` staging buffer. It never calls `finish()`, `queue.submit()`, `onSubmittedWorkDone()`, or an error scope. The application submits its own command buffer, then calls `notifySubmitted()` synchronously; only that method starts the non-blocking `mapAsync()` continuation. The defaults are `sampleEvery: 60` and `maxPendingFrames: 2`; a full bound skips new samples instead of waiting or expanding.
@@ -346,7 +491,7 @@ Resolved `uint64` values are already nanoseconds. The timer subtracts as `BigInt
 
 Device loss is terminal for an instance and maps to the existing host `unknown + context-lost` state. Recreate the adapter/device and timer; old query/buffer objects are never reused. Within one loaded package module, timers on one device share one loss subscription, and disposal unregisters each timer; duplicate bundles do not share that hub. If disposal occurs while an instrumented command stream might still be submitted, the timer deliberately does not destroy those referenced resources and records an abandoned command-frame diagnostic instead of poisoning the application's later submit.
 
-The single-pass timer covers only its instrumented pass. The multi-pass timer measures the GPU timestamp interval from the first pass beginning through the last pass ending, including ordered middle passes and copy commands between those two boundaries in the same command buffer. It is not a sum of per-pass durations and cannot attribute time to an individual pass. Both timers exclude commands outside their timestamp boundaries, CPU encoding/submission, queue wait outside the timestamps, browser composition, presentation, scanout, INP, and the whole page frame. Coordination across command buffers or submits, engine-private encoders, renderer resources/uploads/readbacks, and real-device browser validation remain separate adapter work.
+The single-pass timer covers only its instrumented pass. The multi-pass timer measures the GPU timestamp interval from the first pass beginning through the last pass ending, including ordered middle passes and copy commands between those two boundaries in the same command buffer. The command-batch timer measures the same boundary interval across distinct command buffers only when the caller submits the boundary and resolve buffers together in the attested order. It is not a sum of per-pass durations and cannot attribute time to an individual pass. These timers exclude commands outside their timestamp boundaries, CPU encoding/submission, queue wait outside the timestamps, browser composition, presentation, scanout, INP, and the whole page frame. A command-batch measurement is GPU timestamp evidence, not proof of media decode, upload completion, composition, or physical presentation. Coordination across multiple submits, engine-private encoders, renderer resources/uploads/readbacks, and real-device browser validation remain separate adapter work.
 
 The implementation follows the official [WebGPU timestamp query](https://www.w3.org/TR/webgpu/#timestamp), [`resolveQuerySet()`](https://www.w3.org/TR/webgpu/#dom-gpucommandencoder-resolvequeryset), and [`mapAsync()`](https://www.w3.org/TR/webgpu/#dom-gpubuffer-mapasync) contracts.
 
@@ -361,8 +506,8 @@ import { createWebGpuTransferRecorder } from '@condev-monitor/monitor-sdk-animat
 const client = init()
 const transfers = createWebGpuTransferRecorder({ device })
 
-// This is the only Browser registry provider for this Canvas. Local Overlay /
-// selectElement snapshots can display the transfer fields; RUM sidecars skip it.
+// This owner-scoped provider composes with other owners on this Canvas. Local
+// Overlay/selectElement snapshots can display transfer fields; RUM sidecars skip it.
 const unregisterTarget = client.animation.registerTarget(canvas, transfers.inspect)
 
 function writeFrameUniforms(data: Float32Array) {
@@ -416,7 +561,7 @@ The bound `transfers.inspect` accepts only an SDK context whose `inspectionPurpo
 
 The recorder never calls `mapAsync`, `getMappedRange`, `unmap`, `destroy`, `finish`, `submit`, `onSubmittedWorkDone`, queue write methods, or an error scope. It never stores WebGPU objects, resource labels, descriptors, shader text, URLs, mapped bytes, pixels, or application identifiers. Device loss/disposal only clears recorder-owned references and ignores late Promise settlement.
 
-This first integration is a local selected-target adapter. The current `animation_rum` v1/v2 catalogs do not upload transfer bytes or readback latency, and this enforcement changes no payload contract, backend/database/platform schema, or API. Register only one Browser target-registry provider for a Canvas: a later `registerTarget()` replaces the previous provider. Any family-wide correlation gap makes the whole shared local Target provider unobserved; it never combines one valid family with incomplete shared counts. The same Canvas may be opted into `registerRumTarget()` because the transfer recorder now returns `null` for that purpose; other RUM-eligible target evidence is unaffected. A future composite WebGPU target adapter still needs per-family evidence counts before it can merge timestamp-frame and transfer-operation samples honestly.
+This first integration is a local selected-target adapter. The current `animation_rum` v1/v2 catalogs do not upload transfer bytes or readback latency, and this enforcement changes no payload contract, backend/database/platform schema, or API. Browser target registration composes distinct owner-scoped providers for one Canvas; registering the same owner again replaces only that owner's prior provider, and disposing the transfer owner does not evict framework, Pixi, or renderer owners. Any family-wide correlation gap still makes this transfer provider unobserved; it never combines one valid family with incomplete shared counts. The same Canvas may be opted into `registerRumTarget()` because the transfer recorder returns `null` for that purpose; other RUM-eligible target evidence is unaffected. A future composite WebGPU target adapter still needs per-family evidence counts before it can merge timestamp-frame and transfer-operation samples honestly.
 
 Version compatibility is coordinated across packages. The minimum compatible baseline is the first release whose `@condev-monitor/monitor-sdk-animation` inspection context includes and supplies `inspectionPurpose`, whose `@condev-monitor/monitor-sdk-browser` entry marks RUM target sidecars, and whose `@condev-monitor/monitor-sdk-animation-renderer` recorder performs this exact-local check. Upgrade the three packages together for Browser integration. If the revised renderer is paired with an older animation core, no purpose can be supplied and the transfer inspector safely returns `null`; existing one-argument adapters remain source-compatible, but they are not thereby proven local-only. The `inspect()` return type is now nullable, so direct low-level callers must handle `null`.
 
@@ -462,4 +607,4 @@ Call `poll()` at most once in each later task/frame. Never use a synchronous tig
 
 WebGL 1 uses extension query methods; WebGL 2 uses core query methods with the WebGL 2 extension constants. An extension returning `null` or zero counter bits is `unsupported`. An advertised but malformed API is `error`.
 
-The implementation follows the official [WebGL 1 timer-query extension](https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query/) and [WebGL 2 timer-query extension](https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query_webgl2/). Canvas2D GPU timing, engine object hit-testing, cross-command-buffer WebGPU coordination, renderer-specific resource attribution, Worker/OffscreenCanvas clock bridging, and real-device browser coverage remain separate adapters/work.
+The implementation follows the official [WebGL 1 timer-query extension](https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query/) and [WebGL 2 timer-query extension](https://registry.khronos.org/webgl/extensions/EXT_disjoint_timer_query_webgl2/). Canvas2D GPU timing, engine object hit-testing, cross-submit WebGPU coordination, renderer-specific resource attribution, Worker/OffscreenCanvas clock bridging, and real-device browser coverage remain separate adapters/work.
