@@ -166,7 +166,7 @@ test('Svelte tracked dependencies produce closed local update evidence for the b
     const scope = createCondevSvelteAnimationScope({ client: harness.client, now: () => times.shift(), tick: () => Promise.resolve() })
     const action = condevAnimationTarget({}, scope)
     scope.trackPendingStateWindow({ private: true })
-    scope.trackPendingStateWindow({ private: false })
+    scope.trackPendingStateWindow({ private: false }, 'second private dependency')
     await Promise.resolve()
     await Promise.resolve()
     assert.deepEqual(harness.localRecords, [
@@ -176,6 +176,8 @@ test('Svelte tracked dependencies produce closed local update evidence for the b
             reasonSource: 'svelte-tracked-dependency',
             durationMs: 8,
             timestampMs: 18,
+            updateCauses: ['dependency'],
+            observedCauseCount: 2,
         },
     ])
     const inspect = harness.registrations[0].inspect

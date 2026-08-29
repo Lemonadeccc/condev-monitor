@@ -29,6 +29,8 @@ Svelte 5 bindings for Condev Monitor. The root entry re-exports ordinary Browser
 
 Pass every state or derived value that should retrigger the `$effect.pre` call to `trackPendingStateWindow`. Svelte evaluates those arguments inside the effect, so they form its tracked dependencies. The first effect run only warms the scope and does not create an initial-update sample. Later runs start a tracked pending-state window and close after public `tick()` reports that pending state changes were applied.
 
+Only the closed `dependency` cause and bounded argument count enter the local record. The argument identities and values are evaluated by Svelte but are not retained by Condev. Calling without arguments records an `unknown` caller-attested cause rather than inventing a dependency.
+
 This measurement is a tracked pending-state application window. It does not prove that the component or target mutated the DOM, and it is not Svelte render time, component commit time, browser paint time, or GPU time. Overlapping runs invalidate earlier pending windows, and `onDestroy` prevents a late `tick()` from recording after component teardown.
 
 The optional action registers the real `Element` identity and exposes only anonymous closed inventory (`svelte`) and owner relation (`framework-owner`). Element identity and raw ownership remain in page memory. If the application separately authorizes the Element as a semantic RUM v2 target, the existing projection may emit only the closed `svelte` framework value and `framework-adapter` capability. It does not retain or upload component names, props, state, text, selectors, IDs, classes, URLs, or the tracked dependency values. The action and scope both release target registrations during cleanup.

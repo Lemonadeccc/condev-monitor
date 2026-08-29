@@ -166,7 +166,6 @@ export function createCondevSvelteAnimationScope(options: CondevSvelteAnimationO
 
     const scope: CondevSvelteAnimationScope = {
         trackPendingStateWindow(...trackedDependencies: readonly unknown[]): void {
-            void trackedDependencies
             if (destroyed) return
             if (!warmed) {
                 warmed = true
@@ -174,6 +173,8 @@ export function createCondevSvelteAnimationScope(options: CondevSvelteAnimationO
             }
 
             const currentGeneration = ++generation
+            const observedCauseCount = Math.min(1_024, Math.max(1, trackedDependencies.length))
+            const updateCauses = trackedDependencies.length > 0 ? (['dependency'] as const) : (['unknown'] as const)
             const startedAt = readMonotonicNow(now)
             if (startedAt === undefined) {
                 failures.clockErrors = incrementBounded(failures.clockErrors)
@@ -203,6 +204,8 @@ export function createCondevSvelteAnimationScope(options: CondevSvelteAnimationO
                             reasonSource: 'svelte-tracked-dependency',
                             durationMs: endedAt - startedAt,
                             timestampMs: endedAt,
+                            updateCauses,
+                            observedCauseCount,
                         })
                         if (probe && !probe.recordUpdateWindow({ updateWindowMs: endedAt - startedAt, timestampMs: endedAt })) {
                             failures.sampleRejected = incrementBounded(failures.sampleRejected)
