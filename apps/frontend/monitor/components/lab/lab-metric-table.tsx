@@ -31,6 +31,8 @@ function evidenceLabel(value: LabMetric['evidenceLevel']) {
             return '受控实验测量 / Controlled lab'
         case 'runtime-observation':
             return '运行时观察 / Runtime observation'
+        case 'caller-attested':
+            return '调用方声明 / Caller-attested'
         case 'unsupported-or-unknown':
             return '不支持或未知 / Unsupported or unknown'
         default:

@@ -3,7 +3,7 @@ export type LabRunStatus = 'queued' | 'running' | 'completed' | 'partial' | 'fai
 export type LabRunSource = 'local-runner' | 'ci' | 'import' | 'unknown'
 
 /** These semantic API types mirror `@condev-monitor/animation-lab` v2. */
-export type LabEvidenceLevel = 'controlled-lab-measurement' | 'runtime-observation' | 'unsupported-or-unknown'
+export type LabEvidenceLevel = 'controlled-lab-measurement' | 'runtime-observation' | 'caller-attested' | 'unsupported-or-unknown'
 export type LabEvidenceConfidence = 'explicit' | 'high' | 'medium' | 'low' | 'unknown'
 export type LabActionKind =
     | 'wait'
@@ -115,7 +115,7 @@ export type LabMeasurementContract = {
     source: 'explicit' | 'observed' | 'inferred' | 'package-default' | 'unknown'
     confidence: LabEvidenceConfidence
     budgetRef: LabBudgetRef
-    metricCatalogVersion: 1 | 2 | 3 | 4
+    metricCatalogVersion: 1 | 2 | 3 | 4 | 5
 }
 
 export type LabTechnologyAxis =

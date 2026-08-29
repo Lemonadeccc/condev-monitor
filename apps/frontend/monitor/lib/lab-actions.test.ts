@@ -480,7 +480,7 @@ describe('resolveLabBudgetRule', () => {
         const requirement = getLabBudgetRuleEvidenceRequirement(v2!)
         assert.match(requirement, /完整 measured 观察允许 0 个 Long Task/u)
         assert.doesNotMatch(requirement, /最少\s*0/u)
-        assert.equal(resolveLabBudgetRule(ref(5), contract(5)), null)
+        assert.equal(resolveLabBudgetRule(ref(6), contract(6)), null)
         assert.equal(resolveLabBudgetRule(ref(2), contract(1)), null)
     })
 
@@ -549,8 +549,8 @@ describe('resolveLabBudgetRule', () => {
         assert.ok(resolveLabBudgetRule({ ...contract.budgetRef, ruleId: 'frame-tail' }, contract))
     })
 
-    it('expands the renderer GPU tail rule only for budget v4', () => {
-        const contract = (budgetVersion: 3 | 4): LabRunAnalysis['measurementContract'] => ({
+    it('keeps the renderer GPU rule in budget v5 without inventing media-stage thresholds', () => {
+        const contract = (budgetVersion: 3 | 4 | 5): LabRunAnalysis['measurementContract'] => ({
             contractVersion: 2,
             expectedHz: 60,
             targetFrameMs: 16.666667,
@@ -571,6 +571,16 @@ describe('resolveLabBudgetRule', () => {
             zeroEventCountIsComplete: false,
         })
         assert.equal(resolveLabBudgetRule({ ...contract(3).budgetRef, ruleId: ref.ruleId }, contract(3)), null)
+        const v5 = contract(5)
+        assert.deepEqual(resolveLabBudgetRule({ ...v5.budgetRef, ruleId: ref.ruleId }, v5), {
+            comparator: '<=',
+            metricId: 'renderer.gpu-frame.p95',
+            target: 16.666667 * 0.8,
+            unit: 'ms',
+            minimumSamples: 30,
+            zeroEventCountIsComplete: false,
+        })
+        assert.equal(resolveLabBudgetRule({ ...v5.budgetRef, ruleId: 'media-declared-first-visible-tail' }, v5), null)
         assert.equal(
             evaluateLabBudgetMetric(
                 {

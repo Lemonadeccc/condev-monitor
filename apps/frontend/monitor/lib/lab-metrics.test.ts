@@ -81,6 +81,26 @@ const V4_RENDERER_LIMITATION_CODES = [
     'renderer-evidence-bridge-unavailable',
 ] as const
 
+const V5_MEDIA_STAGE_METRIC_IDS = [
+    'media.declared-completed.count',
+    'media.declared-cancelled.count',
+    'media.declared-begin-to-decode.p95',
+    'media.declared-decode-to-upload.p95',
+    'media.declared-upload-to-first-visible.p95',
+    'media.declared-begin-to-first-visible.p95',
+] as const
+
+const V5_MEDIA_STAGE_LIMITATION_CODES = [
+    'media-stage-caller-attested',
+    'media-stage-not-browser-decoder-or-gpu-proof',
+    'media-stage-complete-attempt-window-only',
+    'media-stage-kind-aggregate',
+    'media-stage-attempts-not-observed-or-rejected',
+    'media-stage-evidence-bridge-unavailable',
+    'media-stage-evidence-rejected',
+    'page-probe-media-stage-evidence-truncated',
+] as const
+
 const TRACE_ACTION_PHASE_LIMITATION_CODES = [
     'trace-action-marker-not-observed',
     'trace-action-marker-ambiguous',
@@ -209,6 +229,23 @@ describe('Lab catalog v2 metric presentation', () => {
             assert.notEqual(label.en, 'raw Renderer Metric')
         }
         for (const limitation of V4_RENDERER_LIMITATION_CODES) {
+            const label = getLabLimitationLabel(limitation)
+            assert.ok(label.zhCN.length > 5, limitation)
+            assert.ok(label.en.length > 5, limitation)
+            assert.notEqual(label.zhCN, `限制：${limitation}`)
+            assert.notEqual(label.en, limitation)
+        }
+    })
+
+    it('presents catalog-v5 caller-attested media stages and every closed boundary bilingually', () => {
+        for (const metricId of V5_MEDIA_STAGE_METRIC_IDS) {
+            const label = getLabMetricLabel({ metricId, name: 'rawMediaStageMetric' })
+            assert.ok(label.zhCN.length > 5, metricId)
+            assert.ok(label.en.length > 5, metricId)
+            assert.notEqual(label.zhCN, '指标：rawMediaStageMetric')
+            assert.notEqual(label.en, 'raw Media Stage Metric')
+        }
+        for (const limitation of V5_MEDIA_STAGE_LIMITATION_CODES) {
             const label = getLabLimitationLabel(limitation)
             assert.ok(label.zhCN.length > 5, limitation)
             assert.ok(label.en.length > 5, limitation)

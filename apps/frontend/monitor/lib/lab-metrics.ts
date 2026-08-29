@@ -29,6 +29,30 @@ const METRIC_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
         zhCN: '渲染器 GPU 帧耗时 p95',
         en: 'Renderer GPU frame duration p95',
     },
+    'media.declared-completed.count': {
+        zhCN: '调用方声明完成的媒体尝试数',
+        en: 'Caller-attested completed media attempts',
+    },
+    'media.declared-cancelled.count': {
+        zhCN: '调用方声明取消的媒体尝试数',
+        en: 'Caller-attested cancelled media attempts',
+    },
+    'media.declared-begin-to-decode.p95': {
+        zhCN: '声明开始 → 解码就绪 p95',
+        en: 'Declared begin → decode-ready p95',
+    },
+    'media.declared-decode-to-upload.p95': {
+        zhCN: '声明解码就绪 → 上传就绪 p95',
+        en: 'Declared decode-ready → upload-ready p95',
+    },
+    'media.declared-upload-to-first-visible.p95': {
+        zhCN: '声明上传就绪 → 首次可见 p95',
+        en: 'Declared upload-ready → first-visible p95',
+    },
+    'media.declared-begin-to-first-visible.p95': {
+        zhCN: '声明开始 → 首次可见 p95',
+        en: 'Declared begin → first-visible p95',
+    },
     'pipeline.loaf-render-start-to-paint.count': {
         zhCN: 'LoAF 渲染开始 → Paint 有效样本数',
         en: 'LoAF render start → paint valid samples',
@@ -107,6 +131,38 @@ const METHOD_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
 }
 
 const LIMITATION_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
+    'media-stage-caller-attested': {
+        zhCN: '这些阶段由接入方代码显式声明，不是浏览器自动识别的媒体流水线事件。',
+        en: 'These stages are explicitly attested by integration code, not automatically detected browser media-pipeline events.',
+    },
+    'media-stage-not-browser-decoder-or-gpu-proof': {
+        zhCN: '声明阶段不证明浏览器解码器、GPU 上传、合成器呈现或真实首像素已经完成。',
+        en: 'Declared stages do not prove browser decode, GPU upload, compositor presentation, or a real first pixel.',
+    },
+    'media-stage-complete-attempt-window-only': {
+        zhCN: '动作级结果只包含完整落在该动作窗口内的已关闭媒体尝试。',
+        en: 'Action-level results include only settled media attempts fully contained in that action window.',
+    },
+    'media-stage-kind-aggregate': {
+        zhCN: '结果按闭集媒体类型汇总，不保留 URL、选择器、DOM 身份或业务对象身份。',
+        en: 'Results aggregate a closed media-kind set without retaining URLs, selectors, DOM identity, or business-object identity.',
+    },
+    'media-stage-attempts-not-observed-or-rejected': {
+        zhCN: '本次运行没有保留可用的声明媒体尝试，或声明证据被严格校验拒绝。',
+        en: 'This run retained no usable declared media attempts, or the attested evidence was rejected by strict validation.',
+    },
+    'media-stage-evidence-bridge-unavailable': {
+        zhCN: '页面中没有可用的媒体阶段证据桥，不能把缺少结果解释为 0 次尝试。',
+        en: 'No media-stage evidence bridge was available; missing results must not be interpreted as zero attempts.',
+    },
+    'media-stage-evidence-rejected': {
+        zhCN: '至少一条媒体阶段声明因字段、时间顺序或边界不合法而被拒绝。',
+        en: 'At least one media-stage attestation was rejected for invalid fields, ordering, or boundaries.',
+    },
+    'page-probe-media-stage-evidence-truncated': {
+        zhCN: '媒体阶段声明超过页面探针的有界保留上限，相关结果只有部分覆盖。',
+        en: 'Media-stage attestations exceeded the page probe retention bound, so related results have partial coverage.',
+    },
     'trace-action-marker-not-observed': {
         zhCN: 'Trace 中未观察到该动作的完整测量标记，因此无法建立动作阶段窗口。',
         en: 'The trace did not contain a complete measure marker for this action, so no action-phase window could be established.',

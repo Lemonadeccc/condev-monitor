@@ -265,6 +265,8 @@ function evidenceLabel(value: LabEvidenceLevel | null | undefined) {
             return '受控实验测量'
         case 'runtime-observation':
             return '运行时观察'
+        case 'caller-attested':
+            return '调用方声明'
         case 'unsupported-or-unknown':
             return '不支持 / 未知'
         default:
