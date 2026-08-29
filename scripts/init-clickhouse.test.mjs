@@ -150,6 +150,7 @@ test('schema files are database-neutral and compose wires one resolved name ever
         '004_animation_rum_v1.sql',
         '005_animation_rum_v2.sql',
         '006_animation_rum_v3_soft_navigation.sql',
+        '007_animation_rum_v2_media_stage_schema.sql',
     ]
     assert.deepEqual((await readdir(schemaDir)).filter(file => file.endsWith('.sql')).sort(), schemaFiles)
     for (const file of schemaFiles) {
@@ -195,6 +196,18 @@ test('animation RUM v2 storage stays isolated, aggregate-only, and queryable by 
     assert.match(sql, /rum_v2_metric_status/)
     assert.match(sql, /rum_v2_provider_counts/)
     assert.equal(sql.match(/TTL toDateTime\(captured_at\) \+ INTERVAL 90 DAY/g)?.length, 3)
+})
+
+test('animation RUM v2 media schema broadening keeps a constraint throughout an idempotent migration', async () => {
+    const sql = await readFile(path.join(schemaDir, '007_animation_rum_v2_media_stage_schema.sql'), 'utf8')
+    const addConstraint = sql.indexOf('ADD CONSTRAINT IF NOT EXISTS rum_v2_capture_versions_schema_2')
+    const dropConstraint = sql.indexOf('DROP CONSTRAINT IF EXISTS rum_v2_capture_versions')
+
+    assert.ok(addConstraint >= 0)
+    assert.ok(dropConstraint > addConstraint)
+    assert.match(sql, /contract_version\s*=\s*2\s+AND\s+snapshot_schema_version\s+IN\s*\(1,\s*2\)/i)
+    assert.doesNotMatch(sql, /\blemonade\s*\./)
+    assert.doesNotMatch(sql, /\b(?:TRUNCATE|RENAME|DETACH|ATTACH)\b/i)
 })
 
 test('animation RUM v3 soft-navigation storage is database-neutral, non-destructive, private, and TTL-bounded', async () => {
