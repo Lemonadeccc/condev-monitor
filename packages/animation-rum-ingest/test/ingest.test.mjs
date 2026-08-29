@@ -3,7 +3,11 @@ import { readFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import test from 'node:test'
 
-import { ANIMATION_RUM_FAMILIES, ANIMATION_RUM_V2_CAPABILITIES } from '@condev-monitor/animation-rum-contract'
+import {
+    ANIMATION_RUM_FAMILIES,
+    ANIMATION_RUM_V2_CAPABILITIES,
+    ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES,
+} from '@condev-monitor/animation-rum-contract'
 import { ANIMATION_RUM_V2_GOLDEN_NOW, createAnimationRumV2GoldenReport } from '@condev-monitor/animation-rum-contract/testing'
 
 import {
@@ -103,6 +107,34 @@ function gpuReport([capability, status, value, samples]) {
     return report
 }
 
+function mediaStageReport() {
+    const report = createAnimationRumV2GoldenReport()
+    report.snapshotSchemaVersion = 2
+    report.capabilities = Object.fromEntries(ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES.map(name => [name, 'unknown']))
+    report.capabilities['media-stage-attestation'] = 'supported'
+    report.coverage.resourcesMedia = { status: 'measured', evidenceLevel: 'runtime-observation' }
+    report.providerEvidence['media-stage-adapter'] = {
+        resourcesMedia: {
+            version: '0.1.0',
+            accepted: 1,
+            retained: 1,
+            evidence: 1,
+            dropped: 0,
+            rejected: 0,
+            truncated: false,
+        },
+    }
+    report.metrics.push({
+        metricId: 'media.stage.video.begin-to-first-visible.p95',
+        relation: 'adapter',
+        owner: 'media-stage-adapter',
+        value: 24,
+        samples: 1,
+        status: 'measured',
+    })
+    return report
+}
+
 test('strictly unwraps BrowserTransport metadata before canonical hashing', () => {
     const report = createAnimationRumV2GoldenReport()
     const direct = prepare(report)
@@ -182,6 +214,30 @@ test('locks the canonical v1 report hash and field order', () => {
         'providerEvidence',
         'metrics',
     ])
+})
+
+test('canonicalizes and projects snapshot schema 2 media-stage aggregates without a new transport or table', () => {
+    const report = mediaStageReport()
+    const prepared = prepare(report)
+    assert.equal(prepared.report.snapshotSchemaVersion, 2)
+    assert.equal(prepared.report.capabilities['media-stage-attestation'], 'supported')
+    assert.ok(prepared.canonicalText.includes('media-stage-adapter'))
+    assert.ok(prepared.canonicalText.includes('media.stage.video.begin-to-first-visible.p95'))
+
+    const envelope = envelopeFor(report)
+    const rows = projectAnimationRumV2Rows(envelope, GOLDEN_VALIDATION_OPTIONS)
+    assert.equal(rows.captureRow.snapshot_schema_version, 2)
+    assert.ok(rows.providerRows.some(row => row.owner === 'media-stage-adapter' && row.family === 'resourcesMedia'))
+    assert.ok(
+        rows.metricRows.some(
+            row =>
+                row.metric_id === 'media.stage.video.begin-to-first-visible.p95' && row.owner === 'media-stage-adapter' && row.value === 24
+        )
+    )
+    assert.deepEqual(
+        createAnimationRumV2ClickHouseInsertPlan(envelope, GOLDEN_VALIDATION_OPTIONS).map(step => step.table),
+        ['animation_rum_provider_evidence_v2', 'animation_rum_metrics_v2', 'animation_rum_captures_v2']
+    )
 })
 
 test('canonicalizes equivalent object order and UTC spellings without mutating input', () => {

@@ -1,13 +1,15 @@
 import {
     ANIMATION_RUM_FAMILIES,
     ANIMATION_RUM_V2_CAPABILITIES,
-    ANIMATION_RUM_V2_METRIC_CATALOG,
     ANIMATION_RUM_V2_PROVIDER_OWNERS,
+    ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES,
+    ANIMATION_RUM_V2_SCHEMA_2_PROVIDER_OWNERS,
     type AnimationRumFamily,
     type AnimationRumV2MetricStatus,
     type AnimationRumV2ProviderOwner,
     type AnimationRumV2Relation,
     type AnimationRumV2Report,
+    getAnimationRumV2MetricCatalog,
     getAnimationRumV2MetricDefinition,
 } from '@condev-monitor/animation-rum-contract'
 
@@ -65,7 +67,7 @@ export interface AnimationRumV2MetricRow extends AnimationRumV2ClickHouseDimensi
 export interface AnimationRumV2CaptureRow extends AnimationRumV2ClickHouseDimensions {
     parent_capture_id: string
     contract_version: 2
-    snapshot_schema_version: 1
+    snapshot_schema_version: 1 | 2
     dist: string
     sdk_version: string
     monitor_version: string
@@ -142,17 +144,20 @@ export function projectAnimationRumV2Rows(
     const report = envelope.info.animationRum
     const dimensions = captureDimensions(envelope)
     const runtime = report.context.runtime
-    const capabilities = Object.fromEntries(ANIMATION_RUM_V2_CAPABILITIES.map(name => [name, report.capabilities[name]]))
+    const capabilityNames = report.snapshotSchemaVersion === 2 ? ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES : ANIMATION_RUM_V2_CAPABILITIES
+    const capabilities = Object.fromEntries(capabilityNames.map(name => [name, report.capabilities[name]]))
     const coverage = Object.fromEntries(
         ANIMATION_RUM_FAMILIES.map(family => [
             family,
             { status: report.coverage[family].status, evidenceLevel: report.coverage[family].evidenceLevel },
         ])
     )
-    const metricOrder = new Map(ANIMATION_RUM_V2_METRIC_CATALOG.map((definition, index) => [definition.metricId, index]))
+    const metricCatalog = getAnimationRumV2MetricCatalog(report.snapshotSchemaVersion)
+    const metricOrder = new Map(metricCatalog.map((definition, index) => [definition.metricId, index]))
     const providerRows: AnimationRumV2ProviderEvidenceRow[] = []
 
-    for (const owner of ANIMATION_RUM_V2_PROVIDER_OWNERS) {
+    const providerOwners = report.snapshotSchemaVersion === 2 ? ANIMATION_RUM_V2_SCHEMA_2_PROVIDER_OWNERS : ANIMATION_RUM_V2_PROVIDER_OWNERS
+    for (const owner of providerOwners) {
         const familyEvidence = report.providerEvidence[owner]
         if (!familyEvidence) continue
         for (const family of ANIMATION_RUM_FAMILIES) {
@@ -183,7 +188,7 @@ export function projectAnimationRumV2Rows(
             return 0
         })
         .map(metric => {
-            const definition = getAnimationRumV2MetricDefinition(metric.metricId)
+            const definition = getAnimationRumV2MetricDefinition(metric.metricId, report.snapshotSchemaVersion)
             if (!definition) throw new Error('Validated Animation RUM v2 metric is missing from the canonical registry')
             return {
                 ...dimensions,

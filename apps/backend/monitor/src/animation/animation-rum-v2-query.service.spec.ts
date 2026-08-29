@@ -1,4 +1,8 @@
-import { ANIMATION_RUM_FAMILIES, ANIMATION_RUM_V2_CAPABILITIES } from '@condev-monitor/animation-rum-contract'
+import {
+    ANIMATION_RUM_FAMILIES,
+    ANIMATION_RUM_V2_CAPABILITIES,
+    ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES,
+} from '@condev-monitor/animation-rum-contract'
 import { ConflictException, ForbiddenException, NotFoundException } from '@nestjs/common'
 
 import { AnimationRumV2QueryService } from './animation-rum-v2-query.service'
@@ -235,8 +239,8 @@ describe('AnimationRumV2QueryService', () => {
         expect(response).toEqual(
             expect.objectContaining({
                 contractVersion: 2,
-                snapshotSchemaVersion: 1,
-                catalogMetricCount: 69,
+                snapshotSchemaVersion: 2,
+                catalogMetricCount: 94,
                 aggregationSemantics: 'distribution-of-capture-aggregates',
                 projectionIntegrity: {
                     semantics: 'completion-marker-child-row-counts',
@@ -767,6 +771,7 @@ describe('AnimationRumV2QueryService', () => {
 
         const response = await service.capture(41, 'vanillaFixture1', 'capture_12345678')
 
+        expect(response.snapshotSchemaVersion).toBe(1)
         expect(response.capture).toEqual(
             expect.objectContaining({
                 eventId: 'event_12345678',
@@ -828,6 +833,83 @@ describe('AnimationRumV2QueryService', () => {
         expect(clickhouse.query.mock.calls[3][0].query).toContain('captured_at >= {retentionFloor')
         expect(JSON.stringify(response)).not.toContain('private.invalid')
         expect(JSON.stringify(response)).not.toContain('#private')
+    })
+
+    it('preserves schema 2 caller-attested media metrics and provider evidence without inventing browser attribution', async () => {
+        const clickhouse = {
+            query: jest
+                .fn()
+                .mockResolvedValueOnce(
+                    result([
+                        captureRow({
+                            parent_capture_id: '',
+                            scope: 'page',
+                            target_key: '',
+                            snapshot_schema_version: 2,
+                            capabilities_json: JSON.stringify({
+                                'media-stage-attestation': 'supported',
+                                private: 'must-not-survive',
+                            }),
+                        }),
+                    ])
+                )
+                .mockResolvedValueOnce(
+                    result([
+                        {
+                            scope: 'page',
+                            metric_id: 'media.stage.webgl.begin-to-first-visible.p95',
+                            relation: 'adapter',
+                            owner: 'media-stage-adapter',
+                            value: 12.5,
+                            samples: 2,
+                            status: 'measured',
+                        },
+                    ])
+                )
+                .mockResolvedValueOnce(
+                    result([
+                        {
+                            scope: 'page',
+                            owner: 'media-stage-adapter',
+                            family: 'resourcesMedia',
+                            provider_version: '2.0.0',
+                            accepted: 2,
+                            retained: 2,
+                            evidence: 2,
+                            dropped: 0,
+                            rejected: 0,
+                            truncated: 0,
+                        },
+                    ])
+                )
+                .mockResolvedValueOnce(result([])),
+        }
+        const { service } = createService(clickhouse)
+
+        const response = await service.capture(41, 'vanillaFixture1', 'capture_12345678')
+
+        expect(response.snapshotSchemaVersion).toBe(2)
+        expect(response.capture.snapshotSchemaVersion).toBe(2)
+        expect(Object.keys(response.capture.capabilities)).toEqual([...ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES])
+        expect(response.capture.capabilities['media-stage-attestation']).toBe('supported')
+        expect(response.metrics).toEqual([
+            expect.objectContaining({
+                metricId: 'media.stage.webgl.begin-to-first-visible.p95',
+                relation: 'adapter',
+                owner: 'media-stage-adapter',
+                value: 12.5,
+            }),
+        ])
+        expect(response.providerEvidence).toEqual([
+            expect.objectContaining({
+                owner: 'media-stage-adapter',
+                family: 'resourcesMedia',
+                accepted: 2,
+                retained: 2,
+                evidence: 2,
+            }),
+        ])
+        expect(JSON.stringify(response)).not.toContain('must-not-survive')
     })
 
     it('returns GPU timer capability and its unavailable metric status in the same capture detail', async () => {
@@ -964,6 +1046,59 @@ describe('AnimationRumV2QueryService', () => {
 
         await expect(service.capture(41, 'vanillaFixture1', 'capture_12345678')).rejects.toBeInstanceOf(ConflictException)
         expect(clickhouse.query).toHaveBeenCalledTimes(4)
+    })
+
+    it('rejects schema 2 media-stage children attached to a schema 1 completion marker', async () => {
+        const clickhouse = {
+            query: jest
+                .fn()
+                .mockResolvedValueOnce(
+                    result([
+                        captureRow({
+                            parent_capture_id: '',
+                            scope: 'page',
+                            target_key: '',
+                            snapshot_schema_version: 1,
+                        }),
+                    ])
+                )
+                .mockResolvedValueOnce(
+                    result([
+                        {
+                            scope: 'page',
+                            metric_id: 'media.stage.image.begin-to-first-visible.p95',
+                            relation: 'adapter',
+                            owner: 'media-stage-adapter',
+                            value: 10,
+                            samples: 1,
+                            status: 'measured',
+                        },
+                    ])
+                )
+                .mockResolvedValueOnce(
+                    result([
+                        {
+                            scope: 'page',
+                            owner: 'media-stage-adapter',
+                            family: 'resourcesMedia',
+                            provider_version: '2.0.0',
+                            accepted: 1,
+                            retained: 1,
+                            evidence: 1,
+                            dropped: 0,
+                            rejected: 0,
+                            truncated: 0,
+                        },
+                    ])
+                )
+                .mockResolvedValueOnce(result([])),
+        }
+        const { service } = createService(clickhouse)
+
+        await expect(service.capture(41, 'vanillaFixture1', 'capture_12345678')).rejects.toMatchObject({
+            status: 409,
+            response: expect.objectContaining({ error: 'ANIMATION_RUM_V2_PROJECTION_INCOMPLETE' }),
+        })
     })
 
     it('returns bounded target summaries with a page detail instead of requiring per-target reads', async () => {

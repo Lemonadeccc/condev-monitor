@@ -42,6 +42,33 @@ function unsupportedGpuReport() {
     return report
 }
 
+function mediaStageReport() {
+    const report = createAnimationRumV2GoldenReport()
+    report.snapshotSchemaVersion = 2
+    report.capabilities = { ...report.capabilities, 'media-stage-attestation': 'supported' }
+    report.coverage.resourcesMedia = { status: 'measured', evidenceLevel: 'runtime-observation' }
+    report.providerEvidence['media-stage-adapter'] = {
+        resourcesMedia: {
+            version: '0.1.0',
+            accepted: 1,
+            retained: 1,
+            evidence: 1,
+            dropped: 0,
+            rejected: 0,
+            truncated: false,
+        },
+    }
+    report.metrics.push({
+        metricId: 'media.stage.video.begin-to-first-visible.p95',
+        relation: 'adapter',
+        owner: 'media-stage-adapter',
+        value: 24,
+        samples: 1,
+        status: 'measured',
+    })
+    return report
+}
+
 function createService(query: jest.Mock, overrides: Record<string, string | undefined> = {}) {
     const client = { query, release: jest.fn() }
     const pool = {
@@ -167,6 +194,41 @@ describe('AnimationRumV2AdmissionService', () => {
         })
         expect(calls.find(call => call.sql.includes('UPDATE public.animation_rum_v2_policy'))?.values).toEqual([101, '2'])
         expect(client.release).toHaveBeenCalledTimes(1)
+    })
+
+    it('stores and forwards the actual snapshot schema 2 media-stage report version', async () => {
+        const query = successfulPageQuery()
+        const { service } = createService(query)
+        const report = mediaStageReport()
+
+        await service.admitBatch(APP_ID, [trackingPayload(report)], {
+            nowEpochMs: ANIMATION_RUM_V2_GOLDEN_NOW,
+        })
+
+        const calls = query.mock.calls.map(call => {
+            const args = call as unknown[]
+            return { sql: compactSql(args[0]), values: args[1] as unknown[] | undefined }
+        })
+        const receiptInsert = calls.find(call => call.sql.includes('INSERT INTO public.animation_rum_v2_capture_receipt'))
+        expect(receiptInsert?.values?.[5]).toBe(2)
+        expect(receiptInsert?.values?.[6]).toBe(2)
+
+        const outboxInsert = calls.find(call => call.sql.includes('INSERT INTO public.animation_rum_v2_outbox'))
+        const envelope = JSON.parse(String(outboxInsert?.values?.[6]))
+        expect(envelope.info.animationRum).toMatchObject({
+            contractVersion: 2,
+            snapshotSchemaVersion: 2,
+            capabilities: { 'media-stage-attestation': 'supported' },
+        })
+        expect(envelope.info.animationRum.metrics).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    metricId: 'media.stage.video.begin-to-first-visible.p95',
+                    owner: 'media-stage-adapter',
+                }),
+            ])
+        )
+        expect(JSON.stringify(envelope)).not.toContain('attemptId')
     })
 
     it('accepts an exact stale retry after policy disable without allocating another sequence', async () => {

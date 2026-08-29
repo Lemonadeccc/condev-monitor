@@ -3,10 +3,13 @@ import {
     ANIMATION_RUM_FAMILIES,
     ANIMATION_RUM_V2_CAPABILITIES,
     ANIMATION_RUM_V2_CONTRACT_VERSION,
-    ANIMATION_RUM_V2_METRIC_CATALOG,
+    ANIMATION_RUM_V2_MEDIA_STAGE_SNAPSHOT_SCHEMA_VERSION,
     ANIMATION_RUM_V2_PER_MINUTE_METRIC_IDS,
     ANIMATION_RUM_V2_PROVIDER_OWNERS,
     ANIMATION_RUM_V2_QUALITY_REASONS,
+    ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES,
+    ANIMATION_RUM_V2_SCHEMA_2_METRIC_CATALOG,
+    ANIMATION_RUM_V2_SCHEMA_2_PROVIDER_OWNERS,
     ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION,
     getAnimationRumV2MetricDefinition,
     isAnimationRumV2RouteKey,
@@ -106,7 +109,8 @@ const RENDERERS = new Set(['dom', 'svg', 'canvas', 'mixed', 'other', 'unknown'])
 const BACKENDS = new Set(['dom', 'canvas2d', 'webgl', 'webgl2', 'webgpu', 'mixed', 'other', 'unknown'])
 const QUALITY_REASON_SET = new Set<string>(ANIMATION_RUM_V2_QUALITY_REASONS)
 const FAMILY_SET = new Set<string>(ANIMATION_RUM_FAMILIES)
-const PROVIDER_OWNER_SET = new Set<string>(ANIMATION_RUM_V2_PROVIDER_OWNERS)
+const SCHEMA_1_PROVIDER_OWNER_SET = new Set<string>(ANIMATION_RUM_V2_PROVIDER_OWNERS)
+const SCHEMA_2_PROVIDER_OWNER_SET = new Set<string>(ANIMATION_RUM_V2_SCHEMA_2_PROVIDER_OWNERS)
 const NORMALIZABLE_METRIC_IDS: string[] = [...ANIMATION_RUM_V2_PER_MINUTE_METRIC_IDS]
 
 const CAPTURE_COLUMNS = `
@@ -192,8 +196,8 @@ function boundedString(value: unknown, maximum: number, pattern: RegExp, fallbac
     return candidate.length <= maximum && pattern.test(candidate) ? candidate : fallback
 }
 
-function metricBindingIsValid(metricId: string, scope: string, relation: string, owner: string): boolean {
-    const definition = getAnimationRumV2MetricDefinition(metricId)
+function metricBindingIsValid(metricId: string, scope: string, relation: string, owner: string, snapshotSchemaVersion: 1 | 2): boolean {
+    const definition = getAnimationRumV2MetricDefinition(metricId, snapshotSchemaVersion)
     return Boolean(
         definition?.bindings.some(
             binding => binding.scope === scope && binding.relation === relation && binding.owners.some(candidate => candidate === owner)
@@ -484,8 +488,8 @@ export class AnimationRumV2QueryService {
 
         return {
             contractVersion: ANIMATION_RUM_V2_CONTRACT_VERSION,
-            snapshotSchemaVersion: ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION,
-            catalogMetricCount: ANIMATION_RUM_V2_METRIC_CATALOG.length,
+            snapshotSchemaVersion: ANIMATION_RUM_V2_MEDIA_STAGE_SNAPSHOT_SCHEMA_VERSION,
+            catalogMetricCount: ANIMATION_RUM_V2_SCHEMA_2_METRIC_CATALOG.length,
             retentionDays: RETENTION_DAYS,
             aggregationSemantics: 'distribution-of-capture-aggregates' as const,
             window: this.windowView(query),
@@ -669,7 +673,7 @@ export class AnimationRumV2QueryService {
         const hasMore = typeof total === 'number' ? consumed < BigInt(total) : typeof total === 'string' ? consumed < BigInt(total) : null
         return {
             contractVersion: ANIMATION_RUM_V2_CONTRACT_VERSION,
-            snapshotSchemaVersion: ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION,
+            snapshotSchemaVersion: ANIMATION_RUM_V2_MEDIA_STAGE_SNAPSHOT_SCHEMA_VERSION,
             window: this.windowView(query),
             filters: this.filtersView(query),
             pagination: {
@@ -718,6 +722,8 @@ export class AnimationRumV2QueryService {
         if (!scope) {
             throw new NotFoundException({ message: 'Animation capture not found', error: 'NOT_FOUND' })
         }
+        const snapshotSchemaVersion = this.snapshotSchemaVersion(row.snapshot_schema_version)
+        if (snapshotSchemaVersion === null) this.throwProjectionIncomplete()
         const childParams = { appId, captureId, eventId, scope }
         const [metricResult, providerResult, relationships] = await Promise.all([
             this.readQuery({
@@ -751,9 +757,11 @@ export class AnimationRumV2QueryService {
         ])
         const metricJson = (await metricResult.json()) as { data?: Record<string, unknown>[] }
         const providerJson = (await providerResult.json()) as { data?: Record<string, unknown>[] }
-        const metrics = (metricJson.data ?? []).map(metric => this.metricView(metric)).filter(metric => metric !== null)
+        const metrics = (metricJson.data ?? [])
+            .map(metric => this.metricView(metric, snapshotSchemaVersion))
+            .filter(metric => metric !== null)
         const providerEvidence = (providerJson.data ?? [])
-            .map(provider => this.providerEvidenceView(provider))
+            .map(provider => this.providerEvidenceView(provider, snapshotSchemaVersion))
             .filter(provider => provider !== null)
         const projectionIntegrity = this.captureProjectionIntegrityView(row)
         if (
@@ -767,7 +775,7 @@ export class AnimationRumV2QueryService {
 
         return {
             contractVersion: ANIMATION_RUM_V2_CONTRACT_VERSION,
-            snapshotSchemaVersion: ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION,
+            snapshotSchemaVersion,
             capture: this.captureDetailView(row),
             metrics,
             providerEvidence,
@@ -1181,9 +1189,9 @@ export class AnimationRumV2QueryService {
         const metricId = typeof row.metric_id === 'string' ? row.metric_id : ''
         const scope = closedString(row.scope, SCOPES, '')
         const relation = closedString(row.relation, RELATIONS, '')
-        const owner = closedString(row.owner, PROVIDER_OWNER_SET, '')
-        const definition = getAnimationRumV2MetricDefinition(metricId)
-        if (!definition || !scope || !relation || !owner || !metricBindingIsValid(metricId, scope, relation, owner)) return null
+        const owner = closedString(row.owner, SCHEMA_2_PROVIDER_OWNER_SET, '')
+        const definition = getAnimationRumV2MetricDefinition(metricId, 2)
+        if (!definition || !scope || !relation || !owner || !metricBindingIsValid(metricId, scope, relation, owner, 2)) return null
 
         const capturesWithValue = jsonIntegerOrZero(row.captures_with_value)
         const measuredCaptures = jsonIntegerOrZero(row.measured_captures_with_value)
@@ -1256,6 +1264,7 @@ export class AnimationRumV2QueryService {
         const reducedMotion = Number(row.reduced_motion)
         return {
             captureId: boundedString(row.capture_id, 80, CAPTURE_ID_PATTERN),
+            snapshotSchemaVersion: this.snapshotSchemaVersion(row.snapshot_schema_version),
             parentCaptureId,
             scope,
             targetKey,
@@ -1301,23 +1310,34 @@ export class AnimationRumV2QueryService {
     }
 
     private captureDetailView(row: Record<string, unknown>) {
+        const snapshotSchemaVersion = this.snapshotSchemaVersion(row.snapshot_schema_version)
         return {
             ...this.captureListView(row),
             eventId: boundedString(row.event_id, 80, CAPTURE_ID_PATTERN),
             contractVersion: Number(row.contract_version) === ANIMATION_RUM_V2_CONTRACT_VERSION ? ANIMATION_RUM_V2_CONTRACT_VERSION : null,
-            snapshotSchemaVersion:
-                Number(row.snapshot_schema_version) === ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION
-                    ? ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION
-                    : null,
-            capabilities: this.capabilitiesView(row.capabilities_json),
+            snapshotSchemaVersion,
+            capabilities: this.capabilitiesView(row.capabilities_json, snapshotSchemaVersion),
             coverage: this.coverageView(row.coverage_json),
         }
     }
 
-    private capabilitiesView(value: unknown): Record<string, string> {
+    private snapshotSchemaVersion(value: unknown): 1 | 2 | null {
+        const version = Number(value)
+        if (version === ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION) return ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION
+        if (version === ANIMATION_RUM_V2_MEDIA_STAGE_SNAPSHOT_SCHEMA_VERSION) {
+            return ANIMATION_RUM_V2_MEDIA_STAGE_SNAPSHOT_SCHEMA_VERSION
+        }
+        return null
+    }
+
+    private capabilitiesView(value: unknown, snapshotSchemaVersion: 1 | 2 | null): Record<string, string> {
         const source = recordFromJson(value)
+        const capabilities =
+            snapshotSchemaVersion === ANIMATION_RUM_V2_MEDIA_STAGE_SNAPSHOT_SCHEMA_VERSION
+                ? ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES
+                : ANIMATION_RUM_V2_CAPABILITIES
         return Object.fromEntries(
-            ANIMATION_RUM_V2_CAPABILITIES.map(capability => [capability, closedString(source[capability], CAPABILITY_STATES, 'unknown')])
+            capabilities.map(capability => [capability, closedString(source[capability], CAPABILITY_STATES, 'unknown')])
         )
     }
 
@@ -1338,14 +1358,26 @@ export class AnimationRumV2QueryService {
         )
     }
 
-    private metricView(row: Record<string, unknown>) {
+    private metricView(row: Record<string, unknown>, snapshotSchemaVersion: 1 | 2 = 2) {
         const metricId = typeof row.metric_id === 'string' ? row.metric_id : ''
         const scope = closedString(row.scope, SCOPES, '')
         const relation = closedString(row.relation, RELATIONS, '')
-        const owner = closedString(row.owner, PROVIDER_OWNER_SET, '')
+        const providerOwnerSet =
+            snapshotSchemaVersion === ANIMATION_RUM_V2_MEDIA_STAGE_SNAPSHOT_SCHEMA_VERSION
+                ? SCHEMA_2_PROVIDER_OWNER_SET
+                : SCHEMA_1_PROVIDER_OWNER_SET
+        const owner = closedString(row.owner, providerOwnerSet, '')
         const status = closedString(row.status, METRIC_STATUSES, '')
-        const definition = getAnimationRumV2MetricDefinition(metricId)
-        if (!definition || !scope || !relation || !owner || !status || !metricBindingIsValid(metricId, scope, relation, owner)) return null
+        const definition = getAnimationRumV2MetricDefinition(metricId, snapshotSchemaVersion)
+        if (
+            !definition ||
+            !scope ||
+            !relation ||
+            !owner ||
+            !status ||
+            !metricBindingIsValid(metricId, scope, relation, owner, snapshotSchemaVersion)
+        )
+            return null
         const available = status === 'measured' || status === 'partial'
         const value = finiteNumber(row.value)
         const samples = safeInteger(row.samples)
@@ -1365,9 +1397,13 @@ export class AnimationRumV2QueryService {
         }
     }
 
-    private providerEvidenceView(row: Record<string, unknown>) {
+    private providerEvidenceView(row: Record<string, unknown>, snapshotSchemaVersion: 1 | 2 = 2) {
         const scope = closedString(row.scope, SCOPES, '')
-        const owner = closedString(row.owner, PROVIDER_OWNER_SET, '')
+        const providerOwnerSet =
+            snapshotSchemaVersion === ANIMATION_RUM_V2_MEDIA_STAGE_SNAPSHOT_SCHEMA_VERSION
+                ? SCHEMA_2_PROVIDER_OWNER_SET
+                : SCHEMA_1_PROVIDER_OWNER_SET
+        const owner = closedString(row.owner, providerOwnerSet, '')
         const family = closedString(row.family, FAMILY_SET, '')
         const providerVersion = boundedString(row.provider_version, 32, PROVIDER_VERSION_PATTERN)
         const accepted = safeInteger(row.accepted)

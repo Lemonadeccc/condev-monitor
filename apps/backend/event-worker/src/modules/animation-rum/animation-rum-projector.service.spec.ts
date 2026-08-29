@@ -73,6 +73,31 @@ function useUnsupportedGpuReport(report: ReturnType<typeof createAnimationRumV2G
     report.coverage.renderer = { status: 'unsupported', evidenceLevel: 'unsupported-or-unknown' }
 }
 
+function useMediaStageReport(report: ReturnType<typeof createAnimationRumV2GoldenReport>): void {
+    report.snapshotSchemaVersion = 2
+    report.capabilities = { ...report.capabilities, 'media-stage-attestation': 'supported' }
+    report.coverage.resourcesMedia = { status: 'measured', evidenceLevel: 'runtime-observation' }
+    report.providerEvidence['media-stage-adapter'] = {
+        resourcesMedia: {
+            version: '0.1.0',
+            accepted: 1,
+            retained: 1,
+            evidence: 1,
+            dropped: 0,
+            rejected: 0,
+            truncated: false,
+        },
+    }
+    report.metrics.push({
+        metricId: 'media.stage.webgpu.upload-to-first-visible.p95',
+        relation: 'adapter',
+        owner: 'media-stage-adapter',
+        value: 8,
+        samples: 1,
+        status: 'measured',
+    })
+}
+
 function kafkaContext(rawEnvelope: unknown, messageKey: string | null = 'app-12345678') {
     return { rawEnvelope, messageKey }
 }
@@ -116,6 +141,34 @@ describe('AnimationRumProjectorService', () => {
             capabilities: { 'gpu-timer-query': 'unsupported' },
             metrics: [expect.objectContaining({ metricId: 'renderer.gpu-frame.p95', status: 'unsupported' })],
         })
+    })
+
+    it('revalidates and projects snapshot schema 2 media-stage envelopes through the existing v2 writer', async () => {
+        const value = v2Envelope()
+        useMediaStageReport(value.info.animationRum)
+        const writer = {
+            insertAnimationRum: jest.fn(),
+            insertAnimationRumV2: jest.fn().mockResolvedValue(undefined),
+        }
+        const service = new AnimationRumProjectorService(writer as any)
+
+        await service.handleEnvelope(value, kafkaContext(value))
+
+        expect(writer.insertAnimationRum).not.toHaveBeenCalled()
+        expect(writer.insertAnimationRumV2).toHaveBeenCalledWith(value)
+        expect(value.info.animationRum).toMatchObject({
+            snapshotSchemaVersion: 2,
+            capabilities: { 'media-stage-attestation': 'supported' },
+            providerEvidence: { 'media-stage-adapter': expect.any(Object) },
+        })
+        expect(value.info.animationRum.metrics).toEqual(
+            expect.arrayContaining([
+                expect.objectContaining({
+                    metricId: 'media.stage.webgpu.upload-to-first-visible.p95',
+                    owner: 'media-stage-adapter',
+                }),
+            ])
+        )
     })
 
     it('requires raw Kafka context and the actual appId message key for v2', async () => {

@@ -5,6 +5,8 @@ import {
     ANIMATION_RUM_V2_CAPABILITIES,
     ANIMATION_RUM_V2_MAX_PAYLOAD_BYTES,
     ANIMATION_RUM_V2_PROVIDER_OWNERS,
+    ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES,
+    ANIMATION_RUM_V2_SCHEMA_2_PROVIDER_OWNERS,
     type AnimationRumFamily,
     type AnimationRumV2ProviderEvidence,
     type AnimationRumV2Report,
@@ -49,8 +51,9 @@ function canonicalizeValidatedReport(report: AnimationRumV2Report): AnimationRum
             backend: report.context.runtime.backend,
         },
     }
+    const capabilityNames = report.snapshotSchemaVersion === 2 ? ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES : ANIMATION_RUM_V2_CAPABILITIES
     const capabilities = Object.fromEntries(
-        ANIMATION_RUM_V2_CAPABILITIES.map(name => [name, report.capabilities[name]])
+        capabilityNames.map(name => [name, report.capabilities[name]])
     ) as AnimationRumV2Report['capabilities']
     const coverage = Object.fromEntries(
         ANIMATION_RUM_FAMILIES.map(family => [
@@ -62,7 +65,8 @@ function canonicalizeValidatedReport(report: AnimationRumV2Report): AnimationRum
         ])
     ) as AnimationRumV2Report['coverage']
     const providerEvidence: AnimationRumV2Report['providerEvidence'] = {}
-    for (const owner of ANIMATION_RUM_V2_PROVIDER_OWNERS) {
+    const providerOwners = report.snapshotSchemaVersion === 2 ? ANIMATION_RUM_V2_SCHEMA_2_PROVIDER_OWNERS : ANIMATION_RUM_V2_PROVIDER_OWNERS
+    for (const owner of providerOwners) {
         const inboundFamilies = report.providerEvidence[owner]
         if (!inboundFamilies) continue
         const families: Partial<Record<AnimationRumFamily, AnimationRumV2ProviderEvidence>> = {}

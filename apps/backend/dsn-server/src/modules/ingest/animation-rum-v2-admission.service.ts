@@ -302,10 +302,10 @@ export class AnimationRumV2AdmissionService {
                             delivery_state, initial_received_at, updated_at, expires_at
                         ) VALUES (
                             $1, $2, $3, $4, $5,
-                            2, 1, $6, $7,
-                            $8, $9, $10, $11, $12, $13::timestamptz,
-                            'pending', $14::timestamptz, $14::timestamptz,
-                            $14::timestamptz + ($15::text || ' days')::interval
+                            $6, $7, $8, $9,
+                            $10, $11, $12, $13, $14, $15::timestamptz,
+                            'pending', $16::timestamptz, $16::timestamptz,
+                            $16::timestamptz + ($17::text || ' days')::interval
                         )
                     `,
                     [
@@ -314,6 +314,8 @@ export class AnimationRumV2AdmissionService {
                         report.eventId,
                         item.prepared.payloadHash,
                         item.prepared.payloadHashVersion,
+                        report.contractVersion,
+                        report.snapshotSchemaVersion,
                         report.scope,
                         report.parentCaptureId,
                         routeKey,
