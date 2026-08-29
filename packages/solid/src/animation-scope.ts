@@ -2,6 +2,7 @@ import type { AnimationBrowserClient } from '@condev-monitor/monitor-sdk-browser
 import { onCleanup } from 'solid-js'
 
 type SolidAnimationClient = Pick<AnimationBrowserClient, 'animation'>
+type FrameworkComponentScope = ReturnType<AnimationBrowserClient['animation']['createFrameworkComponentScope']>
 type CleanupRegistrar = (callback: () => void) => void
 
 export interface CondevSolidAnimationOptions {
@@ -11,6 +12,8 @@ export interface CondevSolidAnimationOptions {
     now?: () => number
     /** Test seam for Solid's public `onCleanup`; application code should omit it. */
     registerCleanup?: CleanupRegistrar
+    /** Local-only developer label. Never enters animation RUM. */
+    label?: string
 }
 
 export interface CondevSolidAnimationScope {
@@ -42,11 +45,6 @@ export type CondevSolidAnimationTargetDirective = (node: Element, scopeAccessor:
 interface SolidScopeInternals {
     bindTarget(node: Element): () => void
 }
-
-const SOLID_TARGET_INSPECTION = Object.freeze({
-    inventory: Object.freeze({ uiFrameworks: Object.freeze(['solid'] as const) }),
-    owners: Object.freeze([Object.freeze({ relation: 'framework-owner' as const, framework: 'solid' as const })]),
-})
 
 const scopeInternals = new WeakMap<CondevSolidAnimationScope, SolidScopeInternals>()
 
@@ -91,6 +89,7 @@ function incrementBounded(value: number): number {
 export function createCondevSolidAnimationScope(options: CondevSolidAnimationOptions): CondevSolidAnimationScope {
     const now = options.now ?? defaultNow
     let destroyed = false
+    let componentScope: FrameworkComponentScope | undefined
     const targetDisposers = new Set<() => void>()
     const failures = {
         targetRegistrationErrors: 0,
@@ -103,13 +102,29 @@ export function createCondevSolidAnimationScope(options: CondevSolidAnimationOpt
     const recordTargetCleanupError = (): void => {
         failures.targetCleanupErrors = incrementBounded(failures.targetCleanupErrors)
     }
+    try {
+        componentScope = options.client.animation.createFrameworkComponentScope({ framework: 'solid', label: options.label, now })
+    } catch {
+        // Optional local component evidence is independent from generic host work.
+    }
+    const targetRegistrationOwner = Object.freeze({})
 
     const bindTarget = (node: Element): (() => void) => {
         if (destroyed) return noOp
 
         let unregister: (() => void) | undefined
         try {
-            unregister = options.client.animation.registerTarget(node, () => SOLID_TARGET_INSPECTION)
+            unregister = options.client.animation.registerTarget(
+                node,
+                context => ({
+                    inventory: { uiFrameworks: ['solid'] },
+                    owners: [{ relation: 'framework-owner', framework: 'solid' }],
+                    ...(context?.inspectionPurpose === 'rum' || !componentScope
+                        ? {}
+                        : { frameworkScopes: [componentScope.snapshot(context?.evidenceWindow)] }),
+                }),
+                { owner: targetRegistrationOwner }
+            )
         } catch {
             failures.targetRegistrationErrors = incrementBounded(failures.targetRegistrationErrors)
             return noOp
@@ -132,6 +147,8 @@ export function createCondevSolidAnimationScope(options: CondevSolidAnimationOpt
         destroyed = true
         for (const dispose of [...targetDisposers]) dispose()
         targetDisposers.clear()
+        componentScope?.dispose()
+        componentScope = undefined
         scopeInternals.delete(scope)
     }
 
@@ -153,6 +170,13 @@ export function createCondevSolidAnimationScope(options: CondevSolidAnimationOpt
             }
 
             try {
+                componentScope?.record({
+                    kind: 'host-script',
+                    reason: 'solid-caller-explicit',
+                    reasonSource: 'solid-caller',
+                    durationMs: endedAt - startedAt,
+                    timestampMs: endedAt,
+                })
                 if (
                     !options.client.animation.recordWorkStats({
                         source: 'host',

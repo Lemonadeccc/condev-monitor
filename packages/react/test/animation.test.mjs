@@ -6,7 +6,14 @@ import { Profiler, createElement } from 'react'
 
 import { init as browserAnimationInit } from '@condev-monitor/monitor-sdk-browser/animation'
 
-import { CondevAnimationProfiler, CondevErrorBoundary, MonitorUser, init, useMonitorUser } from '@condev-monitor/react/animation'
+import {
+    CondevAnimationProfiler,
+    CondevErrorBoundary,
+    MonitorUser,
+    createCondevReactComponentScope,
+    init,
+    useMonitorUser,
+} from '@condev-monitor/react/animation'
 import { CondevR3FObserver } from '@condev-monitor/react/animation/r3f'
 import * as reactRoot from '@condev-monitor/react'
 
@@ -109,6 +116,46 @@ test('the optional R3F entry stays isolated from ordinary React entries', () => 
     assert.equal('CondevR3FObserver' in reactRoot, false)
     assert.equal('CondevR3FObserver' in require('@condev-monitor/react'), false)
     assert.equal('CondevR3FObserver' in commonJsAnimation, false)
+})
+
+test('the React component scope keeps Profiler and independent commit evidence local to a bound Element', () => {
+    const records = []
+    let inspect
+    const component = createCondevReactComponentScope({
+        client: {
+            animation: {
+                createFrameworkComponentScope(options) {
+                    assert.deepEqual(options, { framework: 'react', label: 'Private card' })
+                    return {
+                        record(value) {
+                            records.push(value)
+                            return true
+                        },
+                        snapshot(window) {
+                            return { schemaVersion: 1, scopeId: 'framework-scope-1', framework: 'react', label: 'Private card', window }
+                        },
+                        dispose() {},
+                    }
+                },
+                registerTarget(_element, provider) {
+                    inspect = provider
+                    return () => {}
+                },
+            },
+        },
+        label: 'Private card',
+    })
+    component.onRender('private-id', 'update', 4, 7, 1, 20)
+    component.recordIndependentCommit(2, 22)
+    component.bindTarget({})
+    assert.deepEqual(
+        records.map(record => record.kind),
+        ['render', 'commit-attested']
+    )
+    assert.equal(inspect({ inspectionPurpose: 'local', evidenceWindow: { startedAt: 0, endedAt: 30 } }).frameworkScopes.length, 1)
+    assert.equal('frameworkScopes' in inspect({ inspectionPurpose: 'rum', evidenceWindow: { startedAt: 0, endedAt: 30 } }), false)
+    assert.equal(JSON.stringify(records).includes('private-id'), false)
+    component.dispose()
 })
 
 test('the R3F observer shares one after-render subscription and cleans up renderer roots', () => {

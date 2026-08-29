@@ -13,12 +13,20 @@ import * as angularRoot from '@condev-monitor/angular'
 
 const require = createRequire(import.meta.url)
 
-function createClientHarness({ throwOnCreate = false, throwOnRecord = false, throwOnRegister = false, throwOnUnregister = false } = {}) {
+function createClientHarness({
+    throwOnCreate = false,
+    throwOnRecord = false,
+    throwOnRegister = false,
+    throwOnUnregister = false,
+    withComponentScope = false,
+} = {}) {
     const samples = []
+    const localRecords = []
     const registrations = []
     let disposeCalls = 0
     return {
         samples,
+        localRecords,
         registrations,
         get disposeCalls() {
             return disposeCalls
@@ -46,6 +54,22 @@ function createClientHarness({ throwOnCreate = false, throwOnRecord = false, thr
                         },
                     }
                 },
+                ...(withComponentScope
+                    ? {
+                          createFrameworkComponentScope() {
+                              return {
+                                  record(value) {
+                                      localRecords.push(value)
+                                      return true
+                                  },
+                                  snapshot(window) {
+                                      return { schemaVersion: 1, scopeId: 'framework-scope-1', framework: 'angular', label: null, window }
+                                  },
+                                  dispose() {},
+                              }
+                          },
+                      }
+                    : {}),
                 registerTarget(element, inspect) {
                     if (throwOnRegister) throw new Error('target registry unavailable')
                     for (const current of registrations) {
@@ -191,6 +215,54 @@ test('the Angular scope records only an observed component check window', () => 
     scope.checkStarted()
     assert.equal(scope.viewChecked(), false)
     assert.equal(harness.disposeCalls, 1)
+})
+
+test('Angular input changes produce closed local check evidence without entering RUM inspection', () => {
+    const harness = createClientHarness({ withComponentScope: true })
+    const times = [10, 18]
+    const scope = createCondevAngularAnimationScope({ client: harness.client, getTarget: () => ({}), now: () => times.shift() })
+    scope.postRendered()
+    scope.inputChanged()
+    scope.checkStarted()
+    scope.viewChecked()
+    assert.deepEqual(harness.localRecords, [
+        { kind: 'check', reason: 'angular-input-change', reasonSource: 'angular-input-change', durationMs: 8, timestampMs: 18 },
+    ])
+    const inspect = harness.registrations[0].inspect
+    assert.equal(inspect({ inspectionPurpose: 'local', evidenceWindow: { startedAt: 0, endedAt: 20 } }).frameworkScopes.length, 1)
+    assert.equal('frameworkScopes' in inspect({ inspectionPurpose: 'rum', evidenceWindow: { startedAt: 0, endedAt: 20 } }), false)
+    scope.destroy()
+})
+
+test('invalid Angular check windows consume their input-change marker', () => {
+    const cases = [
+        { name: 'invalid start', read: [Number.NaN, 5, 20, 28] },
+        { name: 'clock rollback', read: [10, 5, 20, 28] },
+        {
+            name: 'throwing end clock',
+            read: (() => {
+                let call = 0
+                return () => {
+                    call += 1
+                    if (call === 2) throw new Error('clock unavailable')
+                    return call === 1 ? 10 : call === 3 ? 20 : 28
+                }
+            })(),
+        },
+    ]
+
+    for (const current of cases) {
+        const harness = createClientHarness({ withComponentScope: true })
+        const now = Array.isArray(current.read) ? () => current.read.shift() : current.read
+        const scope = createCondevAngularAnimationScope({ client: harness.client, now })
+        scope.inputChanged()
+        scope.checkStarted()
+        assert.equal(scope.viewChecked(), false, current.name)
+        scope.checkStarted()
+        assert.equal(scope.viewChecked(), true, current.name)
+        assert.deepEqual(harness.localRecords, [], current.name)
+        scope.destroy()
+    }
 })
 
 test('post-render synchronizes anonymous Angular ownership and switches targets safely', () => {

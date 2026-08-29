@@ -20,12 +20,20 @@ function deferred() {
     return { promise, resolve, reject }
 }
 
-function createClientHarness({ throwOnCreate = false, throwOnRecord = false, throwOnRegister = false, rejectOnRecord = false } = {}) {
+function createClientHarness({
+    throwOnCreate = false,
+    throwOnRecord = false,
+    throwOnRegister = false,
+    rejectOnRecord = false,
+    withComponentScope = false,
+} = {}) {
     const samples = []
+    const localRecords = []
     const registrations = []
     let disposeCalls = 0
     return {
         samples,
+        localRecords,
         registrations,
         get disposeCalls() {
             return disposeCalls
@@ -54,6 +62,22 @@ function createClientHarness({ throwOnCreate = false, throwOnRecord = false, thr
                         },
                     }
                 },
+                ...(withComponentScope
+                    ? {
+                          createFrameworkComponentScope() {
+                              return {
+                                  record(value) {
+                                      localRecords.push(value)
+                                      return true
+                                  },
+                                  snapshot(window) {
+                                      return { schemaVersion: 1, scopeId: 'framework-scope-1', framework: 'svelte', label: null, window }
+                                  },
+                                  dispose() {},
+                              }
+                          },
+                      }
+                    : {}),
                 registerTarget(element, inspect) {
                     if (throwOnRegister) throw new Error('target registry unavailable')
                     const registration = { element, inspect, active: true }
@@ -133,6 +157,31 @@ test('the first effect run warms the scope and later runs record a tick-bounded 
     await Promise.resolve()
     await Promise.resolve()
     assert.deepEqual(harness.samples, [{ updateWindowMs: 8, timestampMs: 18 }])
+    scope.destroy()
+})
+
+test('Svelte tracked dependencies produce closed local update evidence for the bound target', async () => {
+    const harness = createClientHarness({ withComponentScope: true })
+    const times = [10, 18]
+    const scope = createCondevSvelteAnimationScope({ client: harness.client, now: () => times.shift(), tick: () => Promise.resolve() })
+    const action = condevAnimationTarget({}, scope)
+    scope.trackPendingStateWindow({ private: true })
+    scope.trackPendingStateWindow({ private: false })
+    await Promise.resolve()
+    await Promise.resolve()
+    assert.deepEqual(harness.localRecords, [
+        {
+            kind: 'update',
+            reason: 'svelte-tracked-dependency',
+            reasonSource: 'svelte-tracked-dependency',
+            durationMs: 8,
+            timestampMs: 18,
+        },
+    ])
+    const inspect = harness.registrations[0].inspect
+    assert.equal(inspect({ inspectionPurpose: 'local', evidenceWindow: { startedAt: 0, endedAt: 20 } }).frameworkScopes.length, 1)
+    assert.equal('frameworkScopes' in inspect({ inspectionPurpose: 'rum', evidenceWindow: { startedAt: 0, endedAt: 20 } }), false)
+    action.destroy()
     scope.destroy()
 })
 

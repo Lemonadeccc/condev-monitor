@@ -3,6 +3,7 @@ import type { AnimationBrowserClient } from '@condev-monitor/monitor-sdk-browser
 
 export type CondevAngularAnimationClient = Pick<AnimationBrowserClient, 'animation'>
 type AngularFrameworkProbe = ReturnType<AnimationBrowserClient['animation']['createFrameworkProbe']>
+type FrameworkComponentScope = ReturnType<AnimationBrowserClient['animation']['createFrameworkComponentScope']>
 
 export type CondevAngularAnimationTargetBindingStatus = 'attached' | 'replaced' | 'unavailable' | 'disposed' | 'cleanup-failed'
 
@@ -18,9 +19,13 @@ export interface CondevAngularAnimationOptions {
     getTarget?: () => Element | null
     /** Monotonic clock override for deterministic tests or an application-owned clock. */
     now?: () => number
+    /** Local-only developer label. Never enters animation RUM. */
+    label?: string
 }
 
 export interface CondevAngularAnimationScope {
+    /** Call from `ngOnChanges` when at least one component input changed. */
+    inputChanged(): void
     /** Call from `ngDoCheck`. This starts an observed component check window. */
     checkStarted(): void
     /** Call from `ngAfterViewChecked`. This closes the component check window. */
@@ -40,12 +45,11 @@ export interface CondevAngularPostRenderHandle {
     destroy(): void
 }
 
-const ANGULAR_TARGET_INSPECTION = Object.freeze({
-    inventory: Object.freeze({ uiFrameworks: Object.freeze(['angular'] as const) }),
-    owners: Object.freeze([Object.freeze({ relation: 'framework-owner' as const, framework: 'angular' as const })]),
-})
+interface AngularTargetOwner {
+    readonly componentScope?: FrameworkComponentScope
+}
 interface AngularTargetRegistrationRecord {
-    readonly owners: Set<object>
+    readonly owners: Set<AngularTargetOwner>
     readonly unregister: ReturnType<CondevAngularAnimationClient['animation']['registerTarget']>
 }
 
@@ -78,7 +82,11 @@ type AngularTargetRegistration = { status: 'attached'; active: () => boolean; di
 
 type AttachedAngularTargetRegistration = Extract<AngularTargetRegistration, { status: 'attached' }>
 
-function registerAngularTarget(client: CondevAngularAnimationClient, target: Element): AngularTargetRegistration {
+function registerAngularTarget(
+    client: CondevAngularAnimationClient,
+    target: Element,
+    componentScope?: FrameworkComponentScope
+): AngularTargetRegistration {
     const clientKey = client.animation
     let bindingByElement = angularTargetBindingsByClient.get(clientKey)
     if (!bindingByElement) {
@@ -86,7 +94,7 @@ function registerAngularTarget(client: CondevAngularAnimationClient, target: Ele
         angularTargetBindingsByClient.set(clientKey, bindingByElement)
     }
 
-    const owner = {}
+    const owner: AngularTargetOwner = { componentScope }
     let record = bindingByElement.get(target)
     if (record && !record.unregister.active) {
         bindingByElement.delete(target)
@@ -94,8 +102,23 @@ function registerAngularTarget(client: CondevAngularAnimationClient, target: Ele
     }
     if (!record) {
         let unregister: ReturnType<CondevAngularAnimationClient['animation']['registerTarget']>
+        const registrationOwner = Object.freeze({})
         try {
-            unregister = client.animation.registerTarget(target, () => ANGULAR_TARGET_INSPECTION)
+            unregister = client.animation.registerTarget(
+                target,
+                context => ({
+                    inventory: { uiFrameworks: ['angular'] },
+                    owners: [{ relation: 'framework-owner', framework: 'angular' }],
+                    ...(context?.inspectionPurpose === 'rum' || ![...record!.owners].some(candidate => candidate.componentScope)
+                        ? {}
+                        : {
+                              frameworkScopes: [...record!.owners]
+                                  .map(candidate => candidate.componentScope?.snapshot(context?.evidenceWindow))
+                                  .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate)),
+                          }),
+                }),
+                { owner: registrationOwner }
+            )
         } catch {
             return { status: 'unavailable' }
         }
@@ -156,6 +179,8 @@ export function bindCondevAngularAnimationTarget(
 export function createCondevAngularAnimationScope(options: CondevAngularAnimationOptions): CondevAngularAnimationScope {
     const now = options.now ?? defaultNow
     let probe: AngularFrameworkProbe | undefined
+    let componentScope: FrameworkComponentScope | undefined
+    let inputChangePending = false
     let checkStartedAt: number | undefined
     let registeredTarget: Element | undefined
     let targetRegistration: AttachedAngularTargetRegistration | undefined
@@ -165,6 +190,11 @@ export function createCondevAngularAnimationScope(options: CondevAngularAnimatio
         probe = options.client.animation.createFrameworkProbe('angular')
     } catch {
         // Browser-native animation evidence remains usable if this optional probe fails.
+    }
+    try {
+        componentScope = options.client.animation.createFrameworkComponentScope({ framework: 'angular', label: options.label, now })
+    } catch {
+        // Optional local component evidence is independent from check aggregates.
     }
 
     const clearTarget = (): void => {
@@ -191,7 +221,7 @@ export function createCondevAngularAnimationScope(options: CondevAngularAnimatio
             return
         }
 
-        const nextRegistration = registerAngularTarget(options.client, nextTarget)
+        const nextRegistration = registerAngularTarget(options.client, nextTarget, componentScope)
         if (nextRegistration.status !== 'attached') {
             clearTarget()
             return
@@ -207,12 +237,18 @@ export function createCondevAngularAnimationScope(options: CondevAngularAnimatio
         if (destroyed) return
         destroyed = true
         checkStartedAt = undefined
+        inputChangePending = false
         clearTarget()
         safeDispose(() => probe?.dispose())
+        safeDispose(() => componentScope?.dispose())
         probe = undefined
+        componentScope = undefined
     }
 
     return {
+        inputChanged(): void {
+            if (!destroyed) inputChangePending = true
+        },
         checkStarted(): void {
             if (destroyed) return
             checkStartedAt = readMonotonicNow(now)
@@ -220,12 +256,24 @@ export function createCondevAngularAnimationScope(options: CondevAngularAnimatio
         viewChecked(): boolean {
             if (destroyed) {
                 checkStartedAt = undefined
+                inputChangePending = false
                 return false
             }
             const startedAt = checkStartedAt
             checkStartedAt = undefined
+            const hadInputChange = inputChangePending
+            inputChangePending = false
             const endedAt = readMonotonicNow(now)
             if (startedAt === undefined || endedAt === undefined || endedAt < startedAt) return false
+            if (hadInputChange) {
+                componentScope?.record({
+                    kind: 'check',
+                    reason: 'angular-input-change',
+                    reasonSource: 'angular-input-change',
+                    durationMs: endedAt - startedAt,
+                    timestampMs: endedAt,
+                })
+            }
             try {
                 return probe?.recordCheckWindow({ checkWindowMs: endedAt - startedAt, timestampMs: endedAt }) ?? false
             } catch {

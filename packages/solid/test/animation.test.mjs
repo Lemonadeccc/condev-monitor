@@ -10,14 +10,32 @@ import * as solidRoot from '@condev-monitor/solid'
 
 const require = createRequire(import.meta.url)
 
-function createClientHarness({ throwOnRecord = false, throwOnRegister = false, rejectOnRecord = false } = {}) {
+function createClientHarness({ throwOnRecord = false, throwOnRegister = false, rejectOnRecord = false, withComponentScope = false } = {}) {
     const samples = []
+    const localRecords = []
     const registrations = []
     return {
         samples,
+        localRecords,
         registrations,
         client: {
             animation: {
+                ...(withComponentScope
+                    ? {
+                          createFrameworkComponentScope() {
+                              return {
+                                  record(value) {
+                                      localRecords.push(value)
+                                      return true
+                                  },
+                                  snapshot(window) {
+                                      return { schemaVersion: 1, scopeId: 'framework-scope-1', framework: 'solid', label: null, window }
+                                  },
+                                  dispose() {},
+                              }
+                          },
+                      }
+                    : {}),
                 recordWorkStats(sample) {
                     if (throwOnRecord) throw new Error('monitor unavailable')
                     if (rejectOnRecord) return false
@@ -111,6 +129,22 @@ test('explicit reactive work records only synchronous host script self-time', ()
         },
     ])
     assert.deepEqual(Object.keys(harness.samples[0]).sort(), ['category', 'source', 'timestampMs', 'workMs'])
+    scope.destroy()
+})
+
+test('Solid caller-explicit work is associated with a local component scope and excluded from RUM inspection', () => {
+    const harness = createClientHarness({ withComponentScope: true })
+    const times = [10, 18]
+    const scope = createCondevSolidAnimationScope({ client: harness.client, now: () => times.shift() })
+    const unbind = scope.bindTarget({})
+    scope.measureReactiveWork(() => 'ok')
+    assert.deepEqual(harness.localRecords, [
+        { kind: 'host-script', reason: 'solid-caller-explicit', reasonSource: 'solid-caller', durationMs: 8, timestampMs: 18 },
+    ])
+    const inspect = harness.registrations[0].inspect
+    assert.equal(inspect({ inspectionPurpose: 'local', evidenceWindow: { startedAt: 0, endedAt: 20 } }).frameworkScopes.length, 1)
+    assert.equal('frameworkScopes' in inspect({ inspectionPurpose: 'rum', evidenceWindow: { startedAt: 0, endedAt: 20 } }), false)
+    unbind()
     scope.destroy()
 })
 

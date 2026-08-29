@@ -4,6 +4,7 @@ import type { ActionReturn } from 'svelte/action'
 
 type SvelteAnimationClient = Pick<AnimationBrowserClient, 'animation'>
 type SvelteFrameworkProbe = ReturnType<AnimationBrowserClient['animation']['createFrameworkProbe']>
+type FrameworkComponentScope = ReturnType<AnimationBrowserClient['animation']['createFrameworkComponentScope']>
 type DestroyRegistrar = (callback: () => void) => void
 
 export interface CondevSvelteAnimationOptions {
@@ -15,6 +16,8 @@ export interface CondevSvelteAnimationOptions {
     tick?: () => Promise<void>
     /** Test seam for Svelte's public `onDestroy`; application code should omit it. */
     registerDestroy?: DestroyRegistrar
+    /** Local-only developer label. Never enters animation RUM. */
+    label?: string
 }
 
 export interface CondevSvelteAnimationScope {
@@ -45,11 +48,6 @@ export type CondevSvelteAnimationTargetAction = (
 interface SvelteScopeInternals {
     registerTarget(node: Element): () => void
 }
-
-const SVELTE_TARGET_INSPECTION = Object.freeze({
-    inventory: Object.freeze({ uiFrameworks: Object.freeze(['svelte'] as const) }),
-    owners: Object.freeze([Object.freeze({ relation: 'framework-owner' as const, framework: 'svelte' as const })]),
-})
 
 const scopeInternals = new WeakMap<CondevSvelteAnimationScope, SvelteScopeInternals>()
 
@@ -93,6 +91,7 @@ export function createCondevSvelteAnimationScope(options: CondevSvelteAnimationO
     const now = options.now ?? defaultNow
     const afterPendingState = options.tick ?? tick
     let probe: SvelteFrameworkProbe | undefined
+    let componentScope: FrameworkComponentScope | undefined
     let warmed = false
     let generation = 0
     let destroyed = false
@@ -112,13 +111,29 @@ export function createCondevSvelteAnimationScope(options: CondevSvelteAnimationO
         failures.frameworkProbeErrors = incrementBounded(failures.frameworkProbeErrors)
         // Browser-native animation evidence remains usable if this optional probe fails.
     }
+    try {
+        componentScope = options.client.animation.createFrameworkComponentScope({ framework: 'svelte', label: options.label, now })
+    } catch {
+        // Optional local component evidence is independent from lifecycle aggregates.
+    }
+    const targetRegistrationOwner = Object.freeze({})
 
     const registerTarget = (node: Element): (() => void) => {
         if (destroyed) return noOp
 
         let unregister: (() => void) | undefined
         try {
-            unregister = options.client.animation.registerTarget(node, () => SVELTE_TARGET_INSPECTION)
+            unregister = options.client.animation.registerTarget(
+                node,
+                context => ({
+                    inventory: { uiFrameworks: ['svelte'] },
+                    owners: [{ relation: 'framework-owner', framework: 'svelte' }],
+                    ...(context?.inspectionPurpose === 'rum' || !componentScope
+                        ? {}
+                        : { frameworkScopes: [componentScope.snapshot(context?.evidenceWindow)] }),
+                }),
+                { owner: targetRegistrationOwner }
+            )
         } catch {
             failures.targetRegistrationErrors = incrementBounded(failures.targetRegistrationErrors)
             return noOp
@@ -143,7 +158,9 @@ export function createCondevSvelteAnimationScope(options: CondevSvelteAnimationO
         for (const dispose of [...targetDisposers]) safeDispose(dispose)
         targetDisposers.clear()
         safeDispose(() => probe?.dispose())
+        safeDispose(() => componentScope?.dispose())
         probe = undefined
+        componentScope = undefined
         scopeInternals.delete(scope)
     }
 
@@ -180,6 +197,13 @@ export function createCondevSvelteAnimationScope(options: CondevSvelteAnimationO
                         return
                     }
                     try {
+                        componentScope?.record({
+                            kind: 'update',
+                            reason: 'svelte-tracked-dependency',
+                            reasonSource: 'svelte-tracked-dependency',
+                            durationMs: endedAt - startedAt,
+                            timestampMs: endedAt,
+                        })
                         if (probe && !probe.recordUpdateWindow({ updateWindowMs: endedAt - startedAt, timestampMs: endedAt })) {
                             failures.sampleRejected = incrementBounded(failures.sampleRejected)
                         }

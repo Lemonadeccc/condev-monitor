@@ -52,12 +52,14 @@ function createTestRenderer() {
     })
 }
 
-function createClientHarness({ throwOnCreate = false, throwOnRecord = false, throwOnRegister = false } = {}) {
+function createClientHarness({ throwOnCreate = false, throwOnRecord = false, throwOnRegister = false, withComponentScope = false } = {}) {
     const samples = []
+    const localRecords = []
     const registrations = []
     let disposeCalls = 0
     return {
         samples,
+        localRecords,
         registrations,
         get disposeCalls() {
             return disposeCalls
@@ -82,6 +84,22 @@ function createClientHarness({ throwOnCreate = false, throwOnRecord = false, thr
                         },
                     }
                 },
+                ...(withComponentScope
+                    ? {
+                          createFrameworkComponentScope() {
+                              return {
+                                  record(value) {
+                                      localRecords.push(value)
+                                      return true
+                                  },
+                                  snapshot(window) {
+                                      return { schemaVersion: 1, scopeId: 'framework-scope-1', framework: 'vue', label: null, window }
+                                  },
+                                  dispose() {},
+                              }
+                          },
+                      }
+                    : {}),
                 registerTarget(element, inspect) {
                     if (throwOnRegister) throw new Error('target registry unavailable')
                     const registration = { element, inspect, active: true }
@@ -243,4 +261,77 @@ test('invalid clocks and monitor failures cannot alter Vue lifecycle behavior', 
     assert.doesNotThrow(() => noProbeScope.beforeUpdate())
     assert.equal(noProbeScope.updated(), false)
     assert.doesNotThrow(() => noProbeScope.dispose())
+})
+
+test('Vue records only closed development render-trigger operations in the local component scope', () => {
+    const localRecords = []
+    let inspection
+    const times = [10, 18]
+    const client = {
+        animation: {
+            createFrameworkProbe() {
+                return { recordUpdateWindow: () => true, dispose() {} }
+            },
+            createFrameworkComponentScope() {
+                return {
+                    record(value) {
+                        localRecords.push(value)
+                        return true
+                    },
+                    snapshot(window) {
+                        return { schemaVersion: 1, scopeId: 'framework-scope-1', framework: 'vue', label: null, window }
+                    },
+                    dispose() {},
+                }
+            },
+            registerTarget(_element, provider) {
+                inspection = provider
+                return () => {}
+            },
+        },
+    }
+    const scope = createCondevVueAnimationScope({ client, getTarget: () => ({}), now: () => times.shift() })
+    scope.mounted()
+    scope.renderTriggered('set')
+    scope.renderTriggered('get')
+    scope.beforeUpdate()
+    scope.updated()
+    assert.deepEqual(localRecords, [
+        { kind: 'update', reason: 'vue-get', reasonSource: 'vue-render-trigger', durationMs: 8, timestampMs: 18 },
+    ])
+    assert.equal(inspection({ inspectionPurpose: 'local', evidenceWindow: { startedAt: 0, endedAt: 20 } }).frameworkScopes.length, 1)
+    assert.equal('frameworkScopes' in inspection({ inspectionPurpose: 'rum', evidenceWindow: { startedAt: 0, endedAt: 20 } }), false)
+    scope.dispose()
+})
+
+test('invalid Vue update windows consume their render-trigger marker', () => {
+    const cases = [
+        { name: 'invalid start', read: [Number.NaN, 5, 20, 28] },
+        { name: 'clock rollback', read: [10, 5, 20, 28] },
+        {
+            name: 'throwing end clock',
+            read: (() => {
+                let call = 0
+                return () => {
+                    call += 1
+                    if (call === 2) throw new Error('clock unavailable')
+                    return call === 1 ? 10 : call === 3 ? 20 : 28
+                }
+            })(),
+        },
+    ]
+
+    for (const current of cases) {
+        const harness = createClientHarness({ withComponentScope: true })
+        const now = Array.isArray(current.read) ? () => current.read.shift() : current.read
+        const scope = createCondevVueAnimationScope({ client: harness.client, now })
+        scope.mounted()
+        scope.renderTriggered('get')
+        scope.beforeUpdate()
+        assert.equal(scope.updated(), false, current.name)
+        scope.beforeUpdate()
+        assert.equal(scope.updated(), true, current.name)
+        assert.deepEqual(harness.localRecords, [], current.name)
+        scope.dispose()
+    }
 })
