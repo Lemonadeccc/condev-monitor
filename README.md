@@ -508,7 +508,7 @@ The dashboard does not ship its own `.env.example` in this repository. The main 
 The current code chooses mail mode like this:
 
 1. `MAIL_ON=false` -> effectively disabled
-2. `MAIL_ON=true` + `RESEND_API_KEY` -> Resend
+2. `MAIL_ON=true` + `RESEND_API_KEY` + `RESEND_FROM` -> Resend
 3. `MAIL_ON=true` + `EMAIL_SENDER` + `EMAIL_SENDER_PASSWORD` -> SMTP
 4. `MAIL_ON=true` without provider credentials -> JSON transport / warning-only fallback
 
@@ -718,6 +718,32 @@ root.render(
 
 This is still one Browser client and one `init()` call. The animation entry also re-exports the React package's ErrorBoundary and user hooks, so mixed imports do not need a second package entry. The wrapper uses React's public `Profiler`, records anonymous subtree render duration, and never retains the Profiler id, component names, props, or state. It does not manufacture commit duration: React's `commitTime` is passed only as an inbound adapter timestamp, while the bounded recorder stores the SDK's own monotonic capture time. Standard production React builds disable Profiler callbacks by default, so use a profiling-enabled React build only when production framework evidence is an intentional, measured opt-in; page-level animation collection continues without this wrapper.
 
+Keep that single wrapper as the default integration. When one known hotspot also needs local element ownership and a value-free, caller-attested update reason, add the optional component scope only around that hotspot:
+
+```tsx
+import { Profiler, useRef, useState } from 'react'
+import { useCondevReactComponentScope } from '@condev-monitor/react/animation'
+
+function Menu() {
+    const targetRef = useRef<HTMLDivElement>(null)
+    const monitor = useCondevReactComponentScope({ client: monitorClient, label: 'Menu', targetRef })
+    const [open, setOpen] = useState(false)
+
+    const toggle = () => {
+        monitor.recordUpdateCause('state')
+        setOpen(value => !value)
+    }
+
+    return (
+        <Profiler id="condev-menu" onRender={monitor.onRender}>
+            <div ref={targetRef}>{/* existing menu */}</div>
+        </Profiler>
+    )
+}
+```
+
+The hook owns target binding and cleanup, including React development effect replays. It uses public APIs only and never reads Fiber, component names, prop values, state values, or context values. `recordUpdateCause()` must be called immediately before the update it describes; it is supporting evidence, not automatic complete why-update inference.
+
 For React Three Fiber, keep the same client and mount the optional observer inside each monitored `Canvas`:
 
 ```tsx
@@ -735,6 +761,8 @@ function SceneCanvas() {
 ```
 
 The optional `/animation/r3f` entry is isolated from the ordinary React entries, so applications that do not use R3F do not load it. The default observer uses R3F's public after-render callback and Three's public `renderer.info` counters. It does not create a second render loop, call `render()`, `invalidate()`, `advance()`, or `setFrameloop()`, and it does not dispose the caller-owned renderer. Multiple Canvas roots share one after-render subscription and suppress callbacks for roots whose positive public frame sequence did not change. `frameloop="demand"` and `frameloop="never"` therefore produce samples only when R3F actually renders. When `renderer.info.autoReset` is `false`, per-frame draw counters are omitted because they are cumulative, while Three's independently incremented frame sequence still provides deduplication.
+
+For Three's common WebGPU backend, pass `backend="webgpu"`. The observer reads the public top-level `renderer.info.frame` sequence and per-frame `renderer.info.render.drawCalls`/primitive counters; it never relabels cumulative `render.calls` as draw calls. This counter-only path does not request a WebGL context and deliberately leaves GPU frame time unsupported. Supplying `gpuTiming` with `backend="webgpu"` fails through the local `onSetupError` callback because engine-owned WebGPU command encoders need a separate timestamp adapter.
 
 Sparse WebGL GPU timing is an explicit opt-in because timer queries require exclusive ownership of the context's disjoint-query state. Enable it only when the application, renderer plugins, and other profilers do not own those queries:
 
