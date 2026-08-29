@@ -161,6 +161,21 @@ export interface WebGpuMultiPassTimestampTimerOptions<QuerySet extends WebGpuQue
     maxPendingFrames?: number
 }
 
+export interface WebGpuCommandBatchTimestampTimerOptions<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike> {
+    /** The timer observes this device but never destroys it. */
+    device: WebGpuDeviceLike<QuerySet, Buffer>
+    /**
+     * Required host attestation: the returned boundary descriptors delimit a
+     * complete renderer frame across distinct command buffers that will be
+     * submitted together in boundary order.
+     */
+    frameBoundary: 'multi-command-buffer-ordered-submit-complete-frame'
+    /** Sample the first eligible frame and then every Nth beginFrame call. Default: 60. */
+    sampleEvery?: number
+    /** Bound allocated/in-flight query and readback resource sets. Default: 2. */
+    maxPendingFrames?: number
+}
+
 export interface WebGpuTimestampTimerSnapshot {
     backend: 'webgpu'
     capability: WebGpuTimestampTimerCapability
@@ -241,6 +256,36 @@ export interface WebGpuMultiPassTimestampTimer<QuerySet extends WebGpuQuerySetLi
     ): boolean
 }
 
+export interface WebGpuCommandBatchTimestampTimer<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike>
+    extends Omit<WebGpuTimestampTimerCommon<QuerySet>, 'notifySubmitted'> {
+    /**
+     * Atomically instruments descriptors for boundary passes encoded into
+     * distinct command buffers. Neither descriptor is returned on conflict.
+     */
+    instrumentFrameBoundaryPasses<FirstDescriptor extends object, LastDescriptor extends object>(
+        ticket: WebGpuTimestampFrameTicket<QuerySet>,
+        firstDescriptor: FirstDescriptor,
+        lastDescriptor: LastDescriptor
+    ): WebGpuMultiPassBoundaryDescriptors<FirstDescriptor, LastDescriptor, QuerySet> | null
+    /**
+     * Encodes resolve/copy after both boundary passes ended. The caller must
+     * put this encoder's command buffer after the boundary buffers in the batch.
+     */
+    endFrame(
+        ticket: WebGpuTimestampFrameTicket<QuerySet>,
+        encoder: WebGpuCommandEncoderLike<QuerySet, Buffer>,
+        completion: 'boundary-passes-ended-in-distinct-command-buffers-and-resolve-encoded-after-final-pass'
+    ): boolean
+    /**
+     * Call synchronously after one queue.submit containing the associated
+     * command buffers in first-boundary, last-boundary, resolve order.
+     */
+    notifySubmitted(
+        ticket: WebGpuTimestampFrameTicket<QuerySet>,
+        submission: 'caller-attests-associated-command-buffers-submitted-as-one-ordered-batch'
+    ): boolean
+}
+
 export class WebGpuTimestampTimerOptionsError extends Error {
     constructor(message: string) {
         super(message)
@@ -261,7 +306,7 @@ interface FrameRecord<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpu
     state: FrameState
 }
 
-type WebGpuTimestampTimerMode = 'single-pass' | 'multi-pass'
+type WebGpuTimestampTimerMode = 'single-pass' | 'multi-pass' | 'command-batch'
 
 interface WebGpuTimestampTimerCoreOptions<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike> {
     device: WebGpuDeviceLike<QuerySet, Buffer>
@@ -283,7 +328,13 @@ interface WebGpuTimestampTimerInternal<QuerySet extends WebGpuQuerySetLike, Buff
     endFrame(
         ticket: WebGpuTimestampFrameTicket<QuerySet>,
         encoder: WebGpuCommandEncoderLike<QuerySet, Buffer>,
-        completion?: 'all-frame-passes-ended-on-associated-encoder'
+        completion?:
+            | 'all-frame-passes-ended-on-associated-encoder'
+            | 'boundary-passes-ended-in-distinct-command-buffers-and-resolve-encoded-after-final-pass'
+    ): boolean
+    notifySubmitted(
+        ticket: WebGpuTimestampFrameTicket<QuerySet>,
+        submission: 'associated-command-stream-submitted' | 'caller-attests-associated-command-buffers-submitted-as-one-ordered-batch'
     ): boolean
 }
 
@@ -807,7 +858,7 @@ function createWebGpuTimestampTimerCore<QuerySet extends WebGpuQuerySetLike, Buf
             lastDescriptor: LastDescriptor
         ): WebGpuMultiPassBoundaryDescriptors<FirstDescriptor, LastDescriptor, QuerySet> | null {
             if (rejectCallerOperationReentry()) return null
-            if (mode !== 'multi-pass') {
+            if (mode === 'single-pass') {
                 rejectedTicketCount = increment(rejectedTicketCount)
                 return null
             }
@@ -907,19 +958,27 @@ function createWebGpuTimestampTimerCore<QuerySet extends WebGpuQuerySetLike, Buf
         endFrame(
             ticket: WebGpuTimestampFrameTicket<QuerySet>,
             encoder: WebGpuCommandEncoderLike<QuerySet, Buffer>,
-            completion?: 'all-frame-passes-ended-on-associated-encoder'
+            completion?:
+                | 'all-frame-passes-ended-on-associated-encoder'
+                | 'boundary-passes-ended-in-distinct-command-buffers-and-resolve-encoded-after-final-pass'
         ): boolean {
             if (rejectCallerOperationReentry()) return false
             const record = lookup(ticket)
+            const expectedCompletion =
+                mode === 'multi-pass'
+                    ? 'all-frame-passes-ended-on-associated-encoder'
+                    : mode === 'command-batch'
+                      ? 'boundary-passes-ended-in-distinct-command-buffers-and-resolve-encoded-after-final-pass'
+                      : undefined
             if (
                 !record ||
                 record.state !== 'instrumented' ||
                 !isObject(encoder) ||
                 capability !== 'supported' ||
-                (mode === 'multi-pass' && completion !== 'all-frame-passes-ended-on-associated-encoder')
+                (expectedCompletion !== undefined && completion !== expectedCompletion)
             ) {
                 if (record && record.state !== 'instrumented') rejectedTicketCount = increment(rejectedTicketCount)
-                else if (record && mode === 'multi-pass' && completion !== 'all-frame-passes-ended-on-associated-encoder') {
+                else if (record && expectedCompletion !== undefined && completion !== expectedCompletion) {
                     rejectedTicketCount = increment(rejectedTicketCount)
                 }
                 return false
@@ -982,19 +1041,19 @@ function createWebGpuTimestampTimerCore<QuerySet extends WebGpuQuerySetLike, Buf
             record.state = 'encoded'
             return true
         },
-        notifySubmitted(ticket: WebGpuTimestampFrameTicket<QuerySet>, submission: 'associated-command-stream-submitted'): boolean {
+        notifySubmitted(
+            ticket: WebGpuTimestampFrameTicket<QuerySet>,
+            submission: 'associated-command-stream-submitted' | 'caller-attests-associated-command-buffers-submitted-as-one-ordered-batch'
+        ): boolean {
             if (rejectCallerOperationReentry()) return false
             const record = lookup(ticket)
-            if (
-                !record ||
-                record.state !== 'encoded' ||
-                submission !== 'associated-command-stream-submitted' ||
-                capability !== 'supported'
-            ) {
+            const expectedSubmission =
+                mode === 'command-batch'
+                    ? 'caller-attests-associated-command-buffers-submitted-as-one-ordered-batch'
+                    : 'associated-command-stream-submitted'
+            if (!record || record.state !== 'encoded' || submission !== expectedSubmission || capability !== 'supported') {
                 if (record && record.state !== 'encoded') rejectedTicketCount = increment(rejectedTicketCount)
-                else if (record && submission !== 'associated-command-stream-submitted') {
-                    rejectedTicketCount = increment(rejectedTicketCount)
-                }
+                else if (record && submission !== expectedSubmission) rejectedTicketCount = increment(rejectedTicketCount)
                 return false
             }
             let mapping: Promise<void> | null = null
@@ -1158,4 +1217,14 @@ export function createWebGpuMultiPassTimestampTimer<QuerySet extends WebGpuQuery
         throw new WebGpuTimestampTimerOptionsError('frameBoundary must explicitly be multi-pass-single-command-buffer-complete-frame')
     }
     return createWebGpuTimestampTimerCore(options, 'multi-pass')
+}
+
+export function createWebGpuCommandBatchTimestampTimer<QuerySet extends WebGpuQuerySetLike, Buffer extends WebGpuBufferLike>(
+    options: WebGpuCommandBatchTimestampTimerOptions<QuerySet, Buffer>
+): WebGpuCommandBatchTimestampTimer<QuerySet, Buffer> {
+    if (!options || !isObject(options.device)) throw new WebGpuTimestampTimerOptionsError('device must be a WebGPU device')
+    if (options.frameBoundary !== 'multi-command-buffer-ordered-submit-complete-frame') {
+        throw new WebGpuTimestampTimerOptionsError('frameBoundary must explicitly be multi-command-buffer-ordered-submit-complete-frame')
+    }
+    return createWebGpuTimestampTimerCore(options, 'command-batch')
 }

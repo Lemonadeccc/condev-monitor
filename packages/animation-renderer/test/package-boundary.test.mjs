@@ -34,10 +34,18 @@ test('package exports resolve for ESM, CommonJS, and declarations', async () => 
     assert.equal(typeof cjs.createThreeRendererAdapter, 'function')
     assert.equal(typeof esm.createBabylonRendererAdapter, 'function')
     assert.equal(typeof cjs.createBabylonRendererAdapter, 'function')
+    assert.equal(typeof esm.createBabylonResourceLifecycleRecorder, 'function')
+    assert.equal(typeof cjs.createBabylonResourceLifecycleRecorder, 'function')
     assert.equal(typeof esm.createWebGpuTimestampTimer, 'function')
     assert.equal(typeof cjs.createWebGpuTimestampTimer, 'function')
+    assert.equal(typeof esm.createWebGpuCommandBatchTimestampTimer, 'function')
+    assert.equal(typeof cjs.createWebGpuCommandBatchTimestampTimer, 'function')
     assert.equal(typeof esm.createCanvas2dRecorder, 'function')
     assert.equal(typeof cjs.createCanvas2dRecorder, 'function')
+    assert.equal(typeof esm.createPixiObjectTargetAdapter, 'function')
+    assert.equal(typeof cjs.createPixiObjectTargetAdapter, 'function')
+    assert.equal(typeof esm.createR3fPostprocessingPassRecorder, 'function')
+    assert.equal(typeof cjs.createR3fPostprocessingPassRecorder, 'function')
     assert.equal(typeof esm.createWebGpuTransferRecorder, 'function')
     assert.equal(typeof cjs.createWebGpuTransferRecorder, 'function')
 })
@@ -48,6 +56,13 @@ test('Babylon adapter uses no Babylon dependency, private counter, or renderer p
     assert.doesNotMatch(source, /_drawCalls|renderPipes|runners/u)
     assert.doesNotMatch(source, /\.render\s*\(/u)
     assert.doesNotMatch(source, /requestAnimationFrame|setInterval|setTimeout/u)
+})
+
+test('Babylon resource recorder uses explicit identities without scanning or time heuristics', () => {
+    const source = readFileSync(resolve(packageDirectory, 'src/babylon-resource-lifecycle-recorder.ts'), 'utf8')
+    assert.doesNotMatch(source, /@babylonjs|babylonjs|_drawCalls|meshes|textures|materials/u)
+    assert.doesNotMatch(source, /Date\.now|performance\.now|setTimeout|setInterval|requestAnimationFrame/u)
+    assert.doesNotMatch(source, /resource\s*\.\s*(?:dispose|getClassName|name|url)\b|Reflect\.get/u)
 })
 
 test('runtime bundle contains no blocking, scheduling, or context-destroy calls', () => {
@@ -73,4 +88,18 @@ test('WebGPU transfer recorder never owns application resource or queue methods'
     assert.doesNotMatch(source, /\.(?:writeBuffer|writeTexture|copyExternalImageToTexture)\s*\(/u)
     assert.doesNotMatch(source, /requestAnimationFrame|setInterval|setTimeout|new Proxy\s*\(/u)
     assert.doesNotMatch(source, /GPUQueue\.prototype|GPUBuffer\.prototype|GPUCommandEncoder\.prototype/u)
+})
+
+test('Pixi object target adapter has no Pixi dependency or renderer/event takeover', () => {
+    const source = readFileSync(resolve(packageDirectory, 'src/pixi-object-target-adapter.ts'), 'utf8')
+    assert.doesNotMatch(source, /@pixi|pixi\.js/u)
+    assert.doesNotMatch(source, /\.render\s*\(|\.getContext\s*\(|requestAnimationFrame|setInterval|setTimeout/u)
+    assert.doesNotMatch(source, /\.addEventListener\s*\(|\.add\s*\(|\.hitTest\s*\(/u)
+})
+
+test('R3F postprocessing recorder has no framework dependency or composer takeover', () => {
+    const source = readFileSync(resolve(packageDirectory, 'src/r3f-postprocessing-pass-recorder.ts'), 'utf8')
+    assert.doesNotMatch(source, /from\s+['"](?:@react-three|postprocessing|three\/examples)|\.render\s*\(|\.addPass\s*\(/u)
+    assert.doesNotMatch(source, /requestAnimationFrame|setInterval|setTimeout|new Proxy\s*\(/u)
+    assert.doesNotMatch(source, /Reflect\.get|Object\.keys|Object\.entries|Object\.getOwnProperty/u)
 })

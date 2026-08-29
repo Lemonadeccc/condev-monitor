@@ -30,8 +30,12 @@ import type {
 } from '../src'
 import {
     createBabylonRendererAdapter,
+    createBabylonResourceLifecycleRecorder,
     createCanvas2dRecorder,
+    createPixiObjectTargetAdapter,
+    createR3fPostprocessingPassRecorder,
     createWebGlGpuTimer,
+    createWebGpuCommandBatchTimestampTimer,
     createWebGpuMultiPassTimestampTimer,
     createWebGpuTimestampTimer,
     createWebGpuTransferRecorder,
@@ -49,6 +53,55 @@ const babylonAdapter = createBabylonRendererAdapter({
     instrumentationOwnership: 'caller',
 })
 babylonAdapter.dispose()
+
+const babylonResources = createBabylonResourceLifecycleRecorder({
+    lifecycleCoverage: 'caller-attests-complete-resource-lifecycle-from-empty-scene',
+    candidateAfterCheckpoints: 2,
+})
+const babylonResource = {}
+babylonResources.recordCreated(babylonResource, 'texture')
+const babylonResourceCount: number | null = babylonResources.captureCheckpoint().current?.texture ?? null
+void babylonResourceCount
+babylonResources.recordReleased(babylonResource)
+babylonResources.dispose()
+
+declare const pixiCanvas: Element
+declare const pixiObject: object
+declare const pixiAnimation: {
+    registerTarget(element: Element, inspect: (context?: { inspectionPurpose: 'local' | 'rum' }) => unknown): () => void
+}
+const pixiObjectTarget = createPixiObjectTargetAdapter({
+    animation: pixiAnimation,
+    element: pixiCanvas,
+    backend: 'webgl2',
+    hitTest: point => {
+        const x: number = point.x
+        const y: number = point.y
+        void x
+        void y
+        return pixiObject
+    },
+    classifyObject: () => 'sprite',
+})
+const pixiCaptureStatus: 'hit' | 'miss' | 'unavailable' = pixiObjectTarget.captureTarget({ x: 1, y: 2 }).status
+void pixiCaptureStatus
+pixiObjectTarget.dispose()
+
+const postprocessingPasses = createR3fPostprocessingPassRecorder<object>({
+    passCoverage: 'caller-attests-complete-postprocessing-pass-boundaries',
+})
+postprocessingPasses.beginFrame()
+const postprocessingTicket = postprocessingPasses.beginPass({}, 'effect')
+if (postprocessingTicket) {
+    postprocessingPasses.endPass(postprocessingTicket, 'will-report-existing-timestamp-result')
+    postprocessingPasses.recordGpuEvidence(postprocessingTicket, 'caller-attests-existing-timestamp-result-covers-only-associated-pass', {
+        status: 'measured',
+        timeMs: 1,
+        source: 'webgl-timer-query',
+    })
+}
+postprocessingPasses.endFrame()
+postprocessingPasses.dispose()
 
 // @ts-expect-error a live Babylon PerfCounter.Enabled reader is required
 createBabylonRendererAdapter({
@@ -241,6 +294,39 @@ if (webGpuMultiPassTicket) {
     webGpuMultiPassTimer.endFrame(webGpuMultiPassTicket, brandedEncoder, 'all-frame-passes-ended-on-associated-encoder')
     // @ts-expect-error multi-pass attribution requires the exact completion attestation
     webGpuMultiPassTimer.endFrame(webGpuMultiPassTicket, brandedEncoder)
+}
+
+const webGpuCommandBatchTimer = createWebGpuCommandBatchTimestampTimer({
+    device: brandedDevice,
+    frameBoundary: 'multi-command-buffer-ordered-submit-complete-frame',
+})
+const webGpuCommandBatchTicket = webGpuCommandBatchTimer.beginFrame()
+if (webGpuCommandBatchTicket) {
+    const boundaries = webGpuCommandBatchTimer.instrumentFrameBoundaryPasses(
+        webGpuCommandBatchTicket,
+        renderPassDescriptor,
+        secondRenderPassDescriptor
+    )
+    if (boundaries) {
+        const firstRender: RenderPassDescriptorLike = boundaries.firstPassDescriptor
+        const lastRender: RenderPassDescriptorLike = boundaries.lastPassDescriptor
+        void firstRender
+        void lastRender
+        if (
+            webGpuCommandBatchTimer.endFrame(
+                webGpuCommandBatchTicket,
+                brandedEncoder,
+                'boundary-passes-ended-in-distinct-command-buffers-and-resolve-encoded-after-final-pass'
+            )
+        ) {
+            webGpuCommandBatchTimer.notifySubmitted(
+                webGpuCommandBatchTicket,
+                'caller-attests-associated-command-buffers-submitted-as-one-ordered-batch'
+            )
+            // @ts-expect-error command-batch attribution requires the exact ordered-batch attestation
+            webGpuCommandBatchTimer.notifySubmitted(webGpuCommandBatchTicket, 'associated-command-stream-submitted')
+        }
+    }
 }
 
 declare const webGpuEvidence: WebGpuTimestampTimingEvidence

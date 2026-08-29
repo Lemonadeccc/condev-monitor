@@ -2,9 +2,16 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+    createWebGpuCommandBatchTimestampTimer as createCommandBatchTimerFactory,
     createWebGpuMultiPassTimestampTimer as createTimerFactory,
     createWebGpuTimestampTimer as createSingleTimerFactory,
 } from '../build/esm/index.mjs'
+
+const createWebGpuCommandBatchTimestampTimer = options =>
+    createCommandBatchTimerFactory({
+        frameBoundary: 'multi-command-buffer-ordered-submit-complete-frame',
+        ...options,
+    })
 
 const createWebGpuMultiPassTimestampTimer = options =>
     createTimerFactory({
@@ -217,6 +224,51 @@ test('render-to-render timing instruments exact boundary indices, maps after sub
     assert.equal(fake.buffers[0].destroyCount, 1)
     assert.equal(fake.buffers[1].unmapCount, 1)
     assert.equal(fake.buffers[1].destroyCount, 1)
+    timer.dispose()
+})
+
+test('ordered command-buffer batch measures only after exact completion and submit attestations', async () => {
+    const fake = createFakeDevice()
+    const timer = createWebGpuCommandBatchTimestampTimer({ device: fake.device, sampleEvery: 1 })
+    const { ticket, firstPassDescriptor, lastPassDescriptor } = instrumentRenderPair(timer)
+
+    assert.deepEqual(firstPassDescriptor.timestampWrites, {
+        querySet: fake.querySets[0],
+        beginningOfPassWriteIndex: 0,
+    })
+    assert.deepEqual(lastPassDescriptor.timestampWrites, {
+        querySet: fake.querySets[0],
+        endOfPassWriteIndex: 1,
+    })
+
+    const resolveEncoder = createFakeEncoder()
+    assert.equal(timer.endFrame(ticket, resolveEncoder.encoder, 'all-frame-passes-ended-on-associated-encoder'), false)
+    assert.deepEqual(resolveEncoder.calls, [])
+    assert.equal(
+        timer.endFrame(
+            ticket,
+            resolveEncoder.encoder,
+            'boundary-passes-ended-in-distinct-command-buffers-and-resolve-encoded-after-final-pass'
+        ),
+        true
+    )
+    assert.deepEqual(resolveEncoder.calls, [
+        ['resolveQuerySet', fake.querySets[0], 0, 2, fake.buffers[0], 0],
+        ['copyBufferToBuffer', fake.buffers[0], 0, fake.buffers[1], 0, 16],
+    ])
+
+    assert.equal(timer.notifySubmitted(ticket, 'associated-command-stream-submitted'), false)
+    assert.equal(fake.buffers[1].mapCalls.length, 0)
+    assert.equal(timer.notifySubmitted(ticket, 'caller-attests-associated-command-buffers-submitted-as-one-ordered-batch'), true)
+    assert.deepEqual(fake.buffers[1].mapCalls, [[1, 0, 16]])
+
+    fake.resolveReadback(0, 20_000_000n, 24_000_000n)
+    await flushPromises()
+    assert.deepEqual(timer.takeLatestEvidence(), {
+        status: 'measured',
+        timeMs: 4,
+        source: 'webgpu-timestamp-query',
+    })
     timer.dispose()
 })
 

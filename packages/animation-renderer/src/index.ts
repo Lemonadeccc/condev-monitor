@@ -11,6 +11,14 @@ export type {
     BabylonSceneInstrumentationPublicLike,
     BabylonScenePublicLike,
 } from './babylon-renderer-adapter'
+export { BabylonResourceLifecycleRecorderOptionsError, createBabylonResourceLifecycleRecorder } from './babylon-resource-lifecycle-recorder'
+export type {
+    BabylonResourceCounts,
+    BabylonResourceKind,
+    BabylonResourceLifecycleRecorder,
+    BabylonResourceLifecycleRecorderOptions,
+    BabylonResourceLifecycleSnapshot,
+} from './babylon-resource-lifecycle-recorder'
 export { Canvas2dRecorderOptionsError, createCanvas2dRecorder } from './canvas2d-recorder'
 export type {
     Canvas2dContextLike,
@@ -29,6 +37,30 @@ export type {
     Canvas2dTargetRendererInspection,
     Canvas2dUploadEvidence,
 } from './canvas2d-recorder'
+export { PixiObjectTargetAdapterOptionsError, createPixiObjectTargetAdapter } from './pixi-object-target-adapter'
+export type {
+    PixiDisplayObjectKind,
+    PixiGlobalPointLike,
+    PixiObjectRendererBackend,
+    PixiObjectTargetAdapter,
+    PixiObjectTargetAdapterOptions,
+    PixiObjectTargetAnimationPort,
+    PixiObjectTargetCapture,
+    PixiObjectTargetInspection,
+    PixiObjectTargetInspectionContext,
+} from './pixi-object-target-adapter'
+export { R3fPostprocessingPassRecorderOptionsError, createR3fPostprocessingPassRecorder } from './r3f-postprocessing-pass-recorder'
+export type {
+    R3fPostprocessingGpuEvidence,
+    R3fPostprocessingGpuSource,
+    R3fPostprocessingPassAggregate,
+    R3fPostprocessingPassKind,
+    R3fPostprocessingPassRecorder,
+    R3fPostprocessingPassRecorderOptions,
+    R3fPostprocessingPassRecorderSnapshot,
+    R3fPostprocessingPassTicket,
+    R3fPostprocessingPassWindow,
+} from './r3f-postprocessing-pass-recorder'
 export { ThreeRendererAdapterOptionsError, createThreeAfterRenderRegistry, createThreeRendererAdapter } from './three-renderer-adapter'
 export type {
     ThreeAfterRenderRegistry,
@@ -54,11 +86,18 @@ export type {
     WebGlGpuTimerTargetRendererInspection,
     WebGlGpuTimingEvidence,
 } from './webgl-gpu-timer'
-export { WebGpuTimestampTimerOptionsError, createWebGpuMultiPassTimestampTimer, createWebGpuTimestampTimer } from './webgpu-timestamp-timer'
+export {
+    WebGpuTimestampTimerOptionsError,
+    createWebGpuCommandBatchTimestampTimer,
+    createWebGpuMultiPassTimestampTimer,
+    createWebGpuTimestampTimer,
+} from './webgpu-timestamp-timer'
 export type {
     WebGpuBufferDescriptorLike,
     WebGpuBufferLike,
     WebGpuCommandEncoderLike,
+    WebGpuCommandBatchTimestampTimer,
+    WebGpuCommandBatchTimestampTimerOptions,
     WebGpuDeviceLike,
     WebGpuDeviceLostInfoLike,
     WebGpuFrameEndTimestampWritesLike,

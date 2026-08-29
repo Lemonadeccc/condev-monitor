@@ -142,7 +142,7 @@ export interface WebGpuTransferRecorder {
      */
     observeReadback<T>(evidence: WebGpuReadbackEvidence, operation: () => Promise<T>): Promise<T>
     inspectWindow(window: WebGpuTransferTargetInspectionContext['evidenceWindow']): WebGpuTransferTargetRendererInspection
-    /** Bound callback for Browser animation.registerTarget(). Only one provider may own a canvas registration. */
+    /** Bound callback for Browser animation.registerTarget(); use an owner-scoped registration when composing Canvas evidence. */
     inspect(context?: WebGpuTransferTargetInspectionContext): WebGpuTransferTargetAdapterInspection | null
     getSnapshot(): WebGpuTransferRecorderSnapshot
     dispose(): void
