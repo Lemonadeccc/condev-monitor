@@ -4,14 +4,20 @@ import {
     type LabActionTraceLimitation,
     type LabActionTraceSummary,
     type LabActionTraceThreadBreakdown,
+    type LabAuthoredStackLocation,
+    type LabAuthoredStackStatus,
     type LabStackFrame,
     type LabTimelineCategory,
     type LabTimelineChunk,
     type LabTimelineChunkV1,
     type LabTimelineChunkV2,
+    type LabTimelineChunkV3,
     type LabTimelineEvent,
     type LabTraceActionIdentity,
+    type LabTraceAuthoredSourceResolver,
     type LabTracePhase,
+    type LabTraceSourceMapEvidence,
+    type LabTraceSourceMapLimitation,
     type RawTraceEvent,
 } from './types'
 
@@ -23,6 +29,15 @@ const MAX_ACTION_TRACE_THREADS = 64
 const MAX_ACTION_TRACE_ACTIONS = 128
 const ACTION_MARKER_PATTERN = /^condev\.lab\.action\.([A-Za-z0-9._:+-]+)$/u
 const TRACE_PHASES: readonly LabTracePhase[] = ['script', 'style-layout', 'paint', 'composite', 'raster-gpu', 'animation', 'gc', 'other']
+const AUTHORED_SOURCE_BASE_LIMITATIONS: readonly LabTraceSourceMapLimitation[] = [
+    'authored-source-caller-attested-map-match',
+    'authored-source-retained-stack-only',
+    'authored-source-is-location-not-causation',
+    'authored-source-content-not-retained',
+]
+
+type InternalLabStackFrame = LabStackFrame & { rawSource: string }
+type InternalLabTimelineEvent = Omit<LabTimelineEvent, 'stack'> & { stack: readonly InternalLabStackFrame[] }
 
 const SCRIPT_NAMES = new Set([
     'FunctionCall',
@@ -373,9 +388,11 @@ function categoryFor(name: string, categories: string): LabTimelineCategory {
     return 'other'
 }
 
-function stackFrame(value: unknown): LabStackFrame | null {
+function stackFrame(value: unknown): InternalLabStackFrame | null {
     if (!object(value)) return null
-    const source = sanitizeTraceSource(value.url ?? value.scriptName ?? value.sourceURL)
+    const rawSourceValue = value.url ?? value.scriptName ?? value.sourceURL
+    const rawSource = typeof rawSourceValue === 'string' ? rawSourceValue.slice(0, 2_048) : ''
+    const source = sanitizeTraceSource(rawSource)
     const functionName = safeDisplayText(value.functionName, '(anonymous)', 120) || '(anonymous)'
     const lineValue = finite(value.lineNumber ?? value.line)
     const columnValue = finite(value.columnNumber ?? value.column)
@@ -384,10 +401,11 @@ function stackFrame(value: unknown): LabStackFrame | null {
         source,
         line: lineValue === null ? null : Math.max(0, Math.floor(lineValue)),
         column: columnValue === null ? null : Math.max(0, Math.floor(columnValue)),
+        rawSource,
     }
 }
 
-function traceStack(args: unknown): readonly LabStackFrame[] {
+function traceStack(args: unknown): readonly InternalLabStackFrame[] {
     if (!object(args)) return []
     const data = object(args.data) ? args.data : args
     const candidates = [data.stackTrace, data.stack, data.callFrames]
@@ -396,10 +414,97 @@ function traceStack(args: unknown): readonly LabStackFrame[] {
         return candidate
             .slice(0, MAX_STACK_DEPTH)
             .map(stackFrame)
-            .filter((frame): frame is LabStackFrame => frame !== null)
+            .filter((frame): frame is InternalLabStackFrame => frame !== null)
     }
     const direct = stackFrame(data)
     return direct && (direct.source || direct.functionName !== '(anonymous)') ? [direct] : []
+}
+
+function authoredLocation(value: unknown, limitations: Set<LabTraceSourceMapLimitation>): LabAuthoredStackLocation | null {
+    if (!object(value)) return null
+    const sourceValue = value.source
+    const source = sanitizeTraceSource(sourceValue)
+    const line = finite(value.line)
+    const column = finite(value.column)
+    if (!source || line === null || column === null || line < 0 || column < 0) return null
+    if (typeof sourceValue !== 'string' || source !== sourceValue) limitations.add('authored-source-path-redacted')
+    return { source, line: Math.floor(line), column: Math.floor(column) }
+}
+
+function authoredTimelineEvents(
+    events: readonly InternalLabTimelineEvent[],
+    resolver: LabTraceAuthoredSourceResolver,
+    initialLimitations: readonly LabTraceSourceMapLimitation[]
+): { events: LabTimelineEvent[]; evidence: LabTraceSourceMapEvidence } {
+    const limitations = new Set<LabTraceSourceMapLimitation>([...AUTHORED_SOURCE_BASE_LIMITATIONS, ...initialLimitations])
+    let frameCount = 0
+    let eligibleFrameCount = 0
+    let mappedFrameCount = 0
+    const projected = events.map(event => ({
+        ...event,
+        stack: event.stack.map(frame => {
+            frameCount += 1
+            let authoredStatus: LabAuthoredStackStatus = 'not-eligible'
+            let authored: LabAuthoredStackLocation | null = null
+            try {
+                const resolved = resolver({
+                    eventName: event.name,
+                    generatedSource: frame.rawSource,
+                    line: frame.line,
+                    column: frame.column,
+                })
+                if (
+                    object(resolved) &&
+                    ['mapped', 'not-eligible', 'map-not-supplied', 'segment-not-found'].includes(String(resolved.status))
+                ) {
+                    authoredStatus = resolved.status as LabAuthoredStackStatus
+                    authored = authoredStatus === 'mapped' ? authoredLocation(resolved.authored, limitations) : null
+                    if (authoredStatus === 'mapped' && authored === null) authoredStatus = 'segment-not-found'
+                }
+            } catch {
+                authoredStatus = 'map-not-supplied'
+                limitations.add('authored-source-map-file-rejected')
+            }
+            if (authoredStatus !== 'not-eligible') eligibleFrameCount += 1
+            if (authoredStatus === 'mapped' && authored) mappedFrameCount += 1
+            if (authoredStatus === 'map-not-supplied') limitations.add('authored-source-map-not-supplied')
+            if (authoredStatus === 'segment-not-found') limitations.add('authored-source-segment-not-found')
+            if (authoredStatus === 'not-eligible') limitations.add('authored-source-coordinate-basis-unknown')
+            return {
+                functionName: frame.functionName,
+                source: frame.source,
+                line: frame.line,
+                column: frame.column,
+                authoredStatus,
+                authored,
+            }
+        }),
+    }))
+    const status =
+        eligibleFrameCount > 0 && mappedFrameCount === eligibleFrameCount ? 'measured' : mappedFrameCount > 0 ? 'partial' : 'not-observed'
+    return {
+        events: projected,
+        evidence: {
+            status,
+            coordinateBase: 0,
+            frameCount,
+            eligibleFrameCount,
+            mappedFrameCount,
+            limitations: [...limitations],
+        },
+    }
+}
+
+function generatedTimelineEvents(events: readonly InternalLabTimelineEvent[]): LabTimelineEvent[] {
+    return events.map(event => ({
+        ...event,
+        stack: event.stack.map(frame => ({
+            functionName: frame.functionName,
+            source: frame.source,
+            line: frame.line,
+            column: frame.column,
+        })),
+    }))
 }
 
 function threadKind(name: string): LabTimelineEvent['thread'] {
@@ -731,6 +836,16 @@ export function normalizeTraceEvents(
         maxRetainedEvents?: number
         actionWindows?: readonly { label: string; startMs: number; endMs: number }[]
         actionIdentities: readonly LabTraceActionIdentity[]
+        authoredSourceResolver: LabTraceAuthoredSourceResolver
+        authoredSourceLimitations?: readonly LabTraceSourceMapLimitation[]
+    }
+): LabTimelineChunkV3
+export function normalizeTraceEvents(
+    input: readonly RawTraceEvent[],
+    options: {
+        maxRetainedEvents?: number
+        actionWindows?: readonly { label: string; startMs: number; endMs: number }[]
+        actionIdentities: readonly LabTraceActionIdentity[]
     }
 ): LabTimelineChunkV2
 export function normalizeTraceEvents(
@@ -743,6 +858,8 @@ export function normalizeTraceEvents(
         maxRetainedEvents?: number
         actionWindows?: readonly { label: string; startMs: number; endMs: number }[]
         actionIdentities?: readonly LabTraceActionIdentity[]
+        authoredSourceResolver?: LabTraceAuthoredSourceResolver
+        authoredSourceLimitations?: readonly LabTraceSourceMapLimitation[]
     } = {}
 ): LabTimelineChunk {
     if (!Array.isArray(input)) throw new TypeError('trace events must be an array')
@@ -802,7 +919,7 @@ export function normalizeTraceEvents(
     if (options.actionIdentities) assertActionWindowsDoNotOverlap(options.actionIdentities, actionWindows, pairedScan.ambiguousLabels)
     const actionWindowsLookup = actionWindowLookup(unambiguousActionWindows(actionWindows, pairedScan.ambiguousLabels))
 
-    const events: LabTimelineEvent[] = []
+    const events: InternalLabTimelineEvent[] = []
     const tids: string[] = []
     for (let index = 0; index < input.length; index += 1) {
         const raw = input[index]!
@@ -852,16 +969,26 @@ export function normalizeTraceEvents(
         events.sort((left, right) => left.startMs - right.startMs || right.durationMs - left.durationMs)
     }
 
+    const authoredProjection = options.authoredSourceResolver
+        ? authoredTimelineEvents(events, options.authoredSourceResolver, options.authoredSourceLimitations ?? [])
+        : null
     const chunk = {
         startMs: 0,
         endMs: Math.max(0, Math.round(((maximumTimestampUs - minimumTimestampUs) / 1_000) * 1_000) / 1_000),
         totalInputEvents: input.length,
         retainedEvents: events.length,
         droppedEvents: Math.max(0, totalEligibleEvents - events.length),
-        events,
+        events: authoredProjection?.events ?? generatedTimelineEvents(events),
         categoryDurationMs,
     }
-    return summaries
-        ? { ...chunk, schemaVersion: 2, actionPhaseSummaries: summaries }
-        : { ...chunk, schemaVersion: ANIMATION_LAB_SCHEMA_VERSION }
+    return authoredProjection
+        ? {
+              ...chunk,
+              schemaVersion: 3,
+              actionPhaseSummaries: summaries ?? [],
+              authoredSource: authoredProjection.evidence,
+          }
+        : summaries
+          ? { ...chunk, schemaVersion: 2, actionPhaseSummaries: summaries }
+          : { ...chunk, schemaVersion: ANIMATION_LAB_SCHEMA_VERSION }
 }

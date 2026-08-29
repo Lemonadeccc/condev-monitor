@@ -423,7 +423,32 @@ export interface LabStackFrame {
     source: string
     line: number | null
     column: number | null
+    authoredStatus?: LabAuthoredStackStatus
+    authored?: LabAuthoredStackLocation | null
 }
+
+export interface LabAuthoredStackLocation {
+    source: string
+    line: number
+    column: number
+}
+
+export type LabAuthoredStackStatus = 'mapped' | 'not-eligible' | 'map-not-supplied' | 'segment-not-found'
+
+export interface LabTraceAuthoredSourceResolution {
+    status: LabAuthoredStackStatus
+    authored: LabAuthoredStackLocation | null
+}
+
+export interface LabTraceAuthoredSourceInput {
+    eventName: string
+    /** Raw local Trace source. A resolver must never retain or upload it. */
+    generatedSource: string
+    line: number | null
+    column: number | null
+}
+
+export type LabTraceAuthoredSourceResolver = (input: LabTraceAuthoredSourceInput) => LabTraceAuthoredSourceResolution
 
 export interface LabTimelineEvent {
     id: string
@@ -498,7 +523,35 @@ export interface LabTimelineChunkV2 extends LabTimelineChunkBase {
     actionPhaseSummaries: readonly LabActionTraceSummary[]
 }
 
-export type LabTimelineChunk = LabTimelineChunkV1 | LabTimelineChunkV2
+export type LabTraceSourceMapStatus = 'measured' | 'partial' | 'not-observed'
+
+export type LabTraceSourceMapLimitation =
+    | 'authored-source-caller-attested-map-match'
+    | 'authored-source-retained-stack-only'
+    | 'authored-source-is-location-not-causation'
+    | 'authored-source-content-not-retained'
+    | 'authored-source-map-file-rejected'
+    | 'authored-source-map-not-supplied'
+    | 'authored-source-segment-not-found'
+    | 'authored-source-coordinate-basis-unknown'
+    | 'authored-source-path-redacted'
+
+export interface LabTraceSourceMapEvidence {
+    status: LabTraceSourceMapStatus
+    coordinateBase: 0
+    frameCount: number
+    eligibleFrameCount: number
+    mappedFrameCount: number
+    limitations: readonly LabTraceSourceMapLimitation[]
+}
+
+export interface LabTimelineChunkV3 extends LabTimelineChunkBase {
+    schemaVersion: 3
+    actionPhaseSummaries: readonly LabActionTraceSummary[]
+    authoredSource: LabTraceSourceMapEvidence
+}
+
+export type LabTimelineChunk = LabTimelineChunkV1 | LabTimelineChunkV2 | LabTimelineChunkV3
 
 export interface LabLighthouseAudit {
     id: string

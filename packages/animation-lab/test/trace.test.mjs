@@ -91,6 +91,109 @@ test('reports empty traces as explicit empty bounded chunks', () => {
     })
 })
 
+test('emits trace-index v3 only when retained stack frames receive explicit authored-source resolution', () => {
+    const rawGeneratedSource = 'https://private.example/assets/app.js?release=secret#fragment'
+    const trace = [
+        { ph: 'M', name: 'thread_name', pid: 7, tid: 11, args: { name: 'CrRendererMain' } },
+        {
+            ph: 'X',
+            name: 'FunctionCall',
+            cat: 'devtools.timeline',
+            pid: 7,
+            tid: 11,
+            ts: 1_000,
+            dur: 4_000,
+            args: {
+                data: {
+                    stackTrace: [{ functionName: 'render', url: rawGeneratedSource, lineNumber: 12, columnNumber: 4 }],
+                },
+            },
+        },
+    ]
+    const calls = []
+    const result = normalizeTraceEvents(trace, {
+        actionIdentities: [],
+        authoredSourceResolver(input) {
+            calls.push(input)
+            return {
+                status: 'mapped',
+                authored: { source: 'webpack:///Users/private/source.ts?token=secret', line: 2, column: 8 },
+            }
+        },
+    })
+
+    assert.equal(result.schemaVersion, 3)
+    assert.deepEqual(calls, [{ eventName: 'FunctionCall', generatedSource: rawGeneratedSource, line: 12, column: 4 }])
+    assert.deepEqual(result.events[0].stack[0], {
+        functionName: 'render',
+        source: '/assets/app.js',
+        line: 12,
+        column: 4,
+        authoredStatus: 'mapped',
+        authored: { source: '/Users/:redacted/source.ts', line: 2, column: 8 },
+    })
+    assert.deepEqual(result.authoredSource, {
+        status: 'measured',
+        coordinateBase: 0,
+        frameCount: 1,
+        eligibleFrameCount: 1,
+        mappedFrameCount: 1,
+        limitations: [
+            'authored-source-caller-attested-map-match',
+            'authored-source-retained-stack-only',
+            'authored-source-is-location-not-causation',
+            'authored-source-content-not-retained',
+            'authored-source-path-redacted',
+        ],
+    })
+    assert.equal(JSON.stringify(result).includes('private.example'), false)
+    assert.equal(JSON.stringify(result).includes('token=secret'), false)
+})
+
+test('reports partial and unavailable authored-source coverage without changing v2 traces that have no resolver', () => {
+    const trace = [
+        {
+            ph: 'X',
+            name: 'FunctionCall',
+            cat: 'devtools.timeline',
+            pid: 7,
+            tid: 11,
+            ts: 1_000,
+            dur: 4_000,
+            args: {
+                data: {
+                    stackTrace: [
+                        { functionName: 'mapped', url: 'https://example.test/app.js', lineNumber: 1, columnNumber: 1 },
+                        { functionName: 'missing', url: 'https://example.test/app.js', lineNumber: 2, columnNumber: 1 },
+                        { functionName: 'unknown', url: 'https://example.test/other.js', lineNumber: 3, columnNumber: 1 },
+                    ],
+                },
+            },
+        },
+    ]
+    const v2 = normalizeTraceEvents(trace, { actionIdentities: [] })
+    assert.equal(v2.schemaVersion, 2)
+    assert.equal('authoredSource' in v2, false)
+    assert.equal('authoredStatus' in v2.events[0].stack[0], false)
+
+    const v3 = normalizeTraceEvents(trace, {
+        actionIdentities: [],
+        authoredSourceLimitations: ['authored-source-map-file-rejected'],
+        authoredSourceResolver(input) {
+            if (input.line === 1) return { status: 'mapped', authored: { source: 'src/app.ts', line: 0, column: 0 } }
+            if (input.line === 2) return { status: 'segment-not-found', authored: null }
+            return { status: 'not-eligible', authored: null }
+        },
+    })
+    assert.equal(v3.authoredSource.status, 'partial')
+    assert.equal(v3.authoredSource.frameCount, 3)
+    assert.equal(v3.authoredSource.eligibleFrameCount, 2)
+    assert.equal(v3.authoredSource.mappedFrameCount, 1)
+    assert.ok(v3.authoredSource.limitations.includes('authored-source-map-file-rejected'))
+    assert.ok(v3.authoredSource.limitations.includes('authored-source-segment-not-found'))
+    assert.ok(v3.authoredSource.limitations.includes('authored-source-coordinate-basis-unknown'))
+})
+
 test('uses emitted complete events as the clock origin when Chrome metadata has ts zero', () => {
     const monotonicOriginUs = 2_190_123_456_000
     const result = normalizeTraceEvents([
