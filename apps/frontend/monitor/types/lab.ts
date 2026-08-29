@@ -274,13 +274,39 @@ export type LabTimelineEvent = {
     attributes?: Record<string, string | number | boolean | null>
 }
 
+export type LabTraceActionPhase = 'script' | 'style-layout' | 'paint' | 'composite' | 'raster-gpu' | 'animation' | 'gc' | 'other'
+
+export type LabTraceActionThreadKind = 'main' | 'worker' | 'raster' | 'gpu' | 'network' | 'unknown'
+
+export type LabTraceActionThreadBreakdown = {
+    threadId: string
+    thread: LabTraceActionThreadKind
+    classifiedSelfTimeMs: number
+    phases: Record<LabTraceActionPhase, number>
+}
+
+export type LabTraceActionPhaseSummary = {
+    actionId: string
+    actionLabel: string
+    startMs: number | null
+    endMs: number | null
+    wallTimeMs: number | null
+    status: 'measured' | 'partial' | 'not-observed'
+    eventCount: number
+    classifiedThreadTimeMs: number | null
+    threads: LabTraceActionThreadBreakdown[]
+    limitations: string[]
+}
+
 export type LabTimelineApiResponse = LabApiResponse<{
     runId: string
+    schemaVersion: 1 | 2
     durationMs: number
     events: LabTimelineEvent[]
     totalEvents: number
     truncated: boolean
     maxEvents: number
+    actionPhaseSummaries?: LabTraceActionPhaseSummary[]
 }>
 
 export type LabLighthouseCategory = {

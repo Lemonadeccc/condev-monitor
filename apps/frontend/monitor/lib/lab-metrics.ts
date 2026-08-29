@@ -107,6 +107,42 @@ const METHOD_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
 }
 
 const LIMITATION_LABELS: Readonly<Record<string, LabBilingualLabel>> = {
+    'trace-action-marker-not-observed': {
+        zhCN: 'Trace 中未观察到该动作的完整测量标记，因此无法建立动作阶段窗口。',
+        en: 'The trace did not contain a complete measure marker for this action, so no action-phase window could be established.',
+    },
+    'trace-action-marker-ambiguous': {
+        zhCN: 'Trace 中存在多个同名动作测量标记，阶段窗口无法唯一确定。',
+        en: 'Multiple trace measure markers matched this action label, so the action-phase window was ambiguous.',
+    },
+    'trace-action-phase-events-not-observed': {
+        zhCN: '动作窗口内未观察到可分类的线程阶段事件；这不代表动作没有成本。',
+        en: 'No classifiable thread-phase events were observed in the action window; this does not prove the action had no cost.',
+    },
+    'trace-action-thread-kind-unknown': {
+        zhCN: '至少一个 Trace 线程无法归入已知线程类型，因此阶段摘要为部分证据。',
+        en: 'At least one trace thread could not be mapped to a known thread kind, so the phase summary is partial evidence.',
+    },
+    'trace-action-non-laminar-overlap': {
+        zhCN: '动作窗口内存在非嵌套的交叉 Trace 区间；分类采用确定性近似并保留部分状态。',
+        en: 'The action window contained crossing, non-laminar trace intervals; classification used a deterministic approximation and remains partial.',
+    },
+    'trace-action-cross-thread-total-may-exceed-wall-time': {
+        zhCN: '跨线程分类 self-time 会并行重叠，合计可能超过动作墙钟时间，不能作为墙钟占比。',
+        en: 'Classified self-time can overlap across threads, so its total may exceed action wall time and must not be treated as a wall-time percentage.',
+    },
+    'trace-action-classification-is-correlative': {
+        zhCN: '阶段分类只与动作时间窗口相关联，不证明该动作、元素或源码造成了这些工作。',
+        en: 'Phase classification is correlated only by the action time window and does not prove that the action, element, or source code caused the work.',
+    },
+    'trace-action-raster-gpu-is-not-gpu-completion': {
+        zhCN: 'Raster / GPU 线程分类不是 GPU 命令完成、实际呈现或真实 GPU Timer。',
+        en: 'Raster/GPU thread classification is not GPU command completion, presentation, or a real GPU timer.',
+    },
+    'trace-action-thread-breakdown-truncated': {
+        zhCN: '具体线程超过 64 个时，只保留 classified self-time 最高的 64 个线程；摘要为部分证据，跨线程合计只覆盖这些保留线程。',
+        en: 'When more than 64 concrete threads are observed, only the 64 with the highest classified self-time are retained; the summary is partial and its cross-thread total covers only those retained threads.',
+    },
     'aggregate-sample-count-exceeds-contract-bound': {
         zhCN: '跨次样本数总和超过报告合同上限，因此不保留精确总数；聚合值仍是各次测量值的中位数。',
         en: 'The across-attempt sample total exceeded the report-contract bound, so the exact total is omitted; the aggregate value remains the median of attempt values.',

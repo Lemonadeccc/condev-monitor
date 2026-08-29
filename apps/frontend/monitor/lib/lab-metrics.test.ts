@@ -81,6 +81,18 @@ const V4_RENDERER_LIMITATION_CODES = [
     'renderer-evidence-bridge-unavailable',
 ] as const
 
+const TRACE_ACTION_PHASE_LIMITATION_CODES = [
+    'trace-action-marker-not-observed',
+    'trace-action-marker-ambiguous',
+    'trace-action-phase-events-not-observed',
+    'trace-action-thread-kind-unknown',
+    'trace-action-non-laminar-overlap',
+    'trace-action-cross-thread-total-may-exceed-wall-time',
+    'trace-action-classification-is-correlative',
+    'trace-action-raster-gpu-is-not-gpu-completion',
+    'trace-action-thread-breakdown-truncated',
+] as const
+
 function metric(metricId: string, scope: LabMetric['scope']): LabMetric {
     return {
         metricId,
@@ -197,6 +209,16 @@ describe('Lab catalog v2 metric presentation', () => {
             assert.notEqual(label.en, 'raw Renderer Metric')
         }
         for (const limitation of V4_RENDERER_LIMITATION_CODES) {
+            const label = getLabLimitationLabel(limitation)
+            assert.ok(label.zhCN.length > 5, limitation)
+            assert.ok(label.en.length > 5, limitation)
+            assert.notEqual(label.zhCN, `限制：${limitation}`)
+            assert.notEqual(label.en, limitation)
+        }
+    })
+
+    it('explains every trace action phase limitation without exposing raw codes', () => {
+        for (const limitation of TRACE_ACTION_PHASE_LIMITATION_CODES) {
             const label = getLabLimitationLabel(limitation)
             assert.ok(label.zhCN.length > 5, limitation)
             assert.ok(label.en.length > 5, limitation)

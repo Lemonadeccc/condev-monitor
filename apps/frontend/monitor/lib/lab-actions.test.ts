@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { describe, it } from 'node:test'
 
-import type { LabMetric, LabRun, LabRunAnalysis, LabTimelineEvent } from '../types/lab'
+import type { LabMetric, LabRun, LabRunAnalysis, LabTimelineEvent, LabTraceActionPhaseSummary } from '../types/lab'
 import {
     buildLabActionDiagnostics,
     evaluateLabBudgetMetric,
@@ -294,6 +294,102 @@ describe('buildLabActionDiagnostics', () => {
             assert.equal(result.actions[0].action.kind, kind)
             assert.equal(result.actions[0].source, 'structured-report')
         }
+    })
+
+    it('joins an optional trace phase summary by actionId without attaching it to another action', () => {
+        const analysis = {
+            semanticsVersion: 2,
+            scenarioActions: [
+                {
+                    actionId: 'open-card',
+                    order: 0,
+                    kind: 'click',
+                    label: 'open-card',
+                    trigger: { source: 'scenario' },
+                },
+                {
+                    actionId: 'close-card',
+                    order: 1,
+                    kind: 'click',
+                    label: 'close-card',
+                    trigger: { source: 'scenario' },
+                },
+            ],
+            actionWindows: [],
+            metrics: [],
+            technologyEvidence: [],
+            findings: [],
+        } as unknown as LabRunAnalysis
+        const summary: LabTraceActionPhaseSummary = {
+            actionId: 'close-card',
+            actionLabel: 'close-card',
+            startMs: 20,
+            endMs: 50,
+            wallTimeMs: 30,
+            status: 'partial',
+            eventCount: 2,
+            classifiedThreadTimeMs: 35,
+            threads: [
+                {
+                    threadId: 'thread-0',
+                    thread: 'main',
+                    classifiedSelfTimeMs: 25,
+                    phases: {
+                        script: 20,
+                        'style-layout': 5,
+                        paint: 0,
+                        composite: 0,
+                        'raster-gpu': 0,
+                        animation: 0,
+                        gc: 0,
+                        other: 0,
+                    },
+                },
+                {
+                    threadId: 'thread-1',
+                    thread: 'raster',
+                    classifiedSelfTimeMs: 10,
+                    phases: {
+                        script: 0,
+                        'style-layout': 0,
+                        paint: 0,
+                        composite: 0,
+                        'raster-gpu': 10,
+                        animation: 0,
+                        gc: 0,
+                        other: 0,
+                    },
+                },
+            ],
+            limitations: ['trace-action-cross-thread-total-may-exceed-wall-time'],
+        }
+
+        const result = buildLabActionDiagnostics(run, analysis, [], [summary])
+
+        assert.equal(result.actions[0].tracePhaseSummary, null)
+        assert.equal(result.actions[1].tracePhaseSummary, summary)
+        assert.equal(result.actions[1].tracePhaseSummary?.classifiedThreadTimeMs, 35)
+    })
+
+    it('keeps v1 timelines unchanged when no action phase summaries are present', () => {
+        const analysis = {
+            semanticsVersion: 2,
+            scenarioActions: [
+                {
+                    actionId: 'hero-hover',
+                    order: 0,
+                    kind: 'hover',
+                    label: 'hero-hover',
+                    trigger: { source: 'scenario' },
+                },
+            ],
+            actionWindows: [],
+            metrics: [],
+            technologyEvidence: [],
+            findings: [],
+        } as unknown as LabRunAnalysis
+
+        assert.equal(buildLabActionDiagnostics(run, analysis, []).actions[0].tracePhaseSummary, null)
     })
 })
 

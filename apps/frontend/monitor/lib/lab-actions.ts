@@ -11,6 +11,7 @@ import type {
     LabScenarioAction,
     LabTechnologyEvidence,
     LabTimelineEvent,
+    LabTraceActionPhaseSummary,
 } from '@/types/lab'
 
 const MAX_ACTIONS = 128
@@ -80,6 +81,7 @@ export type LabActionDiagnostic = {
     source: LabActionDataSource
     timelineRelation: 'action-id' | 'temporal-overlap' | 'not-observed'
     events: LabTimelineEvent[]
+    tracePhaseSummary: LabTraceActionPhaseSummary | null
     metrics: LabMetric[]
     budgetRefs: LabBudgetRuleRef[]
     technologies: LabTechnologyEvidence[]
@@ -502,7 +504,8 @@ function isActionScoped(value: { scope?: { level?: string; actionId?: string; su
 export function buildLabActionDiagnostics(
     run: LabRun,
     analysis: LabRunAnalysis | null | undefined,
-    timelineEvents: readonly LabTimelineEvent[]
+    timelineEvents: readonly LabTimelineEvent[],
+    actionPhaseSummaries: readonly LabTraceActionPhaseSummary[] = []
 ): LabActionDiagnostics {
     const structuredActions = buildStructuredActions(analysis)
     const events = Array.isArray(timelineEvents) ? timelineEvents.slice(0, 4_000) : []
@@ -525,6 +528,11 @@ export function buildLabActionDiagnostics(
     const findings = Array.isArray(analysis?.findings) ? analysis.findings.slice(0, MAX_FINDINGS) : []
     const runTechnologies = technologies.filter(item => !isActionScoped(item) && !token(item.actionId))
     const runLimitations = boundedStrings(run.summary?.limitations, MAX_LIMITATIONS)
+    const tracePhaseSummaries = new Map(
+        (Array.isArray(actionPhaseSummaries) ? actionPhaseSummaries : [])
+            .slice(0, MAX_ACTIONS)
+            .map(summary => [summary.actionId, summary] as const)
+    )
     const labelCounts = new Map<string, number>()
     for (const action of structuredActions) {
         if (action.label) labelCounts.set(action.label, (labelCounts.get(action.label) ?? 0) + 1)
@@ -602,6 +610,7 @@ export function buildLabActionDiagnostics(
             source: record.source,
             timelineRelation: record.events.length ? (hasActionIds ? 'action-id' : 'temporal-overlap') : 'not-observed',
             events: record.events,
+            tracePhaseSummary: tracePhaseSummaries.get(record.action.actionId) ?? null,
             metrics: actionMetrics,
             budgetRefs,
             technologies: actionTechnologies,

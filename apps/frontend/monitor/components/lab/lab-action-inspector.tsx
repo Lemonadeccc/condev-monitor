@@ -25,6 +25,9 @@ import type {
     LabTechnologyAxis,
     LabTechnologyEvidence,
     LabTimelineEvent,
+    LabTraceActionPhase,
+    LabTraceActionPhaseSummary,
+    LabTraceActionThreadKind,
 } from '@/types/lab'
 
 const UNKNOWN = '未采集 / 未知'
@@ -37,6 +40,139 @@ const TECHNOLOGY_AXES: LabTechnologyAxis[] = [
     'media',
     'browser-runtime',
 ]
+const TRACE_ACTION_PHASES: LabTraceActionPhase[] = [
+    'script',
+    'style-layout',
+    'paint',
+    'composite',
+    'raster-gpu',
+    'animation',
+    'gc',
+    'other',
+]
+
+function tracePhaseLabel(value: LabTraceActionPhase) {
+    switch (value) {
+        case 'script':
+            return '脚本'
+        case 'style-layout':
+            return '样式 / 布局'
+        case 'paint':
+            return 'Paint'
+        case 'composite':
+            return 'Composite'
+        case 'raster-gpu':
+            return 'Raster / GPU 线程'
+        case 'animation':
+            return '动画'
+        case 'gc':
+            return 'GC'
+        case 'other':
+            return '其他'
+    }
+}
+
+function traceThreadLabel(value: LabTraceActionThreadKind) {
+    switch (value) {
+        case 'main':
+            return '主线程'
+        case 'worker':
+            return 'Worker'
+        case 'raster':
+            return 'Raster 线程'
+        case 'gpu':
+            return 'GPU 进程线程'
+        case 'network':
+            return '网络线程'
+        case 'unknown':
+            return '未知线程'
+    }
+}
+
+function traceSummaryStatusLabel(value: LabTraceActionPhaseSummary['status']) {
+    switch (value) {
+        case 'measured':
+            return '已测量'
+        case 'partial':
+            return '部分测量'
+        case 'not-observed':
+            return '未观察到动作阶段'
+    }
+}
+
+function TraceActionPhaseEvidence({ summary }: { summary: LabTraceActionPhaseSummary }) {
+    const tone = summary.status === 'measured' ? 'default' : summary.status === 'partial' ? 'secondary' : 'outline'
+
+    return (
+        <section className="mt-7" aria-labelledby="lab-action-trace-phases-title">
+            <h4 id="lab-action-trace-phases-title" className="inline-flex items-center gap-2 text-sm font-semibold">
+                <Cpu className="h-4 w-4" aria-hidden="true" /> Trace 动作阶段
+            </h4>
+            <div className="mt-3 rounded-lg border p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <Badge variant={tone}>{traceSummaryStatusLabel(summary.status)}</Badge>
+                    <span className="font-mono text-xs text-muted-foreground">{summary.eventCount.toLocaleString()} 个分类事件</span>
+                </div>
+                <dl className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <MetadataItem label="动作墙钟窗口" value={formatLabDuration(summary.wallTimeMs)} mono />
+                    <MetadataItem label="跨线程分类 self-time 合计" value={formatLabDuration(summary.classifiedThreadTimeMs)} mono />
+                    <MetadataItem label="窗口开始" value={formatLabDuration(summary.startMs)} mono />
+                    <MetadataItem label="窗口结束" value={formatLabDuration(summary.endMs)} mono />
+                </dl>
+
+                {summary.threads.length ? (
+                    <div className="mt-4 grid gap-3">
+                        {summary.threads.map(thread => (
+                            <article key={thread.threadId} className="overflow-hidden rounded-md border bg-muted/10">
+                                <div className="flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2 text-xs">
+                                    <span className="font-medium">
+                                        {traceThreadLabel(thread.thread)} · <span className="font-mono">{thread.threadId}</span>
+                                    </span>
+                                    <span className="font-mono tabular-nums">
+                                        分类 self-time {formatLabDuration(thread.classifiedSelfTimeMs)}
+                                    </span>
+                                </div>
+                                <dl className="grid grid-cols-2 gap-px bg-border sm:grid-cols-4 xl:grid-cols-8">
+                                    {TRACE_ACTION_PHASES.map(phase => (
+                                        <div key={phase} className="min-w-0 bg-background px-3 py-2">
+                                            <dt className="truncate text-[11px] text-muted-foreground" title={tracePhaseLabel(phase)}>
+                                                {tracePhaseLabel(phase)}
+                                            </dt>
+                                            <dd className="mt-1 font-mono text-xs font-medium tabular-nums">
+                                                {formatLabDuration(thread.phases[phase])}
+                                            </dd>
+                                        </div>
+                                    ))}
+                                </dl>
+                            </article>
+                        ))}
+                    </div>
+                ) : (
+                    <div className="mt-4">
+                        <EmptyEvidence>
+                            没有可分类的线程阶段。该状态表示未观察到足够证据，不代表动作没有脚本、渲染或合成成本。
+                        </EmptyEvidence>
+                    </div>
+                )}
+
+                <div className="mt-4 rounded-md border border-amber-500/20 bg-amber-500/5 p-3 text-xs leading-5 text-muted-foreground">
+                    各线程阶段是在动作窗口内裁剪的分类 self-time。跨线程可并行执行，因此合计可能大于墙钟时间，不能换算为动作墙钟占比；
+                    Raster / GPU 线程分类也不等于 GPU 完成、呈现时间或源码根因。
+                </div>
+
+                {summary.limitations.length ? (
+                    <ul className="mt-4 grid gap-2 text-xs sm:grid-cols-2">
+                        {summary.limitations.map(code => (
+                            <li key={code} className="rounded-md border bg-muted/10 p-3">
+                                <LimitationText code={code} />
+                            </li>
+                        ))}
+                    </ul>
+                ) : null}
+            </div>
+        </section>
+    )
+}
 
 function actionKindLabel(value: string | null | undefined) {
     switch (value) {
@@ -558,6 +694,8 @@ function ActionDetail({
                 </div>
             </section>
 
+            {diagnostic.tracePhaseSummary ? <TraceActionPhaseEvidence summary={diagnostic.tracePhaseSummary} /> : null}
+
             <section className="mt-7" aria-labelledby="lab-action-evidence-title">
                 <h4 id="lab-action-evidence-title" className="inline-flex items-center gap-2 text-sm font-semibold">
                     <Crosshair className="h-4 w-4" aria-hidden="true" /> 时间线与证据引用
@@ -687,14 +825,19 @@ export function LabActionInspector({
     run,
     analysis,
     events,
+    actionPhaseSummaries = [],
     timelineTruncated,
 }: {
     run: LabRun
     analysis?: LabRunAnalysis | null
     events: LabTimelineEvent[]
+    actionPhaseSummaries?: LabTraceActionPhaseSummary[]
     timelineTruncated: boolean
 }) {
-    const diagnostics = useMemo(() => buildLabActionDiagnostics(run, analysis, events), [analysis, events, run])
+    const diagnostics = useMemo(
+        () => buildLabActionDiagnostics(run, analysis, events, actionPhaseSummaries),
+        [actionPhaseSummaries, analysis, events, run]
+    )
     const [selectedId, setSelectedId] = useState<string | null>(null)
     const selected = diagnostics.actions.find(item => item.action.actionId === selectedId) ?? diagnostics.actions[0] ?? null
 

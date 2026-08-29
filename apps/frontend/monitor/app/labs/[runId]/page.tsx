@@ -228,6 +228,7 @@ export default function LabRunPage() {
                                                     run={run}
                                                     analysis={analysis}
                                                     events={timeline.events}
+                                                    actionPhaseSummaries={timeline.actionPhaseSummaries}
                                                     timelineTruncated={timeline.truncated}
                                                 />
                                             </AIPanelCard>
