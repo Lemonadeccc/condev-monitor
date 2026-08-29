@@ -9,6 +9,7 @@
     "start": "next start -H 127.0.0.1"
   },
   "dependencies": {
+    "@condev-monitor/monitor-sdk-animation-renderer": "workspace:*",
     "@condev-monitor/react": "workspace:*",
     "@gsap/react": "2.1.2",
     "@react-three/drei": "10.7.7",

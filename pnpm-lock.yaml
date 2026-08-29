@@ -845,6 +845,9 @@ importers:
 
   examples/animation-fixtures/aegis:
     dependencies:
+      '@condev-monitor/monitor-sdk-animation-renderer':
+        specifier: workspace:*
+        version: link:../../../packages/animation-renderer
       '@condev-monitor/react':
         specifier: workspace:*
         version: link:../../../packages/react
