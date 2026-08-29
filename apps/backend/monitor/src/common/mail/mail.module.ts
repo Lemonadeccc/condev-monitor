@@ -1,68 +1,55 @@
 import { Module } from '@nestjs/common'
 import { createTransport } from 'nodemailer'
 
+import type { EmailClient } from './email-client'
 import { NodemailerEmailClient, ResendEmailClient } from './email-client'
 import { MailService } from './mail.service'
 
 export type MailMode = 'off' | 'json' | 'smtp' | 'resend'
+type MailEnvironment = Record<string, string | undefined>
+
+export function resolveMailMode(environment: MailEnvironment = process.env): MailMode {
+    if (environment.MAIL_ON !== 'true') return 'off'
+    if (environment.RESEND_API_KEY && environment.RESEND_FROM) return 'resend'
+    if (environment.EMAIL_SENDER && environment.EMAIL_SENDER_PASSWORD) return 'smtp'
+    return 'json'
+}
+
+export function createPlatformEmailClient(environment: MailEnvironment = process.env): EmailClient {
+    const mode = resolveMailMode(environment)
+    if (mode === 'resend') {
+        return new ResendEmailClient(environment.RESEND_API_KEY!)
+    }
+
+    if (mode !== 'smtp') {
+        return new NodemailerEmailClient(createTransport({ jsonTransport: true }))
+    }
+
+    return new NodemailerEmailClient(
+        createTransport({
+            host: environment.SMTP_HOST ?? 'smtp.163.com',
+            port: Number(environment.SMTP_PORT ?? 465),
+            secure: (environment.SMTP_SECURE ?? 'true') === 'true',
+            connectionTimeout: Number(environment.SMTP_CONNECTION_TIMEOUT_MS ?? 5000),
+            greetingTimeout: Number(environment.SMTP_GREETING_TIMEOUT_MS ?? 5000),
+            socketTimeout: Number(environment.SMTP_SOCKET_TIMEOUT_MS ?? 10000),
+            auth: {
+                user: environment.EMAIL_SENDER!,
+                pass: environment.EMAIL_SENDER_PASSWORD!,
+            },
+        })
+    )
+}
 
 @Module({
     providers: [
         {
             provide: 'MAIL_MODE',
-            useFactory: () => {
-                const mailOn = process.env.MAIL_ON === 'true'
-                const emailSender = process.env.EMAIL_SENDER
-                const emailSenderPassword = process.env.EMAIL_SENDER_PASSWORD
-                const resendApiKey = process.env.RESEND_API_KEY
-
-                if (!mailOn) return 'off' as const
-                if (resendApiKey) return 'resend' as const
-                if (emailSender && emailSenderPassword) return 'smtp' as const
-                return 'json' as const
-            },
+            useFactory: () => resolveMailMode(),
         },
         {
             provide: 'EMAIL_CLIENT',
-            useFactory: () => {
-                const mailOn = process.env.MAIL_ON === 'true'
-                const emailSender = process.env.EMAIL_SENDER
-                const emailSenderPassword = process.env.EMAIL_SENDER_PASSWORD
-                const resendApiKey = process.env.RESEND_API_KEY
-                const smtpHost = process.env.SMTP_HOST ?? 'smtp.163.com'
-                const smtpPort = Number(process.env.SMTP_PORT ?? 465)
-                const smtpSecure = (process.env.SMTP_SECURE ?? 'true') === 'true'
-                const connectionTimeout = Number(process.env.SMTP_CONNECTION_TIMEOUT_MS ?? 5000)
-                const greetingTimeout = Number(process.env.SMTP_GREETING_TIMEOUT_MS ?? 5000)
-                const socketTimeout = Number(process.env.SMTP_SOCKET_TIMEOUT_MS ?? 10000)
-
-                if (!mailOn) {
-                    return new NodemailerEmailClient(createTransport({ jsonTransport: true }))
-                }
-
-                if (resendApiKey) {
-                    return new ResendEmailClient(resendApiKey)
-                }
-
-                if (!emailSender || !emailSenderPassword) {
-                    return new NodemailerEmailClient(createTransport({ jsonTransport: true }))
-                }
-
-                return new NodemailerEmailClient(
-                    createTransport({
-                        host: smtpHost,
-                        port: smtpPort,
-                        secure: smtpSecure,
-                        connectionTimeout,
-                        greetingTimeout,
-                        socketTimeout,
-                        auth: {
-                            user: emailSender,
-                            pass: emailSenderPassword,
-                        },
-                    })
-                )
-            },
+            useFactory: () => createPlatformEmailClient(),
         },
         MailService,
     ],
