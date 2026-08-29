@@ -1,6 +1,7 @@
 import { isAnimationRumV2RouteKey, isAnimationRumV2TargetKey } from '@condev-monitor/animation-rum-contract'
 import {
     deterministicAnimationRumSample,
+    createAnimationRumV2MediaStageRegistry,
     toAnimationRumV2PageReport,
     toAnimationRumV2TargetReport,
     type AnimationElementSelectionHandle,
@@ -9,6 +10,8 @@ import {
     type AnimationInteractionHandle,
     type AnimationInteractionKind,
     type AnimationRumV2Report,
+    type AnimationRumV2MediaStageSource,
+    type MediaSemanticAttemptRecord,
     type AnimationRuntime,
     type AnimationRuntimeFamily,
 } from '@condev-monitor/monitor-sdk-animation'
@@ -32,6 +35,8 @@ export interface BrowserAnimationRumV2Options {
     sampleKey?: string
     seed?: string
     policyVersion?: number
+    /** Explicitly promote closed caller-attested media-stage aggregates into wire schema 2. */
+    mediaStages?: boolean
 }
 
 interface AnimationRumV2DeliveryPort {
@@ -71,6 +76,8 @@ interface AnimationRumV2ControllerOptions {
 export interface BrowserAnimationRumV2Controller {
     readonly sampled: boolean
     registerTarget(targetKey: string, element: Element, options?: BrowserAnimationRumTargetOptions): BrowserAnimationRumTargetHandle
+    markMediaStageInstrumented(): void
+    recordMediaAttempt(record: Readonly<MediaSemanticAttemptRecord>): boolean
     /** Settles target-owned interaction windows before the shared collector stops. */
     prepareForStop(): void
     finalize(snapshot?: BrowserAnimationSnapshot): void
@@ -117,7 +124,10 @@ export function validateBrowserAnimationRumV2Options(options: BrowserAnimationRu
     if (seed.length < 1 || seed.length > 128) {
         throw new TypeError('animation.rum.seed must contain 1 to 128 characters')
     }
-    return { sampleRate: options.sampleRate, sampleKey, seed, policyVersion }
+    if (options.mediaStages !== undefined && typeof options.mediaStages !== 'boolean') {
+        throw new TypeError('animation.rum.mediaStages must be a boolean')
+    }
+    return { sampleRate: options.sampleRate, sampleKey, seed, policyVersion, mediaStages: options.mediaStages ?? false }
 }
 
 /** Side-effect-free validation run before Browser transport/integrations start. */
@@ -252,6 +262,7 @@ interface FrozenRumCapture {
     capturedAtEpochMs: number
     pageEventId: string
     loafDiagnostics: LongAnimationFrameDiagnosticsSnapshot
+    mediaStages?: AnimationRumV2MediaStageSource
     targets: Array<{
         eventId: string
         captureId: string
@@ -268,6 +279,7 @@ export function createBrowserAnimationRumV2Controller(options: AnimationRumV2Con
     const targets = new Map<string, RegisteredRumTarget>()
     const targetByElement = new Map<Element, RegisteredRumTarget>()
     const observeDiagnostics = options.observeLoafDiagnostics ?? observeLongAnimationFrameDiagnostics
+    const mediaStages = sampled && rum.mediaStages ? createAnimationRumV2MediaStageRegistry() : null
     let loafObservation: LongAnimationFrameDiagnosticsObservation | null = sampled ? observeDiagnostics() : null
     let lifecycleCleanup: (() => void) | undefined
     let deliveryLifecycle: Promise<void> = Promise.resolve()
@@ -319,6 +331,7 @@ export function createBrowserAnimationRumV2Controller(options: AnimationRumV2Con
             capturedAtEpochMs: capturedAt,
             pageEventId: reportId('event'),
             loafDiagnostics: takeLoafDiagnostics(),
+            ...(mediaStages ? { mediaStages: mediaStages.snapshot() } : {}),
             targets: [...targets.values()].map(target => {
                 const targetSnapshot = target.snapshot()
                 if (!targetSnapshot || !target.eventId || !target.captureId) {
@@ -348,12 +361,14 @@ export function createBrowserAnimationRumV2Controller(options: AnimationRumV2Con
             runtime: { framework: frameworkFromRuntimeFamily(options.context?.runtimeFamily) },
             viewportBucket: viewportBucket(),
             dprBucket: dprBucket(),
+            snapshotSchemaVersion: rum.mediaStages ? 2 : 1,
         } as const
         const page = toAnimationRumV2PageReport(snapshot, {
             ...projection,
             eventId: frozen.pageEventId,
             pageEvidence: snapshot.pageEvidence,
             loafDiagnostics: frozen.loafDiagnostics,
+            ...(frozen.mediaStages ? { mediaStages: frozen.mediaStages } : {}),
         })
         const targetReports = frozen.targets.map(target => {
             return toAnimationRumV2TargetReport(snapshot, target.snapshot, {
@@ -392,6 +407,12 @@ export function createBrowserAnimationRumV2Controller(options: AnimationRumV2Con
 
     const controller: BrowserAnimationRumV2Controller = {
         sampled,
+        markMediaStageInstrumented() {
+            mediaStages?.markInstrumented()
+        },
+        recordMediaAttempt(record) {
+            return mediaStages?.record(record) ?? false
+        },
         registerTarget(targetKey, element, targetOptions = {}) {
             if (disposed) throw new Error('Cannot register an Animation RUM target after the client was destroyed')
             if (finalizationLocked) throw new Error('Cannot register an Animation RUM target after the page capture was finalized')

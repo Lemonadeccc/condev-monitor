@@ -333,6 +333,61 @@ describe('Browser Animation RUM v2 controller', () => {
         expect(value.delivery.flush).not.toHaveBeenCalled()
     })
 
+    it('freezes an independent caller-attested media registry only for explicit schema 2 opt-in', () => {
+        const value = harness({ sampleRate: 1, mediaStages: true })
+        value.controller.markMediaStageInstrumented()
+        expect(
+            value.controller.recordMediaAttempt({
+                attemptId: 91,
+                kind: 'image',
+                outcome: 'completed',
+                startedAt: 10,
+                endedAt: 22,
+                durationMs: 12,
+                decodeReady: { stage: 'decode-ready', timestampMs: 13, elapsedMs: 3, durationMs: null, byteCount: 9999, itemCount: 7 },
+                uploadReady: { stage: 'upload-ready', timestampMs: 17, elapsedMs: 7, durationMs: null, byteCount: 9999, itemCount: 7 },
+                firstVisible: {
+                    stage: 'first-visible',
+                    timestampMs: 22,
+                    elapsedMs: 12,
+                    durationMs: null,
+                    byteCount: null,
+                    itemCount: null,
+                },
+            })
+        ).toBe(true)
+        expect(
+            value.controller.recordMediaAttempt({
+                attemptId: 92,
+                kind: 'custom',
+                outcome: 'completed',
+                startedAt: 30,
+                endedAt: 31,
+                durationMs: 1,
+                decodeReady: null,
+                uploadReady: null,
+                firstVisible: null,
+            })
+        ).toBe(false)
+
+        value.controller.finalize()
+        const pageOptions = pageBuilder.mock.calls[0]?.[1] as {
+            snapshotSchemaVersion?: number
+            mediaStages?: { acceptedAttemptCount: number; kinds: { image: { beginToFirstVisibleMs: { p95: number } } } }
+        }
+        expect(pageOptions.snapshotSchemaVersion).toBe(2)
+        expect(pageOptions.mediaStages?.acceptedAttemptCount).toBe(1)
+        expect(pageOptions.mediaStages?.kinds.image.beginToFirstVisibleMs.p95).toBe(12)
+        expect(JSON.stringify(pageOptions.mediaStages)).not.toMatch(/9999|attemptId|byteCount|itemCount|custom/u)
+
+        const legacy = harness({ sampleRate: 1 })
+        legacy.controller.markMediaStageInstrumented()
+        expect(legacy.controller.recordMediaAttempt({} as never)).toBe(false)
+        legacy.controller.finalize()
+        expect(pageBuilder.mock.calls.at(-1)?.[1]).toEqual(expect.objectContaining({ snapshotSchemaVersion: 1 }))
+        expect(pageBuilder.mock.calls.at(-1)?.[1]).not.toHaveProperty('mediaStages')
+    })
+
     it('drains only an authorized backlog when deterministic sampling excludes the current page', async () => {
         const value = harness({ sampleRate: Number.MIN_VALUE, sampleKey: 'definitely-not-selected' })
         value.controller.registerTarget('hero-canvas', fakeElement())

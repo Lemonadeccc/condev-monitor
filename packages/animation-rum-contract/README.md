@@ -1,8 +1,13 @@
 # Condev Animation RUM contract
 
-This zero-dependency package is the canonical normalized wire contract for Animation RUM v2. It is intentionally separate from the Browser collector, DSN transport wrapper, Kafka envelope, storage schema, and dashboard so every trust boundary can reuse one closed metric registry and one validator without copying protocol logic.
+This zero-dependency package is the canonical normalized wire contract for Animation RUM v2. It is intentionally separate from the Browser collector, DSN transport wrapper, Kafka envelope, storage schema, and dashboard so every trust boundary can reuse one closed metric registry and one validator without copying protocol logic. Browser delivery, DSN admission, Worker projection, ClickHouse planning, Monitor queries, and the dashboard all consume this contract; Animation RUM v1 remains a separate unchanged protocol.
 
-The first release is contract-only. Nothing imports it from the production SDK or backend yet, no v2 report is sent or accepted, and Animation RUM v1 remains unchanged.
+Contract version 2 currently supports two exact snapshot schemas:
+
+- snapshot schema 1 is the frozen default catalog and remains byte-compatible with existing golden reports;
+- snapshot schema 2 is an explicit Browser `rum.mediaStages` opt-in. It is a strict superset with `media-stage-attestation`, `media-stage-adapter`, and 25 page-level `media.stage.<kind>.*` aggregates for `image`, `video`, `canvas`, `webgl`, and `webgpu`.
+
+Schema 2 does not add a raw stage array. It rejects schema-2-only capabilities, owners, and metrics from schema 1, and it never accepts attempt ids, URLs, selectors, resource identity, raw timestamps, byte/item counts, custom kinds, or arbitrary metadata. Media stage values are caller-attested on one monotonic clock; they are not browser decoder, GPU completion, compositor, first-pixel, or source-code causality proof.
 
 ## Evidence boundary
 

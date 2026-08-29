@@ -333,7 +333,7 @@ describe('Animation RUM v2 report preparation and scope', () => {
         expect(() => prepareAnimationRumV2QueuedReport(scope, { ...pageReport(), selector: '#private' }, NOW)).toThrow(
             /forbidden_field|unknown_root_field/u
         )
-        expect(() => prepareAnimationRumV2QueuedReport(scope, { ...pageReport(), snapshotSchemaVersion: 2 }, NOW)).toThrow(
+        expect(() => prepareAnimationRumV2QueuedReport(scope, { ...pageReport(), snapshotSchemaVersion: 3 }, NOW)).toThrow(
             'unsupported_snapshot_schema_version'
         )
     })

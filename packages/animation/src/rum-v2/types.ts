@@ -3,6 +3,7 @@ import type {
     AnimationRumFamily,
     AnimationSnapshot,
     CapabilityEvidence,
+    DurationStatistics,
     InteractionQualitySummary,
 } from '../types'
 
@@ -18,6 +19,7 @@ export type AnimationRumV2ProviderOwner =
     | 'browser-page-evidence'
     | 'input-scheduling'
     | 'media-adapter'
+    | 'media-stage-adapter'
     | 'renderer-adapter'
     | 'target-sidecar'
 export type AnimationRumV2QualityReason =
@@ -55,6 +57,7 @@ export type AnimationRumV2CapabilityName =
     | 'target-direct-inspection'
     | 'interaction-quality-adapter'
     | 'gpu-timer-query'
+    | 'media-stage-attestation'
 
 export interface AnimationRumV2Metric {
     metricId: string
@@ -93,7 +96,7 @@ export type AnimationRumV2RuntimeBackend = 'dom' | 'canvas2d' | 'webgl' | 'webgl
 
 export interface AnimationRumV2Report {
     contractVersion: 2
-    snapshotSchemaVersion: 1
+    snapshotSchemaVersion: 1 | 2
     eventId: string
     captureId: string
     scope: 'page' | 'target'
@@ -124,7 +127,8 @@ export interface AnimationRumV2Report {
             backend: AnimationRumV2RuntimeBackend
         }
     }
-    capabilities: Record<AnimationRumV2CapabilityName, AnimationRumV2CapabilityState>
+    capabilities: Record<Exclude<AnimationRumV2CapabilityName, 'media-stage-attestation'>, AnimationRumV2CapabilityState> &
+        Partial<Record<AnimationRumV2CapabilityName, AnimationRumV2CapabilityState>>
     coverage: Record<
         AnimationRumFamily,
         { status: AnimationRumV2MetricStatus; evidenceLevel: 'runtime-observation' | 'unsupported-or-unknown' }
@@ -231,12 +235,35 @@ export interface AnimationRumV2RuntimeContext {
     backend?: AnimationRumV2RuntimeBackend
 }
 
+export type AnimationRumV2MediaStageKind = 'image' | 'video' | 'canvas' | 'webgl' | 'webgpu'
+
+export interface AnimationRumV2MediaStageKindAggregate {
+    attemptCount: number
+    firstVisibleCount: number
+    beginToDecodeMs: DurationStatistics | null
+    decodeToUploadMs: DurationStatistics | null
+    uploadToFirstVisibleMs: DurationStatistics | null
+    beginToFirstVisibleMs: DurationStatistics | null
+}
+
+export interface AnimationRumV2MediaStageSource {
+    instrumented: boolean
+    acceptedAttemptCount: number
+    retainedAttemptCount: number
+    droppedAttemptCount: number
+    rejectedAttemptCount: number
+    truncated: boolean
+    kinds: Record<AnimationRumV2MediaStageKind, AnimationRumV2MediaStageKindAggregate>
+}
+
 export interface AnimationRumV2ProjectionOptions {
     /** Caller-generated id; the pure builder never reads randomness or global state. */
     eventId: string
     capturedAtEpochMs: number
     sampleRate: number
     samplingPolicyVersion: number
+    /** Wire schema 2 is an explicit opt-in; the local AnimationSnapshot remains schema 1. */
+    snapshotSchemaVersion?: 1 | 2
     routeKey?: string
     release?: string
     dist?: string
@@ -251,6 +278,8 @@ export interface AnimationRumV2ProjectionOptions {
     loafDiagnostics?: AnimationRumV2LoafDiagnosticsSource
     /** Already aggregated page-window interaction quality from an explicit host adapter. */
     interactionQuality?: InteractionQualitySummary
+    /** Closed caller-attested aggregates from the independent Browser RUM registry. */
+    mediaStages?: AnimationRumV2MediaStageSource
 }
 
 export interface AnimationRumV2TargetProjectionOptions extends AnimationRumV2ProjectionOptions {

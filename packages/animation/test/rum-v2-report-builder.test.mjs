@@ -9,7 +9,14 @@ import {
     validateNormalizedAnimationRumV2,
 } from '@condev-monitor/animation-rum-contract'
 
-import { AnimationCollector, toAnimationRumSummary, toAnimationRumV2PageReport, toAnimationRumV2TargetReport } from '../build/esm/index.mjs'
+import {
+    AnimationCollector,
+    createAnimationRumV2MediaStageRegistry,
+    createMediaSemanticStageRecorder,
+    toAnimationRumSummary,
+    toAnimationRumV2PageReport,
+    toAnimationRumV2TargetReport,
+} from '../build/esm/index.mjs'
 
 class FakeRuntime {
     constructor() {
@@ -1621,4 +1628,94 @@ test('an installed target renderer adapter with no observation remains supported
     for (const id of ['renderer.draw-calls.p95', 'renderer.triangles.p95']) {
         assert.deepEqual([metric(report, id).value, metric(report, id).samples, metric(report, id).status], [null, null, 'not-observed'])
     }
+})
+
+test('projects caller-attested media stages only through explicit page schema 2', () => {
+    const { runtime, snapshot } = capturePage()
+    const registry = createAnimationRumV2MediaStageRegistry()
+    registry.markInstrumented()
+    const recorder = createMediaSemanticStageRecorder({}, { onAttemptSettled: record => registry.record(record) })
+    const image = recorder.begin('image', 100)
+    image.decodeReady({ timestampMs: 104, byteCount: 9999 })
+    image.uploadReady({ timestampMs: 109, itemCount: 7 })
+    image.firstVisible({ timestampMs: 116 })
+    image.end(116)
+    const custom = recorder.begin('custom', 120)
+    custom.firstVisible({ timestampMs: 123 })
+    custom.end(123)
+
+    const source = registry.snapshot()
+    assert.equal(source.acceptedAttemptCount, 1)
+    assert.equal(source.kinds.image.attemptCount, 1)
+    assert.equal(JSON.stringify(source).includes('9999'), false)
+    assert.equal(JSON.stringify(source).includes('attemptId'), false)
+
+    const report = toAnimationRumV2PageReport(snapshot, projectionOptions(runtime, { snapshotSchemaVersion: 2, mediaStages: source }))
+    const validation = validateNormalizedAnimationRumV2(report, { nowEpochMs: runtime.wallNow() })
+    assert.equal(validation.ok, true, validation.ok ? '' : validation.errors.join(', '))
+    assert.equal(report.snapshotSchemaVersion, 2)
+    assert.equal(report.capabilities['media-stage-attestation'], 'supported')
+    assert.deepEqual(
+        [
+            metric(report, 'media.stage.image.begin-to-decode.p95').value,
+            metric(report, 'media.stage.image.decode-to-upload.p95').value,
+            metric(report, 'media.stage.image.upload-to-first-visible.p95').value,
+            metric(report, 'media.stage.image.begin-to-first-visible.p95').value,
+        ],
+        [4, 5, 7, 16]
+    )
+    assert.deepEqual(
+        [
+            metric(report, 'media.stage.image.first-visible.count').value,
+            metric(report, 'media.stage.image.first-visible.count').samples,
+            metric(report, 'media.stage.image.first-visible.count').status,
+        ],
+        [1, 1, 'measured']
+    )
+    assert.deepEqual(
+        [metric(report, 'media.stage.video.first-visible.count').value, metric(report, 'media.stage.video.first-visible.count').status],
+        [null, 'not-observed']
+    )
+    assert.equal(report.metrics.filter(value => value.metricId.startsWith('media.stage.')).length, 25)
+    assert.doesNotMatch(JSON.stringify(report), /9999|attemptId|byteCount|itemCount|custom/u)
+})
+
+test('keeps empty media instrumentation unobserved and incomplete attempts partial', () => {
+    const { runtime, snapshot } = capturePage()
+    const empty = createAnimationRumV2MediaStageRegistry()
+    empty.markInstrumented()
+    const emptyReport = toAnimationRumV2PageReport(
+        snapshot,
+        projectionOptions(runtime, { snapshotSchemaVersion: 2, mediaStages: empty.snapshot() })
+    )
+    assert.deepEqual(
+        [
+            metric(emptyReport, 'media.stage.webgl.first-visible.count').value,
+            metric(emptyReport, 'media.stage.webgl.first-visible.count').samples,
+            metric(emptyReport, 'media.stage.webgl.first-visible.count').status,
+        ],
+        [null, null, 'not-observed']
+    )
+
+    const partial = createAnimationRumV2MediaStageRegistry()
+    partial.markInstrumented()
+    const recorder = createMediaSemanticStageRecorder({}, { onAttemptSettled: record => partial.record(record) })
+    const video = recorder.begin('video', 200)
+    video.decodeReady({ timestampMs: 205 })
+    video.cancel(210)
+    const partialReport = toAnimationRumV2PageReport(
+        snapshot,
+        projectionOptions(runtime, { snapshotSchemaVersion: 2, mediaStages: partial.snapshot() })
+    )
+    assert.equal(metric(partialReport, 'media.stage.video.begin-to-decode.p95').status, 'partial')
+    assert.deepEqual(
+        [
+            metric(partialReport, 'media.stage.video.first-visible.count').value,
+            metric(partialReport, 'media.stage.video.first-visible.count').samples,
+            metric(partialReport, 'media.stage.video.first-visible.count').status,
+        ],
+        [0, 1, 'partial']
+    )
+    assert.ok(partialReport.captureQuality.reasons.includes('provider-rejected-samples'))
+    assert.equal(validateNormalizedAnimationRumV2(partialReport, { nowEpochMs: runtime.wallNow() }).ok, true)
 })

@@ -2,7 +2,9 @@ import {
     ANIMATION_RUM_FAMILIES,
     ANIMATION_RUM_V2_CAPABILITIES,
     ANIMATION_RUM_V2_MAX_PAYLOAD_BYTES,
-    ANIMATION_RUM_V2_METRIC_CATALOG,
+    ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES,
+    type AnimationRumV2MetricDefinition,
+    getAnimationRumV2MetricCatalog,
     isAnimationRumV2RouteKey,
     isAnimationRumV2TargetKey,
     validateNormalizedAnimationRumV2,
@@ -28,6 +30,8 @@ import type {
     AnimationRumV2CapabilityName,
     AnimationRumV2CapabilityState,
     AnimationRumV2LoafDiagnosticAggregate,
+    AnimationRumV2MediaStageKind,
+    AnimationRumV2MediaStageSource,
     AnimationRumV2Metric,
     AnimationRumV2MetricStatus,
     AnimationRumV2PageEvidenceSource,
@@ -79,9 +83,10 @@ const RUNTIME_BACKENDS = new Set<AnimationRumV2RuntimeBackend>([
 const VIEWPORT_BUCKETS = new Set(['tiny', 'small', 'medium', 'large', 'xlarge', 'unknown'])
 const DPR_BUCKETS = new Set(['1', '1.5', '2', '3', '4+', 'unknown'])
 const GPU_TIMER_CAPABILITIES = new Set<AnimationGpuTimerCapability>(['supported', 'unsupported', 'disabled', 'unknown'])
+const MEDIA_STAGE_KINDS = ['image', 'video', 'canvas', 'webgl', 'webgpu'] as const satisfies readonly AnimationRumV2MediaStageKind[]
 
 type Scope = AnimationRumV2Report['scope']
-type MetricDefinition = (typeof ANIMATION_RUM_V2_METRIC_CATALOG)[number]
+type MetricDefinition = AnimationRumV2MetricDefinition
 
 interface TargetProjectionWindow {
     startedAt: number
@@ -105,6 +110,8 @@ interface ProviderAccumulator {
 
 interface ProjectionState {
     scope: Scope
+    snapshotSchemaVersion: 1 | 2
+    catalog: readonly MetricDefinition[]
     capabilities: AnimationRumV2Report['capabilities']
     candidates: Map<string, MetricCandidate>
     providers: Map<string, ProviderAccumulator>
@@ -165,14 +172,17 @@ function capabilityState(evidence: CapabilityEvidence | null | undefined, absent
     return 'unknown'
 }
 
-function emptyCapabilities(): AnimationRumV2Report['capabilities'] {
-    return Object.fromEntries(ANIMATION_RUM_V2_CAPABILITIES.map(name => [name, 'unknown'])) as AnimationRumV2Report['capabilities']
+function emptyCapabilities(snapshotSchemaVersion: 1 | 2): AnimationRumV2Report['capabilities'] {
+    const names = snapshotSchemaVersion === 2 ? ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES : ANIMATION_RUM_V2_CAPABILITIES
+    return Object.fromEntries(names.map(name => [name, 'unknown'])) as AnimationRumV2Report['capabilities']
 }
 
-function createState(scope: Scope): ProjectionState {
+function createState(scope: Scope, snapshotSchemaVersion: 1 | 2): ProjectionState {
     return {
         scope,
-        capabilities: emptyCapabilities(),
+        snapshotSchemaVersion,
+        catalog: getAnimationRumV2MetricCatalog(snapshotSchemaVersion),
+        capabilities: emptyCapabilities(snapshotSchemaVersion),
         candidates: new Map(),
         providers: new Map(),
         reasons: new Set(),
@@ -1243,6 +1253,114 @@ function projectHostEvidence(state: ProjectionState, snapshot: AnimationSnapshot
     )
 }
 
+function mediaStageMetricId(kind: AnimationRumV2MediaStageKind, suffix: string): string {
+    return `media.stage.${kind}.${suffix}`
+}
+
+function putUnavailableMediaStageMetrics(state: ProjectionState, status: AnimationRumV2MetricStatus): void {
+    for (const kind of MEDIA_STAGE_KINDS) {
+        for (const suffix of [
+            'first-visible.count',
+            'begin-to-decode.p95',
+            'decode-to-upload.p95',
+            'upload-to-first-visible.p95',
+            'begin-to-first-visible.p95',
+        ]) {
+            putMetric(state, mediaStageMetricId(kind, suffix), null, null, status)
+        }
+    }
+}
+
+function projectCallerAttestedMediaStages(state: ProjectionState, source: AnimationRumV2MediaStageSource | undefined): void {
+    if (state.snapshotSchemaVersion !== 2) return
+    if (!source) {
+        state.capabilities['media-stage-attestation'] = 'disabled'
+        putUnavailableMediaStageMetrics(state, 'not-instrumented')
+        return
+    }
+
+    try {
+        const accepted = safeCount(source.acceptedAttemptCount)
+        const retained = safeCount(source.retainedAttemptCount)
+        const dropped = safeCount(source.droppedAttemptCount)
+        const rejected = safeCount(source.rejectedAttemptCount)
+        const shapeValid =
+            typeof source.instrumented === 'boolean' &&
+            accepted !== null &&
+            retained !== null &&
+            dropped !== null &&
+            rejected !== null &&
+            retained + dropped === accepted &&
+            source.truncated === dropped > 0 &&
+            (source.instrumented || (accepted === 0 && retained === 0 && dropped === 0 && rejected === 0))
+        if (!shapeValid || !source.instrumented) {
+            state.capabilities['media-stage-attestation'] = shapeValid ? 'disabled' : 'unknown'
+            if (!shapeValid) state.reasons.add('source-field-incomplete')
+            putUnavailableMediaStageMetrics(state, shapeValid ? 'not-instrumented' : 'unknown')
+            return
+        }
+
+        let retainedByKind = 0
+        let aggregateValid = true
+        for (const kind of MEDIA_STAGE_KINDS) {
+            const aggregate = source.kinds[kind]
+            const attemptCount = safeCount(aggregate?.attemptCount)
+            const firstVisibleCount = safeCount(aggregate?.firstVisibleCount)
+            if (
+                attemptCount === null ||
+                firstVisibleCount === null ||
+                firstVisibleCount > attemptCount ||
+                !statisticsCountWithin(aggregate?.beginToDecodeMs, attemptCount) ||
+                !statisticsCountWithin(aggregate?.decodeToUploadMs, attemptCount) ||
+                !statisticsCountWithin(aggregate?.uploadToFirstVisibleMs, firstVisibleCount) ||
+                !statisticsCountWithin(aggregate?.beginToFirstVisibleMs, firstVisibleCount) ||
+                retainedByKind > MAX_COUNT - attemptCount
+            ) {
+                aggregateValid = false
+                break
+            }
+            retainedByKind += attemptCount
+        }
+        if (!aggregateValid || retainedByKind !== retained) {
+            state.capabilities['media-stage-attestation'] = 'unknown'
+            state.reasons.add('source-field-incomplete')
+            putUnavailableMediaStageMetrics(state, 'unknown')
+            return
+        }
+
+        state.capabilities['media-stage-attestation'] = 'supported'
+        if (!registerProviderWindow(state, 'media-stage-adapter', 'resourcesMedia', accepted, retained, retained, rejected)) {
+            putUnavailableMediaStageMetrics(state, 'unknown')
+            return
+        }
+        const status: AnimationRumV2MetricStatus = dropped > 0 || rejected > 0 ? 'partial' : 'measured'
+        for (const kind of MEDIA_STAGE_KINDS) {
+            const aggregate = source.kinds[kind]
+            if (aggregate.attemptCount === 0) {
+                for (const suffix of [
+                    'first-visible.count',
+                    'begin-to-decode.p95',
+                    'decode-to-upload.p95',
+                    'upload-to-first-visible.p95',
+                    'begin-to-first-visible.p95',
+                ]) {
+                    putMetric(state, mediaStageMetricId(kind, suffix), null, null, 'not-observed')
+                }
+                continue
+            }
+            putMetric(state, mediaStageMetricId(kind, 'first-visible.count'), aggregate.firstVisibleCount, aggregate.attemptCount, status)
+            putDistribution(state, mediaStageMetricId(kind, 'begin-to-decode.p95'), aggregate.beginToDecodeMs, 'p95', status)
+            putDistribution(state, mediaStageMetricId(kind, 'decode-to-upload.p95'), aggregate.decodeToUploadMs, 'p95', status)
+            putDistribution(state, mediaStageMetricId(kind, 'upload-to-first-visible.p95'), aggregate.uploadToFirstVisibleMs, 'p95', status)
+            putDistribution(state, mediaStageMetricId(kind, 'begin-to-first-visible.p95'), aggregate.beginToFirstVisibleMs, 'p95', status)
+        }
+    } catch {
+        state.capabilities['media-stage-attestation'] = 'unknown'
+        state.reasons.add('source-field-incomplete')
+        putUnavailableMediaStageMetrics(state, 'unknown')
+    }
+}
+
 function projectInteractionQuality(state: ProjectionState, quality: InteractionQualitySummary | undefined): void {
     if (!quality) {
         state.capabilities['interaction-quality-adapter'] = 'disabled'
@@ -1292,7 +1410,7 @@ function targetSignalStatus(summary: InteractionSignalWindowSummary | Interactio
 
 function projectTargetTemporalEvidence(state: ProjectionState, correlated: InteractionPerformanceSummary | null): void {
     if (!correlated) {
-        for (const definition of ANIMATION_RUM_V2_METRIC_CATALOG) {
+        for (const definition of state.catalog) {
             if (definition.bindings.some(binding => binding.scope === 'target' && binding.relation === 'target-temporal-overlap')) {
                 putMetric(state, definition.metricId, null, null, 'not-observed')
             }
@@ -1714,7 +1832,7 @@ function addProviderQualityReasons(state: ProjectionState): void {
     if ([...state.providers.values()].some(value => value.rejected > 0)) state.reasons.add('provider-rejected-samples')
     for (const [metricId, candidate] of state.candidates) {
         if (candidate.status !== 'partial') continue
-        const definition = ANIMATION_RUM_V2_METRIC_CATALOG.find(item => item.metricId === metricId)
+        const definition = state.catalog.find(item => item.metricId === metricId)
         const binding = definition && bindingFor(definition, state.scope)
         if (definition && binding && !hasProviderLoss(state, binding.owners[0]!, definition.family as AnimationRumFamily)) {
             state.reasons.add('source-field-incomplete')
@@ -1725,11 +1843,11 @@ function addProviderQualityReasons(state: ProjectionState): void {
 
 function finalizeMetrics(state: ProjectionState): AnimationRumV2Metric[] {
     const metrics: AnimationRumV2Metric[] = []
-    for (const definition of ANIMATION_RUM_V2_METRIC_CATALOG) {
+    for (const definition of state.catalog) {
         const binding = bindingFor(definition, state.scope)
         if (!binding) continue
         const owner = binding.owners[0] as AnimationRumV2ProviderOwner
-        const requiredStates = definition.requiredCapabilities.map(name => state.capabilities[name])
+        const requiredStates = definition.requiredCapabilities.map(name => state.capabilities[name] ?? 'unknown')
         const unavailableByCapability = capabilityUnavailableStatus(requiredStates)
         const candidate = state.candidates.get(definition.metricId)
         let status: AnimationRumV2MetricStatus = candidate?.status ?? (binding.relation === 'adapter' ? 'not-instrumented' : 'not-observed')
@@ -1778,7 +1896,7 @@ function finalizeMetrics(state: ProjectionState): AnimationRumV2Metric[] {
 
     const byIdentity = new Map(metrics.map(metric => [metric.metricId, metric]))
     for (const metric of metrics) {
-        const definition = ANIMATION_RUM_V2_METRIC_CATALOG.find(item => item.metricId === metric.metricId)
+        const definition = state.catalog.find(item => item.metricId === metric.metricId)
         if (!definition?.populationMetricId || (metric.status !== 'measured' && metric.status !== 'partial')) continue
         const population = byIdentity.get(definition.populationMetricId)
         if (!population || (population.status !== 'measured' && population.status !== 'partial') || population.value === 0) {
@@ -1791,11 +1909,14 @@ function finalizeMetrics(state: ProjectionState): AnimationRumV2Metric[] {
     return metrics
 }
 
-function coverageFromMetrics(metrics: readonly AnimationRumV2Metric[]): AnimationRumV2Report['coverage'] {
+function coverageFromMetrics(
+    metrics: readonly AnimationRumV2Metric[],
+    catalog: readonly MetricDefinition[]
+): AnimationRumV2Report['coverage'] {
     return Object.fromEntries(
         ANIMATION_RUM_FAMILIES.map(family => {
             const familyMetrics = metrics.filter(metric => {
-                const definition = ANIMATION_RUM_V2_METRIC_CATALOG.find(item => item.metricId === metric.metricId)
+                const definition = catalog.find(item => item.metricId === metric.metricId)
                 return definition?.family === family
             })
             const statuses = familyMetrics.map(metric => metric.status)
@@ -1960,6 +2081,12 @@ function validateProjectionOptions(options: AnimationRumV2ProjectionOptions): vo
     if (!Number.isInteger(options.samplingPolicyVersion) || options.samplingPolicyVersion < 1 || options.samplingPolicyVersion > 255) {
         throw new AnimationOptionsError('samplingPolicyVersion must be an integer between 1 and 255')
     }
+    if (options.snapshotSchemaVersion !== undefined && options.snapshotSchemaVersion !== 1 && options.snapshotSchemaVersion !== 2) {
+        throw new AnimationOptionsError('snapshotSchemaVersion must be 1 or 2')
+    }
+    if ((options.snapshotSchemaVersion ?? 1) === 1 && options.mediaStages !== undefined) {
+        throw new AnimationOptionsError('mediaStages requires Animation RUM v2 snapshot schema 2')
+    }
 }
 
 function completeReport(
@@ -1981,7 +2108,7 @@ function completeReport(
     const reasons = [...state.reasons].sort() as AnimationRumV2QualityReason[]
     const report: AnimationRumV2Report = {
         contractVersion: 2,
-        snapshotSchemaVersion: 1,
+        snapshotSchemaVersion: state.snapshotSchemaVersion,
         eventId: safeId('eventId', options.eventId),
         captureId: safeId('captureId', identity.captureId),
         scope: identity.scope,
@@ -1997,7 +2124,7 @@ function completeReport(
         samplingPolicyVersion: options.samplingPolicyVersion,
         context,
         capabilities: state.capabilities,
-        coverage: coverageFromMetrics(metrics),
+        coverage: coverageFromMetrics(metrics, state.catalog),
         captureQuality: {
             sufficiency: reasons.some(
                 reason =>
@@ -2039,7 +2166,8 @@ export function toAnimationRumV2PageReport(
     if (!snapshot || typeof snapshot !== 'object' || snapshot.schemaVersion !== 1) {
         throw new AnimationOptionsError('snapshot.schemaVersion must be 1')
     }
-    const state = createState('page')
+    const snapshotSchemaVersion = options.snapshotSchemaVersion ?? 1
+    const state = createState('page', snapshotSchemaVersion)
     const pageEvidence = options.pageEvidence ?? snapshot.pageEvidence
     projectFrames(state, snapshot)
     projectLongAnimationFrames(state, snapshot)
@@ -2072,6 +2200,7 @@ export function toAnimationRumV2PageReport(
     projectResources(state, snapshot)
     projectPageEvidence(state, pageEvidence)
     projectHostEvidence(state, snapshot)
+    projectCallerAttestedMediaStages(state, options.mediaStages)
     projectInteractionQuality(state, options.interactionQuality)
     state.capabilities['visibility-lifecycle'] = snapshot.visibility.current === 'unknown' ? 'unknown' : 'supported'
     if (state.capabilities['reduced-motion-preference'] === 'unknown') {
@@ -2107,10 +2236,14 @@ export function toAnimationRumV2TargetReport(
     if (!isAnimationRumV2TargetKey(options.targetKey)) {
         throw new AnimationOptionsError('targetKey must be a static registered semantic identity, never a selector or DOM-derived value')
     }
+    if (options.mediaStages !== undefined) {
+        throw new AnimationOptionsError('caller-attested media stage evidence is page-scoped and cannot be projected to a target')
+    }
     const captureId = safeId('captureId', options.captureId)
     const parentCaptureId = safeId('parentCaptureId', pageSnapshot.captureId)
     if (captureId === parentCaptureId) throw new AnimationOptionsError('target captureId must differ from the parent page captureId')
-    const state = createState('target')
+    const snapshotSchemaVersion = options.snapshotSchemaVersion ?? 1
+    const state = createState('target', snapshotSchemaVersion)
     const selectedAt = safeNumber(targetSnapshot.selectedAt)
     const capturedAt = safeNumber(targetSnapshot.capturedAt)
     const elapsedMs = safeNumber(targetSnapshot.elapsedMs)
@@ -2175,6 +2308,7 @@ export function toAnimationRumV2TargetReport(
     state.capabilities['video-frame-callback'] = 'disabled'
     state.capabilities['video-playback-quality'] = 'disabled'
     state.capabilities['media-adapter'] = 'disabled'
+    if (snapshotSchemaVersion === 2) state.capabilities['media-stage-attestation'] = 'disabled'
     const frameworkInventoryObserved = frameworkFromValues(targetSnapshot.inventory.uiFrameworks) !== 'unknown'
     const frameworkOwnerObserved = targetSnapshot.owners.some(owner => owner.relation === 'framework-owner')
     state.capabilities['framework-adapter'] = frameworkInventoryObserved || frameworkOwnerObserved ? 'supported' : 'disabled'

@@ -5,6 +5,8 @@ export const ANIMATION_RUM_V2_CONTRACT_VERSION = 2 as const
 // The current local AnimationSnapshot remains schema v1. Wire and snapshot
 // versions are intentionally independent.
 export const ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION = 1 as const
+export const ANIMATION_RUM_V2_MEDIA_STAGE_SNAPSHOT_SCHEMA_VERSION = 2 as const
+export const ANIMATION_RUM_V2_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS = Object.freeze([1, 2] as const)
 export const ANIMATION_RUM_V2_MAX_PAYLOAD_BYTES = 64 * 1024
 export const ANIMATION_RUM_V2_MAX_METRICS = 128
 export const ANIMATION_RUM_V2_INHERITED_V1_METRIC_COUNT = 32
@@ -53,6 +55,8 @@ export const ANIMATION_RUM_V2_CAPABILITIES = Object.freeze([
     'gpu-timer-query',
 ] as const)
 
+export const ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES = Object.freeze([...ANIMATION_RUM_V2_CAPABILITIES, 'media-stage-attestation'] as const)
+
 export const ANIMATION_RUM_V2_PROVIDER_OWNERS = Object.freeze([
     'browser-core',
     'web-vitals-runtime',
@@ -62,6 +66,11 @@ export const ANIMATION_RUM_V2_PROVIDER_OWNERS = Object.freeze([
     'media-adapter',
     'renderer-adapter',
     'target-sidecar',
+] as const)
+
+export const ANIMATION_RUM_V2_SCHEMA_2_PROVIDER_OWNERS = Object.freeze([
+    ...ANIMATION_RUM_V2_PROVIDER_OWNERS,
+    'media-stage-adapter',
 ] as const)
 
 export const ANIMATION_RUM_V2_QUALITY_REASONS = Object.freeze([
@@ -76,11 +85,12 @@ export const ANIMATION_RUM_V2_QUALITY_REASONS = Object.freeze([
 ] as const)
 
 export type AnimationRumFamily = (typeof ANIMATION_RUM_FAMILIES)[number]
-export type AnimationRumV2CapabilityName = (typeof ANIMATION_RUM_V2_CAPABILITIES)[number]
+export type AnimationRumV2SnapshotSchemaVersion = (typeof ANIMATION_RUM_V2_SUPPORTED_SNAPSHOT_SCHEMA_VERSIONS)[number]
+export type AnimationRumV2CapabilityName = (typeof ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES)[number]
 export type AnimationRumV2CapabilityState = 'supported' | 'unsupported' | 'unknown' | 'disabled'
 export type AnimationRumV2Scope = 'page' | 'target'
 export type AnimationRumV2Relation = 'page-window' | 'target-direct' | 'target-temporal-overlap' | 'adapter'
-export type AnimationRumV2ProviderOwner = (typeof ANIMATION_RUM_V2_PROVIDER_OWNERS)[number]
+export type AnimationRumV2ProviderOwner = (typeof ANIMATION_RUM_V2_SCHEMA_2_PROVIDER_OWNERS)[number]
 export type AnimationRumV2QualityReason = (typeof ANIMATION_RUM_V2_QUALITY_REASONS)[number]
 export type AnimationRumV2MetricStatus = 'measured' | 'partial' | 'not-observed' | 'not-instrumented' | 'unsupported' | 'unknown'
 export type AnimationRumV2CoverageStatus = AnimationRumV2MetricStatus
@@ -123,6 +133,7 @@ const pageResources = [{ scope: 'page', relation: 'page-window', owners: ['resou
 const pageEvidence = [{ scope: 'page', relation: 'page-window', owners: ['browser-page-evidence'] }] as const
 const pageAndTargetAnimations = [...pageEvidence, { scope: 'target', relation: 'target-direct', owners: ['target-sidecar'] }] as const
 const pageMedia = [{ scope: 'page', relation: 'page-window', owners: ['media-adapter'] }] as const
+const pageMediaStage = [{ scope: 'page', relation: 'adapter', owners: ['media-stage-adapter'] }] as const
 const targetDirect = [{ scope: 'target', relation: 'target-direct', owners: ['target-sidecar'] }] as const
 const rendererAdapter = [
     { scope: 'page', relation: 'adapter', owners: ['renderer-adapter'] },
@@ -474,6 +485,77 @@ export const ANIMATION_RUM_V2_METRIC_CATALOG: readonly AnimationRumV2MetricDefin
     metric('motion.settle-time.p95', 'motionQuality', 'settleTimeMs', 'p95', 'ms', interactionAdapter, ['interaction-quality-adapter']),
 ])
 
+export const ANIMATION_RUM_V2_MEDIA_STAGE_KINDS = Object.freeze(['image', 'video', 'canvas', 'webgl', 'webgpu'] as const)
+export type AnimationRumV2MediaStageKind = (typeof ANIMATION_RUM_V2_MEDIA_STAGE_KINDS)[number]
+
+function mediaStageMetricName(kind: AnimationRumV2MediaStageKind, suffix: string): string {
+    return `declared${kind.charAt(0).toUpperCase()}${kind.slice(1)}${suffix}`
+}
+
+export const ANIMATION_RUM_V2_SCHEMA_2_MEDIA_STAGE_METRIC_CATALOG: readonly AnimationRumV2MetricDefinition[] = Object.freeze(
+    ANIMATION_RUM_V2_MEDIA_STAGE_KINDS.flatMap(kind => {
+        const firstVisibleCountId = `media.stage.${kind}.first-visible.count`
+        return [
+            metric(
+                firstVisibleCountId,
+                'resourcesMedia',
+                mediaStageMetricName(kind, 'FirstVisibleCount'),
+                'count',
+                'count',
+                pageMediaStage,
+                ['media-stage-attestation']
+            ),
+            metric(
+                `media.stage.${kind}.begin-to-decode.p95`,
+                'resourcesMedia',
+                mediaStageMetricName(kind, 'BeginToDecodeMs'),
+                'p95',
+                'ms',
+                pageMediaStage,
+                ['media-stage-attestation']
+            ),
+            metric(
+                `media.stage.${kind}.decode-to-upload.p95`,
+                'resourcesMedia',
+                mediaStageMetricName(kind, 'DecodeToUploadMs'),
+                'p95',
+                'ms',
+                pageMediaStage,
+                ['media-stage-attestation']
+            ),
+            metric(
+                `media.stage.${kind}.upload-to-first-visible.p95`,
+                'resourcesMedia',
+                mediaStageMetricName(kind, 'UploadToFirstVisibleMs'),
+                'p95',
+                'ms',
+                pageMediaStage,
+                ['media-stage-attestation'],
+                'capture-window',
+                undefined,
+                firstVisibleCountId
+            ),
+            metric(
+                `media.stage.${kind}.begin-to-first-visible.p95`,
+                'resourcesMedia',
+                mediaStageMetricName(kind, 'BeginToFirstVisibleMs'),
+                'p95',
+                'ms',
+                pageMediaStage,
+                ['media-stage-attestation'],
+                'capture-window',
+                undefined,
+                firstVisibleCountId
+            ),
+        ]
+    })
+)
+
+export const ANIMATION_RUM_V2_SCHEMA_2_METRIC_CATALOG: readonly AnimationRumV2MetricDefinition[] = Object.freeze([
+    ...ANIMATION_RUM_V2_METRIC_CATALOG,
+    ...ANIMATION_RUM_V2_SCHEMA_2_MEDIA_STAGE_METRIC_CATALOG,
+])
+
 /**
  * Closed event-flow aggregates that can be divided by a capture window.
  * Point-in-time inventory such as running animations, surfaces, and video
@@ -502,10 +584,26 @@ export const ANIMATION_RUM_V2_PER_MINUTE_METRIC_IDS = Object.freeze([
     'resource.decoded-size.sum',
 ] as const)
 
-const METRIC_BY_ID = new Map(ANIMATION_RUM_V2_METRIC_CATALOG.map(definition => [definition.metricId, definition]))
+const METRIC_BY_ID_V1 = new Map(ANIMATION_RUM_V2_METRIC_CATALOG.map(definition => [definition.metricId, definition]))
+const METRIC_BY_ID_V2 = new Map(ANIMATION_RUM_V2_SCHEMA_2_METRIC_CATALOG.map(definition => [definition.metricId, definition]))
 
-export function getAnimationRumV2MetricDefinition(metricId: string): AnimationRumV2MetricDefinition | undefined {
-    return METRIC_BY_ID.get(metricId)
+export function getAnimationRumV2MetricCatalog(
+    snapshotSchemaVersion: AnimationRumV2SnapshotSchemaVersion
+): readonly AnimationRumV2MetricDefinition[] {
+    return snapshotSchemaVersion === 2 ? ANIMATION_RUM_V2_SCHEMA_2_METRIC_CATALOG : ANIMATION_RUM_V2_METRIC_CATALOG
+}
+
+function metricDefinitions(
+    snapshotSchemaVersion: AnimationRumV2SnapshotSchemaVersion
+): ReadonlyMap<string, AnimationRumV2MetricDefinition> {
+    return snapshotSchemaVersion === 2 ? METRIC_BY_ID_V2 : METRIC_BY_ID_V1
+}
+
+export function getAnimationRumV2MetricDefinition(
+    metricId: string,
+    snapshotSchemaVersion: AnimationRumV2SnapshotSchemaVersion = 1
+): AnimationRumV2MetricDefinition | undefined {
+    return metricDefinitions(snapshotSchemaVersion).get(metricId)
 }
 
 export interface AnimationRumV2Metric {
@@ -529,7 +627,7 @@ export interface AnimationRumV2ProviderEvidence {
 
 export interface AnimationRumV2Report {
     contractVersion: 2
-    snapshotSchemaVersion: 1
+    snapshotSchemaVersion: AnimationRumV2SnapshotSchemaVersion
     eventId: string
     captureId: string
     scope: AnimationRumV2Scope
@@ -572,7 +670,8 @@ export interface AnimationRumV2Report {
             backend: 'dom' | 'canvas2d' | 'webgl' | 'webgl2' | 'webgpu' | 'mixed' | 'other' | 'unknown'
         }
     }
-    capabilities: Record<AnimationRumV2CapabilityName, AnimationRumV2CapabilityState>
+    capabilities: Record<(typeof ANIMATION_RUM_V2_CAPABILITIES)[number], AnimationRumV2CapabilityState> &
+        Partial<Record<AnimationRumV2CapabilityName, AnimationRumV2CapabilityState>>
     coverage: Record<AnimationRumFamily, { status: AnimationRumV2CoverageStatus; evidenceLevel: AnimationRumV2EvidenceLevel }>
     captureQuality: {
         sufficiency: 'sufficient' | 'insufficient'
@@ -629,8 +728,10 @@ const QUALITY_KEYS = new Set(['sufficiency', 'integrity', 'reasons', 'adapterErr
 const PROVIDER_KEYS = new Set(['version', 'accepted', 'retained', 'evidence', 'dropped', 'rejected', 'truncated'])
 const METRIC_KEYS = new Set(['metricId', 'relation', 'owner', 'value', 'samples', 'status'])
 const FAMILY_SET = new Set<string>(ANIMATION_RUM_FAMILIES)
-const CAPABILITY_SET = new Set<string>(ANIMATION_RUM_V2_CAPABILITIES)
-const OWNER_SET = new Set<string>(ANIMATION_RUM_V2_PROVIDER_OWNERS)
+const CAPABILITY_SET_V1 = new Set<string>(ANIMATION_RUM_V2_CAPABILITIES)
+const CAPABILITY_SET_V2 = new Set<string>(ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES)
+const OWNER_SET_V1 = new Set<string>(ANIMATION_RUM_V2_PROVIDER_OWNERS)
+const OWNER_SET_V2 = new Set<string>(ANIMATION_RUM_V2_SCHEMA_2_PROVIDER_OWNERS)
 const QUALITY_REASON_SET = new Set<string>(ANIMATION_RUM_V2_QUALITY_REASONS)
 const RELATION_SET = new Set<string>(['page-window', 'target-direct', 'target-temporal-overlap', 'adapter'])
 const STATUS_SET = new Set<string>(['measured', 'partial', 'not-observed', 'not-instrumented', 'unsupported', 'unknown'])
@@ -845,7 +946,8 @@ export function detectAnimationRumProtocol(value: unknown): AnimationRumProtocol
     if (value.contractVersion === 1 && value.snapshotSchemaVersion === 1) return 'v1'
     if (
         value.contractVersion === ANIMATION_RUM_V2_CONTRACT_VERSION &&
-        value.snapshotSchemaVersion === ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION
+        (value.snapshotSchemaVersion === ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION ||
+            value.snapshotSchemaVersion === ANIMATION_RUM_V2_MEDIA_STAGE_SNAPSHOT_SCHEMA_VERSION)
     ) {
         return 'v2'
     }
@@ -897,13 +999,23 @@ function parseContext(raw: unknown, errors: string[]): AnimationRumV2Report['con
     return raw as AnimationRumV2Report['context']
 }
 
-function parseCapabilities(raw: unknown, errors: string[]): AnimationRumV2Report['capabilities'] | null {
+function capabilityNames(snapshotSchemaVersion: AnimationRumV2SnapshotSchemaVersion): readonly AnimationRumV2CapabilityName[] {
+    return snapshotSchemaVersion === 2 ? ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES : ANIMATION_RUM_V2_CAPABILITIES
+}
+
+function parseCapabilities(
+    raw: unknown,
+    snapshotSchemaVersion: AnimationRumV2SnapshotSchemaVersion,
+    errors: string[]
+): AnimationRumV2Report['capabilities'] | null {
     if (!isRecord(raw)) {
         add(errors, 'invalid_capabilities')
         return null
     }
-    rejectUnknownKeys(raw, CAPABILITY_SET, errors, 'unknown_capability')
-    if (Object.keys(raw).length !== ANIMATION_RUM_V2_CAPABILITIES.length || ANIMATION_RUM_V2_CAPABILITIES.some(name => !(name in raw))) {
+    const names = capabilityNames(snapshotSchemaVersion)
+    const allowed = snapshotSchemaVersion === 2 ? CAPABILITY_SET_V2 : CAPABILITY_SET_V1
+    rejectUnknownKeys(raw, allowed, errors, 'unknown_capability')
+    if (Object.keys(raw).length !== names.length || names.some(name => !(name in raw))) {
         add(errors, 'missing_capability')
     }
     for (const value of Object.values(raw)) {
@@ -937,12 +1049,16 @@ function parseCoverage(raw: unknown, errors: string[]): AnimationRumV2Report['co
     return raw as AnimationRumV2Report['coverage']
 }
 
-function parseProviderEvidence(raw: unknown, errors: string[]): AnimationRumV2Report['providerEvidence'] | null {
+function parseProviderEvidence(
+    raw: unknown,
+    snapshotSchemaVersion: AnimationRumV2SnapshotSchemaVersion,
+    errors: string[]
+): AnimationRumV2Report['providerEvidence'] | null {
     if (!isRecord(raw)) {
         add(errors, 'invalid_provider_evidence')
         return null
     }
-    rejectUnknownKeys(raw, OWNER_SET, errors, 'unknown_provider_owner')
+    rejectUnknownKeys(raw, snapshotSchemaVersion === 2 ? OWNER_SET_V2 : OWNER_SET_V1, errors, 'unknown_provider_owner')
     for (const families of Object.values(raw)) {
         if (!isRecord(families)) {
             add(errors, 'invalid_provider_family_evidence')
@@ -1054,7 +1170,7 @@ function validateGpuTimerMetricCapabilityStatus(
     const states = definition.requiredCapabilities.map(capability => capabilities[capability])
     if (states.some(state => typeof state !== 'string' || !CAPABILITY_STATES.has(state))) return
 
-    const capabilityStatus = unavailableStatusForRequiredCapabilities(states)
+    const capabilityStatus = unavailableStatusForRequiredCapabilities(states as AnimationRumV2CapabilityState[])
     // A supported timer may still have no completed query or may reject a
     // disjoint/invalid result. Other unavailable states must describe the
     // strongest unavailable required capability exactly.
@@ -1065,6 +1181,7 @@ function validateGpuTimerMetricCapabilityStatus(
 function parseMetrics(
     raw: unknown,
     scope: unknown,
+    snapshotSchemaVersion: AnimationRumV2SnapshotSchemaVersion,
     capabilities: AnimationRumV2Report['capabilities'] | null,
     providers: AnimationRumV2Report['providerEvidence'] | null,
     quality: AnimationRumV2Report['captureQuality'] | null,
@@ -1075,6 +1192,8 @@ function parseMetrics(
         return null
     }
     const identities = new Set<string>()
+    const definitions = metricDefinitions(snapshotSchemaVersion)
+    const owners = snapshotSchemaVersion === 2 ? OWNER_SET_V2 : OWNER_SET_V1
     for (const value of raw) {
         if (!isRecord(value)) {
             add(errors, 'invalid_metric')
@@ -1082,10 +1201,10 @@ function parseMetrics(
         }
         rejectUnknownKeys(value, METRIC_KEYS, errors, 'unknown_metric_field')
         if (Object.keys(value).length !== METRIC_KEYS.size) add(errors, 'missing_metric_field')
-        const definition = typeof value.metricId === 'string' ? METRIC_BY_ID.get(value.metricId) : undefined
+        const definition = typeof value.metricId === 'string' ? definitions.get(value.metricId) : undefined
         if (!definition) add(errors, 'unknown_metric_id')
         if (typeof value.relation !== 'string' || !RELATION_SET.has(value.relation)) add(errors, 'invalid_metric_relation')
-        if (typeof value.owner !== 'string' || !OWNER_SET.has(value.owner)) add(errors, 'invalid_metric_owner')
+        if (typeof value.owner !== 'string' || !owners.has(value.owner)) add(errors, 'invalid_metric_owner')
         if (definition && !bindingAllows(definition, scope, value.relation, value.owner)) add(errors, 'invalid_metric_binding')
         if (typeof value.status !== 'string' || !STATUS_SET.has(value.status)) add(errors, 'invalid_metric_status')
         const allowedValues = definition?.allowedValues
@@ -1108,7 +1227,7 @@ function parseMetrics(
             const zeroPopulationAllowed = definition.stat === 'count' || definition.stat === 'sum'
             if (value.samples === 0 && (!zeroPopulationAllowed || value.value !== 0)) add(errors, 'invalid_zero_population_metric')
         }
-        const owner = typeof value.owner === 'string' && OWNER_SET.has(value.owner) ? (value.owner as AnimationRumV2ProviderOwner) : null
+        const owner = typeof value.owner === 'string' && owners.has(value.owner) ? (value.owner as AnimationRumV2ProviderOwner) : null
         const provider = owner && providers && definition ? providers[owner]?.[definition.family] : undefined
         if (available && !provider) add(errors, 'missing_metric_provider_evidence')
         if (available && provider && provider.evidence === 0) add(errors, 'missing_metric_evidence')
@@ -1134,15 +1253,20 @@ function parseMetrics(
     return raw as AnimationRumV2Metric[]
 }
 
-function validateMetricSemantics(metrics: AnimationRumV2Metric[] | null, errors: string[]): void {
+function validateMetricSemantics(
+    metrics: AnimationRumV2Metric[] | null,
+    snapshotSchemaVersion: AnimationRumV2SnapshotSchemaVersion,
+    errors: string[]
+): void {
     if (!metrics) return
     const available = metrics.filter(
         (metricValue): metricValue is AnimationRumV2Metric & { value: number; samples: number } =>
             AVAILABLE_STATUSES.has(metricValue.status) && typeof metricValue.value === 'number' && typeof metricValue.samples === 'number'
     )
     const groups = new Map<string, Array<{ stat: AnimationRumV2MetricStat; value: number }>>()
+    const definitions = metricDefinitions(snapshotSchemaVersion)
     for (const metricValue of available) {
-        const definition = METRIC_BY_ID.get(metricValue.metricId)
+        const definition = definitions.get(metricValue.metricId)
         if (!definition) continue
         const key = `${definition.family}\0${definition.name}\0${metricValue.owner}\0${metricValue.relation}`
         const group = groups.get(key) ?? []
@@ -1179,11 +1303,13 @@ function validateMetricSemantics(metrics: AnimationRumV2Metric[] | null, errors:
 function validateCoverageAgainstMetrics(
     coverage: AnimationRumV2Report['coverage'] | null,
     metrics: AnimationRumV2Metric[] | null,
+    snapshotSchemaVersion: AnimationRumV2SnapshotSchemaVersion,
     errors: string[]
 ): void {
     if (!coverage || !metrics) return
+    const definitions = metricDefinitions(snapshotSchemaVersion)
     for (const family of ANIMATION_RUM_FAMILIES) {
-        const familyMetrics = metrics.filter(metric => METRIC_BY_ID.get(metric.metricId)?.family === family)
+        const familyMetrics = metrics.filter(metric => definitions.get(metric.metricId)?.family === family)
         const available = familyMetrics.filter(metric => AVAILABLE_STATUSES.has(metric.status))
         const state = coverage[family]?.status
         if (
@@ -1210,7 +1336,14 @@ export function validateNormalizedAnimationRumV2(raw: unknown, options: { nowEpo
     rejectUnknownKeys(raw, ROOT_KEYS, errors, 'unknown_root_field')
     if (Object.keys(raw).length !== ROOT_KEYS.size) add(errors, 'missing_root_field')
     if (raw.contractVersion !== ANIMATION_RUM_V2_CONTRACT_VERSION) add(errors, 'unsupported_contract_version')
-    if (raw.snapshotSchemaVersion !== ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION) add(errors, 'unsupported_snapshot_schema_version')
+    const snapshotSchemaVersion: AnimationRumV2SnapshotSchemaVersion =
+        raw.snapshotSchemaVersion === ANIMATION_RUM_V2_MEDIA_STAGE_SNAPSHOT_SCHEMA_VERSION ? 2 : 1
+    if (
+        raw.snapshotSchemaVersion !== ANIMATION_RUM_V2_SNAPSHOT_SCHEMA_VERSION &&
+        raw.snapshotSchemaVersion !== ANIMATION_RUM_V2_MEDIA_STAGE_SNAPSHOT_SCHEMA_VERSION
+    ) {
+        add(errors, 'unsupported_snapshot_schema_version')
+    }
     if (!boundedString(raw.eventId, 80, ID_RE)) add(errors, 'invalid_event_id')
     if (!boundedString(raw.captureId, 80, ID_RE)) add(errors, 'invalid_capture_id')
     if (raw.scope !== 'page' && raw.scope !== 'target') add(errors, 'invalid_scope')
@@ -1240,13 +1373,13 @@ export function validateNormalizedAnimationRumV2(raw: unknown, options: { nowEpo
     if (!boundedInteger(raw.samplingPolicyVersion, 255) || raw.samplingPolicyVersion < 1) add(errors, 'invalid_sampling_policy_version')
 
     const context = parseContext(raw.context, errors)
-    const capabilities = parseCapabilities(raw.capabilities, errors)
+    const capabilities = parseCapabilities(raw.capabilities, snapshotSchemaVersion, errors)
     const coverage = parseCoverage(raw.coverage, errors)
-    const providers = parseProviderEvidence(raw.providerEvidence, errors)
+    const providers = parseProviderEvidence(raw.providerEvidence, snapshotSchemaVersion, errors)
     const quality = parseCaptureQuality(raw.captureQuality, context, providers, errors)
-    const metrics = parseMetrics(raw.metrics, raw.scope, capabilities, providers, quality, errors)
-    validateMetricSemantics(metrics, errors)
-    validateCoverageAgainstMetrics(coverage, metrics, errors)
+    const metrics = parseMetrics(raw.metrics, raw.scope, snapshotSchemaVersion, capabilities, providers, quality, errors)
+    validateMetricSemantics(metrics, snapshotSchemaVersion, errors)
+    validateCoverageAgainstMetrics(coverage, metrics, snapshotSchemaVersion, errors)
 
     if (errors.length > 0 || !context || !capabilities || !coverage || !providers || !quality || !metrics) return { ok: false, errors }
     return { ok: true, value: raw as unknown as AnimationRumV2Report }

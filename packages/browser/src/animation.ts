@@ -90,6 +90,7 @@ import {
     publishAcceptedAnimationLabRendererSample,
     snapshotAnimationLabRendererSample,
 } from './animation-lab-renderer-bridge'
+import { publishAcceptedAnimationLabMediaAttempt } from './animation-lab-media-stage-bridge'
 
 export type {
     BrowserAnimationAutoPageEvidenceOptions,
@@ -139,6 +140,8 @@ export interface BrowserAnimationRumOptions extends Omit<AnimationRumOptions, 'e
     contractVersion?: 1 | 2
     /** Also upload finalized native soft-navigation CLS/INP/LCP through the isolated RUM v3 lane. */
     softNavigation?: boolean
+    /** Explicitly upload closed caller-attested media-stage aggregates through RUM v2 wire schema 2. */
+    mediaStages?: boolean
 }
 
 export interface BrowserAnimationDevtoolsOptions extends Omit<AnimationOverlayOptions, 'production'> {}
@@ -258,7 +261,7 @@ export interface AnimationClientHandle {
     createGsapTickerObserver(options: GsapTickerObserverOptions): GsapTickerObserver
     /** Local-only public Lenis scroll evidence with Browser-owned teardown. */
     createLenisScrollObserver(options: LenisScrollObserverOptions): LenisScrollObserver
-    /** Explicit local-only media decode/upload/first-visible stages with Browser-owned teardown. */
+    /** Explicit media stages; local-only unless RUM v2 `mediaStages` is opted in. */
     createMediaSemanticStageRecorder(options?: MediaSemanticStageRecorderOptions): MediaSemanticStageRecorder
     /** Explicit local business-interaction checkpoints across optional public motion observers. */
     createMotionSemanticCheckpointRecorder(
@@ -329,15 +332,16 @@ function resolveRumOptions(rum: BrowserAnimationFeatureOptions['rum'], dsn: stri
     if (!dsn) throw new TypeError('animation.rum requires a DSN; omit rum to keep the animation monitor local-only')
     const contractVersion = rum.contractVersion ?? 1
     if (contractVersion !== 1 && contractVersion !== 2) throw new TypeError('animation.rum.contractVersion must be 1 or 2')
-    const { contractVersion: _contractVersion, softNavigation, ...resolved } = rum
+    const { contractVersion: _contractVersion, softNavigation, mediaStages, ...resolved } = rum
     if (softNavigation !== undefined && typeof softNavigation !== 'boolean') {
         throw new TypeError('animation.rum.softNavigation must be a boolean')
     }
     if (softNavigation) validateBrowserAnimationRumV3SoftNavigationConfiguration(dsn, resolved, routeKey)
     if (contractVersion === 2) {
-        validateBrowserAnimationRumV2Configuration(dsn, resolved, routeKey)
+        validateBrowserAnimationRumV2Configuration(dsn, { ...resolved, mediaStages }, routeKey)
         return { enabled: false, sampleRate: 0 }
     }
+    if (mediaStages) throw new TypeError('animation.rum.mediaStages requires contractVersion 2')
     return { ...resolved, enabled: true }
 }
 
@@ -1106,7 +1110,13 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
     }
 
     createMediaSemanticStageRecorder(options: MediaSemanticStageRecorderOptions = {}): MediaSemanticStageRecorder {
-        const recorder = createMediaSemanticStageRecorder(options)
+        this.rumV2?.markMediaStageInstrumented()
+        const recorder = createMediaSemanticStageRecorder(options, {
+            onAttemptSettled: record => {
+                publishAcceptedAnimationLabMediaAttempt(record)
+                this.rumV2?.recordMediaAttempt(record)
+            },
+        })
         const registration = this.localEvidence.registerMedia(recorder)
         return this.trackProbe(recorder, () => registration.unregister())
     }
@@ -1528,7 +1538,12 @@ export function init(options: BrowserAnimationInitOptions = {}): AnimationBrowse
             lifecycle.attachRumV2(rumV2)
         }
         if (rumOptions && rumOptions.softNavigation) {
-            const { contractVersion: _contractVersion, softNavigation: _softNavigation, ...rumV3Options } = rumOptions
+            const {
+                contractVersion: _contractVersion,
+                softNavigation: _softNavigation,
+                mediaStages: _mediaStages,
+                ...rumV3Options
+            } = rumOptions
             const routeKey = resolvedContext?.routeKey
             if (!routeKey) throw new Error('Validated soft-navigation RUM route key is unavailable')
             const rumV3SoftNavigation = createBrowserAnimationRumV3SoftNavigationController({

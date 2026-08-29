@@ -8,6 +8,9 @@ import {
     ANIMATION_RUM_V2_METRIC_CATALOG,
     ANIMATION_RUM_V2_PAGE_ADDITION_COUNT,
     ANIMATION_RUM_V2_PER_MINUTE_METRIC_IDS,
+    ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES,
+    ANIMATION_RUM_V2_SCHEMA_2_MEDIA_STAGE_METRIC_CATALOG,
+    ANIMATION_RUM_V2_SCHEMA_2_METRIC_CATALOG,
     ANIMATION_RUM_V2_TARGET_ADAPTER_ADDITION_COUNT,
     detectAnimationRumProtocol,
     getAnimationRumV2MetricDefinition,
@@ -35,6 +38,55 @@ test('keeps the v2 metric registry closed, unique, and intentionally bounded', (
     assert.equal(getAnimationRumV2MetricDefinition('target.effective-pixel-ratio-bucket.latest')?.unit, 'multiplier')
     assert.ok(Object.isFrozen(ANIMATION_RUM_V2_METRIC_CATALOG))
     assert.ok(ANIMATION_RUM_V2_METRIC_CATALOG.every(definition => Object.isFrozen(definition) && Object.isFrozen(definition.bindings)))
+})
+
+test('adds caller-attested media stages only in snapshot schema 2', () => {
+    assert.equal(ANIMATION_RUM_V2_SCHEMA_2_MEDIA_STAGE_METRIC_CATALOG.length, 25)
+    assert.equal(
+        ANIMATION_RUM_V2_SCHEMA_2_METRIC_CATALOG.length,
+        ANIMATION_RUM_V2_METRIC_CATALOG.length + ANIMATION_RUM_V2_SCHEMA_2_MEDIA_STAGE_METRIC_CATALOG.length
+    )
+    assert.ok(ANIMATION_RUM_V2_SCHEMA_2_METRIC_CATALOG.length <= ANIMATION_RUM_V2_MAX_METRICS)
+    assert.equal(getAnimationRumV2MetricDefinition('media.stage.webgpu.begin-to-first-visible.p95'), undefined)
+    assert.equal(
+        getAnimationRumV2MetricDefinition('media.stage.webgpu.begin-to-first-visible.p95', 2)?.bindings[0]?.owners[0],
+        'media-stage-adapter'
+    )
+
+    const report = createAnimationRumV2GoldenReport()
+    report.snapshotSchemaVersion = 2
+    report.capabilities = Object.fromEntries(ANIMATION_RUM_V2_SCHEMA_2_CAPABILITIES.map(name => [name, 'unknown']))
+    report.capabilities['media-stage-attestation'] = 'supported'
+    report.coverage.resourcesMedia = { status: 'measured', evidenceLevel: 'runtime-observation' }
+    report.providerEvidence['media-stage-adapter'] = {
+        resourcesMedia: {
+            version: '0.1.0',
+            accepted: 1,
+            retained: 1,
+            evidence: 1,
+            dropped: 0,
+            rejected: 0,
+            truncated: false,
+        },
+    }
+    report.metrics.push({
+        metricId: 'media.stage.webgpu.begin-to-first-visible.p95',
+        relation: 'adapter',
+        owner: 'media-stage-adapter',
+        value: 12,
+        samples: 1,
+        status: 'measured',
+    })
+    assert.equal(validateNormalizedAnimationRumV2(report, { nowEpochMs: ANIMATION_RUM_V2_GOLDEN_NOW }).ok, true)
+    assert.equal(detectAnimationRumProtocol({ ...report, event_type: 'animation_rum' }), 'v2')
+
+    const forgedSchema1 = structuredClone(report)
+    forgedSchema1.snapshotSchemaVersion = 1
+    const rejected = validateNormalizedAnimationRumV2(forgedSchema1, { nowEpochMs: ANIMATION_RUM_V2_GOLDEN_NOW })
+    assert.equal(rejected.ok, false)
+    assert.ok(rejected.errors.includes('unknown_capability'))
+    assert.ok(rejected.errors.includes('unknown_provider_owner'))
+    assert.ok(rejected.errors.includes('unknown_metric_id'))
 })
 
 test('locks the complete catalog manifest independently from its validator', () => {

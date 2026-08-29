@@ -85,6 +85,7 @@ jest.mock('@condev-monitor/monitor-sdk-browser-utils', () => ({
 
 const ACTIVE_CLIENT_KEY = Symbol.for('@condev-monitor/browser-animation/client/v1')
 const LAB_RENDERER_BRIDGE_KEY = Symbol.for('@condev-monitor/animation-lab/renderer-evidence/v1')
+const LAB_MEDIA_STAGE_BRIDGE_KEY = Symbol.for('@condev-monitor/animation-lab/media-stage-evidence/v1')
 
 function runtime(): AnimationRuntime {
     let now = 1_000
@@ -247,6 +248,7 @@ describe('browser animation single-init entry', () => {
         mockRumV3DeliveryInstances.length = 0
         delete (globalThis as typeof globalThis & Record<PropertyKey, unknown>)[ACTIVE_CLIENT_KEY]
         delete (globalThis as typeof globalThis & Record<PropertyKey, unknown>)[LAB_RENDERER_BRIDGE_KEY]
+        delete (globalThis as typeof globalThis & Record<PropertyKey, unknown>)[LAB_MEDIA_STAGE_BRIDGE_KEY]
     })
 
     it('starts a transport-free local client without a DSN and stays SSR-safe', async () => {
@@ -376,6 +378,48 @@ describe('browser animation single-init entry', () => {
         restoreGlobals()
     })
 
+    it('uploads closed media-stage aggregates only after explicit RUM v2 opt-in', async () => {
+        const restoreGlobals = installBrowserGlobals()
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({
+            dsn: 'https://example.test/dsn-api/tracking/app',
+            performance: false,
+            whiteScreen: false,
+            animation: {
+                runtime: runtime(),
+                autoInputWindows: false,
+                autoPageEvidence: false,
+                rum: { contractVersion: 2, sampleRate: 1, mediaStages: true },
+                context: { routeKey: 'fixture.home', environment: 'test', runtimeFamily: 'vanilla' },
+            },
+        })
+        const recorder = client.animation.createMediaSemanticStageRecorder()
+        const attempt = recorder.begin('webgpu', 100)
+        attempt.decodeReady({ timestampMs: 103, byteCount: 9999, itemCount: 7 })
+        attempt.uploadReady({ timestampMs: 108, byteCount: 9999, itemCount: 7 })
+        attempt.firstVisible({ timestampMs: 114, itemCount: 7 })
+        attempt.end(114)
+
+        client.animation.stop()
+        const delivery = mockRumV2DeliveryInstances[0]!
+        const reports = delivery.persist.mock.calls[0]![0] as Array<{
+            snapshotSchemaVersion: number
+            scope: string
+            metrics: Array<{ metricId: string; value: number | null; status: string }>
+        }>
+        expect(reports).toHaveLength(1)
+        expect(reports[0]).toMatchObject({ snapshotSchemaVersion: 2, scope: 'page' })
+        expect(reports[0]?.metrics.find(metric => metric.metricId === 'media.stage.webgpu.begin-to-first-visible.p95')).toMatchObject({
+            value: 14,
+            status: 'measured',
+        })
+        expect(JSON.stringify(reports[0])).not.toMatch(/9999|attemptId|byteCount|itemCount|selector|url/iu)
+        expect(mockTransportSend).not.toHaveBeenCalled()
+
+        await client.destroy()
+        restoreGlobals()
+    })
+
     it('adds isolated soft-navigation RUM v3 without replacing the existing v2 page lane', async () => {
         const restoreGlobals = installBrowserGlobals()
         let softNavigationSubscriber: ((segment: AnimationSoftNavigationFinalizedSegmentSnapshot) => void) | undefined
@@ -388,6 +432,8 @@ describe('browser animation single-init entry', () => {
                 }
             },
         }
+        const rumV3Module = require('./animation-rum-v3') as typeof import('./animation-rum-v3')
+        const createRumV3 = jest.spyOn(rumV3Module, 'createBrowserAnimationRumV3SoftNavigationController')
         const { init } = require('./animation') as typeof import('./animation')
         const client = init({
             dsn: 'https://example.test/dsn-api/tracking/app',
@@ -397,7 +443,7 @@ describe('browser animation single-init entry', () => {
                 runtime: runtimeValue,
                 autoInputWindows: false,
                 autoPageEvidence: false,
-                rum: { contractVersion: 2, sampleRate: 1, softNavigation: true },
+                rum: { contractVersion: 2, sampleRate: 1, softNavigation: true, mediaStages: true },
                 context: { routeKey: 'fixture.product', environment: 'test', runtimeFamily: 'react' },
             },
         })
@@ -409,6 +455,7 @@ describe('browser animation single-init entry', () => {
         expect(client.animation.softNavigationSampled).toBe(true)
         expect(v2Delivery.start).toHaveBeenCalledTimes(1)
         expect(v3Delivery.start).toHaveBeenCalledTimes(1)
+        expect(createRumV3.mock.calls[0]?.[0].rum).not.toHaveProperty('mediaStages')
         softNavigationSubscriber?.({
             schemaVersion: 1,
             segmentId: 9,
@@ -638,6 +685,12 @@ describe('browser animation single-init entry', () => {
                 animation: { runtime: runtime(), rum: { contractVersion: 2, sampleRate: 1 } },
             })
         ).toThrow('valid Browser DSN')
+        expect(() =>
+            init({
+                dsn: 'https://example.test/dsn-api/tracking/app',
+                animation: { runtime: runtime(), rum: { contractVersion: 1, sampleRate: 1, mediaStages: true } },
+            })
+        ).toThrow('mediaStages requires contractVersion 2')
         expect(BrowserTransport).not.toHaveBeenCalled()
         expect(mockRumV2DeliveryConstructor).not.toHaveBeenCalled()
 
@@ -1165,6 +1218,56 @@ describe('browser animation single-init entry', () => {
             activeAttemptCount: 0,
         })
         expect(beginInteraction).not.toHaveBeenCalled()
+    })
+
+    it('publishes only closed media-stage timing boundaries to an optional local Lab bridge', async () => {
+        const evidence: unknown[] = []
+        ;(globalThis as typeof globalThis & Record<PropertyKey, unknown>)[LAB_MEDIA_STAGE_BRIDGE_KEY] = (value: unknown) => {
+            evidence.push(value)
+        }
+        const { init } = require('./animation') as typeof import('./animation')
+        const client = init({ animation: { runtime: runtime() } })
+        const recorder = client.animation.createMediaSemanticStageRecorder()
+        const attempt = recorder.begin('webgpu', 100)
+        attempt.decodeReady({ timestampMs: 112, byteCount: 123, itemCount: 2 })
+        attempt.uploadReady({ timestampMs: 120, byteCount: 456, itemCount: 3 })
+        attempt.firstVisible({ timestampMs: 132, itemCount: 1 })
+        attempt.end(140)
+
+        expect(evidence).toEqual([
+            {
+                contractVersion: 1,
+                kind: 'webgpu',
+                outcome: 'completed',
+                startedAtMs: 100,
+                endedAtMs: 140,
+                decodeReadyAtMs: 112,
+                uploadReadyAtMs: 120,
+                firstVisibleAtMs: 132,
+            },
+        ])
+        expect(JSON.stringify(evidence)).not.toContain('byteCount')
+        expect(JSON.stringify(evidence)).not.toContain('itemCount')
+        await client.destroy()
+    })
+
+    it('rejects forged media-stage attempts that exceed the recorder duration bound', () => {
+        const sink = jest.fn()
+        ;(globalThis as typeof globalThis & Record<PropertyKey, unknown>)[LAB_MEDIA_STAGE_BRIDGE_KEY] = sink
+        const { publishAcceptedAnimationLabMediaAttempt } =
+            require('./animation-lab-media-stage-bridge') as typeof import('./animation-lab-media-stage-bridge')
+
+        publishAcceptedAnimationLabMediaAttempt({
+            kind: 'video',
+            outcome: 'completed',
+            startedAt: 0,
+            endedAt: 600_001,
+            decodeReady: null,
+            uploadReady: null,
+            firstVisible: null,
+        } as never)
+
+        expect(sink).not.toHaveBeenCalled()
     })
 
     it('exposes semantic recorders only through the local devtools sidecar', async () => {
