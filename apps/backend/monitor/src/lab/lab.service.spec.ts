@@ -63,6 +63,143 @@ function reportArtifact(run: LabRunEntity): LabArtifactEntity {
 }
 
 describe('LabService runner grants and ownership', () => {
+    it('revalidates Trace Index v2 against the latest report before exposing the timeline', async () => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const run = runEntity()
+        const traceArtifact = {
+            ...reportArtifact(run),
+            id: '44444444-4444-4444-8444-444444444444',
+            kind: 'trace-index' as const,
+            storageKey: 'animation-lab/private/trace-index.json',
+        }
+        const report = reportArtifact(run)
+        runs.findOne.mockResolvedValue(run)
+        artifacts.findOne.mockImplementation(async options => (options.where.kind === 'trace-index' ? traceArtifact : report))
+        const applications = { assertOwned: jest.fn().mockResolvedValue(undefined) }
+        const storage = {
+            readStoredJson: jest.fn().mockResolvedValue({
+                schemaVersion: 2,
+                startMs: 0,
+                endMs: 0,
+                totalInputEvents: 0,
+                retainedEvents: 0,
+                droppedEvents: 0,
+                events: [],
+                categoryDurationMs: {
+                    interaction: 0,
+                    script: 0,
+                    'style-layout': 0,
+                    paint: 0,
+                    composite: 0,
+                    'raster-gpu': 0,
+                    network: 0,
+                    animation: 0,
+                    gc: 0,
+                    other: 0,
+                },
+                actionPhaseSummaries: [
+                    {
+                        actionId: 'hero-hover-01',
+                        actionLabel: 'hover-card',
+                        startMs: null,
+                        endMs: null,
+                        wallTimeMs: null,
+                        status: 'not-observed',
+                        eventCount: 0,
+                        classifiedThreadTimeMs: null,
+                        threads: [],
+                        limitations: ['trace-action-marker-not-observed'],
+                    },
+                ],
+            }),
+        }
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            {} as never,
+            applications as never,
+            storage as never
+        )
+        Object.defineProperty(service, 'readAnimationReport', {
+            value: jest.fn().mockResolvedValue({
+                analysis: { scenarioActions: [{ actionId: 'hero-hover-01', label: 'renamed-hover-card' }] },
+            }),
+        })
+
+        await expect(service.getTimeline(7, run.id)).rejects.toBeInstanceOf(ConflictException)
+        expect(applications.assertOwned).toHaveBeenCalledWith(run.appId, 7)
+        expect(storage.readStoredJson).toHaveBeenCalledWith(traceArtifact.storageKey, 'identity', 4 * 1024 * 1024)
+        expect(artifacts.findOne).toHaveBeenNthCalledWith(2, {
+            where: { runId: run.id, appId: run.appId, kind: 'animation-report' },
+            order: { createdAt: 'DESC' },
+        })
+    })
+
+    it('binds Trace Index v2 summaries to the latest verified animation-report actions', async () => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const run = runEntity()
+        const report = reportArtifact(run)
+        artifacts.findOne.mockResolvedValue(report)
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            {} as never,
+            { assertOwned: jest.fn() } as never,
+            {} as never
+        )
+        Object.defineProperty(service, 'readAnimationReport', {
+            value: jest.fn().mockResolvedValue({
+                analysis: { scenarioActions: [{ actionId: 'hero-hover-01', label: 'hover-card' }] },
+            }),
+        })
+        const timeline = {
+            schemaVersion: 2,
+            actionPhaseSummaries: [{ actionId: 'hero-hover-01', actionLabel: 'hover-card' }],
+        }
+
+        await expect((service as any).assertTraceIndexActionBindings(artifacts, run, timeline)).resolves.toBeUndefined()
+        expect(artifacts.findOne).toHaveBeenCalledWith({
+            where: { runId: run.id, appId: run.appId, kind: 'animation-report' },
+            order: { createdAt: 'DESC' },
+        })
+
+        for (const forged of [
+            { ...timeline, actionPhaseSummaries: [{ actionId: 'forged-action', actionLabel: 'hover-card' }] },
+            { ...timeline, actionPhaseSummaries: [{ actionId: 'hero-hover-01', actionLabel: 'forged-label' }] },
+            { ...timeline, actionPhaseSummaries: [] },
+        ]) {
+            await expect((service as any).assertTraceIndexActionBindings(artifacts, run, forged)).rejects.toBeInstanceOf(ConflictException)
+        }
+    })
+
+    it('fails closed when Trace Index v2 has no current report or verified scenario actions', async () => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const run = runEntity()
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            {} as never,
+            { assertOwned: jest.fn() } as never,
+            {} as never
+        )
+        const timeline = { schemaVersion: 2, actionPhaseSummaries: [] }
+        artifacts.findOne.mockResolvedValue(null)
+        await expect((service as any).assertTraceIndexActionBindings(artifacts, run, timeline)).rejects.toBeInstanceOf(ConflictException)
+
+        artifacts.findOne.mockResolvedValue(reportArtifact(run))
+        Object.defineProperty(service, 'readAnimationReport', { value: jest.fn().mockResolvedValue({ analysis: null }) })
+        await expect((service as any).assertTraceIndexActionBindings(artifacts, run, timeline)).rejects.toBeInstanceOf(ConflictException)
+    })
+
     it('checks app ownership and persists only a hash of the once-returned runner grant', async () => {
         const runs = repository<LabRunEntity>()
         const artifacts = repository<LabArtifactEntity>()
@@ -361,6 +498,226 @@ describe('LabService runner grants and ownership', () => {
         expect(storage.writeTemporary).not.toHaveBeenCalled()
     })
 
+    it('discards Trace Index v2 from Runner contracts older than 7 before permanent storage', async () => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const rawToken = `labg_${'f'.repeat(43)}`
+        const config = parseCreateLabRunInput({
+            appId: 'app-123',
+            scenarioKey: 'trace.action-phases.v2',
+            config: { trace: true },
+        }).config
+        const run = runEntity({
+            status: 'running',
+            phase: 'uploading',
+            config: JSON.stringify(config),
+            summary: JSON.stringify({ capabilities: { cdpTrace: true } }),
+        })
+        const consumedAt = new Date('2026-08-25T00:00:30.000Z')
+        const grant: LabRunnerGrantEntity = {
+            id: '22222222-2222-4222-8222-222222222222',
+            runId: run.id,
+            appId: run.appId,
+            tokenHash: createHash(rawToken),
+            expiresAt: new Date(Date.now() + 60_000),
+            consumedAt,
+            lastUsedAt: consumedAt,
+            revokedAt: null,
+            createdAt: new Date(),
+        }
+        runs.findOne.mockResolvedValue(run)
+        grants.findOne.mockResolvedValue(grant)
+        artifacts.findOne.mockResolvedValue(null)
+        const repositories = new Map<unknown, unknown>([
+            [LabRunEntity, runs],
+            [LabArtifactEntity, artifacts],
+            [LabRunnerGrantEntity, grants],
+        ])
+        const manager = { getRepository: (entity: unknown) => repositories.get(entity) }
+        const dataSource = { transaction: jest.fn(async callback => callback(manager)) }
+        const temporary = { path: '/private/tmp/trace-index.part', byteSize: 2, sha256: 'a'.repeat(64) }
+        const storage = {
+            writeTemporary: jest.fn().mockResolvedValue(temporary),
+            readTemporaryJson: jest.fn().mockResolvedValue({
+                schemaVersion: 2,
+                startMs: 0,
+                endMs: 0,
+                totalInputEvents: 0,
+                retainedEvents: 0,
+                droppedEvents: 0,
+                events: [],
+                categoryDurationMs: {
+                    interaction: 0,
+                    script: 0,
+                    'style-layout': 0,
+                    paint: 0,
+                    composite: 0,
+                    'raster-gpu': 0,
+                    network: 0,
+                    animation: 0,
+                    gc: 0,
+                    other: 0,
+                },
+                actionPhaseSummaries: [],
+            }),
+            discardTemporary: jest.fn().mockResolvedValue(undefined),
+            commitTemporary: jest.fn(),
+        }
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            dataSource as never,
+            { assertOwned: jest.fn() } as never,
+            storage as never
+        )
+
+        await expect(
+            service.uploadArtifact({
+                runId: run.id,
+                token: rawToken,
+                runnerContractVersion: 6,
+                input: Readable.from('{}'),
+                metadata: {
+                    kind: 'trace-index',
+                    mimeType: 'application/json',
+                    encoding: 'identity',
+                    expectedSha256: temporary.sha256,
+                    idempotencyKeyHash: 'b'.repeat(64),
+                    contentLength: temporary.byteSize,
+                    maxBytes: 4 * 1024 * 1024,
+                },
+            })
+        ).rejects.toMatchObject({ status: 426 })
+        expect(storage.discardTemporary).toHaveBeenCalledWith(temporary.path)
+        expect(storage.commitTemporary).not.toHaveBeenCalled()
+        expect(artifacts.save).not.toHaveBeenCalled()
+    })
+
+    it('revalidates a racing idempotent Trace duplicate before returning it', async () => {
+        const runs = repository<LabRunEntity>()
+        const artifacts = repository<LabArtifactEntity>()
+        const grants = repository<LabRunnerGrantEntity>()
+        const rawToken = `labg_${'h'.repeat(43)}`
+        const config = parseCreateLabRunInput({
+            appId: 'app-123',
+            scenarioKey: 'trace.racing-idempotency.v2',
+            config: { trace: true },
+        }).config
+        const run = runEntity({
+            status: 'running',
+            phase: 'uploading',
+            config: JSON.stringify(config),
+            summary: JSON.stringify({ capabilities: { cdpTrace: true } }),
+        })
+        const grant: LabRunnerGrantEntity = {
+            id: '22222222-2222-4222-8222-222222222222',
+            runId: run.id,
+            appId: run.appId,
+            tokenHash: createHash(rawToken),
+            expiresAt: new Date(Date.now() + 60_000),
+            consumedAt: new Date('2026-08-25T00:00:30.000Z'),
+            lastUsedAt: new Date('2026-08-25T00:00:30.000Z'),
+            revokedAt: null,
+            createdAt: new Date(),
+        }
+        const existingTrace = {
+            ...reportArtifact(run),
+            kind: 'trace-index' as const,
+            storageKey: 'animation-lab/private/trace-index.json',
+        }
+        const report = reportArtifact(run)
+        artifacts.findOne.mockImplementation(async options => {
+            if (options.where.kind === 'animation-report') return report
+            return existingTrace
+        })
+        runs.findOne.mockResolvedValue(run)
+        grants.findOne.mockResolvedValue(grant)
+        const repositories = new Map<unknown, unknown>([
+            [LabRunEntity, runs],
+            [LabArtifactEntity, artifacts],
+            [LabRunnerGrantEntity, grants],
+        ])
+        const manager = { getRepository: (entity: unknown) => repositories.get(entity) }
+        const dataSource = { transaction: jest.fn(async callback => callback(manager)) }
+        const temporary = { path: '/private/tmp/trace-index-race.part', byteSize: 2, sha256: existingTrace.sha256 }
+        const traceIndex = {
+            schemaVersion: 2,
+            startMs: 0,
+            endMs: 0,
+            totalInputEvents: 0,
+            retainedEvents: 0,
+            droppedEvents: 0,
+            events: [],
+            categoryDurationMs: {
+                interaction: 0,
+                script: 0,
+                'style-layout': 0,
+                paint: 0,
+                composite: 0,
+                'raster-gpu': 0,
+                network: 0,
+                animation: 0,
+                gc: 0,
+                other: 0,
+            },
+            actionPhaseSummaries: [
+                {
+                    actionId: 'hero-hover-01',
+                    actionLabel: 'hover-card',
+                    startMs: null,
+                    endMs: null,
+                    wallTimeMs: null,
+                    status: 'not-observed',
+                    eventCount: 0,
+                    classifiedThreadTimeMs: null,
+                    threads: [],
+                    limitations: ['trace-action-marker-not-observed'],
+                },
+            ],
+        }
+        const storage = {
+            writeTemporary: jest.fn().mockResolvedValue(temporary),
+            readTemporaryJson: jest.fn().mockResolvedValue(traceIndex),
+            discardTemporary: jest.fn().mockResolvedValue(undefined),
+            commitTemporary: jest.fn(),
+        }
+        const service = new LabService(
+            runs as never,
+            artifacts as never,
+            grants as never,
+            dataSource as never,
+            { assertOwned: jest.fn() } as never,
+            storage as never
+        )
+        Object.defineProperty(service, 'readAnimationReport', {
+            value: jest.fn().mockResolvedValue({
+                analysis: { scenarioActions: [{ actionId: 'hero-hover-01', label: 'renamed-hover-card' }] },
+            }),
+        })
+
+        await expect(
+            service.uploadArtifact({
+                runId: run.id,
+                token: rawToken,
+                runnerContractVersion: 7,
+                input: Readable.from('{}'),
+                metadata: {
+                    kind: 'trace-index',
+                    mimeType: 'application/json',
+                    encoding: 'identity',
+                    expectedSha256: existingTrace.sha256,
+                    idempotencyKeyHash: existingTrace.idempotencyKeyHash,
+                    contentLength: temporary.byteSize,
+                    maxBytes: 4 * 1024 * 1024,
+                },
+            })
+        ).rejects.toBeInstanceOf(ConflictException)
+        expect(storage.discardTemporary).toHaveBeenCalledWith(temporary.path)
+        expect(storage.commitTemporary).not.toHaveBeenCalled()
+    })
+
     it('keeps the complete Runner v4 claim, update, and artifact lifecycle compatible', async () => {
         const runs = repository<LabRunEntity>()
         const artifacts = repository<LabArtifactEntity>()
@@ -379,9 +736,10 @@ describe('LabService runner grants and ownership', () => {
                     budgetRef: { catalogVersion: 1, budgetId: 'condev.animation.default', budgetVersion: 3 },
                     metricCatalogVersion: 3,
                 },
+                trace: true,
             },
         }).config
-        const run = runEntity({ config: JSON.stringify(config) })
+        const run = runEntity({ config: JSON.stringify(config), summary: JSON.stringify({ capabilities: { cdpTrace: true } }) })
         const grant: LabRunnerGrantEntity = {
             id: '22222222-2222-4222-8222-222222222222',
             runId: run.id,
@@ -393,7 +751,11 @@ describe('LabService runner grants and ownership', () => {
             revokedAt: null,
             createdAt: new Date(),
         }
-        const existingArtifact = reportArtifact(run)
+        const existingArtifact = {
+            ...reportArtifact(run),
+            kind: 'trace-index' as const,
+            storageKey: 'animation-lab/private/trace-index.json',
+        }
         runs.findOne.mockResolvedValue(run)
         grants.findOne.mockResolvedValue(grant)
         artifacts.findOne.mockResolvedValue(existingArtifact)
@@ -404,13 +766,40 @@ describe('LabService runner grants and ownership', () => {
         ])
         const manager = { getRepository: (entity: unknown) => repositories.get(entity) }
         const dataSource = { transaction: jest.fn(async callback => callback(manager)) }
+        const temporary = { path: '/private/tmp/runner-v4-trace.part', byteSize: 2, sha256: existingArtifact.sha256 }
+        const storage = {
+            writeTemporary: jest.fn().mockResolvedValue(temporary),
+            readTemporaryJson: jest.fn().mockResolvedValue({
+                schemaVersion: 1,
+                startMs: 0,
+                endMs: 0,
+                totalInputEvents: 0,
+                retainedEvents: 0,
+                droppedEvents: 0,
+                events: [],
+                categoryDurationMs: {
+                    interaction: 0,
+                    script: 0,
+                    'style-layout': 0,
+                    paint: 0,
+                    composite: 0,
+                    'raster-gpu': 0,
+                    network: 0,
+                    animation: 0,
+                    gc: 0,
+                    other: 0,
+                },
+            }),
+            discardTemporary: jest.fn().mockResolvedValue(undefined),
+            commitTemporary: jest.fn(),
+        }
         const service = new LabService(
             runs as never,
             artifacts as never,
             grants as never,
             dataSource as never,
             { assertOwned: jest.fn() } as never,
-            {} as never
+            storage as never
         )
 
         await expect(service.negotiateRunnerContract(run.id, rawToken, 4)).resolves.toEqual({
@@ -435,18 +824,20 @@ describe('LabService runner grants and ownership', () => {
                 runId: run.id,
                 token: rawToken,
                 runnerContractVersion: 4,
-                input: Readable.from(Buffer.alloc(1_024)),
+                input: Readable.from('{}'),
                 metadata: {
-                    kind: 'animation-report',
+                    kind: 'trace-index',
                     mimeType: 'application/json',
                     encoding: 'identity',
                     expectedSha256: existingArtifact.sha256,
                     idempotencyKeyHash: existingArtifact.idempotencyKeyHash,
-                    contentLength: 1_024,
-                    maxBytes: 2 * 1024 * 1024,
+                    contentLength: temporary.byteSize,
+                    maxBytes: 4 * 1024 * 1024,
                 },
             })
-        ).resolves.toEqual(expect.objectContaining({ id: existingArtifact.id, kind: 'animation-report' }))
+        ).resolves.toEqual(expect.objectContaining({ id: existingArtifact.id, kind: 'trace-index' }))
+        expect(storage.discardTemporary).toHaveBeenCalledWith(temporary.path)
+        expect(storage.commitTemporary).not.toHaveBeenCalled()
         expect(run).toEqual(expect.objectContaining({ status: 'running', phase: 'processing', progress: 0.75 }))
         expect(grant.consumedAt).toBeInstanceOf(Date)
     })

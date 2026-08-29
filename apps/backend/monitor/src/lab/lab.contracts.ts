@@ -8,8 +8,8 @@ import { type AnimationLabMetricV2Projection, parseAnimationLabMetricV2 } from '
 export const LAB_RUN_CONFIG_MAX_BYTES = 16 * 1024
 export const LAB_RUN_SUMMARY_MAX_BYTES = 64 * 1024
 export const LAB_RUN_ARTIFACT_TOTAL_MAX_BYTES = 128 * 1024 * 1024
-export const LAB_RUNNER_CONTRACT_VERSION = 6 as const
-export const LAB_RUNNER_CONTRACT_VERSIONS = [4, 5, LAB_RUNNER_CONTRACT_VERSION] as const
+export const LAB_RUNNER_CONTRACT_VERSION = 7 as const
+export const LAB_RUNNER_CONTRACT_VERSIONS = [4, 5, 6, LAB_RUNNER_CONTRACT_VERSION] as const
 export type LabRunnerContractVersion = (typeof LAB_RUNNER_CONTRACT_VERSIONS)[number]
 
 const LAB_RUNNER_V5_ACTION_KINDS: ReadonlySet<string> = new Set([
@@ -143,6 +143,17 @@ export function assertLabRunnerSupportsReportActionKinds(
             426
         )
     }
+}
+
+export function assertLabRunnerSupportsTraceIndexVersion(
+    runnerContractVersion: LabRunnerContractVersion,
+    traceIndexSchemaVersion: number
+): void {
+    if (traceIndexSchemaVersion === 1 || (runnerContractVersion >= 7 && traceIndexSchemaVersion === 2)) return
+    throw new HttpException(
+        `Animation Lab Runner contract ${runnerContractVersion} cannot upload trace-index schema ${traceIndexSchemaVersion}; Runner contract 7 is required`,
+        426
+    )
 }
 
 export type CreateLabRunInput = {

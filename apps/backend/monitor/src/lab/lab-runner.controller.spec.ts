@@ -1,6 +1,6 @@
 import { HttpException } from '@nestjs/common'
 
-import { LAB_RUNNER_CONTRACT_VERSION } from './lab.contracts'
+import { LAB_RUNNER_CONTRACT_VERSION, LAB_RUNNER_CONTRACT_VERSIONS } from './lab.contracts'
 import { LabRunnerController } from './lab-runner.controller'
 
 const runId = '11111111-1111-4111-8111-111111111111'
@@ -37,7 +37,7 @@ describe('LabRunnerController contract negotiation', () => {
         }
     )
 
-    it.each([4, 5, LAB_RUNNER_CONTRACT_VERSION] as const)(
+    it.each(LAB_RUNNER_CONTRACT_VERSIONS)(
         'passes Runner contract %s through every control-plane operation',
         async runnerContractVersion => {
             const negotiated = { runId, runnerContractVersion }

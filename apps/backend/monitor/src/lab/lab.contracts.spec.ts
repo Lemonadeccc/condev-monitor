@@ -3,6 +3,7 @@ import { BadRequestException, HttpException } from '@nestjs/common'
 import {
     assertLabRunnerSupportsMeasurementContract,
     assertLabRunnerSupportsReportActionKinds,
+    assertLabRunnerSupportsTraceIndexVersion,
     createHash,
     LAB_RUNNER_CONTRACT_VERSION,
     LAB_RUNNER_CONTRACT_VERSIONS,
@@ -299,9 +300,20 @@ describe('animation lab contracts', () => {
             } catch (error) {
                 expect(error).toBeInstanceOf(HttpException)
                 expect((error as HttpException).getStatus()).toBe(426)
-                expect((error as Error).message).toMatch(/contract 4 or 5 or 6 is required/u)
+                expect((error as Error).message).toMatch(/contract 4 or 5 or 6 or 7 is required/u)
             }
         }
+    })
+
+    it('keeps trace-index v1 compatible and gates v2 on Runner contract 7', () => {
+        for (const version of LAB_RUNNER_CONTRACT_VERSIONS) {
+            expect(() => assertLabRunnerSupportsTraceIndexVersion(version, 1)).not.toThrow()
+        }
+        for (const version of [4, 5, 6] as const) {
+            expect(() => assertLabRunnerSupportsTraceIndexVersion(version, 2)).toThrow(HttpException)
+        }
+        expect(() => assertLabRunnerSupportsTraceIndexVersion(7, 2)).not.toThrow()
+        expect(() => assertLabRunnerSupportsTraceIndexVersion(7, 3)).toThrow(HttpException)
     })
 
     it('accepts only the closed, bounded summary shape', () => {

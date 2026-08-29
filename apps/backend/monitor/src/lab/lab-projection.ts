@@ -57,7 +57,40 @@ type RecordValue = Record<string, unknown>
 
 type ParsedMetric = LabSummaryMetric & { evidenceLevel: AnimationLabMetricV2Projection['evidenceLevel'] }
 
-type ParsedTimeline = {
+const TRACE_ACTION_PHASES = ['script', 'style-layout', 'paint', 'composite', 'raster-gpu', 'animation', 'gc', 'other'] as const
+const TRACE_ACTION_STATUSES = ['measured', 'partial', 'not-observed'] as const
+const TRACE_ACTION_LIMITATIONS = [
+    'trace-action-marker-not-observed',
+    'trace-action-marker-ambiguous',
+    'trace-action-phase-events-not-observed',
+    'trace-action-thread-kind-unknown',
+    'trace-action-thread-breakdown-truncated',
+    'trace-action-non-laminar-overlap',
+    'trace-action-cross-thread-total-may-exceed-wall-time',
+    'trace-action-classification-is-correlative',
+    'trace-action-raster-gpu-is-not-gpu-completion',
+] as const
+
+export type ParsedTraceActionPhaseSummary = {
+    actionId: string
+    actionLabel: string
+    startMs: number | null
+    endMs: number | null
+    wallTimeMs: number | null
+    status: (typeof TRACE_ACTION_STATUSES)[number]
+    eventCount: number
+    classifiedThreadTimeMs: number | null
+    threads: Array<{
+        threadId: string
+        thread: (typeof TRACE_THREADS)[number]
+        classifiedSelfTimeMs: number
+        phases: Record<(typeof TRACE_ACTION_PHASES)[number], number>
+    }>
+    limitations: Array<(typeof TRACE_ACTION_LIMITATIONS)[number]>
+}
+
+export type ParsedTimeline = {
+    schemaVersion: 1 | 2
     durationMs: number
     events: Array<{
         eventId: string
@@ -88,6 +121,7 @@ type ParsedTimeline = {
     totalEvents: number
     truncated: boolean
     maxEvents: number
+    actionPhaseSummaries: ParsedTraceActionPhaseSummary[]
 }
 
 export type ParsedAnimationReport = {
@@ -910,14 +944,215 @@ function platformCategory(category: (typeof TRACE_CATEGORIES)[number], durationM
     return category
 }
 
+function approximatelyEqual(left: number, right: number): boolean {
+    return Math.abs(left - right) <= 0.01
+}
+
+function parseTraceActionPhaseSummaries(
+    value: unknown,
+    traceStartMs: number,
+    traceEndMs: number,
+    eligibleEventCount: number
+): ParsedTraceActionPhaseSummary[] {
+    const seenActionIds = new Set<string>()
+    const seenActionLabels = new Set<string>()
+    return boundedArray(value, 'trace-index.actionPhaseSummaries', 128).map((item, index) => {
+        const label = `trace-index.actionPhaseSummaries[${index}]`
+        const raw = record(item, label)
+        exactKeys(
+            raw,
+            [
+                'actionId',
+                'actionLabel',
+                'startMs',
+                'endMs',
+                'wallTimeMs',
+                'status',
+                'eventCount',
+                'classifiedThreadTimeMs',
+                'threads',
+                'limitations',
+            ],
+            label
+        )
+        const actionId = token(raw.actionId, `${label}.actionId`)
+        const actionLabel = string(raw.actionLabel, `${label}.actionLabel`, 160)
+        if (seenActionIds.has(actionId) || seenActionLabels.has(actionLabel)) {
+            throw new BadRequestException(`${label} duplicates an action identity`)
+        }
+        seenActionIds.add(actionId)
+        seenActionLabels.add(actionLabel)
+        const startMs = nullableFinite(raw.startMs, `${label}.startMs`, traceStartMs, traceEndMs)
+        const endMs = nullableFinite(raw.endMs, `${label}.endMs`, traceStartMs, traceEndMs)
+        const wallTimeMs = nullableFinite(raw.wallTimeMs, `${label}.wallTimeMs`, 0, MAX_DURATION_MS)
+        const status = enumeration(raw.status, `${label}.status`, TRACE_ACTION_STATUSES)
+        if ((startMs === null) !== (endMs === null) || (startMs === null) !== (wallTimeMs === null)) {
+            throw new BadRequestException(`${label} action window fields must be all null or all measured`)
+        }
+        if (startMs !== null && endMs !== null && wallTimeMs !== null) {
+            if (endMs < startMs || !approximatelyEqual(endMs - startMs, wallTimeMs)) {
+                throw new BadRequestException(`${label}.wallTimeMs does not match its action window`)
+            }
+        }
+        const eventCount = integer(raw.eventCount, `${label}.eventCount`, 0, eligibleEventCount)
+        const classifiedThreadTimeMs = nullableFinite(
+            raw.classifiedThreadTimeMs,
+            `${label}.classifiedThreadTimeMs`,
+            0,
+            MAX_DURATION_MS * 64
+        )
+        const seenThreadIds = new Set<string>()
+        const threads = boundedArray(raw.threads, `${label}.threads`, 64).map((threadItem, threadIndex) => {
+            const threadLabel = `${label}.threads[${threadIndex}]`
+            const threadRaw = record(threadItem, threadLabel)
+            exactKeys(threadRaw, ['threadId', 'thread', 'classifiedSelfTimeMs', 'phases'], threadLabel)
+            const threadId = token(threadRaw.threadId, `${threadLabel}.threadId`, 80)
+            if (!/^thread-[0-9a-z]+$/u.test(threadId) || seenThreadIds.has(threadId)) {
+                throw new BadRequestException(`Invalid or duplicate ${threadLabel}.threadId`)
+            }
+            seenThreadIds.add(threadId)
+            const thread = enumeration(threadRaw.thread, `${threadLabel}.thread`, TRACE_THREADS)
+            const classifiedSelfTimeMs = finite(
+                threadRaw.classifiedSelfTimeMs,
+                `${threadLabel}.classifiedSelfTimeMs`,
+                0,
+                wallTimeMs ?? MAX_DURATION_MS
+            )
+            const phasesRaw = record(threadRaw.phases, `${threadLabel}.phases`)
+            exactKeys(phasesRaw, TRACE_ACTION_PHASES, `${threadLabel}.phases`)
+            const phases = Object.fromEntries(
+                TRACE_ACTION_PHASES.map(phase => [
+                    phase,
+                    finite(phasesRaw[phase], `${threadLabel}.phases.${phase}`, 0, wallTimeMs ?? MAX_DURATION_MS),
+                ])
+            ) as Record<(typeof TRACE_ACTION_PHASES)[number], number>
+            const phaseTotal = TRACE_ACTION_PHASES.reduce((total, phase) => total + phases[phase], 0)
+            if (!approximatelyEqual(phaseTotal, classifiedSelfTimeMs)) {
+                throw new BadRequestException(`${threadLabel}.classifiedSelfTimeMs does not match phases`)
+            }
+            return { threadId, thread, classifiedSelfTimeMs, phases }
+        })
+        const threadTotal = threads.reduce((total, thread) => total + thread.classifiedSelfTimeMs, 0)
+        if (
+            (classifiedThreadTimeMs === null) !== (threads.length === 0) ||
+            (classifiedThreadTimeMs !== null && !approximatelyEqual(threadTotal, classifiedThreadTimeMs))
+        ) {
+            throw new BadRequestException(`${label}.classifiedThreadTimeMs does not match threads`)
+        }
+        const seenLimitations = new Set<string>()
+        const parsedLimitations = boundedArray(raw.limitations, `${label}.limitations`, TRACE_ACTION_LIMITATIONS.length).map(
+            (limitation, limitationIndex) => {
+                const limitationLabel = `${label}.limitations[${limitationIndex}]`
+                const parsed = enumeration(limitation, limitationLabel, TRACE_ACTION_LIMITATIONS)
+                if (seenLimitations.has(parsed)) throw new BadRequestException(`${limitationLabel} is duplicated`)
+                seenLimitations.add(parsed)
+                return parsed
+            }
+        )
+        if (eventCount === 0 && (classifiedThreadTimeMs !== null || threads.length !== 0)) {
+            throw new BadRequestException(`${label} cannot classify thread phases without eligible events`)
+        }
+        if (eventCount > 0 && (classifiedThreadTimeMs === null || threads.length === 0)) {
+            throw new BadRequestException(`${label} eligible events require classified thread phases`)
+        }
+        if (eventCount < threads.length) {
+            throw new BadRequestException(`${label}.eventCount cannot be smaller than its concrete thread count`)
+        }
+        const markerMissing = seenLimitations.has('trace-action-marker-not-observed')
+        const markerAmbiguous = seenLimitations.has('trace-action-marker-ambiguous')
+        const phaseEventsMissing = seenLimitations.has('trace-action-phase-events-not-observed')
+        const unknownThread = seenLimitations.has('trace-action-thread-kind-unknown')
+        const threadBreakdownTruncated = seenLimitations.has('trace-action-thread-breakdown-truncated')
+        const nonLaminarOverlap = seenLimitations.has('trace-action-non-laminar-overlap')
+        const crossThread = seenLimitations.has('trace-action-cross-thread-total-may-exceed-wall-time')
+        const correlative = seenLimitations.has('trace-action-classification-is-correlative')
+        const rasterGpuBoundary = seenLimitations.has('trace-action-raster-gpu-is-not-gpu-completion')
+
+        if (startMs === null) {
+            const validMissingMarker = status === 'not-observed' && markerMissing && !markerAmbiguous && parsedLimitations.length === 1
+            const validAmbiguousMarker = status === 'partial' && markerAmbiguous && !markerMissing && parsedLimitations.length === 1
+            if (!validMissingMarker && !validAmbiguousMarker) {
+                throw new BadRequestException(`${label} null action window has contradictory status or limitations`)
+            }
+            if (eventCount !== 0 || classifiedThreadTimeMs !== null || threads.length !== 0) {
+                throw new BadRequestException(`${label} null action window cannot contain classified phase evidence`)
+            }
+        } else if (status === 'not-observed') {
+            if (
+                eventCount !== 0 ||
+                classifiedThreadTimeMs !== null ||
+                threads.length !== 0 ||
+                !correlative ||
+                !phaseEventsMissing ||
+                parsedLimitations.length !== 2
+            ) {
+                throw new BadRequestException(`${label} unobserved phase window has contradictory evidence or limitations`)
+            }
+        } else {
+            if (eventCount === 0 || classifiedThreadTimeMs === null || threads.length === 0 || !correlative) {
+                throw new BadRequestException(`${label} measured action window requires classified thread evidence`)
+            }
+            if (classifiedThreadTimeMs <= 0 || !threads.some(thread => TRACE_ACTION_PHASES.some(phase => thread.phases[phase] > 0))) {
+                throw new BadRequestException(`${label} measured action window requires positive classified phase time`)
+            }
+            if (markerMissing || markerAmbiguous || phaseEventsMissing) {
+                throw new BadRequestException(`${label} classified action window cannot declare missing marker or phase evidence`)
+            }
+            const hasPartialEvidence = unknownThread || threadBreakdownTruncated || nonLaminarOverlap
+            if ((status === 'partial') !== hasPartialEvidence) {
+                throw new BadRequestException(`${label} status does not match its partial trace evidence`)
+            }
+            if (nonLaminarOverlap && eventCount < 2) {
+                throw new BadRequestException(`${label} non-laminar overlap requires at least two eligible events`)
+            }
+            const containsUnknownThread = threads.some(thread => thread.thread === 'unknown')
+            if (unknownThread !== containsUnknownThread) {
+                throw new BadRequestException(`${label} unknown-thread limitation does not match its thread evidence`)
+            }
+            if (threadBreakdownTruncated && (threads.length !== 64 || eventCount <= 64)) {
+                throw new BadRequestException(`${label} truncated thread breakdown does not contain the bounded retained set`)
+            }
+            if (crossThread !== threads.length > 1) {
+                throw new BadRequestException(`${label} cross-thread limitation does not match its thread evidence`)
+            }
+            const containsRasterGpuTime = threads.some(thread => thread.phases['raster-gpu'] > 0)
+            if (rasterGpuBoundary !== containsRasterGpuTime) {
+                throw new BadRequestException(`${label} raster-gpu limitation does not match its phase evidence`)
+            }
+        }
+        return {
+            actionId,
+            actionLabel,
+            startMs,
+            endMs,
+            wallTimeMs,
+            status,
+            eventCount,
+            classifiedThreadTimeMs,
+            threads,
+            limitations: parsedLimitations,
+        }
+    })
+}
+
 export function parseTraceIndexArtifact(value: unknown): ParsedTimeline {
     const raw = record(value, 'trace-index')
+    if (raw.schemaVersion !== 1 && raw.schemaVersion !== 2) throw new BadRequestException('Unsupported trace-index schemaVersion')
     exactKeys(
         raw,
-        ['schemaVersion', 'startMs', 'endMs', 'totalInputEvents', 'retainedEvents', 'droppedEvents', 'events', 'categoryDurationMs'],
+        [
+            'schemaVersion',
+            'startMs',
+            'endMs',
+            'totalInputEvents',
+            'retainedEvents',
+            'droppedEvents',
+            'events',
+            'categoryDurationMs',
+            ...(raw.schemaVersion === 2 ? ['actionPhaseSummaries'] : []),
+        ],
         'trace-index'
     )
-    if (raw.schemaVersion !== 1) throw new BadRequestException('Unsupported trace-index schemaVersion')
     const startMs = finite(raw.startMs, 'trace-index.startMs', 0, MAX_DURATION_MS)
     const endMs = finite(raw.endMs, 'trace-index.endMs', startMs, MAX_DURATION_MS)
     const totalInputEvents = integer(raw.totalInputEvents, 'trace-index.totalInputEvents', 0, MAX_TRACE_INPUT_EVENTS)
@@ -971,12 +1206,19 @@ export function parseTraceIndexArtifact(value: unknown): ParsedTimeline {
         finite(categoryDuration[category], `trace-index.categoryDurationMs.${category}`, 0, MAX_DURATION_MS * MAX_TRACE_INPUT_EVENTS)
     }
 
+    const actionPhaseSummaries =
+        raw.schemaVersion === 2
+            ? parseTraceActionPhaseSummaries(raw.actionPhaseSummaries, startMs, endMs, retainedEvents + droppedEvents)
+            : []
+
     return {
+        schemaVersion: raw.schemaVersion,
         durationMs,
         events,
         totalEvents: retainedEvents + droppedEvents,
         truncated: droppedEvents > 0,
         maxEvents: LAB_PLATFORM_TIMELINE_EVENT_LIMIT,
+        actionPhaseSummaries,
     }
 }
 

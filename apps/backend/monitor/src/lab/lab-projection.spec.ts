@@ -47,6 +47,44 @@ function traceIndex(events = [traceEvent()]) {
     }
 }
 
+function traceIndexV2() {
+    return {
+        ...traceIndex(),
+        schemaVersion: 2,
+        droppedEvents: 1,
+        actionPhaseSummaries: [
+            {
+                actionId: 'hero-hover-01',
+                actionLabel: 'hover-card',
+                startMs: 10,
+                endMs: 70,
+                wallTimeMs: 60,
+                status: 'measured',
+                eventCount: 2,
+                classifiedThreadTimeMs: 45,
+                threads: [
+                    {
+                        threadId: 'thread-0',
+                        thread: 'main',
+                        classifiedSelfTimeMs: 45,
+                        phases: {
+                            script: 30,
+                            'style-layout': 5,
+                            paint: 4,
+                            composite: 3,
+                            'raster-gpu': 0,
+                            animation: 3,
+                            gc: 0,
+                            other: 0,
+                        },
+                    },
+                ],
+                limitations: ['trace-action-classification-is-correlative'],
+            },
+        ],
+    }
+}
+
 function metric(overrides: Record<string, unknown> = {}) {
     return {
         family: 'frameCadence',
@@ -764,6 +802,242 @@ describe('lab platform artifact projections', () => {
         const unsafe = traceEvent()
         unsafe.stack[0]!.source = 'blob:http://localhost:5173/private-id'
         expect(() => parseTraceIndexArtifact(traceIndex([unsafe]))).toThrow(BadRequestException)
+    })
+
+    it('strictly projects bounded Trace Index v2 action phase evidence', () => {
+        expect(parseTraceIndexArtifact(traceIndexV2())).toEqual(
+            expect.objectContaining({
+                schemaVersion: 2,
+                actionPhaseSummaries: [
+                    expect.objectContaining({
+                        actionId: 'hero-hover-01',
+                        actionLabel: 'hover-card',
+                        wallTimeMs: 60,
+                        classifiedThreadTimeMs: 45,
+                        threads: [
+                            expect.objectContaining({
+                                threadId: 'thread-0',
+                                thread: 'main',
+                                classifiedSelfTimeMs: 45,
+                            }),
+                        ],
+                    }),
+                ],
+            })
+        )
+        expect(parseTraceIndexArtifact(traceIndex())).toEqual(expect.objectContaining({ schemaVersion: 1, actionPhaseSummaries: [] }))
+
+        const ambiguous = traceIndexV2()
+        Object.assign(ambiguous.actionPhaseSummaries[0]!, {
+            startMs: null,
+            endMs: null,
+            wallTimeMs: null,
+            status: 'partial',
+            eventCount: 0,
+            classifiedThreadTimeMs: null,
+            threads: [],
+            limitations: ['trace-action-marker-ambiguous'],
+        })
+        expect(parseTraceIndexArtifact(ambiguous).actionPhaseSummaries[0]).toEqual(
+            expect.objectContaining({ status: 'partial', startMs: null, classifiedThreadTimeMs: null })
+        )
+
+        const missingMarker = traceIndexV2()
+        Object.assign(missingMarker.actionPhaseSummaries[0]!, {
+            startMs: null,
+            endMs: null,
+            wallTimeMs: null,
+            status: 'not-observed',
+            eventCount: 0,
+            classifiedThreadTimeMs: null,
+            threads: [],
+            limitations: ['trace-action-marker-not-observed'],
+        })
+        expect(parseTraceIndexArtifact(missingMarker).actionPhaseSummaries[0]).toEqual(
+            expect.objectContaining({ status: 'not-observed', startMs: null, classifiedThreadTimeMs: null })
+        )
+
+        const noPhaseEvents = traceIndexV2()
+        Object.assign(noPhaseEvents.actionPhaseSummaries[0]!, {
+            status: 'not-observed',
+            eventCount: 0,
+            classifiedThreadTimeMs: null,
+            threads: [],
+            limitations: ['trace-action-classification-is-correlative', 'trace-action-phase-events-not-observed'],
+        })
+        expect(parseTraceIndexArtifact(noPhaseEvents).actionPhaseSummaries[0]).toEqual(
+            expect.objectContaining({ status: 'not-observed', startMs: 10, classifiedThreadTimeMs: null })
+        )
+
+        const unknownThread = traceIndexV2()
+        unknownThread.actionPhaseSummaries[0]!.status = 'partial'
+        unknownThread.actionPhaseSummaries[0]!.threads[0]!.thread = 'unknown'
+        unknownThread.actionPhaseSummaries[0]!.limitations = [
+            'trace-action-classification-is-correlative',
+            'trace-action-thread-kind-unknown',
+        ]
+        expect(parseTraceIndexArtifact(unknownThread).actionPhaseSummaries[0]).toEqual(
+            expect.objectContaining({ status: 'partial', classifiedThreadTimeMs: 45 })
+        )
+
+        const nonLaminar = traceIndexV2()
+        nonLaminar.actionPhaseSummaries[0]!.status = 'partial'
+        nonLaminar.actionPhaseSummaries[0]!.limitations = ['trace-action-classification-is-correlative', 'trace-action-non-laminar-overlap']
+        expect(parseTraceIndexArtifact(nonLaminar).actionPhaseSummaries[0]).toEqual(expect.objectContaining({ status: 'partial' }))
+
+        const truncatedThreads = traceIndexV2()
+        truncatedThreads.totalInputEvents = 65
+        truncatedThreads.droppedEvents = 64
+        truncatedThreads.actionPhaseSummaries[0]!.status = 'partial'
+        truncatedThreads.actionPhaseSummaries[0]!.eventCount = 65
+        truncatedThreads.actionPhaseSummaries[0]!.classifiedThreadTimeMs = 64
+        truncatedThreads.actionPhaseSummaries[0]!.threads = Array.from({ length: 64 }, (_, index) => ({
+            threadId: `thread-${index.toString(36)}`,
+            thread: 'worker',
+            classifiedSelfTimeMs: 1,
+            phases: {
+                script: 1,
+                'style-layout': 0,
+                paint: 0,
+                composite: 0,
+                'raster-gpu': 0,
+                animation: 0,
+                gc: 0,
+                other: 0,
+            },
+        }))
+        truncatedThreads.actionPhaseSummaries[0]!.limitations = [
+            'trace-action-classification-is-correlative',
+            'trace-action-thread-breakdown-truncated',
+            'trace-action-cross-thread-total-may-exceed-wall-time',
+        ]
+        expect(parseTraceIndexArtifact(truncatedThreads).actionPhaseSummaries[0]).toEqual(
+            expect.objectContaining({ status: 'partial', eventCount: 65, classifiedThreadTimeMs: 64 })
+        )
+    })
+
+    it('rejects forged, duplicate, inconsistent, or extended Trace Index v2 summaries', () => {
+        const mutations: Array<(value: ReturnType<typeof traceIndexV2>) => void> = [
+            value => Object.assign(value.actionPhaseSummaries[0]!, { privateSelector: '#account' }),
+            value => value.actionPhaseSummaries.push(structuredClone(value.actionPhaseSummaries[0]!)),
+            value => {
+                value.actionPhaseSummaries[0]!.wallTimeMs = 59
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.classifiedThreadTimeMs = 44
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.threads[0]!.classifiedSelfTimeMs = 44
+            },
+            value => {
+                Object.assign(value.actionPhaseSummaries[0]!.threads[0]!.phases, { network: 1 })
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.limitations = ['trace-action-unknown' as never]
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.eventCount = 0
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.eventCount = value.totalInputEvents + 1
+            },
+            value => {
+                value.droppedEvents = 0
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.classifiedThreadTimeMs = 0
+                value.actionPhaseSummaries[0]!.threads[0]!.classifiedSelfTimeMs = 0
+                const phases = value.actionPhaseSummaries[0]!.threads[0]!.phases
+                for (const phase of Object.keys(phases)) phases[phase as keyof typeof phases] = 0
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.limitations = []
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.status = 'partial'
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.limitations = [
+                    'trace-action-classification-is-correlative',
+                    'trace-action-marker-not-observed',
+                ]
+            },
+            value => {
+                Object.assign(value.actionPhaseSummaries[0]!, {
+                    status: 'not-observed',
+                    eventCount: 0,
+                    classifiedThreadTimeMs: null,
+                    threads: [],
+                    limitations: [
+                        'trace-action-classification-is-correlative',
+                        'trace-action-phase-events-not-observed',
+                        'trace-action-marker-ambiguous',
+                    ],
+                })
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.status = 'partial'
+                value.actionPhaseSummaries[0]!.threads[0]!.thread = 'unknown'
+                value.actionPhaseSummaries[0]!.limitations = [
+                    'trace-action-classification-is-correlative',
+                    'trace-action-non-laminar-overlap',
+                ]
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.status = 'partial'
+                value.actionPhaseSummaries[0]!.eventCount = 1
+                value.actionPhaseSummaries[0]!.limitations = [
+                    'trace-action-classification-is-correlative',
+                    'trace-action-non-laminar-overlap',
+                ]
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.threads[0]!.phases.script = 29
+                value.actionPhaseSummaries[0]!.threads[0]!.phases['raster-gpu'] = 1
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.limitations = [
+                    'trace-action-classification-is-correlative',
+                    'trace-action-cross-thread-total-may-exceed-wall-time',
+                ]
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.limitations = [
+                    'trace-action-classification-is-correlative',
+                    'trace-action-raster-gpu-is-not-gpu-completion',
+                ]
+            },
+            value => {
+                value.actionPhaseSummaries[0]!.status = 'partial'
+                value.actionPhaseSummaries[0]!.limitations = [
+                    'trace-action-classification-is-correlative',
+                    'trace-action-thread-breakdown-truncated',
+                ]
+            },
+            value => {
+                const secondThread = structuredClone(value.actionPhaseSummaries[0]!.threads[0]!)
+                secondThread.threadId = 'thread-1'
+                secondThread.classifiedSelfTimeMs = 5
+                secondThread.phases = {
+                    script: 5,
+                    'style-layout': 0,
+                    paint: 0,
+                    composite: 0,
+                    'raster-gpu': 0,
+                    animation: 0,
+                    gc: 0,
+                    other: 0,
+                }
+                value.actionPhaseSummaries[0]!.threads.push(secondThread)
+                value.actionPhaseSummaries[0]!.eventCount = 3
+                value.actionPhaseSummaries[0]!.classifiedThreadTimeMs = 50
+            },
+        ]
+        for (const mutate of mutations) {
+            const value = traceIndexV2()
+            mutate(value)
+            expect(() => parseTraceIndexArtifact(value)).toThrow(BadRequestException)
+        }
     })
 
     it('projects only bounded, privacy-safe animation report fields', () => {

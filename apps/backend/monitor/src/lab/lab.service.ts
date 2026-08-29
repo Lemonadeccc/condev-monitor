@@ -22,6 +22,7 @@ import { LabRunnerGrantEntity } from './entity/lab-runner-grant.entity'
 import {
     assertLabRunnerSupportsMeasurementContract,
     assertLabRunnerSupportsReportActionKinds,
+    assertLabRunnerSupportsTraceIndexVersion,
     type CompareLabRunsInput,
     createHash,
     type CreateLabRunInput,
@@ -50,6 +51,7 @@ import {
     LAB_TRACE_INDEX_DECODED_MAX_BYTES,
     parseAnimationReportArtifact,
     type ParsedAnimationReport,
+    type ParsedTimeline,
     parseTraceIndexArtifact,
 } from './lab-projection'
 import { cancelLabRunState, claimLabRunState, isTerminalLabStatus, updateLabRunState } from './lab-state'
@@ -259,7 +261,9 @@ export class LabService {
         const artifact = await this.latestArtifact(run.id, 'trace-index')
         if (!artifact) return this.emptyTimeline(run.id)
         const json = await this.storage.readStoredJson(artifact.storageKey, artifact.encoding, LAB_TRACE_INDEX_DECODED_MAX_BYTES)
-        return { runId: run.id, ...parseTraceIndexArtifact(json) }
+        const timeline = parseTraceIndexArtifact(json)
+        await this.assertTraceIndexActionBindings(this.artifactRepository, run, timeline)
+        return { runId: run.id, ...timeline }
     }
 
     async getLighthouse(userId: number, runId: string) {
@@ -351,22 +355,12 @@ export class LabService {
         metadata: LabArtifactUploadMetadata
     }) {
         await this.dataSource.transaction(async manager => {
-            const { run, grant } = await this.authenticateRunner(manager, params.runId, params.token, {
+            const { run } = await this.authenticateRunner(manager, params.runId, params.token, {
                 requireClaimed: true,
                 allowTerminal: false,
             })
             this.compatibleRunnerConfig(run, params.runnerContractVersion)
-            grant.lastUsedAt = new Date()
-            await manager.getRepository(LabRunnerGrantEntity).save(grant)
         })
-        const existing = await this.artifactRepository.findOne({
-            where: { runId: params.runId, idempotencyKeyHash: params.metadata.idempotencyKeyHash },
-        })
-        if (existing) {
-            await this.drainBounded(params.input, params.metadata.maxBytes)
-            this.assertIdempotentArtifact(existing, params.metadata)
-            return this.serializeArtifact(existing)
-        }
 
         const temporary = await this.storage.writeTemporary(params.input, params.metadata.maxBytes)
         if (params.metadata.contentLength !== null && temporary.byteSize !== params.metadata.contentLength) {
@@ -380,6 +374,7 @@ export class LabService {
 
         let committedStorageKey: string | null = null
         let derivedReport: ParsedAnimationReport | null = null
+        let derivedTimeline: ParsedTimeline | null = null
         try {
             if (params.metadata.kind === 'animation-report') {
                 const json = await this.storage.readTemporaryJson(
@@ -398,7 +393,8 @@ export class LabService {
                     params.metadata.encoding,
                     LAB_TRACE_INDEX_DECODED_MAX_BYTES
                 )
-                parseTraceIndexArtifact(json)
+                derivedTimeline = parseTraceIndexArtifact(json)
+                assertLabRunnerSupportsTraceIndexVersion(params.runnerContractVersion, derivedTimeline.schemaVersion)
             }
             return await this.dataSource.transaction(async manager => {
                 const { run, grant } = await this.authenticateRunner(manager, params.runId, params.token, {
@@ -406,19 +402,22 @@ export class LabService {
                     allowTerminal: false,
                 })
                 this.compatibleRunnerConfig(run, params.runnerContractVersion)
-                grant.lastUsedAt = new Date()
-                await manager.getRepository(LabRunnerGrantEntity).save(grant)
                 const artifactRepository = manager.getRepository(LabArtifactEntity)
                 const duplicate = await artifactRepository.findOne({
                     where: { runId: run.id, idempotencyKeyHash: params.metadata.idempotencyKeyHash },
                     lock: { mode: 'pessimistic_write' },
                 })
+                if (duplicate) this.assertIdempotentArtifact(duplicate, params.metadata)
+                if (params.metadata.kind === 'trace-index') {
+                    this.assertTraceIndexMatchesRunConfig(run)
+                    await this.assertTraceIndexActionBindings(artifactRepository, run, derivedTimeline)
+                }
+                grant.lastUsedAt = new Date()
+                await manager.getRepository(LabRunnerGrantEntity).save(grant)
                 if (duplicate) {
                     await this.storage.discardTemporary(temporary.path)
-                    this.assertIdempotentArtifact(duplicate, params.metadata)
                     return this.serializeArtifact(duplicate)
                 }
-                if (params.metadata.kind === 'trace-index') this.assertTraceIndexMatchesRunConfig(run)
                 const aggregate = await artifactRepository
                     .createQueryBuilder('artifact')
                     .select('COUNT(*)', 'count')
@@ -537,17 +536,6 @@ export class LabService {
             existing.encoding !== metadata.encoding
         ) {
             throw new ConflictException('Idempotency key was already used for a different artifact')
-        }
-    }
-
-    private async drainBounded(input: Readable, maximumBytes: number): Promise<void> {
-        let observedBytes = 0
-        for await (const chunk of input) {
-            observedBytes += Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk))
-            if (observedBytes > maximumBytes) {
-                input.destroy()
-                throw new PayloadTooLargeException('Artifact is too large')
-            }
         }
     }
 
@@ -699,6 +687,35 @@ export class LabService {
         }
     }
 
+    private async assertTraceIndexActionBindings(
+        artifactRepository: Repository<LabArtifactEntity>,
+        run: LabRunEntity,
+        timeline: ParsedTimeline | null
+    ): Promise<void> {
+        if (!timeline) throw new ConflictException('Trace index was not validated before storage')
+        if (timeline.schemaVersion === 1) return
+        const reportArtifact = await artifactRepository.findOne({
+            where: { runId: run.id, appId: run.appId, kind: 'animation-report' },
+            order: { createdAt: 'DESC' },
+        })
+        if (!reportArtifact || this.isExpired(reportArtifact)) {
+            throw new ConflictException('Trace index v2 requires a current animation report')
+        }
+        const report = await this.readAnimationReport(reportArtifact)
+        const expectedActions = report.analysis?.scenarioActions
+        if (!expectedActions) throw new ConflictException('Trace index v2 requires verified scenario action identities')
+        if (expectedActions.length !== timeline.actionPhaseSummaries.length) {
+            throw new ConflictException('Trace index v2 action summaries do not match the animation report')
+        }
+        const actualById = new Map(timeline.actionPhaseSummaries.map(summary => [summary.actionId, summary]))
+        for (const expected of expectedActions) {
+            const actual = actualById.get(expected.actionId)
+            if (!actual || actual.actionLabel !== expected.label) {
+                throw new ConflictException('Trace index v2 action summaries do not match the animation report')
+            }
+        }
+    }
+
     private serializeArtifact(artifact: LabArtifactEntity): SerializedArtifact {
         return {
             id: artifact.id,
@@ -818,11 +835,13 @@ export class LabService {
     private emptyTimeline(runId: string) {
         return {
             runId,
+            schemaVersion: 1 as const,
             durationMs: 0,
             events: [],
             totalEvents: 0,
             truncated: false,
             maxEvents: LAB_PLATFORM_TIMELINE_EVENT_LIMIT,
+            actionPhaseSummaries: [],
         }
     }
 
