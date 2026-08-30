@@ -22,6 +22,7 @@ const DEFAULT_POLICY: ActiveExplorerPolicy = {
     maxMotionRecords: 5_000,
     allowedKinds: ACTIVE_KINDS,
     blockMutationRequests: true,
+    allowDevelopmentHmr: false,
 }
 
 function boundedInteger(value: unknown, fallback: number, minimum: number, maximum: number, label: string): number {
@@ -30,6 +31,12 @@ function boundedInteger(value: unknown, fallback: number, minimum: number, maxim
         throw new RangeError(`${label} must be an integer between ${minimum} and ${maximum}`)
     }
     return resolved
+}
+
+function boundedBoolean(value: unknown, fallback: boolean, label: string): boolean {
+    if (value === undefined) return fallback
+    if (typeof value !== 'boolean') throw new TypeError(`${label} must be a boolean`)
+    return value
 }
 
 function isActiveKind(value: unknown): value is Exclude<ActiveExplorerActionKind, 'load'> {
@@ -59,7 +66,8 @@ export function resolveActiveExplorerPolicy(input: ActiveExplorerPolicyInput = {
         settleTimeoutMs: boundedInteger(input.settleTimeoutMs, DEFAULT_POLICY.settleTimeoutMs, 100, 120_000, 'settleTimeoutMs'),
         maxMotionRecords: boundedInteger(input.maxMotionRecords, DEFAULT_POLICY.maxMotionRecords, 1, 100_000, 'maxMotionRecords'),
         allowedKinds: [...new Set(allowedKinds)],
-        blockMutationRequests: input.blockMutationRequests ?? DEFAULT_POLICY.blockMutationRequests,
+        blockMutationRequests: boundedBoolean(input.blockMutationRequests, DEFAULT_POLICY.blockMutationRequests, 'blockMutationRequests'),
+        allowDevelopmentHmr: boundedBoolean(input.allowDevelopmentHmr, DEFAULT_POLICY.allowDevelopmentHmr, 'allowDevelopmentHmr'),
     }
 }
 
@@ -67,10 +75,58 @@ function safeCssProperty(value: string): boolean {
     return value.length <= 80 && /^(?:--)?[A-Za-z][A-Za-z0-9-]*$/u.test(value)
 }
 
+function ordinalIds(values: readonly (string | undefined)[], prefix: string): ReadonlyMap<string, string> {
+    const result = new Map<string, string>()
+    for (const value of values) {
+        if (!value || result.has(value)) continue
+        result.set(value, `${prefix}-${String(result.size + 1).padStart(5, '0')}`)
+    }
+    return result
+}
+
+function mappedId(map: ReadonlyMap<string, string>, value: string, fallback: string): string {
+    return map.get(value) ?? fallback
+}
+
 /** Fresh allowlist projection: local URLs, selectors, labels, coordinates and visual hashes never cross this boundary. */
 export function toUploadSafeActiveAnimationExploration(
     session: LocalActiveAnimationExplorationSession
 ): UploadSafeActiveAnimationExplorationSession {
+    const routeIds = ordinalIds(
+        [
+            ...session.routes.map(route => route.routeId),
+            ...session.states.map(state => state.routeId),
+            ...session.edges.map(edge => edge.routeId),
+        ],
+        'route'
+    )
+    const stateIds = ordinalIds(
+        [
+            ...session.states.map(state => state.stateId),
+            ...session.routes.flatMap(route => route.stateIds),
+            ...session.targets.map(target => target.stateId),
+            ...session.edges.flatMap(edge => [edge.fromStateId, edge.toStateId]),
+            ...session.motions.map(motion => motion.stateId),
+        ],
+        'state'
+    )
+    const targetIds = ordinalIds(
+        [...session.targets.map(target => target.targetId), ...session.motions.map(motion => motion.targetId)],
+        'target'
+    )
+    const edgeIds = ordinalIds([...session.edges.map(edge => edge.edgeId), ...session.motions.map(motion => motion.edgeId)], 'edge')
+    const motionIds = ordinalIds(
+        [...session.motions.map(motion => motion.motionId), ...session.edges.flatMap(edge => edge.motionIds)],
+        'motion'
+    )
+    const actionIds = ordinalIds(
+        session.edges.map(edge => edge.action.actionId),
+        'action'
+    )
+    const candidateIds = ordinalIds(
+        session.edges.map(edge => edge.action.candidateId),
+        'candidate'
+    )
     return {
         schemaVersion: 1,
         dataClassification: 'upload-safe',
@@ -82,43 +138,44 @@ export function toUploadSafeActiveAnimationExploration(
             engine: session.browser.engine,
             ...(session.browser.version ? { version: session.browser.version.slice(0, 80) } : {}),
         },
+        authentication: session.authentication ?? 'unknown',
         startedAt: session.startedAt,
         endedAt: session.endedAt,
         policy: resolveActiveExplorerPolicy(session.policy),
         routes: session.routes.map(route => ({
-            routeId: sanitizeSafeToken(route.routeId, 'route', 100),
+            routeId: mappedId(routeIds, route.routeId, 'route-unknown'),
             routeKey: sanitizeSafeToken(route.routeKey, 'route', 128),
-            stateIds: route.stateIds.map((stateId, index) => sanitizeSafeToken(stateId, `state-${index + 1}`, 100)),
+            stateIds: route.stateIds.map(stateId => mappedId(stateIds, stateId, 'state-unknown')),
         })),
         states: session.states.map(state => ({
-            stateId: sanitizeSafeToken(state.stateId, 'state', 100),
-            routeId: sanitizeSafeToken(state.routeId, 'route', 100),
+            stateId: mappedId(stateIds, state.stateId, 'state-unknown'),
+            routeId: mappedId(routeIds, state.routeId, 'route-unknown'),
             depth: Number.isSafeInteger(state.depth) && state.depth >= 0 ? state.depth : 0,
-            semanticHash: sanitizeSafeToken(state.semanticHash, 'unknown', 128),
+            semanticHash: `${mappedId(stateIds, state.stateId, 'state-unknown')}.semantic`,
             targetCount: Number.isSafeInteger(state.targetCount) && state.targetCount >= 0 ? state.targetCount : 0,
-            motionInventoryHash: sanitizeSafeToken(state.motionInventoryHash, 'unknown', 128),
+            motionInventoryHash: `${mappedId(stateIds, state.stateId, 'state-unknown')}.motion-inventory`,
         })),
         targets: session.targets.map(target => ({
-            targetId: sanitizeSafeToken(target.targetId, 'target', 100),
-            stateId: sanitizeSafeToken(target.stateId, 'state', 100),
+            targetId: mappedId(targetIds, target.targetId, 'target-unknown'),
+            stateId: mappedId(stateIds, target.stateId, 'state-unknown'),
             surface: target.surface,
         })),
         edges: session.edges.map(edge => ({
-            edgeId: sanitizeSafeToken(edge.edgeId, 'edge', 100),
-            fromStateId: sanitizeSafeToken(edge.fromStateId, 'state', 100),
-            ...(edge.toStateId ? { toStateId: sanitizeSafeToken(edge.toStateId, 'state', 100) } : {}),
-            routeId: sanitizeSafeToken(edge.routeId, 'route', 100),
+            edgeId: mappedId(edgeIds, edge.edgeId, 'edge-unknown'),
+            fromStateId: mappedId(stateIds, edge.fromStateId, 'state-unknown'),
+            ...(edge.toStateId ? { toStateId: mappedId(stateIds, edge.toStateId, 'state-unknown') } : {}),
+            routeId: mappedId(routeIds, edge.routeId, 'route-unknown'),
             depth: Number.isSafeInteger(edge.depth) && edge.depth >= 0 ? edge.depth : 0,
             action: {
-                actionId: sanitizeSafeToken(edge.action.actionId, 'action', 100),
+                actionId: mappedId(actionIds, edge.action.actionId, 'action-unknown'),
                 kind: edge.action.kind,
-                ...(edge.action.candidateId ? { candidateId: sanitizeSafeToken(edge.action.candidateId, 'candidate', 100) } : {}),
+                ...(edge.action.candidateId ? { candidateId: mappedId(candidateIds, edge.action.candidateId, 'candidate-unknown') } : {}),
                 ...(typeof edge.action.durationMs === 'number' && Number.isFinite(edge.action.durationMs)
                     ? { durationMs: Math.max(0, edge.action.durationMs) }
                     : {}),
             },
             status: edge.status,
-            motionIds: edge.motionIds.map((motionId, index) => sanitizeSafeToken(motionId, `motion-${index + 1}`, 100)),
+            motionIds: edge.motionIds.map(motionId => mappedId(motionIds, motionId, 'motion-unknown')),
             startedAtMs: Number.isFinite(edge.startedAtMs) ? Math.max(0, edge.startedAtMs) : 0,
             endedAtMs: Number.isFinite(edge.endedAtMs) ? Math.max(0, edge.endedAtMs) : 0,
             blockedMutationRequests:
@@ -127,12 +184,12 @@ export function toUploadSafeActiveAnimationExploration(
             ...(edge.errorCode ? { errorCode: edge.errorCode } : {}),
         })),
         motions: session.motions.map(motion => ({
-            motionId: sanitizeSafeToken(motion.motionId, 'motion', 100),
-            fingerprint: sanitizeSafeToken(motion.fingerprint, 'unknown', 128),
-            routeId: sanitizeSafeToken(motion.routeId, 'route', 100),
-            stateId: sanitizeSafeToken(motion.stateId, 'state', 100),
-            edgeId: sanitizeSafeToken(motion.edgeId, 'edge', 100),
-            ...(motion.targetId ? { targetId: sanitizeSafeToken(motion.targetId, 'target', 100) } : {}),
+            motionId: mappedId(motionIds, motion.motionId, 'motion-unknown'),
+            fingerprint: `${mappedId(motionIds, motion.motionId, 'motion-unknown')}.fingerprint`,
+            routeId: mappedId(routeIds, motion.routeId, 'route-unknown'),
+            stateId: mappedId(stateIds, motion.stateId, 'state-unknown'),
+            edgeId: mappedId(edgeIds, motion.edgeId, 'edge-unknown'),
+            ...(motion.targetId ? { targetId: mappedId(targetIds, motion.targetId, 'target-unknown') } : {}),
             family: motion.family,
             engine: motion.engine,
             status: motion.status,

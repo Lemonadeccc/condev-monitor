@@ -29,6 +29,7 @@ export type ActiveExplorerEvidenceConfidence = 'explicit' | 'high' | 'medium' | 
 export type ActiveExplorerCausality = 'direct-api' | 'adapter-bound' | 'temporal-correlation' | 'visual-inference' | 'unknown'
 export type ActiveExplorerEdgeStatus = 'executed' | 'failed' | 'timed-out' | 'rejected' | 'quarantined'
 export type ActiveExplorerMotionStatus = 'observed' | 'completed' | 'cancelled' | 'running' | 'partial'
+export type ActiveExplorerAuthentication = 'none' | 'required-local-storage-state' | 'unknown'
 export type ActiveExplorerStopReason =
     | 'candidate-queue-exhausted'
     | 'max-routes'
@@ -53,6 +54,10 @@ export type ActiveExplorerLimitation =
     | 'visual-change-unclassified'
     | 'infinite-observation-capped'
     | 'observer-sample-capped'
+    | 'renderer-adapter-error'
+    | 'renderer-object-ambiguous'
+    | 'renderer-object-unresolved'
+    | 'development-hmr-allowed'
     | 'outcome-needs-review'
     | 'unsupported-browser-evidence'
 
@@ -69,6 +74,7 @@ export interface ActiveExplorerPolicyInput {
     maxMotionRecords?: number
     allowedKinds?: readonly Exclude<ActiveExplorerActionKind, 'load'>[]
     blockMutationRequests?: boolean
+    allowDevelopmentHmr?: boolean
 }
 
 export interface ActiveExplorerPolicy {
@@ -84,6 +90,7 @@ export interface ActiveExplorerPolicy {
     maxMotionRecords: number
     allowedKinds: readonly Exclude<ActiveExplorerActionKind, 'load'>[]
     blockMutationRequests: boolean
+    allowDevelopmentHmr: boolean
 }
 
 export interface ActiveExplorerLocalAction {
@@ -162,7 +169,20 @@ export interface ActiveExplorerMotionRecord {
         selector?: string
         animationName?: string
         pseudoElement?: string
+        rendererSubjectKey?: string
+        rendererOutcomeKey?: string
+        rendererResolution?: 'hit' | 'miss' | 'unavailable'
     }
+}
+
+export interface ActiveExplorerRendererObjectEvidence {
+    subjectKey: string
+    surface: 'canvas-2d' | 'webgl' | 'webgpu'
+    resolution: 'hit' | 'miss' | 'unavailable'
+    selector?: string
+    outcomeKey?: string
+    outcomeStatus?: 'completed' | 'failed' | 'idle'
+    adapterError?: true
 }
 
 export interface ActiveExplorerEdgeRecord {
@@ -178,6 +198,9 @@ export interface ActiveExplorerEdgeRecord {
     endedAtMs: number
     blockedMutationRequests: number
     limitations: readonly ActiveExplorerLimitation[]
+    localOnly?: {
+        rendererObjects: readonly ActiveExplorerRendererObjectEvidence[]
+    }
     errorCode?: 'action-timeout' | 'action-failed' | 'cross-origin-navigation' | 'browser-closed' | 'page-crashed' | 'policy-blocked'
 }
 
@@ -208,6 +231,8 @@ export interface LocalActiveAnimationExplorationSession {
         engine: ActiveExplorerBrowserEngine
         version?: string
     }
+    /** Safe replay requirement only; never a path, cookie, token, or storage-state value. */
+    authentication?: ActiveExplorerAuthentication
     startedAt: string
     endedAt: string
     policy: ActiveExplorerPolicy
@@ -232,6 +257,7 @@ export interface UploadSafeActiveAnimationExplorationSession {
     mode: 'active-explore'
     pageKey: string
     browser: LocalActiveAnimationExplorationSession['browser']
+    authentication: ActiveExplorerAuthentication
     startedAt: string
     endedAt: string
     policy: ActiveExplorerPolicy
@@ -239,7 +265,7 @@ export interface UploadSafeActiveAnimationExplorationSession {
     states: readonly Omit<ActiveExplorerStateRecord, 'visualHash' | 'replayEdgeIds'>[]
     targets: readonly Omit<ActiveExplorerTargetRecord, 'localOnly'>[]
     edges: ReadonlyArray<
-        Omit<ActiveExplorerEdgeRecord, 'action'> & {
+        Omit<ActiveExplorerEdgeRecord, 'action' | 'localOnly'> & {
             action: Pick<ActiveExplorerLocalAction, 'actionId' | 'kind' | 'candidateId' | 'durationMs'>
         }
     >

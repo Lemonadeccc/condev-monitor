@@ -27,7 +27,7 @@ Usage:
   condev-animation-lab-active-explore --url http://127.0.0.1:43121 --page-key example.home --out-dir ./lab-results
     [--route-key example.home] [--browser chromium|firefox|webkit] [--headed]
     [--executable-path /path/to/browser] [--storage-state ./playwright-auth.json]
-    [--ignore-https-errors] [--max-routes 8] [--max-states 48]
+    [--ignore-https-errors] [--allow-development-hmr] [--max-routes 8] [--max-states 48]
     [--max-edges 96] [--max-depth 3] [--max-total-duration-ms 120000]
 
 The active explorer executes only policy-approved actions, blocks mutation
@@ -60,9 +60,10 @@ function parseArgs(argv: string[]): Options {
             process.stdout.write(`${usage()}\n`)
             process.exit(0)
         }
-        if (value === '--headed' || value === '--ignore-https-errors') {
+        if (value === '--headed' || value === '--ignore-https-errors' || value === '--allow-development-hmr') {
             if (value === '--headed') output.headed = true
-            else output.ignoreHTTPSErrors = true
+            else if (value === '--ignore-https-errors') output.ignoreHTTPSErrors = true
+            else output.policy.allowDevelopmentHmr = true
             continue
         }
         const next = argv[index + 1]

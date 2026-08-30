@@ -108,7 +108,22 @@ function session() {
 test('parses bounded active exploration artifacts and summarizes motion families', () => {
     const parsed = parseLabActiveExploration(session())
     assert.equal(parsed.coverage.complete, false)
+    assert.equal(parsed.authentication, 'unknown')
     assert.deepEqual(activeExplorationMotionFamilies(parsed), [{ family: 'css-transition', count: 1 }])
+})
+
+test('preserves only the closed replay authentication requirement', () => {
+    const unauthenticated = session()
+    Object.assign(unauthenticated, { authentication: 'none' })
+    assert.equal(parseLabActiveExploration(unauthenticated).authentication, 'none')
+
+    const authenticated = session()
+    Object.assign(authenticated, { authentication: 'required-local-storage-state' })
+    assert.equal(parseLabActiveExploration(authenticated).authentication, 'required-local-storage-state')
+
+    const forged = session()
+    Object.assign(forged, { authentication: '/private/playwright-auth.json' })
+    assert.throws(() => parseLabActiveExploration(forged))
 })
 
 test('rejects forged completeness and oversized local evidence', () => {

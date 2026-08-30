@@ -23,6 +23,7 @@ import {
 import type {
     ActiveObserverAnimation,
     ActiveObserverEvent,
+    ActiveObserverRendererObject,
     ActiveObserverSnapshot,
     ActiveObserverSurface,
 } from './active-animation-observer'
@@ -84,6 +85,8 @@ interface MotionDraft {
     eventTimes: number[]
     animation?: ActiveObserverAnimation
     surface?: ActiveObserverSurface
+    rendererObject?: ActiveObserverRendererObject
+    rendererAttribution?: 'none' | 'resolved' | 'unresolved' | 'ambiguous'
     eventCount: number
 }
 
@@ -128,6 +131,9 @@ function observerInventoryHash(snapshot: ActiveObserverSnapshot): string {
                 .sort(),
             surfaces: snapshot.surfaces
                 .map(item => [item.kind, item.targetToken, Math.round(item.width), Math.round(item.height)].join('|'))
+                .sort(),
+            rendererObjects: snapshot.rendererObjects
+                .map(item => [item.surface, item.subjectKey, item.selector ?? '', item.outcomeKey ?? ''].join('|'))
                 .sort(),
         })
     )
@@ -213,6 +219,39 @@ function surfaceForAction(action: ActiveExplorerLocalAction, snapshot: ActiveObs
     return snapshot.surfaces.find(surface => surface.selector === action.selector)
 }
 
+function rendererObjectsForAction(
+    action: ActiveExplorerLocalAction,
+    snapshot: ActiveObserverSnapshot
+): readonly ActiveObserverRendererObject[] {
+    if (action.kind === 'load') return snapshot.rendererObjects
+    if (!action.selector) return []
+    return snapshot.rendererObjects.filter(item => item.selector === action.selector)
+}
+
+export function selectUnambiguousActiveExplorerRendererObject(rendererObjects: readonly ActiveObserverRendererObject[]): {
+    rendererObject?: ActiveObserverRendererObject
+    state: 'none' | 'resolved' | 'unresolved' | 'ambiguous'
+} {
+    const hits = rendererObjects.filter(item => item.resolution === 'hit' && !item.adapterError)
+    return {
+        ...(hits.length === 1 ? { rendererObject: hits[0] } : {}),
+        state: hits.length > 1 ? 'ambiguous' : hits.length === 1 ? 'resolved' : rendererObjects.length > 0 ? 'unresolved' : 'none',
+    }
+}
+
+function edgeLocalRendererEvidence(action: ActiveExplorerLocalAction, snapshot: ActiveObserverSnapshot) {
+    const rendererObjects = rendererObjectsForAction(action, snapshot).map(item => ({
+        subjectKey: item.subjectKey,
+        surface: item.surface,
+        resolution: item.resolution,
+        ...(item.selector ? { selector: item.selector } : {}),
+        ...(item.outcomeKey ? { outcomeKey: item.outcomeKey } : {}),
+        ...(item.outcomeStatus ? { outcomeStatus: item.outcomeStatus } : {}),
+        ...(item.adapterError ? { adapterError: true as const } : {}),
+    }))
+    return rendererObjects.length > 0 ? { rendererObjects } : undefined
+}
+
 function motionEngine(family: ActiveExplorerMotionFamily): ActiveExplorerMotionRecord['engine'] {
     if (['css-animation', 'css-transition', 'waapi', 'scroll-driven', 'view-transition'].includes(family)) return 'browser-native'
     if (family === 'svg-smil') return 'svg'
@@ -223,7 +262,7 @@ function motionEngine(family: ActiveExplorerMotionFamily): ActiveExplorerMotionR
 }
 
 function createTarget(targets: Map<string, ActiveExplorerTargetRecord>, stateId: string, draft: MotionDraft): string | undefined {
-    const identity = draft.selector ?? draft.targetToken
+    const identity = draft.rendererObject?.subjectKey ?? draft.selector ?? draft.targetToken
     if (!identity) return undefined
     const surface = draft.surface?.kind ?? (draft.family === 'svg-smil' ? 'svg' : 'dom')
     const targetId = `target-${sha256(`${stateId}|${surface}|${identity}`).slice(0, 16)}`
@@ -234,6 +273,7 @@ function createTarget(targets: Map<string, ActiveExplorerTargetRecord>, stateId:
             surface,
             localOnly: {
                 ...(draft.selector ? { selector: draft.selector } : {}),
+                ...(draft.rendererObject?.subjectKey ? { label: draft.rendererObject.subjectKey } : {}),
             },
         })
     }
@@ -315,6 +355,8 @@ function deriveMotions(input: {
 
     if (input.visualChanged && drafts.size === 0) {
         const surface = surfaceForAction(input.action, input.after)
+        const rendererAttribution = selectUnambiguousActiveExplorerRendererObject(rendererObjectsForAction(input.action, input.after))
+        const rendererObject = rendererAttribution.rendererObject
         const family = surfaceFamily(surface)
         const key = [family, input.action.selector ?? input.action.candidateId ?? input.action.actionId, 'visual-change'].join('|')
         drafts.set(key, {
@@ -322,6 +364,8 @@ function deriveMotions(input: {
             family: family === 'unknown' ? 'script-driven' : family,
             ...(input.action.selector ? { selector: input.action.selector } : {}),
             ...(surface ? { targetToken: surface.targetToken, surface } : {}),
+            ...(rendererObject ? { rendererObject } : {}),
+            rendererAttribution: rendererAttribution.state,
             properties: new Set<string>(),
             lifecycle: new Set<string>(['visual-change']),
             eventTimes: [],
@@ -343,20 +387,29 @@ function deriveMotions(input: {
                 ? Math.max(0, eventEnd - eventStart)
                 : undefined
         const direct = Boolean(animation || draft.eventCount > 0) && !draft.surface
-        const evidenceKinds: ActiveExplorerMotionRecord['evidenceKinds'] = draft.surface
-            ? ['visual-inference', 'surface-only']
-            : animation
-              ? draft.eventCount > 0
-                  ? ['browser-direct', 'browser-event']
-                  : ['browser-direct']
-              : draft.eventCount > 0
-                ? ['browser-event']
-                : ['visual-inference']
+        const evidenceKinds: ActiveExplorerMotionRecord['evidenceKinds'] = draft.rendererObject
+            ? ['visual-inference', 'adapter-attested']
+            : draft.surface
+              ? ['visual-inference', 'surface-only']
+              : animation
+                ? draft.eventCount > 0
+                    ? ['browser-direct', 'browser-event']
+                    : ['browser-direct']
+                : draft.eventCount > 0
+                  ? ['browser-event']
+                  : ['visual-inference']
         const limitations = new Set<ActiveExplorerLimitation>(['temporal-correlation', 'outcome-needs-review'])
         if (draft.surface) {
-            limitations.add('surface-only')
-            if (['canvas-2d', 'webgl', 'webgpu'].includes(draft.family)) limitations.add('no-renderer-adapter')
+            if (!draft.rendererObject) {
+                limitations.add('surface-only')
+                if (['canvas-2d', 'webgl', 'webgpu'].includes(draft.family)) {
+                    if (draft.rendererAttribution === 'none') limitations.add('no-renderer-adapter')
+                    else if (draft.rendererAttribution === 'unresolved') limitations.add('renderer-object-unresolved')
+                }
+            }
         }
+        if (draft.rendererObject?.adapterError) limitations.add('renderer-adapter-error')
+        if (draft.rendererAttribution === 'ambiguous') limitations.add('renderer-object-ambiguous')
         if (input.after.capped) limitations.add('observer-sample-capped')
         if (infinite) limitations.add('infinite-observation-capped')
         const targetId = createTarget(input.targets, input.stateId, draft)
@@ -393,14 +446,23 @@ function deriveMotions(input: {
             properties: [...draft.properties],
             lifecycle,
             evidenceKinds,
-            evidenceConfidence: direct ? 'high' : draft.surface ? 'medium' : 'low',
-            causality: direct ? 'direct-api' : draft.surface ? 'visual-inference' : 'temporal-correlation',
+            evidenceConfidence: draft.rendererObject ? 'explicit' : direct ? 'high' : draft.surface ? 'medium' : 'low',
+            causality: draft.rendererObject
+                ? 'adapter-bound'
+                : direct
+                  ? 'direct-api'
+                  : draft.surface
+                    ? 'visual-inference'
+                    : 'temporal-correlation',
             limitations: [...limitations],
             observedInstances: Math.max(1, draft.eventCount),
             localOnly: {
                 ...(draft.selector ? { selector: draft.selector } : {}),
                 ...(draft.name ? { animationName: draft.name } : {}),
                 ...(draft.pseudoElement ? { pseudoElement: draft.pseudoElement } : {}),
+                ...(draft.rendererObject?.subjectKey ? { rendererSubjectKey: draft.rendererObject.subjectKey } : {}),
+                ...(draft.rendererObject?.outcomeKey ? { rendererOutcomeKey: draft.rendererObject.outcomeKey } : {}),
+                ...(draft.rendererObject?.resolution ? { rendererResolution: draft.rendererObject.resolution } : {}),
             },
         }
     })
@@ -449,7 +511,10 @@ async function withBranch<T>(
     try {
         page = await context.newPage()
         await page.navigate(entryUrl, Math.max(60_000, policy.actionTimeoutMs))
-        await page.wait(policy.settleIdleMs)
+        // Hydrated renderer adapters commonly register shortly after `load`.
+        // Keep this bounded, but do not sample a declared Canvas surface at the
+        // first 400 ms idle boundary before its explicit adapter can exist.
+        await page.wait(Math.max(policy.settleIdleMs, Math.min(1_000, policy.settleTimeoutMs)))
         for (const action of replayActions) {
             await page.execute(action, policy.actionTimeoutMs)
             await page.wait(policy.settleIdleMs)
@@ -501,6 +566,7 @@ export async function createActiveAnimationExploration(
     const processedStates = new Set<string>()
     const stopReasons = new Set<ActiveExplorerStopReason>()
     const limitations = new Set<ActiveExplorerLimitation>(['bounded-exploration', 'outcome-needs-review'])
+    if (policy.allowDevelopmentHmr) limitations.add('development-hmr-allowed')
     const uncoveredReasonCounts: Partial<Record<ActiveExplorerLimitation, number>> = {}
     let candidateEdges = 0
     let actionSequence = 0
@@ -603,13 +669,20 @@ export async function createActiveAnimationExploration(
                             edgeId,
                             routeId: route.routeId,
                             stateId: stateResult.state.stateId,
-                            before: { sequence: 0, capped: false, animations: [], events: [], smil: [], surfaces: [] },
+                            before: { sequence: 0, capped: false, animations: [], events: [], smil: [], surfaces: [], rendererObjects: [] },
                             after: observer.snapshot,
                             visualChanged: false,
                             settleMs: observer.settleMs,
                             targets,
                         })
                         const motionIds = addMotions(loadMotions)
+                        const localOnly = edgeLocalRendererEvidence(action, observer.snapshot)
+                        const loadLimitations = new Set<ActiveExplorerLimitation>(['temporal-correlation', 'outcome-needs-review'])
+                        if (observer.snapshot.rendererObjects.some(item => item.adapterError)) {
+                            loadLimitations.add('renderer-adapter-error')
+                            limitations.add('renderer-adapter-error')
+                            addReasonCount(uncoveredReasonCounts, 'renderer-adapter-error')
+                        }
                         edges.push({
                             edgeId,
                             fromStateId: stateResult.state.stateId,
@@ -622,7 +695,8 @@ export async function createActiveAnimationExploration(
                             startedAtMs: 0,
                             endedAtMs: observer.settleMs,
                             blockedMutationRequests: page.blockedMutationRequests(),
-                            limitations: ['temporal-correlation', 'outcome-needs-review'],
+                            limitations: [...loadLimitations],
+                            ...(localOnly ? { localOnly } : {}),
                         })
                         pendingStates.push({
                             stateId: stateResult.state.stateId,
@@ -801,6 +875,20 @@ export async function createActiveAnimationExploration(
                         limitations.add('network-side-effect-blocked')
                         addReasonCount(uncoveredReasonCounts, 'network-side-effect-blocked')
                     }
+                    if (rendererObjectsForAction(action, result.afterObserver).some(item => item.adapterError)) {
+                        edgeLimitations.add('renderer-adapter-error')
+                        limitations.add('renderer-adapter-error')
+                        addReasonCount(uncoveredReasonCounts, 'renderer-adapter-error')
+                    }
+                    if (
+                        selectUnambiguousActiveExplorerRendererObject(rendererObjectsForAction(action, result.afterObserver)).state ===
+                        'ambiguous'
+                    ) {
+                        edgeLimitations.add('renderer-object-ambiguous')
+                        limitations.add('renderer-object-ambiguous')
+                        addReasonCount(uncoveredReasonCounts, 'renderer-object-ambiguous')
+                    }
+                    const localOnly = edgeLocalRendererEvidence(action, result.afterObserver)
                     edges.push({
                         edgeId,
                         fromStateId: pending.stateId,
@@ -814,6 +902,7 @@ export async function createActiveAnimationExploration(
                         endedAtMs: Date.now() - startedAtMs,
                         blockedMutationRequests,
                         limitations: [...edgeLimitations],
+                        ...(localOnly ? { localOnly } : {}),
                     })
                     if (stateResult?.created && pending.depth + 1 < policy.maxDepth) {
                         pendingStates.push({
@@ -887,6 +976,7 @@ export async function createActiveAnimationExploration(
             engine: session.engine,
             ...(session.version ? { version: session.version } : {}),
         },
+        authentication: options.storageState ? 'required-local-storage-state' : 'none',
         startedAt: startedAtDate.toISOString(),
         endedAt: endedAtDate.toISOString(),
         policy,

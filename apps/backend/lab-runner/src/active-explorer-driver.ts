@@ -106,6 +106,27 @@ export function isSafeActiveExplorerRequest(value: string, allowedOrigin: string
     return parsed.target.origin === allowedOrigin
 }
 
+/** Page-controlled URLs and subprotocols require an explicit local-only opt-in. */
+export function isSafeActiveExplorerDevelopmentSocket(
+    value: string,
+    allowedOrigin: string,
+    protocols: readonly string[],
+    allowDevelopmentHmr = false
+): boolean {
+    if (!allowDevelopmentHmr) return false
+    try {
+        const target = new URL(value)
+        if (!['ws:', 'wss:'].includes(target.protocol) || target.username || target.password) return false
+        const allowed = new URL(allowedOrigin)
+        const comparableOrigin = `${target.protocol === 'wss:' ? 'https:' : 'http:'}//${target.host}`
+        if (comparableOrigin !== allowed.origin || !['127.0.0.1', '::1', 'localhost'].includes(target.hostname)) return false
+        if (target.pathname === '/_next/webpack-hmr') return true
+        return target.pathname === '/' && protocols.length === 1 && protocols[0] === 'vite-hmr'
+    } catch {
+        return false
+    }
+}
+
 async function completeWithin(promise: Promise<unknown>, timeoutMs: number, description: string): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined
     try {
@@ -436,8 +457,19 @@ class PlaywrightActiveExplorerSession implements ActiveExplorerAutomationSession
                 }
             })
             await context.routeWebSocket('**/*', async socket => {
-                blockedRequests += 1
-                await socket.close({ code: 1008, reason: 'Blocked by Active Explorer policy' })
+                if (
+                    isSafeActiveExplorerDevelopmentSocket(
+                        socket.url(),
+                        options.origin,
+                        socket.protocols(),
+                        options.policy.allowDevelopmentHmr
+                    )
+                ) {
+                    socket.connectToServer()
+                } else {
+                    blockedRequests += 1
+                    await socket.close({ code: 1008, reason: 'Blocked by Active Explorer policy' })
+                }
             })
         }
         return new PlaywrightActiveExplorerContext(context, globalKey, capability, options.policy, () => blockedRequests)

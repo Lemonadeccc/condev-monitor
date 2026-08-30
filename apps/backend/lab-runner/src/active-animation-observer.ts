@@ -66,6 +66,17 @@ export interface ActiveObserverSurface {
     height: number
 }
 
+export interface ActiveObserverRendererObject {
+    subjectKey: string
+    surface: 'canvas-2d' | 'webgl' | 'webgpu'
+    resolution: 'hit' | 'miss' | 'unavailable'
+    targetToken?: string
+    selector?: string
+    outcomeKey?: string
+    outcomeStatus?: 'completed' | 'failed' | 'idle'
+    adapterError?: true
+}
+
 export interface ActiveObserverSnapshot {
     sequence: number
     capped: boolean
@@ -73,6 +84,7 @@ export interface ActiveObserverSnapshot {
     events: ActiveObserverEvent[]
     smil: ActiveObserverSmilAnimation[]
     surfaces: ActiveObserverSurface[]
+    rendererObjects: ActiveObserverRendererObject[]
 }
 
 /**
@@ -95,8 +107,12 @@ export function buildActiveAnimationObserverScript(globalKey: string, capability
         const targetIds = new WeakMap();
         const animationIds = new WeakMap();
         const canvasContexts = new WeakMap();
+        const rendererObjects = new Map();
+        const rendererAdapterErrors = new Map();
+        const outcomeStates = new Map();
         let nextTargetId = 1;
         let nextAnimationId = 1;
+        let lastPointer;
 
         const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : undefined;
         const stringValue = (value, maximum = 160) => typeof value === 'string' && value ? value.slice(0, maximum) : undefined;
@@ -147,6 +163,71 @@ export function buildActiveAnimationObserverScript(globalKey: string, capability
             }
             events.push({ sequence: ++sequence, atMs: performance.now(), ...record });
         };
+        const publicOutcomeKey = '__CONDEV_ANIMATION_LAB_OUTCOME__';
+        const rendererBridgeKey = '__CONDEV_ANIMATION_LAB_RENDERER_OBJECTS_V1__';
+        const tokenPattern = /^[a-z0-9][a-z0-9._:-]{0,119}$/;
+        const subjectPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+        const outcomeStatuses = new Set(['completed', 'failed', 'idle']);
+        const rendererSurfaces = new Set(['canvas-2d', 'webgl', 'webgpu']);
+        const registerOutcome = (key, status) => {
+            if (typeof key !== 'string' || !tokenPattern.test(key) || !outcomeStatuses.has(status)) return false;
+            if (!outcomeStates.has(key) && outcomeStates.size >= 128) return false;
+            outcomeStates.set(key, status);
+            sequence += 1;
+            return true;
+        };
+        if (!root[publicOutcomeKey]) {
+            Object.defineProperty(root, publicOutcomeKey, {
+                configurable: false,
+                enumerable: false,
+                writable: false,
+                value: Object.freeze({ register: registerOutcome }),
+            });
+        }
+        Object.defineProperty(root, rendererBridgeKey, {
+            configurable: false,
+            enumerable: false,
+            writable: false,
+            value: Object.freeze({
+                register(input) {
+                    try {
+                        if (!input || typeof input !== 'object') return undefined;
+                        const subjectKey = input.subjectKey;
+                        const surface = input.surface;
+                        const target = input.target;
+                        const outcomeKey = input.outcomeKey;
+                        const resolve = input.resolve;
+                        if (
+                            typeof subjectKey !== 'string' ||
+                            !subjectPattern.test(subjectKey) ||
+                            !rendererSurfaces.has(surface) ||
+                            !(target instanceof Element) ||
+                            typeof resolve !== 'function' ||
+                            (outcomeKey !== undefined && (typeof outcomeKey !== 'string' || !tokenPattern.test(outcomeKey))) ||
+                            rendererObjects.has(subjectKey) ||
+                            rendererObjects.size >= 128
+                        ) return undefined;
+                        const record = { subjectKey, surface, target, resolve, ...(outcomeKey ? { outcomeKey } : {}) };
+                        rendererObjects.set(subjectKey, record);
+                        sequence += 1;
+                        let removed = false;
+                        return () => {
+                            if (removed) return;
+                            removed = true;
+                            if (rendererObjects.get(subjectKey) === record) rendererObjects.delete(subjectKey);
+                            sequence += 1;
+                        };
+                    } catch {
+                        return undefined;
+                    }
+                },
+            }),
+        });
+        addEventListener('pointermove', event => {
+            const clientX = finite(event.clientX);
+            const clientY = finite(event.clientY);
+            if (clientX !== undefined && clientY !== undefined) lastPointer = Object.freeze({ clientX, clientY });
+        }, true);
         const animationFamily = animation => {
             const timelineName = animation && animation.timeline && animation.timeline.constructor
                 ? animation.timeline.constructor.name
@@ -345,11 +426,64 @@ export function buildActiveAnimationObserverScript(globalKey: string, capability
             ...(stringValue(element.getAttribute('dur')) ? { duration: stringValue(element.getAttribute('dur')) } : {}),
             ...(stringValue(element.getAttribute('repeatCount')) ? { repeatCount: stringValue(element.getAttribute('repeatCount')) } : {}),
         }));
+        const rendererObjectSnapshot = () => {
+            const active = Array.from(rendererObjects.values()).slice(0, 128).map(record => {
+            let resolution = 'unavailable';
+            let adapterError = rendererAdapterErrors.has(record.subjectKey);
+            try {
+                const value = record.resolve(lastPointer);
+                const status = typeof value === 'string' ? value : value && value.status;
+                if (status === 'hit' || status === 'miss' || status === 'unavailable') resolution = status;
+            } catch {
+                adapterError = true;
+                if (!rendererAdapterErrors.has(record.subjectKey) && rendererAdapterErrors.size < 128) {
+                    rendererAdapterErrors.set(record.subjectKey, {
+                        subjectKey: record.subjectKey,
+                        surface: record.surface,
+                        targetToken: targetToken(record.target),
+                        selector: selector(record.target),
+                        ...(record.outcomeKey ? { outcomeKey: record.outcomeKey } : {}),
+                    });
+                }
+            }
+            const outcomeStatus = record.outcomeKey ? outcomeStates.get(record.outcomeKey) : undefined;
+            return {
+                subjectKey: record.subjectKey,
+                surface: record.surface,
+                resolution,
+                targetToken: targetToken(record.target),
+                selector: selector(record.target),
+                ...(record.outcomeKey ? { outcomeKey: record.outcomeKey } : {}),
+                ...(outcomeStatus ? { outcomeStatus } : {}),
+                ...(adapterError ? { adapterError: true } : {}),
+            };
+            });
+            const activeSubjects = new Set(active.map(record => record.subjectKey));
+            const tombstones = Array.from(rendererAdapterErrors.values())
+                .filter(record => !activeSubjects.has(record.subjectKey))
+                .map(record => ({
+                    subjectKey: record.subjectKey,
+                    surface: record.surface,
+                    resolution: 'unavailable',
+                    ...(record.targetToken ? { targetToken: record.targetToken } : {}),
+                    ...(record.selector ? { selector: record.selector } : {}),
+                    ...(record.outcomeKey ? { outcomeKey: record.outcomeKey } : {}),
+                    adapterError: true,
+                }));
+            return [
+                ...active.filter(record => record.adapterError),
+                ...tombstones,
+                ...active.filter(record => !record.adapterError),
+            ].slice(0, 128);
+        };
         root[globalKey] = Object.freeze({
             reset(token, nextCommandSequence) {
                 if (token !== capability || !Number.isSafeInteger(nextCommandSequence) || nextCommandSequence <= commandSequence) return null;
                 commandSequence = nextCommandSequence;
                 events.length = 0;
+                outcomeStates.clear();
+                rendererAdapterErrors.clear();
+                lastPointer = undefined;
                 capped = false;
                 return { sequence };
             },
@@ -366,6 +500,7 @@ export function buildActiveAnimationObserverScript(globalKey: string, capability
                     events: events.map(event => ({ ...event })),
                     smil: smilSnapshot(),
                     surfaces: surfaceSnapshot(),
+                    rendererObjects: rendererObjectSnapshot(),
                 };
             },
         });

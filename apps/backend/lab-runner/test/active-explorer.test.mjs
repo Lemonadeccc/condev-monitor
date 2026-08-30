@@ -25,7 +25,7 @@ function fixtureHtml(second = false) {
             <button type="button" data-lab="delete">Delete account</button>
             <button type="button" data-lab="sync">Sync preview</button>
             <div class="card" data-lab="card">Card</div>
-            <canvas data-lab="surface" width="320" height="180"></canvas>
+            <canvas data-lab="surface" data-condev-renderer="webgl" width="640" height="360" style="width:640px;height:360px;background:#d11"></canvas>
             <div class="spacer"></div>
             <script>
                 document.querySelector('[data-lab="animate"]').addEventListener('click', () => {
@@ -35,6 +35,46 @@ function fixtureHtml(second = false) {
                 })
                 document.querySelector('[data-lab="delete"]').addEventListener('click', () => fetch('/delete', { method: 'POST' }))
                 document.querySelector('[data-lab="sync"]').addEventListener('click', () => fetch('/delete?via=fetch'))
+                const rendererSurface = document.querySelector('[data-lab="surface"]')
+                window.__CONDEV_ANIMATION_LAB_RENDERER_OBJECTS_V1__?.register({
+                    subjectKey: 'fixture.renderer.miss',
+                    surface: 'webgl',
+                    target: rendererSurface,
+                    resolve: point => point ? 'miss' : 'unavailable',
+                })
+                window.__CONDEV_ANIMATION_LAB_RENDERER_OBJECTS_V1__?.register({
+                    subjectKey: 'fixture.renderer.primary',
+                    surface: 'webgl',
+                    target: rendererSurface,
+                    outcomeKey: 'fixture.renderer.hit',
+                    resolve: point => point ? 'hit' : 'unavailable',
+                })
+                let transientAdapterAttempts = 0
+                let unregisterBroken
+                unregisterBroken = window.__CONDEV_ANIMATION_LAB_RENDERER_OBJECTS_V1__?.register({
+                    subjectKey: 'fixture.renderer.broken',
+                    surface: 'webgl',
+                    target: rendererSurface,
+                    resolve: point => {
+                        if (point && transientAdapterAttempts++ === 0) {
+                            queueMicrotask(() => unregisterBroken?.())
+                            throw new Error('private adapter failure')
+                        }
+                        return 'unavailable'
+                    },
+                })
+                let rendererMutationAttempted = false
+                window.addEventListener('pointermove', event => {
+                    const box = rendererSurface.getBoundingClientRect()
+                    if (event.clientX >= box.left && event.clientX <= box.right && event.clientY >= box.top && event.clientY <= box.bottom) {
+                        if (!rendererMutationAttempted) {
+                            rendererMutationAttempted = true
+                            fetch('/delete', { method: 'POST' }).catch(() => {})
+                        }
+                        rendererSurface.style.background = rendererSurface.style.background === 'rgb(0, 170, 255)' ? '#d11' : '#0af'
+                        window.__CONDEV_ANIMATION_LAB_OUTCOME__?.register('fixture.renderer.hit', 'completed')
+                    }
+                }, { passive: true })
             </script>
         </body>
         </html>`
@@ -73,11 +113,28 @@ test('active explorer safely executes bounded actions and records native animati
 
         assert.equal(result.localSession.mode, 'active-explore')
         assert.equal(result.localSession.status, 'needs-review')
+        assert.equal(result.localSession.authentication, 'none')
+        assert.equal(result.uploadSafeSession.authentication, 'none')
         assert.equal(result.localSession.coverage.complete, false)
         assert.equal(result.localSession.routes.length, 2)
         assert.ok(result.localSession.states.length >= 2)
         assert.ok(result.localSession.edges.some(edge => edge.action.kind === 'click' && edge.status === 'executed'))
         assert.ok(result.localSession.motions.some(motion => ['css-animation', 'css-transition', 'waapi'].includes(motion.family)))
+        const rendererEvidence = result.localSession.edges.flatMap(edge => edge.localOnly?.rendererObjects ?? [])
+        assert.ok(rendererEvidence.some(item => item.subjectKey === 'fixture.renderer.primary'))
+        assert.ok(rendererEvidence.some(item => item.resolution === 'hit'))
+        assert.ok(rendererEvidence.some(item => item.subjectKey === 'fixture.renderer.broken' && item.adapterError === true))
+        const rendererMotions = result.localSession.motions.filter(motion => motion.localOnly?.rendererSubjectKey)
+        assert.ok(rendererMotions.some(motion => motion.localOnly?.rendererSubjectKey === 'fixture.renderer.primary'))
+        assert.equal(
+            rendererMotions.some(motion => motion.localOnly?.rendererSubjectKey === 'fixture.renderer.miss'),
+            false
+        )
+        assert.equal(
+            rendererMotions.some(motion => motion.localOnly?.rendererSubjectKey === 'fixture.renderer.broken'),
+            false
+        )
+        assert.ok(result.localSession.limitations.includes('renderer-adapter-error'))
         assert.ok(result.localSession.coverage.uncoveredReasonCounts['dangerous-action-blocked'] >= 1)
         assert.ok(result.localSession.edges.some(edge => edge.blockedMutationRequests >= 1))
         assert.equal(mutationRequests, 0)
@@ -86,6 +143,13 @@ test('active explorer safely executes bounded actions and records native animati
         const safeJson = JSON.stringify(result.uploadSafeSession)
         assert.equal(safeJson.includes(url), false)
         assert.equal(safeJson.includes('[data-lab='), false)
+        assert.equal(safeJson.includes('fixture.renderer.primary'), false)
+        assert.equal(safeJson.includes('fixture.renderer.hit'), false)
+        assert.equal(safeJson.includes('fixture.renderer.broken'), false)
+        assert.notEqual(result.uploadSafeSession.states[0]?.motionInventoryHash, result.localSession.states[0]?.motionInventoryHash)
+        if (result.localSession.targets[0] && result.uploadSafeSession.targets[0]) {
+            assert.notEqual(result.uploadSafeSession.targets[0].targetId, result.localSession.targets[0].targetId)
+        }
         assert.equal(result.uploadSafeSession.privacy.selectorsIncluded, false)
     } finally {
         await new Promise((resolve, reject) => server.close(error => (error ? reject(error) : resolve())))
@@ -106,7 +170,8 @@ test('active explorer records an explicit page crash and still closes its driver
     let contextClosed = false
     let sessionClosed = false
     let pageCrashed = false
-    const emptyObserver = { sequence: 0, capped: false, animations: [], events: [], smil: [], surfaces: [] }
+    let contextStorageState
+    const emptyObserver = { sequence: 0, capped: false, animations: [], events: [], smil: [], surfaces: [], rendererObjects: [] }
     const page = {
         async navigate() {},
         currentUrl: () => 'http://127.0.0.1:4444/',
@@ -138,7 +203,8 @@ test('active explorer records an explicit page crash and still closes its driver
                 driver: 'playwright',
                 engine: 'chromium',
                 version: 'test',
-                async createContext() {
+                async createContext(options) {
+                    contextStorageState = options.storageState
                     return {
                         async newPage() {
                             return page
@@ -159,11 +225,15 @@ test('active explorer records an explicit page crash and still closes its driver
         url: 'http://127.0.0.1:4444/',
         pageKey: 'crash-fixture',
         driver,
+        storageState: '/tmp/local-auth-state.json',
         policy: { maxDepth: 0, maxTotalDurationMs: 2_000 },
     })
 
     assert.ok(result.localSession.stopReasons.includes('page-crashed'))
     assert.equal(result.localSession.coverage.complete, false)
+    assert.equal(result.localSession.authentication, 'required-local-storage-state')
+    assert.equal(result.uploadSafeSession.authentication, 'required-local-storage-state')
+    assert.equal(contextStorageState, '/tmp/local-auth-state.json')
     assert.equal(result.localSession.edges.length, 0)
     assert.equal(contextClosed, true)
     assert.equal(sessionClosed, true)

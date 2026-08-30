@@ -5,6 +5,7 @@ const safeText = z.string().max(1_024)
 const safeToken = z.string().min(1).max(160)
 const nonNegative = z.number().finite().nonnegative()
 const actionKind = z.enum(['load', 'click', 'hover', 'scroll', 'pointer-path', 'resize', 'press'])
+const relativePointSchema = z.object({ xRatio: z.number().min(0).max(1), yRatio: z.number().min(0).max(1) }).strict()
 
 const policySchema = z
     .object({
@@ -20,6 +21,7 @@ const policySchema = z
         maxMotionRecords: z.number().int().min(1).max(100_000),
         allowedKinds: z.array(actionKind.exclude(['load'])).max(6),
         blockMutationRequests: z.boolean(),
+        allowDevelopmentHmr: z.boolean().optional().default(false),
     })
     .strict()
 
@@ -69,6 +71,7 @@ const localActionSchema = z
         width: z.number().int().positive().optional(),
         height: z.number().int().positive().optional(),
         key: safeText.optional(),
+        points: z.array(relativePointSchema).min(2).max(240).optional(),
     })
     .strip()
 const uploadActionSchema = z
@@ -83,6 +86,7 @@ const uploadActionSchema = z
         width: z.never().optional(),
         height: z.never().optional(),
         key: z.never().optional(),
+        points: z.never().optional(),
     })
     .strict()
 
@@ -100,8 +104,28 @@ const edgeShape = {
     limitations: z.array(safeToken).max(64),
     errorCode: safeToken.optional(),
 }
-const localEdgeSchema = z.object({ ...edgeShape, action: localActionSchema }).strip()
-const uploadEdgeSchema = z.object({ ...edgeShape, action: uploadActionSchema }).strict()
+const rendererObjectEvidenceSchema = z
+    .object({
+        subjectKey: safeToken,
+        surface: z.enum(['canvas-2d', 'webgl', 'webgpu']),
+        resolution: z.enum(['hit', 'miss', 'unavailable']),
+        selector: safeText.optional(),
+        outcomeKey: safeToken.optional(),
+        outcomeStatus: z.enum(['completed', 'failed', 'idle']).optional(),
+        adapterError: z.literal(true).optional(),
+    })
+    .strip()
+const localEdgeSchema = z
+    .object({
+        ...edgeShape,
+        action: localActionSchema,
+        localOnly: z
+            .object({ rendererObjects: z.array(rendererObjectEvidenceSchema).max(128) })
+            .strip()
+            .optional(),
+    })
+    .strip()
+const uploadEdgeSchema = z.object({ ...edgeShape, action: uploadActionSchema, localOnly: z.never().optional() }).strict()
 
 const timingSchema = z
     .object({
@@ -150,7 +174,14 @@ const localMotionSchema = z
     .object({
         ...motionShape,
         localOnly: z
-            .object({ selector: safeText.optional(), animationName: safeText.optional(), pseudoElement: safeText.optional() })
+            .object({
+                selector: safeText.optional(),
+                animationName: safeText.optional(),
+                pseudoElement: safeText.optional(),
+                rendererSubjectKey: safeToken.optional(),
+                rendererOutcomeKey: safeToken.optional(),
+                rendererResolution: z.enum(['hit', 'miss', 'unavailable']).optional(),
+            })
             .strip()
             .optional(),
     })
@@ -188,6 +219,7 @@ const commonShape = {
     mode: z.literal('active-explore'),
     pageKey: safeToken,
     browser: browserSchema,
+    authentication: z.enum(['none', 'required-local-storage-state', 'unknown']).optional().default('unknown'),
     startedAt: z.string().datetime(),
     endedAt: z.string().datetime(),
     policy: policySchema,

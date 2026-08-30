@@ -63,14 +63,19 @@ export type {
 } from './browser-driver'
 export { createDiscoveredAnimationProposal, discoverAnimationCandidates } from './explorer'
 export type { DiscoverAnimationCandidatesOptions, DiscoveredAnimationProposal } from './explorer'
-export { createActiveAnimationExploration } from './active-explorer'
+export { createActiveAnimationExploration, selectUnambiguousActiveExplorerRendererObject } from './active-explorer'
 export type {
     ActiveAnimationExplorationOptions,
     ActiveAnimationExplorationResult,
     ActiveExplorerAutomationDriver,
     ActiveExplorerAutomationSession,
 } from './active-explorer'
-export { createPlaywrightActiveExplorerDriver } from './active-explorer-driver'
+export {
+    createPlaywrightActiveExplorerDriver,
+    isSafeActiveExplorerDevelopmentSocket,
+    isSafeActiveExplorerNavigation,
+    isSafeActiveExplorerRequest,
+} from './active-explorer-driver'
 export type { ActiveExplorerAutomationContext, ActiveExplorerAutomationPage, ActiveExplorerStateSnapshot } from './active-explorer-driver'
 export { decodePageProbeResult } from './probe-result'
 export type { DecodedPageProbeResult, ExpectedPageProbeAction } from './probe-result'
