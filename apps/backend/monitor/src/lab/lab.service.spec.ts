@@ -1013,7 +1013,8 @@ describe('LabService runner grants and ownership', () => {
             expect(() => (service as any).serializeRunnerClaim(run)).toThrow('invalid stored execution config')
         }
 
-        const { authenticationMode: _legacyMode, ...legacyConfig } = validConfig
+        const { authenticationMode, ...legacyConfig } = validConfig
+        expect(authenticationMode).toBe('none')
         const legacyRun = runEntity({ config: JSON.stringify(legacyConfig) })
         expect((service as any).serializeRunnerClaim(legacyRun, LAB_RUNNER_CONTRACT_VERSION).config.authenticationMode).toBe('none')
     })
