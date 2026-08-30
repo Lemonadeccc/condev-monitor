@@ -7,6 +7,7 @@
     "bin": {
         "condev-animation-lab": "build/cli.js",
         "condev-animation-lab-explore": "build/explore-cli.js",
+        "condev-animation-lab-active-explore": "build/active-explore-cli.js",
         "condev-animation-lab-import-recorder": "build/import-recorder-cli.js"
     },
     "files": [
@@ -18,7 +19,7 @@
     },
     "scripts": {
         "clean": "rimraf build",
-        "build": "pnpm clean && tsup src/cli.ts src/explore-cli.ts src/import-recorder-cli.ts src/index.ts --format esm --out-dir build --platform node --sourcemap",
+        "build": "pnpm clean && tsup src/cli.ts src/explore-cli.ts src/active-explore-cli.ts src/import-recorder-cli.ts src/index.ts --format esm --out-dir build --platform node --sourcemap",
         "typecheck": "tsc -p tsconfig.json --noEmit",
         "test": "pnpm build && node --test test/*.test.mjs",
         "test:browser-sdk-integration": "pnpm --filter '@condev-monitor/monitor-sdk-browser...' build && pnpm build && node --test test/integration/sdk-renderer-browser.test.mjs"

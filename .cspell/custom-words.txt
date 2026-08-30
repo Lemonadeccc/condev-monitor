@@ -128,3 +128,9 @@ assertionkey
 adapterkey
 objectkey
 raycaster
+smil
+fbclid
+gclid
+blockedbyclient
+subresource
+texttrack
