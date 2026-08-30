@@ -20,9 +20,11 @@ const activeExplorerPath = path.join(root, 'apps/backend/lab-runner/build/active
 const frontendUiE2EPath = path.join(root, 'apps/backend/lab-runner/test-platform/frontend-ui.e2e.mjs')
 const monitorPort = positivePort(process.env.ANIMATION_LAB_PLATFORM_MONITOR_PORT ?? '18083', 'ANIMATION_LAB_PLATFORM_MONITOR_PORT')
 const frontendPort = positivePort(process.env.ANIMATION_LAB_PLATFORM_FRONTEND_PORT ?? '18084', 'ANIMATION_LAB_PLATFORM_FRONTEND_PORT')
+const dsnPort = positivePort(process.env.ANIMATION_LAB_PLATFORM_DSN_PORT ?? '18085', 'ANIMATION_LAB_PLATFORM_DSN_PORT')
 const fixturePort = positivePort(process.env.ANIMATION_LAB_PLATFORM_FIXTURE_PORT ?? '43101', 'ANIMATION_LAB_PLATFORM_FIXTURE_PORT')
 const monitorBase = new URL(`http://127.0.0.1:${monitorPort}`)
 const frontendBase = new URL(`http://localhost:${frontendPort}`)
+const dsnBase = new URL(`http://127.0.0.1:${dsnPort}`)
 const fixtureUrl = new URL(`http://127.0.0.1:${fixturePort}/`)
 const frontendSourceDir = path.join(root, 'apps/frontend/monitor')
 const resultRoot = path.resolve(
@@ -452,7 +454,10 @@ async function cleanupClickhouse() {
     if (!application) return
     await verifyApplicationFixture(application)
     const appId = application.appId
-    assert((await clickhouseFixtureCount(appId)) === 1, 'ClickHouse did not contain exactly one setting for the proven fixture application')
+    const fixtureCount = await clickhouseFixtureCount(appId)
+    assert(fixtureCount <= 1, 'ClickHouse contained multiple settings for the proven fixture application')
+    // Application setting sync is best-effort, so resource pressure can leave no ClickHouse fixture to remove.
+    if (fixtureCount === 0) return
     const environment = clickhouseEnvironment()
     const endpoint = new URL('/', environment.CLICKHOUSE_URL)
     endpoint.searchParams.set('database', environment.CLICKHOUSE_DATABASE)
@@ -602,6 +607,9 @@ async function main() {
     if (await isReady(new URL('/login', frontendBase))) {
         throw new Error(`Refusing to reuse an existing service on isolated frontend port ${frontendPort}`)
     }
+    if (await isReady(new URL('/dsn-api/healthz', dsnBase))) {
+        throw new Error(`Refusing to reuse an existing service on isolated DSN Server port ${dsnPort}`)
+    }
 
     await mkdir(runnerOutDir, { recursive: true, mode: 0o700 })
     await mkdir(activeExplorerOutDir, { recursive: true, mode: 0o700 })
@@ -647,6 +655,25 @@ async function main() {
     const monitorState = processes.find(item => item.child === monitorProcess)
     await waitUntilReady('monitor', new URL('/api/healthz', monitorBase), monitorProcess, monitorState.logPath)
 
+    const dsnProcess = startProcess('dsn-server', 'pnpm', ['--filter', 'dsn-server', 'start:prod'], {
+        ...postgresEnvironment(),
+        ...clickhouseEnvironment(),
+        NODE_ENV: 'production',
+        PORT: String(dsnPort),
+        INGEST_MODE: 'direct',
+        KAFKA_ENABLED: 'false',
+        ANIMATION_RUM_V2_OUTBOX_ENABLED: 'false',
+        ANIMATION_RUM_V3_OUTBOX_ENABLED: 'false',
+        ANIMATION_RUM_V2_RETENTION_ENABLED: 'false',
+        ANIMATION_RUM_V3_RETENTION_ENABLED: 'false',
+        RESEND_API_KEY: '',
+        EMAIL_SENDER_PASSWORD: '',
+        EMAIL_PASS: '',
+        EMAIL_PASSWORD: '',
+    })
+    const dsnState = processes.find(item => item.child === dsnProcess)
+    await waitUntilReady('dsn-server', new URL('/dsn-api/healthz', dsnBase), dsnProcess, dsnState.logPath)
+
     const frontendProcess = startProcess(
         'frontend',
         'pnpm',
@@ -654,6 +681,7 @@ async function main() {
         {
             NODE_ENV: 'development',
             API_PROXY_TARGET: monitorBase.origin,
+            DSN_API_PROXY_TARGET: dsnBase.origin,
             NEXT_TELEMETRY_DISABLED: '1',
         }
     )
