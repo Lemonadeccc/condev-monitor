@@ -104,6 +104,42 @@ jobs:
               if: always()
               run: pnpm docker:stop
 
+    lab-postgres:
+        name: Animation Lab PostgreSQL lifecycle
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        steps:
+            - uses: actions/checkout@v7
+            - uses: pnpm/action-setup@v6
+              with:
+                  version: 10.10.0
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 22
+                  cache: pnpm
+                  cache-dependency-path: pnpm-lock.yaml
+            - run: pnpm install --frozen-lockfile
+            - name: Start and initialize Lab PostgreSQL
+              run: pnpm docker:start
+            - name: Run Animation Lab PostgreSQL lifecycle tests
+              run: pnpm test:animation-lab:postgres
+            - name: Capture Lab PostgreSQL logs
+              if: always()
+              run: |
+                  mkdir -p lab-results/ci-lab-postgres
+                  docker compose -p condev-monitor -f .devcontainer/docker-compose.yml logs --no-color condev-monitor-postgres > lab-results/ci-lab-postgres/postgres.log 2>&1 || true
+            - name: Upload Lab PostgreSQL evidence
+              if: always()
+              uses: actions/upload-artifact@v6
+              with:
+                  name: animation-lab-postgres
+                  path: lab-results/ci-lab-postgres/postgres.log
+                  if-no-files-found: warn
+                  retention-days: 14
+            - name: Stop Lab PostgreSQL infrastructure
+              if: always()
+              run: pnpm docker:stop
+
     attached-platform:
         name: Attached Animation Lab platform E2E
         runs-on: ubuntu-latest
