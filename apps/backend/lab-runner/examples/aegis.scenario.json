@@ -100,9 +100,7 @@
             ],
             "selector": ".hud-action .hud-button",
             "durationMs": 1800,
-            "expect": [
-                { "kind": "element-state", "selector": ".contact-overlay", "state": "visible", "timeoutMs": 5000 }
-            ]
+            "expect": [{ "kind": "element-state", "selector": ".contact-overlay", "state": "visible", "timeoutMs": 5000 }]
         },
         {
             "kind": "press",

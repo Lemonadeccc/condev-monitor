@@ -1264,10 +1264,7 @@ class AnimationClientHandleImpl implements AnimationClientHandle {
                     cleanupComplete = disposeOwnedResources()
                     sessionCleanupFailed = !cleanupComplete
                     if (sessionCleanupFailed) {
-                        sessionCleanupFailureCount = Math.min(
-                            MAX_MOTION_SESSION_CLEANUP_FAILURE_COUNT,
-                            sessionCleanupFailureCount + 1
-                        )
+                        sessionCleanupFailureCount = Math.min(MAX_MOTION_SESSION_CLEANUP_FAILURE_COUNT, sessionCleanupFailureCount + 1)
                     }
                 },
             }
