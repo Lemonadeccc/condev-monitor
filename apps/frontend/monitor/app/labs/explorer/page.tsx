@@ -17,6 +17,7 @@ export default function LabActiveExplorerPage() {
     const { user, loading } = useAuth()
     const [session, setSession] = useState<LabActiveExplorationSession | null>(null)
     const [fileName, setFileName] = useState('')
+    const [artifactRevision, setArtifactRevision] = useState(0)
     const [error, setError] = useState('')
 
     const selectArtifact = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -33,6 +34,7 @@ export default function LabActiveExplorerPage() {
             const parsed = parseLabActiveExploration(JSON.parse(await file.text()) as unknown)
             setSession(parsed)
             setFileName(file.name)
+            setArtifactRevision(value => value + 1)
         } catch (cause) {
             setSession(null)
             setFileName('')
@@ -80,7 +82,7 @@ export default function LabActiveExplorerPage() {
                 ) : null}
             </AIPanelCard>
 
-            {session ? <LabActiveExplorationViewer key={fileName} session={session} /> : null}
+            {session ? <LabActiveExplorationViewer key={artifactRevision} session={session} /> : null}
         </AIMonitorPage>
     )
 }

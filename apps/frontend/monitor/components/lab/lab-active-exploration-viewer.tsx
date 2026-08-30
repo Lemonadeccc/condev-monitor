@@ -1,17 +1,25 @@
 'use client'
 
-import { Activity, AlertTriangle, MousePointerClick, Route, ScanSearch } from 'lucide-react'
+import { Activity, AlertTriangle, CheckCircle2, Download, MousePointerClick, Route, ScanSearch, XCircle } from 'lucide-react'
 import { useMemo, useState } from 'react'
 
 import { AIPanelCard, AIStatCard, AIStateMessage } from '@/components/ai/page-shell'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
     activeExplorationMotionFamilies,
     type LabActiveExplorationEdge,
     type LabActiveExplorationMotion,
     type LabActiveExplorationSession,
 } from '@/lib/lab-active-exploration'
+import {
+    buildLabExplorerReviewedArtifacts,
+    createInitialLabExplorerReviews,
+    type LabExplorerEdgeReview,
+    type LabExplorerReviewState,
+    labExplorerRouteReadiness,
+} from '@/lib/lab-active-exploration-review'
 import { cn } from '@/lib/utils'
 
 type ViewMode = 'actions' | 'motions'
@@ -43,6 +51,34 @@ function statusVariant(status: LabActiveExplorationEdge['status'] | LabActiveExp
     return 'secondary' as const
 }
 
+function reviewVariant(status: LabExplorerEdgeReview['decision']) {
+    if (status === 'approved') return 'success' as const
+    if (status === 'rejected') return 'destructive' as const
+    if (status === 'needs-edit') return 'warning' as const
+    return 'secondary' as const
+}
+
+function reviewLabel(status: LabExplorerEdgeReview['decision']): string {
+    return {
+        'needs-review': '待审核',
+        approved: '已确认',
+        rejected: '已拒绝',
+        'needs-edit': '需修改',
+    }[status]
+}
+
+function downloadJson(fileName: string, value: unknown): void {
+    const url = URL.createObjectURL(new Blob([`${JSON.stringify(value, null, 2)}\n`], { type: 'application/json' }))
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = fileName
+    anchor.style.display = 'none'
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
 function Metadata({ label, value, mono = false }: { label: string; value: string; mono?: boolean }) {
     return (
         <div className="min-w-0 rounded-md border bg-muted/10 p-3">
@@ -65,7 +101,17 @@ function LimitationList({ values }: { values: readonly string[] }) {
     )
 }
 
-function EdgeDetail({ edge, session }: { edge: LabActiveExplorationEdge; session: LabActiveExplorationSession }) {
+function EdgeDetail({
+    edge,
+    session,
+    review,
+    onReview,
+}: {
+    edge: LabActiveExplorationEdge
+    session: LabActiveExplorationSession
+    review?: LabExplorerEdgeReview
+    onReview?: (patch: Partial<LabExplorerEdgeReview>) => void
+}) {
     const route = session.routes.find(candidate => candidate.routeId === edge.routeId)
     const motions = edge.motionIds
         .map(motionId => session.motions.find(motion => motion.motionId === motionId))
@@ -93,6 +139,91 @@ function EdgeDetail({ edge, session }: { edge: LabActiveExplorationEdge; session
                     {route?.localUrl ? <p className="mt-2 break-all font-mono text-xs">URL: {route.localUrl}</p> : null}
                     {edge.action.selector ? <p className="mt-2 break-all font-mono text-xs">selector: {edge.action.selector}</p> : null}
                     <p className="mt-2 text-xs text-muted-foreground">这些字段只应保存在本机 artifact；upload-safe 文件不会包含它们。</p>
+                </section>
+            ) : null}
+
+            {'localOnly' in edge && edge.localOnly?.rendererObjects.length ? (
+                <section className="rounded-lg border border-sky-500/20 bg-sky-500/5 p-4">
+                    <h3 className="text-sm font-semibold">Renderer object 本地证据</h3>
+                    <div className="mt-3 space-y-2">
+                        {edge.localOnly.rendererObjects.map(item => (
+                            <div key={`${item.subjectKey}-${item.surface}`} className="rounded-md border bg-background/60 p-3 text-xs">
+                                <p className="font-mono">{item.subjectKey}</p>
+                                <p className="mt-1 text-muted-foreground">
+                                    {item.surface} · {item.resolution} · outcome {item.outcomeStatus ?? '未观测'}
+                                    {item.adapterError ? ' · adapter error' : ''}
+                                </p>
+                            </div>
+                        ))}
+                    </div>
+                    <p className="mt-3 text-xs text-muted-foreground">
+                        这是显式 resolver 的空间命中证据，不会把 mesh 自动宣称为帧、任务或 GPU 成本的原因。
+                    </p>
+                </section>
+            ) : null}
+
+            {review && onReview ? (
+                <section className="rounded-lg border p-4">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                        <div>
+                            <h3 className="text-sm font-semibold">本地人工审核</h3>
+                            <p className="mt-1 text-xs text-muted-foreground">审核状态只保存在当前标签页；不会写入后端或数据库。</p>
+                        </div>
+                        <Badge variant={reviewVariant(review.decision)}>{reviewLabel(review.decision)}</Badge>
+                    </div>
+                    <div className="mt-4 flex flex-wrap gap-2">
+                        <Button
+                            type="button"
+                            size="sm"
+                            variant={review.decision === 'approved' ? 'default' : 'outline'}
+                            onClick={() => onReview({ decision: 'approved' })}
+                        >
+                            <CheckCircle2 aria-hidden="true" /> 确认加入
+                        </Button>
+                        <Button
+                            type="button"
+                            size="sm"
+                            variant={review.decision === 'rejected' ? 'destructive' : 'outline'}
+                            onClick={() => onReview({ decision: 'rejected' })}
+                        >
+                            <XCircle aria-hidden="true" /> 拒绝
+                        </Button>
+                        <Button
+                            type="button"
+                            size="sm"
+                            variant={review.decision === 'needs-edit' ? 'secondary' : 'outline'}
+                            onClick={() => onReview({ decision: 'needs-edit' })}
+                        >
+                            需修改
+                        </Button>
+                    </div>
+                    <label className="mt-4 flex items-center gap-2 text-sm">
+                        <input type="checkbox" checked={review.critical} onChange={event => onReview({ critical: event.target.checked })} />
+                        这是关键用户路径动画
+                    </label>
+                    <label className="mt-4 block text-sm font-medium">
+                        完成条件
+                        <select
+                            className="mt-2 h-9 w-full rounded-md border bg-background px-3 text-sm"
+                            value={review.outcomeKind}
+                            onChange={event => onReview({ outcomeKind: event.target.value as LabExplorerEdgeReview['outcomeKind'] })}
+                        >
+                            <option value="none">无（关键动作不可导出）</option>
+                            <option value="animations-settled">浏览器动画已稳定</option>
+                            <option value="registered-outcome">项目注册的业务 outcome</option>
+                        </select>
+                    </label>
+                    {review.outcomeKind === 'registered-outcome' ? (
+                        <label className="mt-4 block text-sm font-medium">
+                            Outcome key（仅本地）
+                            <Input
+                                className="mt-2 font-mono text-xs"
+                                value={review.outcomeKey ?? ''}
+                                onChange={event => onReview({ outcomeKey: event.target.value })}
+                                placeholder="feature.animation.completed"
+                            />
+                        </label>
+                    ) : null}
                 </section>
             ) : null}
 
@@ -183,11 +314,33 @@ export function LabActiveExplorationViewer({ session }: { session: LabActiveExpl
     const [selectedMotionId, setSelectedMotionId] = useState(session.motions[0]?.motionId ?? '')
     const [visibleEdgeCount, setVisibleEdgeCount] = useState(LIST_PAGE_SIZE)
     const [visibleMotionCount, setVisibleMotionCount] = useState(LIST_PAGE_SIZE)
+    const [reviews, setReviews] = useState<LabExplorerReviewState>(() => createInitialLabExplorerReviews(session))
+    const [selectedRouteId, setSelectedRouteId] = useState(session.routes[0]?.routeId ?? '')
+    const [exportError, setExportError] = useState('')
     const families = useMemo(() => activeExplorationMotionFamilies(session), [session])
     const visibleEdges = session.edges.slice(0, visibleEdgeCount)
     const visibleMotions = session.motions.slice(0, visibleMotionCount)
     const selectedEdge = session.edges.find(edge => edge.edgeId === selectedEdgeId) ?? session.edges[0]
     const selectedMotion = session.motions.find(motion => motion.motionId === selectedMotionId) ?? session.motions[0]
+    const readiness = useMemo(() => labExplorerRouteReadiness(session, selectedRouteId, reviews), [reviews, selectedRouteId, session])
+    const selectedRoute = session.routes.find(route => route.routeId === selectedRouteId)
+    const updateReview = (edgeId: string, patch: Partial<LabExplorerEdgeReview>) => {
+        setReviews(current => ({
+            ...current,
+            [edgeId]: { ...current[edgeId]!, ...patch },
+        }))
+        setExportError('')
+    }
+    const exportArtifact = async (kind: 'scenario' | 'coverage') => {
+        setExportError('')
+        try {
+            const artifacts = await buildLabExplorerReviewedArtifacts(session, selectedRouteId, reviews)
+            if (kind === 'scenario') downloadJson(artifacts.scenarioFileName, artifacts.scenario)
+            else downloadJson(artifacts.coverageFileName, artifacts.coverage)
+        } catch (cause) {
+            setExportError(cause instanceof Error ? cause.message : '无法生成本地审核产物。')
+        }
+    }
 
     return (
         <div className="space-y-4">
@@ -207,6 +360,62 @@ export function LabActiveExplorationViewer({ session }: { session: LabActiveExpl
                         <p className="mt-1 text-muted-foreground">
                             文件分类：{session.dataClassification} · 状态：{session.status} · 停止原因：{session.stopReasons.join(', ')}
                         </p>
+                    </div>
+                </div>
+            </AIPanelCard>
+
+            <AIPanelCard
+                title="本地审核与导出"
+                description="逐项确认后，为所选路由生成 hash 绑定的本地 Scenario 与 coverage manifest；不会发起网络请求。"
+            >
+                <div className="grid gap-4 lg:grid-cols-[minmax(220px,0.7fr)_minmax(0,1.3fr)]">
+                    <label className="text-sm font-medium">
+                        路由
+                        <select
+                            className="mt-2 h-9 w-full rounded-md border bg-background px-3 text-sm"
+                            value={selectedRouteId}
+                            onChange={event => {
+                                setSelectedRouteId(event.target.value)
+                                setExportError('')
+                            }}
+                        >
+                            {session.routes.map(route => (
+                                <option key={route.routeId} value={route.routeId}>
+                                    {route.routeKey}
+                                </option>
+                            ))}
+                        </select>
+                    </label>
+                    <div className="rounded-md border bg-muted/10 p-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant={readiness.ready ? 'success' : 'warning'}>{readiness.ready ? '可以导出' : '尚未就绪'}</Badge>
+                            <span className="text-sm">
+                                已确认 {readiness.approved} · 已拒绝 {readiness.rejected} · 待处理 {readiness.pending}
+                            </span>
+                        </div>
+                        <p className="mt-2 font-mono text-xs text-muted-foreground">{selectedRoute?.routeKey ?? '未选择路由'}</p>
+                        {readiness.errors.length ? (
+                            <ul className="mt-3 space-y-1 text-xs text-amber-700 dark:text-amber-300">
+                                {readiness.errors.slice(0, 5).map(error => (
+                                    <li key={error}>• {error}</li>
+                                ))}
+                            </ul>
+                        ) : null}
+                        <div className="mt-4 flex flex-wrap gap-2">
+                            <Button type="button" size="sm" disabled={!readiness.ready} onClick={() => void exportArtifact('scenario')}>
+                                <Download aria-hidden="true" /> 下载 Scenario
+                            </Button>
+                            <Button
+                                type="button"
+                                size="sm"
+                                variant="outline"
+                                disabled={!readiness.ready}
+                                onClick={() => void exportArtifact('coverage')}
+                            >
+                                <Download aria-hidden="true" /> 下载 Coverage
+                            </Button>
+                        </div>
+                        {exportError ? <p className="mt-3 text-xs text-destructive">{exportError}</p> : null}
                     </div>
                 </div>
             </AIPanelCard>
@@ -245,7 +454,14 @@ export function LabActiveExplorationViewer({ session }: { session: LabActiveExpl
                                         >
                                             <div className="flex items-center justify-between gap-2">
                                                 <span className="font-medium">{actionLabel(edge.action.kind)}</span>
-                                                <Badge variant={statusVariant(edge.status)}>{edge.status}</Badge>
+                                                <div className="flex items-center gap-1">
+                                                    {reviews[edge.edgeId] ? (
+                                                        <Badge variant={reviewVariant(reviews[edge.edgeId]!.decision)}>
+                                                            {reviewLabel(reviews[edge.edgeId]!.decision)}
+                                                        </Badge>
+                                                    ) : null}
+                                                    <Badge variant={statusVariant(edge.status)}>{edge.status}</Badge>
+                                                </div>
                                             </div>
                                             <p className="mt-1 font-mono text-xs text-muted-foreground">{edge.edgeId}</p>
                                             <p className="mt-1 text-xs text-muted-foreground">
@@ -311,7 +527,16 @@ export function LabActiveExplorationViewer({ session }: { session: LabActiveExpl
                     </div>
                     <article className="min-w-0 p-5 lg:p-6">
                         {mode === 'actions' && selectedEdge ? (
-                            <EdgeDetail edge={selectedEdge} session={session} />
+                            <EdgeDetail
+                                edge={selectedEdge}
+                                session={session}
+                                review={session.dataClassification === 'local-only' ? reviews[selectedEdge.edgeId] : undefined}
+                                onReview={
+                                    session.dataClassification === 'local-only'
+                                        ? patch => updateReview(selectedEdge.edgeId, patch)
+                                        : undefined
+                                }
+                            />
                         ) : mode === 'motions' && selectedMotion ? (
                             <MotionDetail motion={selectedMotion} session={session} />
                         ) : (
