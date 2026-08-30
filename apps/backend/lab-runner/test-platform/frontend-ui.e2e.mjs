@@ -39,6 +39,7 @@ assert(!base.username && !base.password, 'ANIMATION_LAB_UI_BASE_URL must not con
 const email = requiredEnvironment('ANIMATION_LAB_UI_EMAIL')
 const password = requiredEnvironment('ANIMATION_LAB_UI_PASSWORD')
 const runId = strictRunId(requiredEnvironment('ANIMATION_LAB_UI_RUN_ID'))
+const activeExplorationArtifact = requiredEnvironment('ANIMATION_LAB_UI_ACTIVE_EXPLORATION_ARTIFACT')
 
 const chrome = await chromeLauncher.launch({
     logLevel: 'silent',
@@ -158,8 +159,19 @@ try {
             downloadedReport.coverage.totals.uncovered === 0,
         'Animation report UI download did not retain complete reviewed coverage'
     )
-
     assert(!(await page.locator('body').innerText()).includes('labg_'), 'Frontend Lab detail leaked a runner grant')
+
+    await page.goto(new URL('/labs/explorer', base).href, { waitUntil: 'domcontentloaded' })
+    await page.getByRole('heading', { name: '主动动效探索' }).waitFor({ state: 'visible', timeout: 30_000 })
+    await page.locator('input[type="file"]').setInputFiles(activeExplorationArtifact)
+    await page.getByText('探索状态图', { exact: true }).waitFor({ state: 'visible', timeout: 30_000 })
+    await page.getByText('页面加载', { exact: true }).first().waitFor({ state: 'visible' })
+    await page.getByText('local-only', { exact: false }).first().waitFor({ state: 'visible' })
+    await page.getByText('animation-exploration.local.json', { exact: true }).waitFor({ state: 'visible' })
+    assert((await page.getByRole('button', { name: /^动作 /u }).count()) === 1, 'Active Explorer viewer did not expose its action list')
+    assert((await page.getByRole('button', { name: /^动效 /u }).count()) === 1, 'Active Explorer viewer did not expose its motion list')
+
+    assert(!(await page.locator('body').innerText()).includes('labg_'), 'Active Explorer viewer leaked a runner grant')
     assert(failedApiResponses.length === 0, `Frontend Lab UI observed failed API responses: ${failedApiResponses.join(', ')}`)
     assert(pageErrors.length === 0, `Frontend Lab UI observed page errors: ${pageErrors.join('\n')}`)
     assert(failedRequests.length === 0, `Frontend Lab UI observed failed requests: ${failedRequests.join(', ')}`)
