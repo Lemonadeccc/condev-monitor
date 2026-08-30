@@ -7,7 +7,9 @@ import {
     type UploadSafeScenarioManifest,
 } from '@condev-monitor/animation-lab-explorer'
 import * as chromeLauncher from 'chrome-launcher'
-import { chromium, type Page } from 'playwright-core'
+import { type Browser, chromium, type Page } from 'playwright-core'
+
+import { waitForChromeDebuggingEndpoint } from './chrome-debugging-endpoint'
 
 export interface DiscoverAnimationCandidatesOptions {
     url: string
@@ -201,8 +203,10 @@ export async function createDiscoveredAnimationProposal(options: DiscoverAnimati
             '--disable-background-networking',
         ].filter(Boolean),
     })
-    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${chrome.port}`)
+    let browser: Browser | undefined
     try {
+        const endpoint = await waitForChromeDebuggingEndpoint(chrome.port, { description: 'Animation Explorer Chrome' })
+        browser = await chromium.connectOverCDP(endpoint)
         const context = await browser.newContext({
             serviceWorkers: 'block',
             ...(options.storageState ? { storageState: options.storageState } : {}),
@@ -222,7 +226,7 @@ export async function createDiscoveredAnimationProposal(options: DiscoverAnimati
             await context.close().catch(() => undefined)
         }
     } finally {
-        await browser.close().catch(() => undefined)
+        await browser?.close().catch(() => undefined)
         try {
             await chrome.kill()
         } catch {

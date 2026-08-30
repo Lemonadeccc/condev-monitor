@@ -4,6 +4,7 @@ import type { AnimationLabScenario, LabActionExpectation, RawTraceEvent } from '
 import * as chromeLauncher from 'chrome-launcher'
 import { type Browser, type BrowserContext, type BrowserType, type CDPSession, chromium, firefox, type Page, webkit } from 'playwright-core'
 
+import { waitForChromeDebuggingEndpoint } from './chrome-debugging-endpoint'
 import { type LabExecutionDriverProfile, PLAYWRIGHT_DESKTOP_EXECUTION_PROFILE } from './execution-preflight'
 import { startTrace } from './trace'
 
@@ -703,7 +704,8 @@ class PlaywrightBrowserDriver implements BrowserDriver {
                 ].filter(Boolean),
             })
             try {
-                const browser = await chromium.connectOverCDP(`http://127.0.0.1:${chrome.port}`)
+                const endpoint = await waitForChromeDebuggingEndpoint(chrome.port, { description: 'Animation Lab Chrome' })
+                const browser = await chromium.connectOverCDP(endpoint)
                 return new PlaywrightBrowserDriverSession(this.engine, browser, options.headed === true, async () => {
                     await chrome.kill()
                 })
