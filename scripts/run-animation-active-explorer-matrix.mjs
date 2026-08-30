@@ -7,6 +7,10 @@ import { fileURLToPath } from 'node:url'
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const runner = path.join(root, 'apps/backend/lab-runner/build/active-explore-cli.js')
 const fixtureNames = Object.freeze(['lemon-bureau', 'nico-palmer', 'salle-blanche', 'aegis', 'silencio'])
+const rendererObjectExpectations = Object.freeze({
+    aegis: 'aegis.hero.primary',
+    silencio: 'silencio.product.primary',
+})
 
 export function resolveFixtureDefinitions(rawBasePort = process.env.CONDEV_ACTIVE_EXPLORER_PORT_BASE) {
     const basePort = rawBasePort === undefined || rawBasePort === '' ? 43_101 : Number(rawBasePort)
@@ -179,9 +183,33 @@ export function verifyActiveExploration(local, safe, fixture, url) {
     if (safe?.dataClassification !== 'upload-safe' || safe?.reviewRequired !== true) {
         throw new Error(`${fixture} upload-safe projection is not review-gated`)
     }
+    if (
+        local?.policy?.allowDevelopmentHmr !== true ||
+        safe?.policy?.allowDevelopmentHmr !== true ||
+        !local?.limitations?.includes('development-hmr-allowed') ||
+        !safe?.limitations?.includes('development-hmr-allowed')
+    ) {
+        throw new Error(`${fixture} did not disclose its explicit development HMR exception in both artifacts`)
+    }
     const safeJson = JSON.stringify(safe)
     if (safeJson.includes(url) || /(?:selector|localUrl|localOnly|visualHash|replayEdgeIds)"/u.test(safeJson)) {
         throw new Error(`${fixture} upload-safe projection leaked local evidence`)
+    }
+    const expectedRendererObject = rendererObjectExpectations[fixture]
+    if (expectedRendererObject) {
+        const rendererObjects = local.edges.flatMap(edge => edge?.localOnly?.rendererObjects ?? [])
+        const expectedEvidence = rendererObjects.some(
+            item =>
+                item?.subjectKey === expectedRendererObject &&
+                ['canvas-2d', 'webgl', 'webgpu'].includes(item?.surface) &&
+                ['hit', 'miss', 'unavailable'].includes(item?.resolution)
+        )
+        if (!expectedEvidence) {
+            throw new Error(`${fixture} did not expose its explicit local renderer-object adapter evidence`)
+        }
+        if (safeJson.includes(expectedRendererObject)) {
+            throw new Error(`${fixture} upload-safe projection leaked its renderer-object subject key`)
+        }
     }
 }
 
@@ -209,6 +237,7 @@ async function main() {
                 url,
                 '--page-key',
                 `fixture.${fixture}`,
+                '--allow-development-hmr',
                 '--out-dir',
                 outDir,
                 '--max-routes',

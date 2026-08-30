@@ -12,12 +12,16 @@ function fixture() {
             routes: [{ routeId: 'route-1' }],
             states: [{ stateId: 'state-1' }],
             edges: [{ edgeId: 'edge-1', status: 'executed' }],
+            policy: { allowDevelopmentHmr: true },
+            limitations: ['development-hmr-allowed'],
             coverage: { complete: false, claim: 'bounded-safe-reachable-state-exploration' },
         },
         safe: {
             dataClassification: 'upload-safe',
             reviewRequired: true,
             routes: [{ routeId: 'route-1' }],
+            policy: { allowDevelopmentHmr: true },
+            limitations: ['development-hmr-allowed'],
         },
     }
 }
@@ -25,6 +29,17 @@ function fixture() {
 test('accepts a bounded review-gated active exploration result', () => {
     const { local, safe } = fixture()
     assert.doesNotThrow(() => verifyActiveExploration(local, safe, 'fixture', 'http://127.0.0.1:43101'))
+})
+
+test('requires an opted-in development HMR exception to remain visible in both artifacts', () => {
+    const { local, safe } = fixture()
+    assert.doesNotThrow(() => verifyActiveExploration(local, safe, 'fixture', 'http://127.0.0.1:43101'))
+
+    local.policy = {}
+    assert.throws(() => verifyActiveExploration(local, safe, 'fixture', 'http://127.0.0.1:43101'), /both artifacts/u)
+    local.policy = { allowDevelopmentHmr: true }
+    safe.limitations = []
+    assert.throws(() => verifyActiveExploration(local, safe, 'fixture', 'http://127.0.0.1:43101'), /both artifacts/u)
 })
 
 test('rejects completeness claims and local evidence leaks', () => {
@@ -44,4 +59,31 @@ test('supports a fresh isolated five-port fixture range', () => {
         ['http://127.0.0.1:44201', 'http://127.0.0.1:44202', 'http://127.0.0.1:44203', 'http://127.0.0.1:44204', 'http://127.0.0.1:44205']
     )
     assert.throws(() => resolveFixtureDefinitions('65533'), /reserve five ports/u)
+})
+
+test('requires explicit renderer-object evidence from the two 3D fixtures without uploading its key', () => {
+    const missing = fixture()
+    assert.throws(
+        () => verifyActiveExploration(missing.local, missing.safe, 'aegis', 'http://127.0.0.1:43104'),
+        /renderer-object adapter evidence/u
+    )
+
+    const present = fixture()
+    present.local.edges[0].localOnly = {
+        rendererObjects: [{ subjectKey: 'aegis.hero.primary', surface: 'webgpu', resolution: 'hit' }],
+    }
+    assert.doesNotThrow(() => verifyActiveExploration(present.local, present.safe, 'aegis', 'http://127.0.0.1:43104'))
+
+    const decoy = fixture()
+    decoy.local.warning = 'aegis.hero.primary'
+    assert.throws(
+        () => verifyActiveExploration(decoy.local, decoy.safe, 'aegis', 'http://127.0.0.1:43104'),
+        /renderer-object adapter evidence/u
+    )
+
+    present.safe.rendererSubjectKey = 'aegis.hero.primary'
+    assert.throws(
+        () => verifyActiveExploration(present.local, present.safe, 'aegis', 'http://127.0.0.1:43104'),
+        /leaked its renderer-object/u
+    )
 })
