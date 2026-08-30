@@ -2,21 +2,27 @@ import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, openSync } from 'node:fs'
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const WRITE_SENTINEL = 'condev-animation-lab-platform-e2e'
+const REMOTE_DATABASE_SENTINEL = 'condev-animation-lab-platform-remote-test'
 const RUNNER_CONTRACT_VERSION = 12
+const RUNNER_GRANT_PATTERN = /labg_[A-Za-z0-9_-]{43}/u
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const requireFromMonitor = createRequire(path.join(root, 'apps/backend/monitor/package.json'))
+const { Client: PostgresClient } = requireFromMonitor('pg')
 const scenarioPath = path.join(root, 'apps/backend/lab-runner/examples/lemon-bureau.scenario.json')
 const coveragePath = path.join(root, 'apps/backend/lab-runner/examples/lemon-bureau.coverage.json')
 const runnerPath = path.join(root, 'apps/backend/lab-runner/build/cli.js')
 const frontendUiE2EPath = path.join(root, 'apps/backend/lab-runner/test-platform/frontend-ui.e2e.mjs')
 const monitorPort = positivePort(process.env.ANIMATION_LAB_PLATFORM_MONITOR_PORT ?? '18083', 'ANIMATION_LAB_PLATFORM_MONITOR_PORT')
 const frontendPort = positivePort(process.env.ANIMATION_LAB_PLATFORM_FRONTEND_PORT ?? '18084', 'ANIMATION_LAB_PLATFORM_FRONTEND_PORT')
+const fixturePort = positivePort(process.env.ANIMATION_LAB_PLATFORM_FIXTURE_PORT ?? '43101', 'ANIMATION_LAB_PLATFORM_FIXTURE_PORT')
 const monitorBase = new URL(`http://127.0.0.1:${monitorPort}`)
 const frontendBase = new URL(`http://localhost:${frontendPort}`)
-const fixtureUrl = new URL('http://127.0.0.1:43101/')
+const fixtureUrl = new URL(`http://127.0.0.1:${fixturePort}/`)
 const frontendDistDirName = '.next-animation-lab-platform-e2e'
 const frontendDistDir = path.join(root, 'apps/frontend/monitor', frontendDistDirName)
 const resultRoot = path.resolve(
@@ -31,7 +37,7 @@ const resultRoot = path.resolve(
 const runnerOutDir = path.join(resultRoot, 'runner')
 const platformStorageDir = path.join(resultRoot, 'platform-storage')
 const processes = []
-const testState = { adminId: 0, applicationId: 0, appId: '', runId: '' }
+const testState = { admin: null, application: null, run: null, ownedFixture: false }
 
 function positivePort(raw, label) {
     const parsed = Number(raw)
@@ -41,6 +47,48 @@ function positivePort(raw, label) {
 
 function assert(condition, message) {
     if (!condition) throw new Error(message)
+}
+
+function isLoopbackHostname(hostname) {
+    const normalized = hostname.toLowerCase().replace(/^\[|\]$/gu, '')
+    if (normalized === 'localhost' || normalized === '::1') return true
+    const ipv4 = normalized.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/u)
+    if (!ipv4) return false
+    const octets = ipv4.slice(1).map(Number)
+    return octets.every(octet => octet >= 0 && octet <= 255) && octets[0] === 127
+}
+
+function assertDatabaseTarget(label, hostname, databaseName) {
+    if (isLoopbackHostname(hostname)) return
+    const remoteAllowed =
+        process.env.ANIMATION_LAB_PLATFORM_ALLOW_REMOTE_DATABASES === '1' &&
+        process.env.ANIMATION_LAB_PLATFORM_REMOTE_DATABASE_SENTINEL === REMOTE_DATABASE_SENTINEL
+    assert(remoteAllowed, `Refusing non-loopback ${label} host; remote test databases require both explicit Animation Lab platform opt-ins`)
+    assert(
+        /(?:test|ci|e2e|integration)/iu.test(databaseName),
+        `Refusing remote ${label} database without a test, ci, e2e, or integration identity in its name`
+    )
+}
+
+function assertPlatformDatabaseWriteAccess() {
+    const postgres = postgresEnvironment()
+    assertDatabaseTarget('PostgreSQL', postgres.DB_HOST, postgres.DB_DATABASE)
+    const clickhouse = clickhouseEnvironment()
+    let endpoint
+    try {
+        endpoint = new URL(clickhouse.CLICKHOUSE_URL)
+    } catch {
+        throw new Error('CLICKHOUSE_URL must be a valid HTTP or HTTPS URL for the Animation Lab platform E2E')
+    }
+    assert(
+        endpoint.protocol === 'http:' || endpoint.protocol === 'https:',
+        'CLICKHOUSE_URL must use HTTP or HTTPS for the Animation Lab platform E2E'
+    )
+    assertDatabaseTarget('ClickHouse', endpoint.hostname, clickhouse.CLICKHOUSE_DATABASE)
+}
+
+function assertNoRunnerGrant(value, label) {
+    assert(!RUNNER_GRANT_PATTERN.test(JSON.stringify(value)), `${label} leaked a complete runner grant`)
 }
 
 function delay(milliseconds) {
@@ -90,6 +138,8 @@ async function stopProcess({ child }) {
         } catch (error) {
             if (error?.code !== 'ESRCH') throw error
         }
+        await Promise.race([new Promise(resolve => child.once('exit', resolve)), delay(5_000)])
+        assert(child.exitCode !== null || child.signalCode !== null, `Process ${child.pid} did not stop after SIGKILL`)
     }
 }
 
@@ -130,6 +180,81 @@ function run(command, args, { environment = {}, logName } = {}) {
             reject(new Error(`${command} ${args.join(' ')} exited with ${code ?? signal}\n${log.slice(-12_000)}`))
         })
     })
+}
+
+async function postgresQuery(sql, parameters = []) {
+    const environment = postgresEnvironment()
+    const client = new PostgresClient({
+        host: environment.DB_HOST,
+        port: Number(environment.DB_PORT),
+        user: environment.DB_USERNAME,
+        password: environment.DB_PASSWORD,
+        database: environment.DB_DATABASE,
+    })
+    await client.connect()
+    try {
+        return await client.query(sql, parameters)
+    } finally {
+        await client.end()
+    }
+}
+
+async function verifyAdminFixture(candidate) {
+    const result = await postgresQuery(
+        `SELECT id::text, email
+         FROM public.admin
+         WHERE id = $1::integer AND email = $2;`,
+        [candidate.id, candidate.email]
+    )
+    assert(
+        result.rowCount === 1 && result.rows[0]?.id === String(candidate.id) && result.rows[0]?.email === candidate.email,
+        'PostgreSQL did not prove ownership of the fixture admin'
+    )
+}
+
+async function verifyApplicationFixture(candidate) {
+    const result = await postgresQuery(
+        `SELECT id::text, "appId", "userId"::text, name
+         FROM public.application
+         WHERE id = $1::integer
+           AND "appId" = $2
+           AND "userId" = $3::integer
+           AND name = $4
+           AND "isDelete" = false;`,
+        [candidate.id, candidate.appId, candidate.adminId, candidate.name]
+    )
+    assert(
+        result.rowCount === 1 &&
+            result.rows[0]?.id === String(candidate.id) &&
+            result.rows[0]?.appId === candidate.appId &&
+            result.rows[0]?.userId === String(candidate.adminId) &&
+            result.rows[0]?.name === candidate.name,
+        'PostgreSQL did not prove ownership of the fixture application'
+    )
+}
+
+async function verifyRunFixture(candidate) {
+    const result = await postgresQuery(
+        `SELECT id::text, "appId", "createdBy"::text, name, "scenarioKey", "targetOrigin"
+         FROM public.animation_lab_run
+         WHERE id = $1::uuid
+           AND "appId" = $2
+           AND "createdBy" = $3::integer
+           AND name = $4
+           AND "scenarioKey" = $5
+           AND "targetOrigin" = $6;`,
+        [candidate.id, candidate.appId, candidate.adminId, candidate.name, candidate.scenarioKey, candidate.targetOrigin]
+    )
+    assert(
+        result.rowCount === 1 &&
+            result.rows[0]?.id === candidate.id &&
+            result.rows[0]?.appId === candidate.appId &&
+            result.rows[0]?.createdBy === String(candidate.adminId) &&
+            result.rows[0]?.name === candidate.name &&
+            result.rows[0]?.scenarioKey === candidate.scenarioKey &&
+            result.rows[0]?.targetOrigin === candidate.targetOrigin,
+        'PostgreSQL did not prove ownership of the fixture Lab run'
+    )
 }
 
 async function responseJson(response, description, expectedStatus = 200) {
@@ -189,37 +314,77 @@ function clickhouseEnvironment() {
 }
 
 async function cleanupPostgres() {
-    const statements = []
-    if (testState.runId) statements.push(`DELETE FROM public.animation_lab_run WHERE id = '${testState.runId}'`)
-    if (testState.applicationId > 0) statements.push(`DELETE FROM public.application WHERE id = ${testState.applicationId}`)
-    if (testState.adminId > 0) statements.push(`DELETE FROM public.admin WHERE id = ${testState.adminId}`)
-    if (statements.length === 0) return
-
-    await run(
-        'docker',
-        [
-            'exec',
-            'condev-monitor-postgres',
-            'psql',
-            '-v',
-            'ON_ERROR_STOP=1',
-            '-U',
-            process.env.DB_USERNAME ?? 'postgres',
-            '-d',
-            process.env.DB_DATABASE ?? 'postgres',
-            '-c',
-            `${statements.join('; ')};`,
-        ],
-        { logName: 'postgres-cleanup.log' }
-    )
+    if (testState.run) {
+        const deleted = await postgresQuery(
+            `DELETE FROM public.animation_lab_run
+             WHERE id = $1::uuid
+               AND "appId" = $2
+               AND "createdBy" = $3::integer
+               AND name = $4
+               AND "scenarioKey" = $5
+               AND "targetOrigin" = $6;`,
+            [
+                testState.run.id,
+                testState.run.appId,
+                testState.run.adminId,
+                testState.run.name,
+                testState.run.scenarioKey,
+                testState.run.targetOrigin,
+            ]
+        )
+        assert(deleted.rowCount === 1, `Expected to delete one owned fixture Lab run, deleted ${deleted.rowCount}`)
+    }
+    if (testState.application) {
+        const deleted = await postgresQuery(
+            `DELETE FROM public.application
+             WHERE id = $1::integer
+               AND "appId" = $2
+               AND "userId" = $3::integer
+               AND name = $4
+               AND "isDelete" = false;`,
+            [testState.application.id, testState.application.appId, testState.application.adminId, testState.application.name]
+        )
+        assert(deleted.rowCount === 1, `Expected to delete one owned fixture application, deleted ${deleted.rowCount}`)
+    }
+    if (testState.admin) {
+        const deleted = await postgresQuery(
+            `DELETE FROM public.admin
+             WHERE id = $1::integer AND email = $2;`,
+            [testState.admin.id, testState.admin.email]
+        )
+        assert(deleted.rowCount === 1, `Expected to delete one owned fixture admin, deleted ${deleted.rowCount}`)
+    }
 }
 
-async function cleanupClickhouse() {
-    if (!testState.appId) return
+async function clickhouseFixtureCount(appId) {
     const environment = clickhouseEnvironment()
     const endpoint = new URL('/', environment.CLICKHOUSE_URL)
     endpoint.searchParams.set('database', environment.CLICKHOUSE_DATABASE)
-    endpoint.searchParams.set('param_appId', testState.appId)
+    endpoint.searchParams.set('param_appId', appId)
+    const authorization = Buffer.from(`${environment.CLICKHOUSE_USERNAME}:${environment.CLICKHOUSE_PASSWORD}`).toString('base64')
+    const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: { authorization: `Basic ${authorization}` },
+        body: 'SELECT count() AS fixture_count FROM app_settings FINAL WHERE app_id = {appId:String} FORMAT JSON',
+        signal: AbortSignal.timeout(30_000),
+    })
+    if (!response.ok)
+        throw new Error(`ClickHouse ownership query failed with HTTP ${response.status}: ${(await response.text()).slice(0, 500)}`)
+    const body = await response.json()
+    const count = Number(body?.data?.[0]?.fixture_count)
+    assert(Number.isSafeInteger(count) && count >= 0, 'ClickHouse ownership query returned an invalid fixture count')
+    return count
+}
+
+async function cleanupClickhouse() {
+    if (!testState.application) return
+    await verifyApplicationFixture(testState.application)
+    const appId = testState.application.appId
+    assert((await clickhouseFixtureCount(appId)) === 1, 'ClickHouse did not contain exactly one setting for the proven fixture application')
+    const environment = clickhouseEnvironment()
+    const endpoint = new URL('/', environment.CLICKHOUSE_URL)
+    endpoint.searchParams.set('database', environment.CLICKHOUSE_DATABASE)
+    endpoint.searchParams.set('param_appId', appId)
     const authorization = Buffer.from(`${environment.CLICKHOUSE_USERNAME}:${environment.CLICKHOUSE_PASSWORD}`).toString('base64')
     const response = await fetch(endpoint, {
         method: 'POST',
@@ -228,11 +393,12 @@ async function cleanupClickhouse() {
         signal: AbortSignal.timeout(30_000),
     })
     if (!response.ok) throw new Error(`ClickHouse cleanup failed with HTTP ${response.status}: ${(await response.text()).slice(0, 500)}`)
+    assert((await clickhouseFixtureCount(appId)) === 0, 'ClickHouse fixture cleanup left app_settings rows behind')
 }
 
 async function verifyAttachedRun(authorization, grant) {
-    const detail = await jsonRequest(`/api/labs/runs/${testState.runId}`, { authorization })
-    assert(detail.run?.runId === testState.runId, 'Platform detail returned a mismatched Lab run')
+    const detail = await jsonRequest(`/api/labs/runs/${testState.run.id}`, { authorization })
+    assert(detail.run?.runId === testState.run.id, 'Platform detail returned a mismatched Lab run')
     assert(detail.run?.controlStatus === 'completed', `Attached Lab control status is ${detail.run?.controlStatus ?? 'missing'}`)
     assert(detail.run?.status === 'completed', `Attached Lab platform status is ${detail.run?.status ?? 'missing'}`)
     assert(detail.run?.phase === 'done' && detail.run?.progress === 100, 'Attached Lab did not reach done/100')
@@ -240,25 +406,27 @@ async function verifyAttachedRun(authorization, grant) {
     assert(detail.analysis?.semanticsVersion === 3, 'Platform detail did not retain semantics v3')
     assert(detail.analysis?.coverage?.totals?.uncovered === 0, 'Attached Lab coverage contains uncovered reviewed actions')
     assert(detail.analysis?.coverage?.totals?.passed === detail.analysis?.coverage?.totals?.declared, 'Attached Lab coverage did not pass')
-    assert(!JSON.stringify(detail).includes('labg_'), 'Platform detail leaked a runner grant')
+    assertNoRunnerGrant(detail, 'Platform detail')
 
-    const list = await jsonRequest(`/api/labs/runs?appId=${encodeURIComponent(testState.appId)}&limit=20&offset=0`, { authorization })
-    assert(list.total === 1 && list.runs?.[0]?.runId === testState.runId, 'Platform Lab list did not return the completed run')
-    assert(!JSON.stringify(list).includes('labg_'), 'Platform Lab list leaked a runner grant')
+    const list = await jsonRequest(`/api/labs/runs?appId=${encodeURIComponent(testState.application.appId)}&limit=20&offset=0`, {
+        authorization,
+    })
+    assert(list.total === 1 && list.runs?.[0]?.runId === testState.run.id, 'Platform Lab list did not return the completed run')
+    assertNoRunnerGrant(list, 'Platform Lab list')
 
-    const timeline = await jsonRequest(`/api/labs/runs/${testState.runId}/timeline`, { authorization })
-    assert(timeline.runId === testState.runId, 'Timeline returned a mismatched run id')
+    const timeline = await jsonRequest(`/api/labs/runs/${testState.run.id}/timeline`, { authorization })
+    assert(timeline.runId === testState.run.id, 'Timeline returned a mismatched run id')
     assert(timeline.schemaVersion === 4, `Expected Trace Index schema 4, got ${timeline.schemaVersion ?? 'missing'}`)
     assert(
         Array.isArray(timeline.actionPhaseSummaries) && timeline.actionPhaseSummaries.length === 6,
         'Timeline action evidence is incomplete'
     )
 
-    const lighthouse = await jsonRequest(`/api/labs/runs/${testState.runId}/lighthouse`, { authorization })
-    assert(lighthouse.runId === testState.runId && lighthouse.report === null, 'Disabled Lighthouse was not explicit on the platform')
+    const lighthouse = await jsonRequest(`/api/labs/runs/${testState.run.id}/lighthouse`, { authorization })
+    assert(lighthouse.runId === testState.run.id && lighthouse.report === null, 'Disabled Lighthouse was not explicit on the platform')
 
-    const artifactList = await jsonRequest(`/api/labs/runs/${testState.runId}/artifacts`, { authorization })
-    assert(artifactList.runId === testState.runId, 'Artifact list returned a mismatched run id')
+    const artifactList = await jsonRequest(`/api/labs/runs/${testState.run.id}/artifacts`, { authorization })
+    assert(artifactList.runId === testState.run.id, 'Artifact list returned a mismatched run id')
     assert(
         Array.isArray(artifactList.artifacts) && artifactList.artifacts.length === 2,
         'Attached Lab should retain report and trace index'
@@ -276,10 +444,10 @@ async function verifyAttachedRun(authorization, grant) {
     assert(reportBytes.byteLength === reportArtifact.sizeBytes, 'Downloaded animation report size drifted')
     assert(createHash('sha256').update(reportBytes).digest('hex') === reportArtifact.sha256, 'Downloaded animation report hash drifted')
     const report = JSON.parse(reportBytes.toString('utf8'))
-    assert(report.runId === testState.runId, 'Downloaded animation report returned a mismatched run id')
+    assert(report.runId === testState.run.id, 'Downloaded animation report returned a mismatched run id')
 
     const repeatedClaim = await responseJson(
-        await fetch(new URL(`/api/labs/runner/runs/${testState.runId}/claim`, monitorBase), {
+        await fetch(new URL(`/api/labs/runner/runs/${testState.run.id}/claim`, monitorBase), {
             method: 'POST',
             headers: {
                 'x-lab-runner-token': grant,
@@ -290,13 +458,14 @@ async function verifyAttachedRun(authorization, grant) {
         'idempotent runner claim',
         201
     )
-    assert(repeatedClaim.runId === testState.runId, 'Idempotent runner claim returned a mismatched run')
+    assert(repeatedClaim.runId === testState.run.id, 'Idempotent runner claim returned a mismatched run')
 }
 
 async function main() {
     if (process.env.ANIMATION_LAB_PLATFORM_E2E_WRITE_SENTINEL !== WRITE_SENTINEL) {
         throw new Error(`ANIMATION_LAB_PLATFORM_E2E_WRITE_SENTINEL must equal ${WRITE_SENTINEL}`)
     }
+    assertPlatformDatabaseWriteAccess()
     if (await isReady(new URL('/api/healthz', monitorBase))) {
         throw new Error(`Refusing to reuse an existing service on isolated Monitor port ${monitorPort}`)
     }
@@ -310,7 +479,18 @@ async function main() {
 
     let fixtureProcess = null
     if (!(await isReady(fixtureUrl))) {
-        fixtureProcess = startProcess('lemon-bureau', 'pnpm', ['--filter', 'lemon-bureau', 'dev'])
+        fixtureProcess = startProcess('lemon-bureau', 'pnpm', [
+            '--filter',
+            'lemon-bureau',
+            'exec',
+            'vite',
+            '--host',
+            '127.0.0.1',
+            '--port',
+            String(fixturePort),
+            '--strictPort',
+        ])
+        testState.ownedFixture = true
         const fixtureState = processes.find(item => item.child === fixtureProcess)
         await waitUntilReady('lemon-bureau', fixtureUrl, fixtureProcess, fixtureState.logPath)
     } else {
@@ -349,8 +529,10 @@ async function main() {
         expectedStatus: 201,
         body: { email, password },
     })
-    testState.adminId = Number(registration.id)
-    assert(Number.isSafeInteger(testState.adminId) && testState.adminId > 0, 'Monitor registration returned an invalid admin id')
+    const adminCandidate = { id: Number(registration.id), email }
+    assert(Number.isSafeInteger(adminCandidate.id) && adminCandidate.id > 0, 'Monitor registration returned an invalid admin id')
+    testState.admin = adminCandidate
+    await verifyAdminFixture(adminCandidate)
 
     const login = await jsonRequest('/api/auth/login', {
         method: 'POST',
@@ -358,25 +540,33 @@ async function main() {
         body: { email, password },
     })
     const authorization = `Bearer ${login.access_token}`
+    const applicationName = `Animation Lab platform ${suffix}`
     const application = await jsonRequest('/api/application', {
         method: 'POST',
         expectedStatus: 201,
         authorization,
-        body: { type: 'vanilla', name: `Animation Lab platform ${suffix}` },
+        body: { type: 'vanilla', name: applicationName },
     })
-    testState.applicationId = Number(application.id)
-    testState.appId = String(application.appId)
-    assert(Number.isSafeInteger(testState.applicationId) && testState.applicationId > 0, 'Application API returned an invalid id')
-    assert(/^[A-Za-z0-9][A-Za-z0-9_-]{1,79}$/u.test(testState.appId), 'Application API returned an invalid appId')
+    const applicationCandidate = {
+        id: Number(application.id),
+        appId: String(application.appId),
+        adminId: testState.admin.id,
+        name: applicationName,
+    }
+    assert(Number.isSafeInteger(applicationCandidate.id) && applicationCandidate.id > 0, 'Application API returned an invalid id')
+    assert(/^[A-Za-z0-9][A-Za-z0-9_-]{1,79}$/u.test(applicationCandidate.appId), 'Application API returned an invalid appId')
+    testState.application = applicationCandidate
+    await verifyApplicationFixture(applicationCandidate)
 
     const scenario = JSON.parse(await readFile(scenarioPath, 'utf8'))
+    const runName = `Attached Lemon Bureau ${suffix}`
     const created = await jsonRequest('/api/labs/runs', {
         method: 'POST',
         expectedStatus: 201,
         authorization,
         body: {
-            appId: testState.appId,
-            name: `Attached Lemon Bureau ${suffix}`,
+            appId: testState.application.appId,
+            name: runName,
             scenarioKey: scenario.routeKey,
             targetOrigin: fixtureUrl.origin,
             release: '',
@@ -397,20 +587,29 @@ async function main() {
             },
         },
     })
-    testState.runId = String(created.run?.runId)
+    const runCandidate = {
+        id: String(created.run?.runId),
+        appId: testState.application.appId,
+        adminId: testState.admin.id,
+        name: runName,
+        scenarioKey: scenario.routeKey,
+        targetOrigin: fixtureUrl.origin,
+    }
     const grant = String(created.runnerGrant?.token)
     assert(
-        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(testState.runId),
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(runCandidate.id),
         'Lab creation returned an invalid run id'
     )
+    testState.run = runCandidate
     assert(/^labg_[A-Za-z0-9_-]{43}$/u.test(grant), 'Lab creation returned an invalid runner grant')
     assert(created.runnerGrant?.returnedOnce === true, 'Lab creation did not mark the grant as one-time display')
+    await verifyRunFixture(runCandidate)
 
-    await expectStatus(`/api/labs/runner/runs/${testState.runId}/contract`, 426, {
+    await expectStatus(`/api/labs/runner/runs/${testState.run.id}/contract`, 426, {
         'x-lab-runner-token': grant,
         'x-lab-runner-contract': String(RUNNER_CONTRACT_VERSION - 1),
     })
-    await expectStatus(`/api/labs/runner/runs/${testState.runId}/contract`, 401, {
+    await expectStatus(`/api/labs/runner/runs/${testState.run.id}/contract`, 401, {
         'x-lab-runner-token': `labg_${'z'.repeat(43)}`,
         'x-lab-runner-contract': String(RUNNER_CONTRACT_VERSION),
     })
@@ -428,7 +627,7 @@ async function main() {
             '--server',
             monitorBase.origin,
             '--run-id',
-            testState.runId,
+            testState.run.id,
         ],
         {
             environment: { CONDEV_LAB_RUNNER_TOKEN: grant },
@@ -442,12 +641,12 @@ async function main() {
             ANIMATION_LAB_UI_BASE_URL: frontendBase.href,
             ANIMATION_LAB_UI_EMAIL: email,
             ANIMATION_LAB_UI_PASSWORD: password,
-            ANIMATION_LAB_UI_RUN_ID: testState.runId,
+            ANIMATION_LAB_UI_RUN_ID: testState.run.id,
         },
         logName: 'frontend-ui.log',
     })
-    const localReport = JSON.parse(await readFile(path.join(runnerOutDir, testState.runId, 'lab-report.json'), 'utf8'))
-    assert(localReport.runId === testState.runId, 'Local Runner report returned a mismatched run id')
+    const localReport = JSON.parse(await readFile(path.join(runnerOutDir, testState.run.id, 'lab-report.json'), 'utf8'))
+    assert(localReport.runId === testState.run.id, 'Local Runner report returned a mismatched run id')
     assert(localReport.coverage?.totals?.uncovered === 0, 'Local Runner report has uncovered reviewed actions')
 
     await writeFile(
@@ -455,8 +654,8 @@ async function main() {
         `${JSON.stringify(
             {
                 status: 'passed',
-                runId: testState.runId,
-                appId: testState.appId,
+                runId: testState.run.id,
+                appId: testState.application.appId,
                 runnerContractVersion: RUNNER_CONTRACT_VERSION,
                 browser: 'chromium',
                 target: 'lemon-bureau',
@@ -479,7 +678,19 @@ try {
     exitCode = 1
     process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`)
 } finally {
-    await Promise.allSettled(processes.reverse().map(stopProcess))
+    const stopping = [...processes].reverse()
+    const stopResults = await Promise.allSettled(stopping.map(stopProcess))
+    for (const [index, result] of stopResults.entries()) {
+        if (result.status === 'fulfilled') continue
+        exitCode = 1
+        process.stderr.write(
+            `Failed to stop ${stopping[index].name}: ${result.reason instanceof Error ? result.reason.stack : String(result.reason)}\n`
+        )
+    }
+    if (testState.ownedFixture && (await isReady(fixtureUrl))) {
+        exitCode = 1
+        process.stderr.write(`Owned Lemon Bureau fixture remained reachable at ${fixtureUrl} after cleanup.\n`)
+    }
     await rm(frontendDistDir, { recursive: true, force: true, maxRetries: 3 }).catch(error => {
         exitCode = 1
         process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`)
