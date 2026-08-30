@@ -104,6 +104,60 @@ jobs:
               if: always()
               run: pnpm docker:stop
 
+    attached-platform:
+        name: Attached Animation Lab platform E2E
+        runs-on: ubuntu-latest
+        timeout-minutes: 45
+        steps:
+            - uses: actions/checkout@v7
+            - uses: pnpm/action-setup@v6
+              with:
+                  version: 10.10.0
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 22
+                  cache: pnpm
+                  cache-dependency-path: pnpm-lock.yaml
+            - run: pnpm install --frozen-lockfile
+            - run: pnpm --filter @condev-monitor/animation-lab-runner exec playwright-core install --with-deps chromium
+            - name: Start and initialize Lab infrastructure
+              run: pnpm docker:start
+            - name: Run attached Animation Lab platform E2E
+              run: pnpm test:animation-lab:platform
+              env:
+                  ANIMATION_LAB_PLATFORM_MONITOR_PORT: 18083
+                  ANIMATION_LAB_PLATFORM_OUT_DIR: lab-results/ci-attached-platform
+                  DB_HOST: 127.0.0.1
+                  DB_PORT: 5432
+                  DB_USERNAME: postgres
+                  DB_PASSWORD: condevPostgres
+                  DB_DATABASE: postgres
+                  CLICKHOUSE_URL: http://127.0.0.1:8123
+                  CLICKHOUSE_USERNAME: lemonade
+                  CLICKHOUSE_PASSWORD: condevClickhouse
+                  CLICKHOUSE_DATABASE: lemonade
+                  JWT_SECRET: condev-animation-lab-platform-ci-secret
+            - name: Capture infrastructure logs
+              if: always()
+              run: |
+                  mkdir -p lab-results/ci-attached-platform
+                  docker compose -p condev-monitor -f .devcontainer/docker-compose.yml logs --no-color > lab-results/ci-attached-platform/infrastructure-final.log 2>&1 || true
+            - name: Upload attached Lab evidence
+              if: always()
+              uses: actions/upload-artifact@v6
+              with:
+                  name: animation-lab-attached-platform
+                  path: |
+                      lab-results/ci-attached-platform/summary.json
+                      lab-results/ci-attached-platform/monitor.log
+                      lab-results/ci-attached-platform/runner.log
+                      lab-results/ci-attached-platform/infrastructure-final.log
+                  if-no-files-found: warn
+                  retention-days: 14
+            - name: Stop Lab infrastructure
+              if: always()
+              run: pnpm docker:stop
+
     browser-matrix:
         name: Five fixtures on Chromium, Firefox, and WebKit
         runs-on: ubuntu-latest
