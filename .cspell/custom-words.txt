@@ -118,3 +118,13 @@ hashtextextended
 transactionally
 xact
 labelledby
+silencio
+routekey
+localscenariosha256
+localhash
+outcomecontract
+outcomekey
+assertionkey
+adapterkey
+objectkey
+raycaster

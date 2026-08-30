@@ -16,6 +16,8 @@ const fixtures = Object.freeze({
     silencio: 'http://127.0.0.1:43105',
 })
 const engines = Object.freeze(['chromium', 'firefox', 'webkit'])
+const metricStatuses = Object.freeze(['measured', 'partial', 'not-observed', 'unsupported'])
+const rendererMetricIds = Object.freeze(['renderer.draw-calls.p95', 'renderer.gpu-frame.p95', 'renderer.triangles.p95'])
 
 function selection(name, allowed, fallback) {
     const raw = process.env[name]
@@ -97,9 +99,49 @@ async function findReport(outDir) {
     return JSON.parse(await fs.readFile(path.join(outDir, runDirectories[0].name, 'lab-report.json'), 'utf8'))
 }
 
-function verifyReport(report, fixture, engine) {
+function sameJson(left, right) {
+    return JSON.stringify(left) === JSON.stringify(right)
+}
+
+export function verifyReport(report, scenario, fixture, engine) {
     if (report?.semanticsVersion !== 3) throw new Error(`${fixture}/${engine} did not produce semantics v3`)
     if (report?.browser?.name !== engine) throw new Error(`${fixture}/${engine} reported browser ${report?.browser?.name ?? 'unknown'}`)
+    if (!sameJson(report?.measurementContract, scenario?.measurementContract)) {
+        throw new Error(`${fixture}/${engine} did not preserve the reviewed measurement contract`)
+    }
+
+    const attempts = Array.isArray(report?.attempts) ? report.attempts : []
+    const warmupAttempts = attempts.filter(attempt => attempt?.phase === 'warmup')
+    const measuredAttempts = attempts.filter(attempt => attempt?.phase === 'measured')
+    if (warmupAttempts.length !== scenario?.warmupRuns || measuredAttempts.length !== scenario?.measuredRuns) {
+        throw new Error(
+            `${fixture}/${engine} attempt count drifted: ${warmupAttempts.length}/${scenario?.warmupRuns ?? 'unknown'} warmup, ${measuredAttempts.length}/${scenario?.measuredRuns ?? 'unknown'} measured`
+        )
+    }
+    for (const attempt of measuredAttempts) {
+        if (!Array.isArray(attempt?.metrics) || attempt.metrics.length === 0) {
+            throw new Error(`${fixture}/${engine} measured attempt ${attempt?.attemptId ?? 'unknown'} has no metrics`)
+        }
+        for (const metric of attempt.metrics) {
+            if (!metricStatuses.includes(metric?.status)) {
+                throw new Error(
+                    `${fixture}/${engine} metric ${metric?.metricId ?? 'unknown'} has invalid status ${metric?.status ?? 'missing'}`
+                )
+            }
+        }
+    }
+
+    if ((scenario?.measurementContract?.metricCatalogVersion ?? 0) >= 4) {
+        for (const attempt of measuredAttempts) {
+            for (const metricId of rendererMetricIds) {
+                const metric = attempt.metrics.find(candidate => candidate?.metricId === metricId)
+                if (!metric) {
+                    throw new Error(`${fixture}/${engine} measured attempt ${attempt?.attemptId ?? 'unknown'} silently omitted ${metricId}`)
+                }
+            }
+        }
+    }
+
     const coverage = report?.coverage
     if (coverage?.review !== 'matched') throw new Error(`${fixture}/${engine} did not match its reviewed coverage manifest`)
     const totals = coverage.totals
@@ -132,12 +174,14 @@ async function main() {
         for (const engine of selectedEngines) {
             for (const fixture of selectedFixtures) {
                 const outDir = path.join(outputRoot, engine, fixture)
+                const scenarioPath = path.join(examples, `${fixture}.scenario.json`)
+                const scenario = JSON.parse(await fs.readFile(scenarioPath, 'utf8'))
                 await fs.mkdir(outDir, { recursive: true })
                 process.stdout.write(`\n[matrix] ${fixture} on ${engine}\n`)
                 await run(process.execPath, [
                     runner,
                     '--config',
-                    path.join(examples, `${fixture}.scenario.json`),
+                    scenarioPath,
                     '--coverage-manifest',
                     path.join(examples, `${fixture}.coverage.json`),
                     '--out-dir',
@@ -145,7 +189,7 @@ async function main() {
                     '--browser',
                     engine,
                 ])
-                verifyReport(await findReport(outDir), fixture, engine)
+                verifyReport(await findReport(outDir), scenario, fixture, engine)
             }
         }
         process.stdout.write(`\n[matrix] ${selectedFixtures.length * selectedEngines.length} runs passed. Reports: ${outputRoot}\n`)
@@ -154,7 +198,9 @@ async function main() {
     }
 }
 
-main().catch(error => {
-    process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`)
-    process.exitCode = 1
-})
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+    main().catch(error => {
+        process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`)
+        process.exitCode = 1
+    })
+}
