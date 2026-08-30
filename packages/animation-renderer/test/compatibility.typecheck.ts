@@ -30,19 +30,20 @@ import type {
     WebGpuTransferTargetInspectionContext,
     WebGpuTransferTargetRendererInspection,
 } from '../src'
+// cspell:ignore raycaster
 import {
     createBabylonRendererAdapter,
     createBabylonResourceLifecycleRecorder,
     createCanvas2dRecorder,
     createPixiObjectTargetAdapter,
-    createRendererObjectResolverRegistry,
     createR3fPostprocessingPassRecorder,
+    createRendererObjectResolverRegistry,
+    createThreeRaycastObjectResolver,
     createWebGlGpuTimer,
     createWebGpuCommandBatchTimestampTimer,
     createWebGpuMultiPassTimestampTimer,
     createWebGpuTimestampTimer,
     createWebGpuTransferRecorder,
-    createThreeRaycastObjectResolver,
 } from '../src'
 
 declare const babylonAnimation: BabylonAnimationMonitorPort
