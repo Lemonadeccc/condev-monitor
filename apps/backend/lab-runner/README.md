@@ -78,6 +78,35 @@ The importer preserves only a bounded safe subset in original order and writes s
 
 “Read-only discovery” means the explorer does not synthesize application interactions. It still navigates to the URL, so page-load code and network activity run, and it writes the two local JSON files above. Discovery does not claim complete animation coverage. The runner executes only the reviewed scenario; it does not autonomously crawl every possible application state.
 
+## Actively explore safe reachable states
+
+`condev-animation-lab-active-explore` is a separate, opt-in local workflow for generating an animation inventory draft before a formal Scenario exists. It executes only bounded planner-approved actions in fresh contexts, observes browser animation lifecycle evidence, records route/state/action edges, and leaves every result in `needs-review`:
+
+```bash
+pnpm --filter @condev-monitor/animation-lab-runner build
+node apps/backend/lab-runner/build/active-explore-cli.js \
+  --url http://127.0.0.1:43101 \
+  --page-key fixture.lemon-bureau \
+  --out-dir ./lab-results/active-explorer \
+  --max-routes 3 \
+  --max-states 12 \
+  --max-edges 18 \
+  --max-depth 1
+```
+
+The command produces:
+
+- `animation-exploration.local.json`: private local evidence, including URLs/selectors when observed;
+- `animation-exploration.upload-safe.json`: a fresh allowlisted projection without URLs, selectors, text, coordinates, screenshots, input values, DOM content, exact visual hashes, or replay paths.
+
+Mutation requests are blocked by default, cross-origin navigation is quarantined, and downloads/popups/dialogs are suppressed. Navigation, passive CDN scripts, ordinary GET requests, synchronous event handlers, `localStorage`, and IndexedDB still execute or mutate target-side state, so this is not a sandbox for an untrusted production account. Run it only against an authorized localhost or staging target. Authenticated exploration accepts the same bounded local Playwright storage-state file, and the caller remains responsible for using a dedicated low-privilege test identity.
+
+The active result never becomes a formal coverage denominator automatically. It always reports `coverage.complete: false`; a developer must review the discovered inventory, decide which user paths are critical, provide completion/business outcomes, and materialize approved actions in a closed Scenario plus coverage manifest. Canvas/WebGL/WebGPU evidence remains surface-only until a renderer adapter proves the internal object or GPU evidence.
+
+The state-graph and automation interfaces do not expose Playwright types. Playwright currently implements Chromium, Firefox, and WebKit; a future WebDriver BiDi, Selenium/Grid, or Appium driver can implement the same interface without changing the artifact schema. Those adapters are not currently shipped. An optional visual-discovery SPI is likewise implementation-free: model/CV proposals cannot bypass policy and cannot count as observed animation without browser confirmation.
+
+The Monitor frontend can inspect either artifact at `/labs/explorer`. Parsing and filtering happen in browser memory and do not call a backend upload endpoint. The local-only artifact is appropriate for the developer who ran the command; only the upload-safe artifact is suitable for sharing.
+
 ## Import a manually recorded flow
 
 Chrome DevTools Recorder JSON can be converted into a separate, non-executable review proposal without launching a browser:

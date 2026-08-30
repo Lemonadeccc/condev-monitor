@@ -91,6 +91,37 @@ It performs bounded, read-only DOM discovery and writes two private local files:
 
 The current workflow deliberately has no auto-approve or proposal-to-scenario command. A developer must inspect the local proposal, reject or quarantine unsafe candidates, copy only approved actions into a closed runner scenario, and then run `condev-animation-lab` with that reviewed scenario. Discovery never clicks, hovers, scrolls, or follows a link.
 
+## Bounded active exploration
+
+The companion Runner also exposes an opt-in active mode. Unlike the read-only discovery command above, it replays policy-approved click, hover, scroll, pointer-path, resize, and keyboard actions in disposable browser contexts, builds a bounded route/state graph, and observes CSS Animation, CSS Transition, WAAPI, SVG SMIL, View Transition, Canvas, WebGL, WebGPU, media, and otherwise unclassified visual-change evidence:
+
+```bash
+condev-animation-lab-active-explore \
+  --url http://127.0.0.1:43101 \
+  --page-key fixture.lemon-bureau \
+  --out-dir ./lab-results/active-explorer \
+  --max-routes 3 \
+  --max-states 12 \
+  --max-edges 18 \
+  --max-depth 1
+```
+
+It writes `animation-exploration.local.json` and `animation-exploration.upload-safe.json`. The local file may contain URL, selector, visual hash, and replay evidence. The upload-safe file is constructed from a fresh allowlist and excludes those fields plus text, coordinates, screenshots, input values, and DOM content. Both outputs remain `needs-review`, always carry `coverage.complete: false`, and use the claim `bounded-safe-reachable-state-exploration`.
+
+Mutation HTTP methods are blocked by default, popups are closed, downloads are cancelled, dialogs are dismissed, and cross-origin navigation is quarantined. Those controls reduce risk; they cannot stop synchronous application handlers, `localStorage`, IndexedDB, passive CDN scripts, or benign-looking GET routes from changing target-side state. Run Active Explorer only against an authorized localhost or staging target. Use a dedicated low-privilege storage state and an explicitly reviewed target when authenticated branches are needed.
+
+Exact screenshot hashes are retained only as local visual evidence. State identity uses the stable semantic snapshot so a continuously animated background cannot manufacture an unbounded number of graph states. Canvas/WebGL/WebGPU evidence is surface-level until an explicit renderer adapter supplies scene-object identity or GPU timing.
+
+The browser automation contract is driver-neutral. The current implementation is a Playwright adapter for Chromium, Firefox, and WebKit; WebDriver BiDi and Appium are reserved contract values, not implemented adapters. `VisionDiscoveryAdapter` is also only an optional SPI for deterministic CV or a local/self-hosted visual model. A visual proposal is always `ai-proposed` and never becomes observed motion until the browser observer confirms evidence.
+
+Run the five bundled fixture checks sequentially with:
+
+```bash
+pnpm test:animation:active-explorer
+```
+
+Set `CONDEV_ACTIVE_EXPLORER_FIXTURES=lemon-bureau,aegis` to select a subset. The matrix intentionally starts one fixture at a time to keep local memory usage bounded.
+
 For authenticated discovery, pass a local Playwright storage-state file with `--storage-state`; it must be no larger than 1 MiB and is never added to either output. Target URLs must be HTTP(S) without embedded credentials. `--ignore-https-errors` affects only the explicitly trusted discovery browser context. Service workers are blocked during discovery, so service-worker-dependent candidates are outside its evidence boundary.
 
 ## Policy bounds
