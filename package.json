@@ -42,6 +42,14 @@
             "path": "node_modules/cz-git"
         }
     },
+    "lint-staged": {
+        "{apps,packages}/**/*.{ts,tsx}": [
+            "eslint --fix",
+            "cspell lint --dot --gitignore --color --cache --show-suggestions"
+        ],
+        "{apps,packages}/**/*.{html,js,cjs,mjs,css,scss,md}": "cspell lint --dot --gitignore --color --cache --show-suggestions",
+        "*.{json,jsonc,yml,yaml,md,html,css,scss,js,cjs,mjs,ts,tsx}": "prettier --write"
+    },
     "keywords": [],
     "author": "",
     "license": "Apache-2.0",
