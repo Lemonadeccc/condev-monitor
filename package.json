@@ -35,6 +35,7 @@
         "test:animation-renderer:browser": "pnpm --filter @condev-monitor/monitor-sdk-animation-renderer build && node --test apps/backend/lab-runner/test-browser/webgl-gpu-timer.browser.test.mjs",
         "test:animation-rum-v2:release": "pnpm --filter dsn-server test:animation-rum-v2:pipeline && pnpm --filter monitor test:animation-rum-v2:clickhouse",
         "test:animation-rum-v3:release": "pnpm --filter dsn-server test:animation-rum-v3:pipeline && pnpm --filter monitor test:animation-rum-v3:clickhouse",
+        "test:animation-rum:services": "sh ./scripts/run-animation-rum-release-services.sh",
         "docker:init-kafka": "sh ./scripts/init-kafka-topics.sh",
         "docker:deploy": "sh ./scripts/deploy-stack.sh",
         "docker:deploy:stop": "docker compose -p condev-monitor -f .devcontainer/docker-compose.deply.yml down",
