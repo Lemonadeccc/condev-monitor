@@ -1,7 +1,7 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import { ArrowUpRight, FlaskConical, GitCompareArrows, PlayCircle } from 'lucide-react'
+import { ArrowUpRight, FlaskConical, GitCompareArrows, PlayCircle, Radar } from 'lucide-react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { useMemo } from 'react'
@@ -73,6 +73,11 @@ export default function LabsPage() {
                         onAppChange={setSelectedAppId}
                         extraActions={
                             <>
+                                <Button asChild variant="outline" size="sm">
+                                    <Link href="/labs/explorer">
+                                        <Radar aria-hidden="true" /> 主动探索
+                                    </Link>
+                                </Button>
                                 <Button asChild variant="outline" size="sm">
                                     <Link href={comparisonHref}>
                                         <GitCompareArrows aria-hidden="true" /> 对比实验
