@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { BellRing, GitCompareArrows, Pin, ShieldCheck } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 
 import { AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
 import { LabAlertAcknowledgementButton, LabNotificationManager } from '@/components/lab/lab-notification-manager'
@@ -417,10 +417,12 @@ function FormInput({
     onChange: (value: string) => void
     disabled?: boolean
 }) {
+    const id = useId()
     return (
         <div className="grid gap-1.5">
-            <Label>{label}</Label>
+            <Label htmlFor={id}>{label}</Label>
             <Input
+                id={id}
                 type={type}
                 min={type === 'number' ? 0 : undefined}
                 step={type === 'number' ? 'any' : undefined}
@@ -445,6 +447,8 @@ function BaselinePanel({
     bindings: readonly LabBaselineBinding[]
     onChanged: () => Promise<void>
 }) {
+    const policySelectionId = useId()
+    const baselineRunIdFieldId = useId()
     const [policySelection, setPolicySelection] = useState('')
     const [baselineRunId, setBaselineRunId] = useState('')
     const [bindingKey, setBindingKey] = useState('animation-main')
@@ -465,8 +469,13 @@ function BaselinePanel({
         <AIPanelCard title="固定基线" description="固定 completed run、策略版本和可比较上下文；重新固定会生成新绑定版本。" headerBorder>
             <div className="grid gap-3">
                 <FormInput label="绑定标识" value={bindingKey} onChange={setBindingKey} />
-                <Label>策略版本</Label>
-                <select className={selectClassName} value={policySelection} onChange={event => setPolicySelection(event.target.value)}>
+                <Label htmlFor={policySelectionId}>策略版本</Label>
+                <select
+                    id={policySelectionId}
+                    className={selectClassName}
+                    value={policySelection}
+                    onChange={event => setPolicySelection(event.target.value)}
+                >
                     <option value="">请选择</option>
                     {policies.map(policy => (
                         <option key={policy.policyId} value={policyValue(policy)}>
@@ -474,8 +483,13 @@ function BaselinePanel({
                         </option>
                     ))}
                 </select>
-                <Label>completed 基线运行</Label>
-                <select className={selectClassName} value={baselineRunId} onChange={event => setBaselineRunId(event.target.value)}>
+                <Label htmlFor={baselineRunIdFieldId}>completed 基线运行</Label>
+                <select
+                    id={baselineRunIdFieldId}
+                    className={selectClassName}
+                    value={baselineRunId}
+                    onChange={event => setBaselineRunId(event.target.value)}
+                >
                     <option value="">请选择</option>
                     {runs.map(run => (
                         <option key={run.runId} value={run.runId}>

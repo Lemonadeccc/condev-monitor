@@ -2,7 +2,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { BellRing, CheckCheck, Inbox, RefreshCw, RotateCcw, Save } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useId, useMemo, useState } from 'react'
 
 import { AIPanelCard, AIStateMessage } from '@/components/ai/page-shell'
 import { Badge } from '@/components/ui/badge'
@@ -152,6 +152,12 @@ function DestinationEditor({
     error: Error | null
     onChanged: () => Promise<void>
 }) {
+    const fieldId = useId()
+    const destinationKeyId = `${fieldId}-destination-key`
+    const kindId = `${fieldId}-kind`
+    const registryRevisionId = `${fieldId}-registry-revision`
+    const cooldownId = `${fieldId}-cooldown`
+    const maxAttemptsId = `${fieldId}-max-attempts`
     const [values, setValues] = useState<LabNotificationDestinationForm>({ ...DEFAULT_LAB_NOTIFICATION_DESTINATION })
     const [selectedId, setSelectedId] = useState<string | null>(null)
     const [formError, setFormError] = useState<string | null>(null)
@@ -250,16 +256,18 @@ function DestinationEditor({
                     ) : null}
                 </div>
                 <div className="grid gap-1.5">
-                    <Label>目的地标识</Label>
+                    <Label htmlFor={destinationKeyId}>目的地标识</Label>
                     <Input
+                        id={destinationKeyId}
                         value={values.destinationKey}
                         disabled={Boolean(selectedId)}
                         onChange={event => setValues(current => ({ ...current, destinationKey: event.target.value }))}
                     />
                 </div>
                 <div className="grid gap-1.5">
-                    <Label>类型</Label>
+                    <Label htmlFor={kindId}>类型</Label>
                     <select
+                        id={kindId}
                         className={selectClassName}
                         value={values.kind}
                         disabled={Boolean(selectedId)}
@@ -276,8 +284,9 @@ function DestinationEditor({
                 </div>
                 {values.kind === 'webhook' ? (
                     <div className="grid gap-1.5">
-                        <Label>服务端 registry 版本</Label>
+                        <Label htmlFor={registryRevisionId}>服务端 registry 版本</Label>
                         <Input
+                            id={registryRevisionId}
                             value={values.registryRevision ?? ''}
                             onChange={event => setValues(current => ({ ...current, registryRevision: event.target.value }))}
                         />
@@ -288,8 +297,9 @@ function DestinationEditor({
                 ) : null}
                 <div className="grid grid-cols-2 gap-3">
                     <div className="grid gap-1.5">
-                        <Label>冷却时间（秒）</Label>
+                        <Label htmlFor={cooldownId}>冷却时间（秒）</Label>
                         <Input
+                            id={cooldownId}
                             type="number"
                             min={0}
                             max={86_400}
@@ -299,8 +309,9 @@ function DestinationEditor({
                         />
                     </div>
                     <div className="grid gap-1.5">
-                        <Label>最大尝试次数</Label>
+                        <Label htmlFor={maxAttemptsId}>最大尝试次数</Label>
                         <Input
+                            id={maxAttemptsId}
                             type="number"
                             min={1}
                             max={10}
