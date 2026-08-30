@@ -46,9 +46,9 @@
     "lint-staged": {
         "{apps,packages}/**/*.{ts,tsx}": [
             "eslint --fix",
-            "cspell lint --dot --color --cache --show-suggestions"
+            "cspell lint --dot --color --cache --show-suggestions --no-must-find-files"
         ],
-        "{apps,packages}/**/*.{html,js,cjs,mjs,css,scss,md}": "cspell lint --dot --color --cache --show-suggestions",
+        "{apps,packages}/**/*.{html,js,cjs,mjs,css,scss,md}": "cspell lint --dot --color --cache --show-suggestions --no-must-find-files",
         "*.{json,jsonc,yml,yaml,md,html,css,scss,js,cjs,mjs,ts,tsx}": "prettier --write"
     },
     "keywords": [],
