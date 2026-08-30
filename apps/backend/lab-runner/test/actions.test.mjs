@@ -696,6 +696,38 @@ test('keeps runner-owned windows when an action crosses documents', async () => 
     )
 })
 
+test('keeps probe sequencing stable across WebKit one-millisecond time-origin quantization', async () => {
+    const page = fakePage()
+    const origins = [1_000, 1_001, 1_001, 1_002]
+    page.documentTimeOrigin = async () => origins.shift() ?? 1_002
+
+    const windows = await runScenarioActions(
+        page,
+        scenario([
+            { kind: 'wait', label: 'first', actionId: 'first', durationMs: 1 },
+            { kind: 'wait', label: 'second', actionId: 'second', durationMs: 1 },
+        ]),
+        probeOptions()
+    )
+
+    assert.deepEqual(
+        windows.map(window => ({ actionId: window.actionId, crossDocument: window.crossDocument })),
+        [
+            { actionId: 'first', crossDocument: false },
+            { actionId: 'second', crossDocument: false },
+        ]
+    )
+    assert.deepEqual(
+        page.calls.filter(call => call[0] === 'probe'),
+        [
+            ['probe', 'first', 'start', 'completed', 0],
+            ['probe', 'first', 'end', 'completed', 1],
+            ['probe', 'second', 'start', 'completed', 2],
+            ['probe', 'second', 'end', 'completed', 3],
+        ]
+    )
+})
+
 test('fails closed when a page-probe command capability is incomplete', async () => {
     await assert.rejects(
         runScenarioActions(fakePage(), scenario([{ kind: 'wait', label: 'wait', durationMs: 1 }]), { probeKey: '__probe' }),

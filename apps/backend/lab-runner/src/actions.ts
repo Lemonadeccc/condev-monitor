@@ -130,7 +130,9 @@ async function documentTimeOrigin(page: LabAutomationPage): Promise<number | nul
 }
 
 function documentChanged(start: number | null, end: number | null): boolean {
-    return start !== null && end !== null && Math.abs(end - start) > 0.01
+    // WebKit can quantize performance.timeOrigin by one millisecond within the
+    // same document. Treat only a larger discontinuity as cross-document.
+    return start !== null && end !== null && Math.abs(end - start) > 1
 }
 
 export class LabActionTimeoutError extends Error {
