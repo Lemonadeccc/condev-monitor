@@ -49,8 +49,8 @@ export class LabPolicyWorkerService implements OnModuleInit, OnApplicationShutdo
                     afterRunId: job.runId,
                 })
                 const skippedCode = 'skipped' in result && result.skipped ? this.skippedCode(result.reason) : null
-                await this.complete(job, skippedCode)
-                if (skippedCode) {
+                const completed = await this.complete(job, skippedCode)
+                if (skippedCode && completed) {
                     this.logger.warn({
                         event: 'animation_lab_policy_job_skipped',
                         jobId: job.id,
@@ -98,21 +98,24 @@ export class LabPolicyWorkerService implements OnModuleInit, OnApplicationShutdo
         return job
     }
 
-    private async complete(job: LabPolicyEvaluationJobEntity, resultCode: string | null): Promise<void> {
-        await this.jobRepository
+    private async complete(job: LabPolicyEvaluationJobEntity, resultCode: string | null): Promise<boolean> {
+        const updated = await this.jobRepository
             .createQueryBuilder()
             .update()
             .set({ state: 'completed', leaseOwner: null, leaseUntil: null, lastErrorCode: resultCode, updatedAt: new Date() })
             .where('id = :id AND "leaseOwner" = :leaseOwner', { id: job.id, leaseOwner: job.leaseOwner })
             .execute()
+        if (updated.affected === 1) return true
+        this.logLeaseFailure(job, 'LEASE_LOST_BEFORE_COMPLETE')
+        return false
     }
 
-    private async retry(job: LabPolicyEvaluationJobEntity, error: unknown): Promise<void> {
+    private async retry(job: LabPolicyEvaluationJobEntity, error: unknown): Promise<boolean> {
         const attempts = job.attemptCount + 1
         const quarantined = attempts >= MAX_ATTEMPTS
         const delay = Math.min(MAX_BACKOFF_MS, 1_000 * 2 ** Math.max(0, attempts - 1))
         const code = this.errorCode(error)
-        await this.jobRepository
+        const updated = await this.jobRepository
             .createQueryBuilder()
             .update()
             .set({
@@ -126,9 +129,25 @@ export class LabPolicyWorkerService implements OnModuleInit, OnApplicationShutdo
             })
             .where('id = :id AND "leaseOwner" = :leaseOwner', { id: job.id, leaseOwner: job.leaseOwner })
             .execute()
+        if (updated.affected !== 1) {
+            this.logLeaseFailure(job, 'LEASE_LOST_BEFORE_RETRY')
+            return false
+        }
         const fields = { jobId: job.id, appId: job.appId, bindingId: job.bindingId, runId: job.runId, attemptCount: attempts, code }
         if (quarantined) this.logger.error({ event: 'animation_lab_policy_job_quarantined', ...fields })
         else this.logger.warn({ event: 'animation_lab_policy_job_retry_scheduled', nextDelayMs: delay, ...fields })
+        return true
+    }
+
+    private logLeaseFailure(job: LabPolicyEvaluationJobEntity, code: 'LEASE_LOST_BEFORE_COMPLETE' | 'LEASE_LOST_BEFORE_RETRY'): void {
+        this.logger.error({
+            event: 'animation_lab_policy_job_lease_failed',
+            code,
+            jobId: job.id,
+            appId: job.appId,
+            bindingId: job.bindingId,
+            runId: job.runId,
+        })
     }
 
     private errorCode(error: unknown): string {

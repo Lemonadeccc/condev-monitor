@@ -31,7 +31,6 @@ describe('LabPolicyJobService', () => {
     it('enqueues one idempotent policy evaluation job per matching active binding', async () => {
         const bindings = repository<LabBaselineBindingEntity>()
         const policies = repository<LabProjectPolicyEntity>()
-        const jobs = repository<LabPolicyEvaluationJobEntity>()
         bindings.find.mockResolvedValue([
             {
                 id: '11111111-1111-4111-8111-111111111111',
@@ -51,13 +50,14 @@ describe('LabPolicyJobService', () => {
             },
         ])
         policies.findOne.mockResolvedValue({ id: '33333333-3333-4333-8333-333333333333', digest: 'a'.repeat(64) })
-        jobs.findOne.mockResolvedValue(null)
         const repositories = new Map<unknown, unknown>([
             [LabBaselineBindingEntity, bindings],
             [LabProjectPolicyEntity, policies],
-            [LabPolicyEvaluationJobEntity, jobs],
         ])
-        const manager = { getRepository: jest.fn(entity => repositories.get(entity)) }
+        const manager = {
+            getRepository: jest.fn(entity => repositories.get(entity)),
+            query: jest.fn().mockResolvedValue([{ id: '66666666-6666-4666-8666-666666666666' }]),
+        }
         const service = new LabPolicyJobService()
 
         const created = await service.enqueueForCompletedRun(
@@ -71,21 +71,23 @@ describe('LabPolicyJobService', () => {
 
         expect(created).toBe(1)
         expect(bindings.find).toHaveBeenCalledWith({ where: { appId: 'app-123', scenarioKey: 'hero.hover', active: true } })
-        expect(jobs.save).toHaveBeenCalledWith(
-            expect.objectContaining({
-                appId: 'app-123',
-                bindingKey: 'hero-baseline',
-                runId: '55555555-5555-4555-8555-555555555555',
-                state: 'pending',
-                attemptCount: 0,
-            })
+        expect(manager.query).toHaveBeenCalledWith(
+            expect.stringContaining('ON CONFLICT ("bindingId", "runId", "policyDigest") DO NOTHING'),
+            expect.arrayContaining([
+                'app-123',
+                7,
+                '55555555-5555-4555-8555-555555555555',
+                '11111111-1111-4111-8111-111111111111',
+                'hero-baseline',
+                'a'.repeat(64),
+                expect.any(Date),
+            ])
         )
     })
 
-    it('does not enqueue an already persisted binding/run/policy identity', async () => {
+    it('treats an existing binding/run/policy identity as an idempotent no-op', async () => {
         const bindings = repository<LabBaselineBindingEntity>()
         const policies = repository<LabProjectPolicyEntity>()
-        const jobs = repository<LabPolicyEvaluationJobEntity>()
         bindings.find.mockResolvedValue([
             {
                 id: '11111111-1111-4111-8111-111111111111',
@@ -97,27 +99,25 @@ describe('LabPolicyJobService', () => {
             },
         ])
         policies.findOne.mockResolvedValue({ id: '33333333-3333-4333-8333-333333333333', digest: 'a'.repeat(64) })
-        jobs.findOne.mockResolvedValue({ id: 'existing-job' })
         const repositories = new Map<unknown, unknown>([
             [LabBaselineBindingEntity, bindings],
             [LabProjectPolicyEntity, policies],
-            [LabPolicyEvaluationJobEntity, jobs],
         ])
         const service = new LabPolicyJobService()
+        const query = jest.fn().mockResolvedValue([])
 
         await expect(
             service.enqueueForCompletedRun(
-                { getRepository: jest.fn(entity => repositories.get(entity)) } as never,
+                { getRepository: jest.fn(entity => repositories.get(entity)), query } as never,
                 { id: '55555555-5555-4555-8555-555555555555', appId: 'app-123', scenarioKey: 'hero.hover' } as never
             )
         ).resolves.toBe(0)
-        expect(jobs.save).not.toHaveBeenCalled()
+        expect(query).toHaveBeenCalledTimes(1)
     })
 
-    it('treats a concurrent job identity insert as idempotent', async () => {
+    it('propagates database failures other than an idempotent conflict', async () => {
         const bindings = repository<LabBaselineBindingEntity>()
         const policies = repository<LabProjectPolicyEntity>()
-        const jobs = repository<LabPolicyEvaluationJobEntity>()
         bindings.find.mockResolvedValue([
             {
                 id: '11111111-1111-4111-8111-111111111111',
@@ -129,21 +129,17 @@ describe('LabPolicyJobService', () => {
             },
         ])
         policies.findOne.mockResolvedValue({ id: '33333333-3333-4333-8333-333333333333', digest: 'a'.repeat(64) })
-        jobs.findOne.mockResolvedValue(null)
-        jobs.save.mockRejectedValue({
-            driverError: { code: '23505', constraint: 'animation_lab_policy_evaluation_job_identity_unique' },
-        })
         const repositories = new Map<unknown, unknown>([
             [LabBaselineBindingEntity, bindings],
             [LabProjectPolicyEntity, policies],
-            [LabPolicyEvaluationJobEntity, jobs],
         ])
+        const failure = new Error('database unavailable')
 
         await expect(
             new LabPolicyJobService().enqueueForCompletedRun(
-                { getRepository: jest.fn(entity => repositories.get(entity)) } as never,
+                { getRepository: jest.fn(entity => repositories.get(entity)), query: jest.fn().mockRejectedValue(failure) } as never,
                 { id: '55555555-5555-4555-8555-555555555555', appId: 'app-123', scenarioKey: 'hero.hover' } as never
             )
-        ).resolves.toBe(0)
+        ).rejects.toBe(failure)
     })
 })

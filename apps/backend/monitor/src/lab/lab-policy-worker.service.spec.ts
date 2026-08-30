@@ -98,4 +98,25 @@ describe('LabPolicyWorkerService', () => {
         await empty.service.tick()
         expect(empty.set).not.toHaveBeenCalled()
     })
+
+    it.each([
+        ['complete', jest.fn().mockResolvedValue({ evaluationId: 'evaluation-1' }), 'LEASE_LOST_BEFORE_COMPLETE'],
+        ['retry', jest.fn().mockRejectedValue(new Error('temporary')), 'LEASE_LOST_BEFORE_RETRY'],
+    ] as const)('reports a lost lease before %s without claiming a successful finalization', async (_phase, createEvaluation, code) => {
+        const { service, execute } = harness(createEvaluation)
+        execute.mockResolvedValueOnce({ affected: 1 }).mockResolvedValueOnce({ affected: 0 })
+        const logger = jest.spyOn((service as never as { logger: { error(value: unknown): void } }).logger, 'error').mockImplementation()
+
+        await service.tick()
+
+        expect(logger).toHaveBeenCalledWith({
+            event: 'animation_lab_policy_job_lease_failed',
+            code,
+            jobId: '11111111-1111-4111-8111-111111111111',
+            appId: 'app-123',
+            bindingId: '33333333-3333-4333-8333-333333333333',
+            runId: '22222222-2222-4222-8222-222222222222',
+        })
+        logger.mockRestore()
+    })
 })
