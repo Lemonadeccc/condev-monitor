@@ -26,6 +26,19 @@ function pointElement(documentValue: Document, event: PointerEvent | MouseEvent)
     }
 }
 
+const KEYBOARD_PICKER_SELECTOR = [
+    'a[href]',
+    'button',
+    'input',
+    'select',
+    'textarea',
+    'summary',
+    'video[controls]',
+    'audio[controls]',
+    '[tabindex]:not([tabindex="-1"])',
+].join(',')
+const MAX_KEYBOARD_PICKER_TARGETS = 512
+
 /**
  * One-shot, development-oriented DOM picker. It installs capture listeners only
  * while picking and never starts, pauses, filters, or uploads page collection.
@@ -140,9 +153,41 @@ export function createAnimationElementPicker(options: AnimationElementPickerOpti
     }
 
     const onKeyDown = (event: KeyboardEvent): void => {
-        if (event.key !== 'Escape') return
+        if (event.key === 'Escape') {
+            suppressHostInput(event)
+            cancel()
+            return
+        }
+        if (event.key === 'Enter' && candidate) {
+            suppressHostInput(event)
+            const selected = candidate
+            candidate = null
+            finishPick(selected)
+            return
+        }
+        if (event.key !== 'Tab') return
         suppressHostInput(event)
-        cancel()
+        let targets: Element[] = []
+        try {
+            targets = Array.from(documentValue?.querySelectorAll?.(KEYBOARD_PICKER_SELECTOR) ?? [])
+                .slice(0, MAX_KEYBOARD_PICKER_TARGETS)
+                .filter(element => !excluded(element))
+        } catch {
+            targets = []
+        }
+        if (targets.length === 0) {
+            renderCandidate(null)
+            return
+        }
+        const currentIndex = candidate ? targets.indexOf(candidate) : -1
+        const nextIndex = event.shiftKey
+            ? currentIndex <= 0
+                ? targets.length - 1
+                : currentIndex - 1
+            : currentIndex >= targets.length - 1
+              ? 0
+              : currentIndex + 1
+        renderCandidate(targets[nextIndex] ?? null)
     }
 
     const onViewportChange = (): void => {

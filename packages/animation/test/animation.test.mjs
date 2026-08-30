@@ -3355,6 +3355,9 @@ test('one-shot element picker suppresses the inspected click, supports Escape, a
         elementFromPoint() {
             return this.hit
         }
+        querySelectorAll() {
+            return this.keyboardTargets ?? []
+        }
         addEventListener(type, listener) {
             this.listeners.set(type, listener)
         }
@@ -3404,6 +3407,16 @@ test('one-shot element picker suppresses the inspected click, supports Escape, a
     assert.equal(escape.prevented, true)
     assert.equal(picker.state, 'idle')
     assert.equal(cancelled, 1)
+
+    const keyboardTarget = new PickerNode('button')
+    document.keyboardTargets = [keyboardTarget]
+    assert.equal(picker.start(), true)
+    const tab = document.dispatch('keydown', { key: 'Tab', shiftKey: false })
+    assert.equal(tab.prevented, true)
+    const enter = document.dispatch('keydown', { key: 'Enter' })
+    assert.equal(enter.stopped, true)
+    assert.equal(selected, keyboardTarget)
+    assert.equal(picker.state, 'selected')
     picker.destroy()
     picker.destroy()
     assert.equal(picker.state, 'destroyed')
@@ -4027,6 +4040,8 @@ test('dev overlay renders projected automatic page evidence, preserves scroll, a
     assert.equal(evidencePanel.parent.hidden, true)
     const pageEvidenceTab = findFakeNodes(panel, node => node.getAttribute('data-overlay-tab') === 'pageEvidence')[0]
     const overviewTabPanel = findFakeNodes(panel, node => node.className.includes('overview-panel'))[0]
+    assert.equal(pageEvidenceTab.getAttribute('aria-controls'), evidencePanel.parent.getAttribute('id'))
+    assert.equal(evidencePanel.parent.getAttribute('aria-labelledby'), pageEvidenceTab.getAttribute('id'))
     pageEvidenceTab.click()
     assert.equal(evidencePanel.parent.hidden, false)
     assert.equal(overviewTabPanel.hidden, true)

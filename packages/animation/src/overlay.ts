@@ -853,11 +853,14 @@ export function createAnimationDevOverlay(source: AnimationOverlaySource, option
         ['target', targetPanel, targetPanelId],
     ] as const) {
         const button = documentValue.createElement('button')
+        const tabButtonId = `${tabPanelId}-tab`
         button.className = 'tab'
+        button.setAttribute('id', tabButtonId)
         button.setAttribute('type', 'button')
         button.setAttribute('role', 'tab')
         button.setAttribute('data-overlay-tab', tab)
         button.setAttribute('aria-controls', tabPanelId)
+        tabPanel.setAttribute('aria-labelledby', tabButtonId)
         button.textContent = overlayTabText(locale, tab)
         tabs.appendChild(button)
         tabButtons.set(tab, button)
