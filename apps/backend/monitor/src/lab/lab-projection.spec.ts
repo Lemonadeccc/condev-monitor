@@ -1,5 +1,7 @@
+import type { AnimationLabReport } from '@condev-monitor/animation-lab'
 import { BadRequestException, PayloadTooLargeException } from '@nestjs/common'
 
+import { RemoteLabClient } from '../../../lab-runner/src/remote'
 import { LAB_RUN_SUMMARY_MAX_BYTES, parseLabRunSummary } from './lab.contracts'
 import {
     LAB_COMPACT_SUMMARY_METRICS_TRUNCATED,
@@ -618,6 +620,69 @@ function animationReportSemanticsV3() {
             ],
         },
     }
+}
+
+function oversizedAnimationReportSemanticsV3(): AnimationLabReport {
+    const report = animationReportSemanticsV3()
+    const sourceAction = report.scenario.actions[0]!
+    const sourceWindow = report.actionWindows[0]!
+    const actions = Array.from({ length: 100 }, (_, index) => ({
+        ...sourceAction,
+        actionId: `action-${index.toString().padStart(3, '0')}`,
+        order: index,
+        label: `action-label-${index.toString().padStart(3, '0')}`,
+    }))
+    const actionWindows = actions.map(action => ({
+        ...sourceWindow,
+        actionId: action.actionId,
+        order: action.order,
+    }))
+    const verboseWarmupWindows = actionWindows.map(window => ({
+        ...window,
+        limitations: Array.from(
+            { length: 32 },
+            (_, index) => `warmup-window-limitation-${index.toString().padStart(2, '0')}-${'x'.repeat(110)}`
+        ),
+    }))
+    const measuredAttempt = report.attempts[0]!
+
+    return {
+        ...report,
+        scenario: {
+            ...report.scenario,
+            actions,
+            actionLabels: actions.map(action => action.label),
+        },
+        actionWindows,
+        attempts: [
+            ...Array.from({ length: 10 }, (_, index) => ({
+                ...measuredAttempt,
+                attemptId: `warmup-${index}`,
+                phase: 'warmup',
+                index,
+                metrics: [],
+                actionWindows: verboseWarmupWindows,
+            })),
+            {
+                ...measuredAttempt,
+                actionWindows: [actionWindows[0]!],
+            },
+        ],
+        coverage: {
+            ...report.coverage,
+            totals: { declared: 100, discovered: 0, executed: 1, passed: 1, uncovered: 99 },
+            items: actions.map((action, index) => ({
+                coverageId: `coverage-${index.toString().padStart(3, '0')}`,
+                kind: 'business-state',
+                actionId: action.actionId,
+                origin: 'declared',
+                critical: index === 0,
+                authentication: 'none',
+                status: index === 0 ? 'passed' : 'not-executed',
+                reasons: index === 0 ? [] : ['partial-attempt-coverage'],
+            })),
+        },
+    } as unknown as AnimationLabReport
 }
 
 function candidateFrameTailReportV2(value = 30) {
@@ -2991,6 +3056,49 @@ describe('lab platform artifact projections', () => {
         )
         expect(parseAnimationReportArtifact(animationReport()).analysis).toBeNull()
         expect(parseAnimationReportArtifact(animationReportV2()).analysis).not.toHaveProperty('coverage')
+    })
+
+    it('parses the actual byte-budgeted semantics v3 artifact emitted by the Runner upload path', async () => {
+        const report = oversizedAnimationReportSemanticsV3()
+        const originalFetch = globalThis.fetch
+        let uploadedBody: BodyInit | null = null
+        globalThis.fetch = jest.fn(async (url: string | URL | Request, init?: RequestInit) => {
+            if (String(url).endsWith('/artifacts/animation-report')) uploadedBody = init?.body ?? null
+            return new Response(JSON.stringify({ success: true, data: {} }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json' },
+            })
+        }) as typeof fetch
+
+        try {
+            const client = new RemoteLabClient({
+                server: 'http://localhost:3000/',
+                runId: '123e4567-e89b-12d3-a456-426614174000',
+                token: `labg_${'a'.repeat(43)}`,
+            })
+            await client.uploadDerivedReport(report)
+        } finally {
+            globalThis.fetch = originalFetch
+        }
+
+        expect(Buffer.byteLength(`${JSON.stringify(report)}\n`, 'utf8')).toBeGreaterThan(2 * 1024 * 1024)
+        const capturedBody: unknown = uploadedBody
+        if (!(capturedBody instanceof ArrayBuffer)) throw new Error('Runner did not upload the animation report as an ArrayBuffer')
+        const uploadedBytes = Buffer.from(capturedBody)
+        expect(uploadedBytes.byteLength).toBeLessThanOrEqual(2 * 1024 * 1024)
+
+        const uploaded = JSON.parse(uploadedBytes.toString('utf8'))
+        const warmups = uploaded.attempts.filter((attempt: { phase: string }) => attempt.phase === 'warmup')
+        expect(warmups).toHaveLength(10)
+        expect(warmups.every((attempt: Record<string, unknown>) => !('actionWindows' in attempt))).toBe(true)
+        expect(parseAnimationReportArtifact(uploaded).analysis).toEqual(
+            expect.objectContaining({
+                semanticsVersion: 3,
+                coverage: expect.objectContaining({
+                    totals: { declared: 100, discovered: 0, executed: 1, passed: 1, uncovered: 99 },
+                }),
+            })
+        )
     })
 
     it('recomputes semantics v3 coverage totals and rejects unknown or duplicate identities', () => {
