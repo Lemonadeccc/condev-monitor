@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { lighthouseSkipReason, measurementContractForReport, probeFrameContract } from '../build/index.js'
+import { lighthouseSkipReason, measurementContractForReport, probeFrameContract, waitForLighthouseChromeEndpoint } from '../build/index.js'
 
 const scenario = {
     schemaVersion: 1,
@@ -18,6 +18,21 @@ test('does not run Lighthouse against an unauthenticated or differently trusted 
     assert.equal(lighthouseSkipReason({ storageState: '/local/auth.json' }), 'auth-state')
     assert.equal(lighthouseSkipReason({ ignoreHTTPSErrors: true }), 'https-errors')
     assert.equal(lighthouseSkipReason({}), null)
+})
+
+test('waits through a transient Chrome DevTools 404 before starting Lighthouse', async () => {
+    let requests = 0
+    await waitForLighthouseChromeEndpoint(9_222, {
+        timeoutMs: 100,
+        retryMs: 1,
+        async fetchImpl() {
+            requests += 1
+            return requests < 3
+                ? new Response(null, { status: 404 })
+                : Response.json({ webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/browser/test-browser' })
+        },
+    })
+    assert.equal(requests, 3)
 })
 
 test('uses a fixed package-default 60 Hz budget instead of self-calibrating to observed slowness', () => {

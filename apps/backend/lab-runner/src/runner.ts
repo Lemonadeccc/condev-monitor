@@ -132,6 +132,60 @@ export function lighthouseSkipReason(options: Pick<LabRunOptions, 'storageState'
     return null
 }
 
+interface LighthouseChromeEndpointOptions {
+    timeoutMs?: number
+    retryMs?: number
+    fetchImpl?: typeof fetch
+}
+
+function validLighthouseWebSocket(value: unknown, port: number): boolean {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+    const webSocketDebuggerUrl = (value as { webSocketDebuggerUrl?: unknown }).webSocketDebuggerUrl
+    if (typeof webSocketDebuggerUrl !== 'string') return false
+    try {
+        const url = new URL(webSocketDebuggerUrl)
+        return (
+            url.protocol === 'ws:' &&
+            (url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1') &&
+            Number(url.port) === port &&
+            url.pathname.startsWith('/devtools/browser/')
+        )
+    } catch {
+        return false
+    }
+}
+
+export async function waitForLighthouseChromeEndpoint(port: number, options: LighthouseChromeEndpointOptions = {}): Promise<void> {
+    if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) throw new TypeError('Invalid Lighthouse Chrome port')
+    const timeoutMs = options.timeoutMs ?? 5_000
+    const retryMs = options.retryMs ?? 100
+    if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 30_000) {
+        throw new TypeError('Invalid Lighthouse Chrome readiness timeout')
+    }
+    if (!Number.isSafeInteger(retryMs) || retryMs < 1 || retryMs > 1_000) {
+        throw new TypeError('Invalid Lighthouse Chrome readiness retry interval')
+    }
+    const request = options.fetchImpl ?? fetch
+    const endpoint = `http://127.0.0.1:${port}/json/version`
+    const deadline = Date.now() + timeoutMs
+    do {
+        try {
+            const remainingMs = Math.max(1, deadline - Date.now())
+            const response = await request(endpoint, {
+                redirect: 'error',
+                signal: AbortSignal.timeout(Math.min(1_000, remainingMs)),
+            })
+            if (response.ok && validLighthouseWebSocket(await response.json(), port)) return
+        } catch {
+            // Chrome can accept the port before its DevTools endpoint is ready.
+        }
+        const remainingMs = deadline - Date.now()
+        if (remainingMs <= 0) break
+        await new Promise(resolve => setTimeout(resolve, Math.min(retryMs, remainingMs)))
+    } while (Date.now() < deadline)
+    throw new Error('Lighthouse Chrome debugging endpoint did not become ready')
+}
+
 function progress(options: LabRunOptions, phase: string, current: number, total: number, message: string): void {
     options.onProgress?.({ phase, current, total, message })
 }
@@ -514,6 +568,7 @@ async function lighthouseAttempt(
         ].filter(Boolean),
     })
     try {
+        await waitForLighthouseChromeEndpoint(chrome.port)
         const result = await lighthouse(scenario.url, {
             port: chrome.port,
             logLevel: 'error',

@@ -65,7 +65,7 @@ export type {
     LabLocalDisplaySink,
     TerminalLabLocalDisplayOptions,
 } from './local-display'
-export { lighthouseSkipReason, runAnimationLab } from './runner'
+export { lighthouseSkipReason, runAnimationLab, waitForLighthouseChromeEndpoint } from './runner'
 export type { LabRunOptions, LabRunResult, LighthouseSkipReason } from './runner'
 export { createScenarioProtocolHash } from './scenario-protocol'
 export { loadTraceSourceMapManifest, TraceSourceMapManifestError } from './trace-source-maps'
