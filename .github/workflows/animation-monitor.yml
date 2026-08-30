@@ -53,6 +53,57 @@ jobs:
             - run: pnpm install --frozen-lockfile
             - run: pnpm test:animation
 
+    service-release:
+        name: Service-backed RUM v2 and v3 release
+        runs-on: ubuntu-latest
+        timeout-minutes: 45
+        steps:
+            - uses: actions/checkout@v7
+            - uses: pnpm/action-setup@v6
+              with:
+                  version: 10.10.0
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 22
+                  cache: pnpm
+                  cache-dependency-path: pnpm-lock.yaml
+            - run: pnpm install --frozen-lockfile
+            - name: Start and initialize release infrastructure
+              run: pnpm docker:start
+            - name: Run service-backed Animation RUM releases
+              run: pnpm test:animation-rum:services
+              env:
+                  ANIMATION_RUM_RELEASE_CONSUMER_GROUP: condev-animation-release-${{ github.run_id }}-${{ github.run_attempt }}
+                  ANIMATION_RUM_RELEASE_DSN_PORT: 18082
+                  ANIMATION_RUM_RELEASE_MONITOR_PORT: 18081
+                  DB_HOST: 127.0.0.1
+                  DB_PORT: 5432
+                  DB_USERNAME: postgres
+                  DB_PASSWORD: condevPostgres
+                  DB_DATABASE: postgres
+                  CLICKHOUSE_URL: http://127.0.0.1:8123
+                  CLICKHOUSE_USERNAME: lemonade
+                  CLICKHOUSE_PASSWORD: condevClickhouse
+                  CLICKHOUSE_DATABASE: lemonade
+                  KAFKA_BROKERS: 127.0.0.1:9094
+                  JWT_SECRET: condev-animation-release-ci-secret
+            - name: Capture infrastructure logs
+              if: always()
+              run: |
+                  mkdir -p lab-results/animation-rum-release
+                  docker compose -p condev-monitor -f .devcontainer/docker-compose.yml logs --no-color > lab-results/animation-rum-release/infrastructure-final.log 2>&1 || true
+            - name: Upload release evidence
+              if: always()
+              uses: actions/upload-artifact@v6
+              with:
+                  name: animation-rum-service-release
+                  path: lab-results/animation-rum-release
+                  if-no-files-found: warn
+                  retention-days: 14
+            - name: Stop release infrastructure
+              if: always()
+              run: pnpm docker:stop
+
     browser-matrix:
         name: Five fixtures on Chromium, Firefox, and WebKit
         runs-on: ubuntu-latest
