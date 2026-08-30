@@ -17,6 +17,8 @@
         "test": "jest",
         "pretest:animation-rum-v2:pipeline": "pnpm turbo build --filter=@condev-monitor/animation-rum-ingest",
         "test:animation-rum-v2:pipeline": "RUN_ANIMATION_RUM_V2_E2E=1 jest modules/ingest/animation-rum-v2-pipeline.e2e.spec.ts --runInBand",
+        "pretest:animation-rum-v3:pipeline": "pnpm turbo build --filter=@condev-monitor/animation-rum-ingest",
+        "test:animation-rum-v3:pipeline": "RUN_ANIMATION_RUM_V3_E2E=1 jest modules/ingest/animation-rum-v3-pipeline.e2e.spec.ts --runInBand",
         "test:watch": "jest --watch",
         "test:cov": "jest --coverage",
         "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",

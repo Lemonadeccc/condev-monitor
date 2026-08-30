@@ -601,6 +601,24 @@ DSN 测试默认要求 Kafka transport；显式测试 direct ClickHouse fallback
 
 Kafka 是追加日志，门禁不会也不能从共享 topic 中删除已经发布的测试消息；这些消息会保留到 topic retention 到期。如果 consumer group 被重置为从头消费，旧夹具可能再次投影。因此这条命令只允许连接本地或隔离的一次性测试 Kafka/topic，绝不能指向共享生产基础设施；需要严格零留存的 CI 应为每次运行提供隔离 topic/cluster，并在任务结束后销毁它。
 
+### Animation RUM v3 真实存储门禁
+
+`pnpm test:animation-rum-v3:release` 串行验证 soft-navigation v3 的独立 PostgreSQL admission/outbox、direct ClickHouse 持久化与 completion marker，然后使用 Monitor 的真实 ClickHouse 查询检查单次详情、聚合、质量披露和子行 identity。它不会经过 HTTP、Kafka 或浏览器 SDK，因此只能证明 v3 存储合同与平台读模型，不能替代真实 DSN HTTP → Kafka/Event Worker 端到端验收。
+
+该命令同样不会读取或修改 `.env`，也不会启动 Docker。只允许连接本地或隔离测试基础设施，并通过当前 shell 显式提供：
+
+```sh
+TEST_POSTGRES_URL='<隔离测试 PostgreSQL>' \
+TEST_CLICKHOUSE_URL='<ClickHouse HTTP 地址>' \
+TEST_CLICKHOUSE_USERNAME='<ClickHouse 用户>' \
+TEST_CLICKHOUSE_PASSWORD='<ClickHouse 密码，可为空>' \
+TEST_CLICKHOUSE_DATABASE='<ClickHouse 数据库>' \
+TEST_POSTGRES_WRITE_SENTINEL='condev-animation-rum-v3-pipeline-e2e' \
+pnpm test:animation-rum-v3:release
+```
+
+测试使用随机应用与 capture 身份，并在结束时按精确 identity 清理三个 v3 ClickHouse 表及对应 PostgreSQL control/outbox/receipt 数据。未提供 sentinel 时测试会在写入前失败，避免误连共享环境。
+
 ## 仍未实现的证据层
 
 当前的 `not-instrumented`/`unsupported` 不是遗漏的 0。下列能力还需要单独实现和验证：
@@ -610,7 +628,7 @@ Kafka 是追加日志，门禁不会也不能从共享 topic 中删除已经发�
 3. GPU query 后续：WebGL1/2 已有可选的异步、稀疏、非阻塞 frame timer，并验证 availability、disjoint、context loss、独占 ownership、队列、一次性 host 消费和有界 Target window；WebGPU 已有 feature-gated 单完整 pass、同一 command buffer 首/末 pass 区间、submit 后异步 map、device-loss 终态和乱序 sample 防回流的 timestamp timer；仍缺 WebGPU 跨 command buffer/submit 与引擎私有 encoder 协调、跨重复 bundle 的强制仲裁、真实设备 capability/开销矩阵与引擎自带 profiler 协调；
 4. CDP/trace 深层归因：首版 Labs 已有有界 JS、style/layout、paint/composite、raster/GPU 类别时间线、脱敏生成源码栈，以及 caller-attested 本地 Source Map v3 的 authored 候选与覆盖计数；仍缺逐帧 layer/CPU profile 专门视图、模糊/远程 map 发现（有意不支持）和跨浏览器等价实现。浏览器 SDK 的 LoAF tail 和可选 PaintTimingMixin 只覆盖长帧，不能替代全帧 trace、源码归因或真实 GPU timer；
 5. resource/media/lifecycle 深层证据：resource-to-first-visible、renderer/browser 实测的 media decode/upload/first-visible、route/unmount 前后 listener/observer/ticker/resource/heap delta、hidden/offscreen work，以及代表设备至少十分钟 soak/post-GC plateau；调用方 attested 的本地 media stage 已有，但不能替代这些实测证据；
-6. soft-navigation Web Vitals、跨源 iframe/OffscreenCanvas Worker bridge、inner-scene hit-test，以及经过新版本数据合同授权的 target/quality RUM。
+6. soft-navigation 的 renderer/业务 outcome 深层归因、跨源 iframe/OffscreenCanvas Worker bridge、inner-scene hit-test，以及经过新版本数据合同授权的 target/quality RUM；独立 RUM v3 已提供 soft-navigation CLS/INP/LCP，不代表自动发现动画完成或 renderer 因果。
 
 这些能力落地前，建议只能基于已经观测到的 browser/host evidence；不得由静态文章模式、单个 draw count、DPR 或缺失值推导已确认问题。
 
