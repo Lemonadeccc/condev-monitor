@@ -4,10 +4,6 @@ import { type ClickHouseClient, createClient } from '@clickhouse/client'
 import { createAnimationRumV3GoldenReport } from '@condev-monitor/animation-rum-contract/testing'
 import { Pool } from 'pg'
 
-import { AnimationRumClickhouseService } from './animation-rum-clickhouse.service'
-import { AnimationRumV3AdmissionService } from './animation-rum-v3-admission.service'
-import { AnimationRumV3OutboxDispatcherService } from './animation-rum-v3-outbox-dispatcher.service'
-
 // cspell:ignore rumv
 
 const describePipeline = process.env.RUN_ANIMATION_RUM_V3_E2E === '1' ? describe : describe.skip
@@ -18,10 +14,86 @@ const TABLES = [
     'animation_rum_soft_navigation_captures_v3',
 ] as const
 
+type TrackingReceipt = {
+    eventId: string
+    captureId: string
+    receivedAt: string
+    deliveryState: string
+    duplicate: boolean
+}
+
+type TrackingResponse = {
+    ok: boolean
+    persistedVia: string
+    animationRumV3SoftNavigation: {
+        accepted: number
+        queued: number
+        duplicates: number
+        receipts: TrackingReceipt[]
+    }
+}
+
+type ReceiptRow = {
+    eventId: string
+    captureId: string
+    deliveryState: string
+    deliveryVia: string | null
+    publishedAt: Date | string | null
+    persistedAt: Date | string | null
+}
+
+type CaptureRow = {
+    event_id: string
+    capture_id: string
+    app_id: string
+    contract_version: number
+    snapshot_schema_version: number
+    route_key: string
+    runtime_framework: string
+    runtime_renderer: string
+    runtime_backend: string
+    provider_evidence_count: number
+    metric_count: number
+}
+
+type MetricRow = {
+    event_id: string
+    capture_id: string
+    app_id: string
+    metric_id: string
+    vital_name: string
+    unit: string
+    relation: string
+    owner: string
+    value: number | null
+    samples: number | null
+    status: string
+}
+
+type ProviderRow = {
+    event_id: string
+    capture_id: string
+    app_id: string
+    owner: string
+    family: string
+    accepted: number
+    retained: number
+    evidence: number
+    dropped: number
+    rejected: number
+    truncated: number
+}
+
 function required(name: string, allowEmpty = false): string {
     const value = process.env[name]
     if (value === undefined || (!allowEmpty && value.trim() === '')) throw new Error(`${name} is required for v3 pipeline E2E`)
     return value
+}
+
+function dsnBaseUrl(value: string): URL {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('TEST_DSN_BASE_URL must use http or https')
+    return url
 }
 
 function delay(ms: number): Promise<void> {
@@ -47,12 +119,14 @@ describePipeline('Animation RUM v3 soft-navigation DSN pipeline E2E', () => {
     let pg: Pool
     let clickhouse: ClickHouseClient
     let clickhouseDatabase = ''
+    let dsnUrl: URL
     let adminId = 0
     let applicationId = 0
     let appId = ''
-    let captureId = ''
+    let expectedDeliveryState: 'published' | 'persisted' = 'published'
+    let expectedDeliveryVia: 'kafka' | 'clickhouse-fallback' = 'kafka'
 
-    beforeAll(() => {
+    beforeAll(async () => {
         if (process.env.TEST_POSTGRES_WRITE_SENTINEL !== WRITE_SENTINEL) {
             throw new Error(`TEST_POSTGRES_WRITE_SENTINEL must equal ${WRITE_SENTINEL}`)
         }
@@ -65,6 +139,25 @@ describePipeline('Animation RUM v3 soft-navigation DSN pipeline E2E', () => {
             password: required('TEST_CLICKHOUSE_PASSWORD', true),
             database: clickhouseDatabase,
         })
+        dsnUrl = dsnBaseUrl(required('TEST_DSN_BASE_URL'))
+        const expectedTransport = process.env.TEST_ANIMATION_RUM_V3_EXPECTED_TRANSPORT ?? 'kafka'
+        if (expectedTransport !== 'kafka' && expectedTransport !== 'clickhouse') {
+            throw new Error('TEST_ANIMATION_RUM_V3_EXPECTED_TRANSPORT must be kafka or clickhouse')
+        }
+        expectedDeliveryState = expectedTransport === 'kafka' ? 'published' : 'persisted'
+        expectedDeliveryVia = expectedTransport === 'kafka' ? 'kafka' : 'clickhouse-fallback'
+
+        const health = await fetch(new URL('/dsn-api/healthz', dsnUrl), { signal: AbortSignal.timeout(10_000) })
+        if (!health.ok) throw new Error(`DSN health check failed with HTTP ${health.status}`)
+        await expect(health.json()).resolves.toEqual(expect.objectContaining({ ok: true }))
+
+        const tables = await clickhouse.query({
+            query: `SELECT name FROM system.tables WHERE database = {database:String} AND name IN ({tables:Array(String)}) ORDER BY name`,
+            query_params: { database: clickhouseDatabase, tables: [...TABLES] },
+            format: 'JSON',
+        })
+        const tableRows = await tables.json<{ name: string }>()
+        expect(tableRows.data.map(row => row.name)).toEqual([...TABLES].sort())
     })
 
     afterAll(async () => {
@@ -76,9 +169,8 @@ describePipeline('Animation RUM v3 soft-navigation DSN pipeline E2E', () => {
         if (appId) {
             for (const table of TABLES) {
                 await clickhouse.command({
-                    query: `ALTER TABLE ${clickhouseDatabase}.${table} DELETE WHERE app_id = {appId:String}`,
+                    query: `DELETE FROM ${clickhouseDatabase}.${table} WHERE app_id = {appId:String} SETTINGS lightweight_deletes_sync = 2`,
                     query_params: { appId },
-                    clickhouse_settings: { mutations_sync: '2' },
                 })
             }
         }
@@ -98,10 +190,9 @@ describePipeline('Animation RUM v3 soft-navigation DSN pipeline E2E', () => {
         adminId = 0
         applicationId = 0
         appId = ''
-        captureId = ''
     })
 
-    it('admits into the independent outbox and reaches the v3 ClickHouse completion marker', async () => {
+    it('travels through HTTP, the durable outbox, the selected transport, and every v3 ClickHouse table', async () => {
         const suffix = randomUUID().replaceAll('-', '')
         const admin = await pg.query<{ id: number }>(
             `INSERT INTO public.admin (password, email, role, "isVerified") VALUES ('fixture', $1, 'admin', true) RETURNING id`,
@@ -137,7 +228,6 @@ describePipeline('Animation RUM v3 soft-navigation DSN pipeline E2E', () => {
         report.eventId = `event_v3_e2e_${suffix.slice(0, 24)}`
         report.captureId = `capture_v3_e2e_${suffix.slice(0, 24)}`
         report.capturedAt = new Date(now - 1_000).toISOString()
-        captureId = report.captureId
         const payload = {
             ...report,
             event_type: 'animation_soft_navigation_rum',
@@ -145,75 +235,178 @@ describePipeline('Animation RUM v3 soft-navigation DSN pipeline E2E', () => {
             _eventId: report.eventId,
             _clientCreatedAt: now,
         }
-        const configValues: Record<string, string> = {
-            INGEST_MODE: 'direct',
-            ANIMATION_RUM_V3_OUTBOX_CONCURRENCY: '1',
-            CLICKHOUSE_DATABASE: clickhouseDatabase,
-        }
-        const config = { get: (key: string) => configValues[key] }
-        const admission = new AnimationRumV3AdmissionService(pg, config as never)
-        const clickhouseWriter = new AnimationRumClickhouseService(clickhouse, config as never)
-        const dispatcher = new AnimationRumV3OutboxDispatcherService(
-            pg,
-            { publishDurableBatch: jest.fn() } as never,
-            clickhouseWriter,
-            config as never
-        )
-        await expect(admission.admitBatch(appId, [payload], { nowEpochMs: now })).resolves.toMatchObject({
-            accepted: 1,
-            queued: 1,
-            duplicates: 0,
-        })
-        const dispatch = await dispatcher.dispatchOnce()
-        const retryDiagnostic =
-            dispatch.retried === 0
-                ? null
-                : await pg.query<{ code: string }>(
-                      `SELECT last_error_code AS code FROM public.animation_rum_v3_soft_navigation_outbox
-                       WHERE application_id = $1 AND capture_id = $2`,
-                      [applicationId, captureId]
-                  )
-        expect({ dispatch, retryCode: retryDiagnostic?.rows[0]?.code ?? null }).toEqual({
-            retryCode: null,
-            dispatch: {
-                scanned: 1,
-                published: 0,
-                persisted: 1,
-                retried: 0,
-                quarantined: 0,
-                skipped: 0,
-                failed: 0,
-            },
-        })
 
-        await pollUntil(
-            async () => {
-                const receipt = await pg.query<{ state: string }>(
-                    `SELECT delivery_state AS state FROM public.animation_rum_v3_soft_navigation_capture_receipt
-                     WHERE application_id = $1 AND capture_id = $2`,
-                    [applicationId, captureId]
-                )
-                return receipt.rows[0]?.state ?? 'missing'
+        const response = await fetch(new URL(`/dsn-api/tracking-v3/${appId}`, dsnUrl), {
+            method: 'POST',
+            headers: { 'content-type': 'text/plain;charset=UTF-8' },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(20_000),
+        })
+        const responseBody = (await response.json()) as TrackingResponse
+        if (response.status !== 201) {
+            throw new Error(`DSN rejected the v3 pipeline fixture with HTTP ${response.status}: ${JSON.stringify(responseBody)}`)
+        }
+        expect(responseBody).toEqual({
+            ok: true,
+            persistedVia: 'postgres-outbox',
+            animationRumV3SoftNavigation: {
+                accepted: 1,
+                queued: 1,
+                duplicates: 0,
+                receipts: [
+                    expect.objectContaining({
+                        eventId: report.eventId,
+                        captureId: report.captureId,
+                        deliveryState: 'pending',
+                        duplicate: false,
+                    }),
+                ],
             },
-            state => state === 'published' || state === 'persisted',
-            'terminal v3 receipt'
+        })
+        expect(Number.isFinite(Date.parse(responseBody.animationRumV3SoftNavigation.receipts[0]!.receivedAt))).toBe(true)
+
+        const receipt = await pollUntil(
+            async () => {
+                const receiptState = await pg.query<ReceiptRow>(
+                    `SELECT event_id AS "eventId", capture_id AS "captureId",
+                            delivery_state AS "deliveryState", delivery_via AS "deliveryVia",
+                            published_at AS "publishedAt", persisted_at AS "persistedAt"
+                     FROM public.animation_rum_v3_soft_navigation_capture_receipt
+                     WHERE application_id = $1 AND capture_id = $2`,
+                    [applicationId, report.captureId]
+                )
+                const outbox = await pg.query<{ count: string; errorCode: string | null }>(
+                    `SELECT count(*)::text AS count, max(last_error_code) AS "errorCode"
+                     FROM public.animation_rum_v3_soft_navigation_outbox
+                     WHERE application_id = $1`,
+                    [applicationId]
+                )
+                const row = receiptState.rows[0]
+                if (row?.deliveryState === 'quarantined') {
+                    throw new Error(`Animation RUM v3 outbox quarantined the fixture (${outbox.rows[0]?.errorCode ?? 'unknown'})`)
+                }
+                return { row, outboxCount: Number(outbox.rows[0]?.count ?? Number.NaN) }
+            },
+            state =>
+                state.row?.deliveryState === expectedDeliveryState &&
+                state.row.deliveryVia === expectedDeliveryVia &&
+                state.outboxCount === 0,
+            `v3 receipt to be ${expectedDeliveryState} through ${expectedDeliveryVia} and the outbox to drain`
         )
-        const counts = await pollUntil(
-            async () =>
-                Promise.all(
+        expect(receipt.row).toEqual(
+            expect.objectContaining({
+                eventId: report.eventId,
+                captureId: report.captureId,
+                deliveryState: expectedDeliveryState,
+                deliveryVia: expectedDeliveryVia,
+            })
+        )
+        expect(expectedDeliveryState === 'published' ? receipt.row?.publishedAt : receipt.row?.persistedAt).not.toBeNull()
+
+        const projection = await pollUntil(
+            async () => {
+                const rows = await Promise.all(
                     TABLES.map(async table => {
                         const result = await clickhouse.query({
-                            query: `SELECT count() AS count FROM ${clickhouseDatabase}.${table} FINAL WHERE app_id = {appId:String}`,
+                            query: `SELECT * FROM ${clickhouseDatabase}.${table} FINAL WHERE app_id = {appId:String} ORDER BY capture_id`,
                             query_params: { appId },
                             format: 'JSON',
                         })
-                        const body = await result.json<{ count: number | string }>()
-                        return Number(body.data[0]?.count)
+                        return (await result.json<Record<string, unknown>>()).data
                     })
-                ),
-            value => value[0] === 1 && value[1] === 3 && value[2] === 1,
+                )
+                if (rows[2]!.length > 0 && (rows[0]!.length !== 1 || rows[1]!.length !== 3)) {
+                    throw new Error('ClickHouse exposed the v3 capture completion marker before all child rows')
+                }
+                return rows
+            },
+            rows => rows[0]?.length === 1 && rows[1]?.length === 3 && rows[2]?.length === 1,
             'v3 ClickHouse projection'
         )
-        expect(counts).toEqual([1, 3, 1])
+        const providers = projection[0] as unknown as ProviderRow[]
+        const metrics = projection[1] as unknown as MetricRow[]
+        const captures = projection[2] as unknown as CaptureRow[]
+        expect(captures[0]).toEqual(
+            expect.objectContaining({
+                event_id: report.eventId,
+                capture_id: report.captureId,
+                app_id: appId,
+                route_key: report.context.routeKey,
+                runtime_framework: 'react',
+                runtime_renderer: 'dom',
+                runtime_backend: 'dom',
+            })
+        )
+        expect(Number(captures[0]!.contract_version)).toBe(3)
+        expect(Number(captures[0]!.snapshot_schema_version)).toBe(1)
+        expect(Number(captures[0]!.provider_evidence_count)).toBe(1)
+        expect(Number(captures[0]!.metric_count)).toBe(3)
+        expect(metrics.map(metric => metric.metric_id).sort()).toEqual(report.metrics.map(metric => metric.metricId).sort())
+        expect(metrics).toEqual(
+            expect.arrayContaining(
+                report.metrics.map(metric =>
+                    expect.objectContaining({
+                        event_id: report.eventId,
+                        capture_id: report.captureId,
+                        app_id: appId,
+                        relation: metric.relation,
+                        owner: metric.owner,
+                        value: metric.value,
+                        samples: metric.samples,
+                        status: metric.status,
+                    })
+                )
+            )
+        )
+        expect(providers[0]).toEqual(
+            expect.objectContaining({
+                event_id: report.eventId,
+                capture_id: report.captureId,
+                app_id: appId,
+                owner: 'web-vitals-runtime',
+                family: 'userOutcome',
+                accepted: 3,
+                retained: 3,
+                evidence: 3,
+                dropped: 0,
+                rejected: 0,
+                truncated: 0,
+            })
+        )
+
+        const duplicateResponse = await fetch(new URL(`/dsn-api/tracking-v3/${appId}`, dsnUrl), {
+            method: 'POST',
+            headers: { 'content-type': 'text/plain;charset=UTF-8' },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(20_000),
+        })
+        const duplicateBody = (await duplicateResponse.json()) as TrackingResponse
+        expect(duplicateResponse.status).toBe(201)
+        expect(duplicateBody.animationRumV3SoftNavigation).toEqual({
+            accepted: 1,
+            queued: 0,
+            duplicates: 1,
+            receipts: [
+                expect.objectContaining({
+                    eventId: report.eventId,
+                    captureId: report.captureId,
+                    receivedAt: responseBody.animationRumV3SoftNavigation.receipts[0]!.receivedAt,
+                    deliveryState: expectedDeliveryState,
+                    duplicate: true,
+                }),
+            ],
+        })
+        const duplicateCounts = await Promise.all(
+            TABLES.map(async table => {
+                const result = await clickhouse.query({
+                    query: `SELECT count() AS count FROM ${clickhouseDatabase}.${table} FINAL WHERE app_id = {appId:String}`,
+                    query_params: { appId },
+                    format: 'JSON',
+                })
+                const body = await result.json<{ count: number | string }>()
+                return Number(body.data[0]?.count)
+            })
+        )
+        expect(duplicateCounts).toEqual([1, 3, 1])
     })
 })
