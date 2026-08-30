@@ -606,7 +606,7 @@ The implemented contracts and dependency-free host probes make missing evidence 
 - causal per-frame attribution beyond implemented Chromium Trace Index v4. V4 retains bounded main-thread frame windows with exclusive JS/style/layout/paint/composite/animation/GC phases, sanitized source candidates, and same-renderer-process raster/composite temporal correlation; it does not prove which source/component caused a frame, GPU completion, compositor/display frames, or physical pixels;
 - renderer/browser-measured media GPU upload and physical first-pixel attribution beyond the implemented RVFC callback/browser-reported decode-processing metadata, playback-quality deltas, and caller-attested local/schema-2 aggregate stage recorder; resource-to-first-visible attribution, route/unmount resource deltas, heap/lifecycle growth, hidden/offscreen work checks, and representative-device soak runs;
 - real iOS/Android/WebView execution, power and thermal sampling, and an authorized cross-origin iframe bridge. Current Lab execution preflight rejects these unavailable capabilities rather than relabelling desktop emulation or independent-target testing as real-device or iframe evidence;
-- soft-navigation Web Vitals, automatic product-outcome detection, and automatic target discovery; RUM v2 intentionally accepts only explicitly authorized semantic targets and bounded evidence.
+- soft-navigation 的动画、renderer 与业务 outcome 深层归因，automatic product-outcome detection，以及 automatic target discovery；独立 RUM v3 已提供 soft-navigation CLS/INP/LCP，RUM v2 仍只接受显式授权的语义目标和有界证据。
 
 Until those adapters or lab traces exist, coverage remains `not-instrumented`, `not-observed`, or `unsupported`; it must not be displayed as zero or treated as a pass.
 
