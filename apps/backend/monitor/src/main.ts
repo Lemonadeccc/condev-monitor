@@ -40,9 +40,6 @@ async function bootstrap() {
         const httpAdapter = app.get(HttpAdapterHost)
         app.useGlobalFilters(new AllExceptionFilter(httpAdapter))
     }
-    // const configService = app.get(ConfigService)
-    // const port = configService.get<number>('PORT', 3000)
-    // await app.listen(port)
-    await app.listen(8081)
+    await app.listen(configService.get<number>('PORT') ?? 8081)
 }
 bootstrap()

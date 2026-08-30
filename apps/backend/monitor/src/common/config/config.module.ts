@@ -17,6 +17,7 @@ const envFilePaths = [
 const schema = Joi.object({
     // https://joi.dev/api/
     NODE_ENV: Joi.string().valid('development', 'production').default('development'),
+    PORT: Joi.number().port().default(8081),
     DB_TYPE: Joi.string().default('postgres'),
     DB_HOST: Joi.string().default('condev-monitor-postgres'),
     DB_PORT: Joi.number().port().default(5432),
