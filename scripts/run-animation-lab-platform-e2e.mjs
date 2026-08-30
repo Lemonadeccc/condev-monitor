@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, openSync } from 'node:fs'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -11,9 +11,14 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const scenarioPath = path.join(root, 'apps/backend/lab-runner/examples/lemon-bureau.scenario.json')
 const coveragePath = path.join(root, 'apps/backend/lab-runner/examples/lemon-bureau.coverage.json')
 const runnerPath = path.join(root, 'apps/backend/lab-runner/build/cli.js')
+const frontendUiE2EPath = path.join(root, 'apps/backend/lab-runner/test-platform/frontend-ui.e2e.mjs')
 const monitorPort = positivePort(process.env.ANIMATION_LAB_PLATFORM_MONITOR_PORT ?? '18083', 'ANIMATION_LAB_PLATFORM_MONITOR_PORT')
+const frontendPort = positivePort(process.env.ANIMATION_LAB_PLATFORM_FRONTEND_PORT ?? '18084', 'ANIMATION_LAB_PLATFORM_FRONTEND_PORT')
 const monitorBase = new URL(`http://127.0.0.1:${monitorPort}`)
+const frontendBase = new URL(`http://localhost:${frontendPort}`)
 const fixtureUrl = new URL('http://127.0.0.1:43101/')
+const frontendDistDirName = '.next-animation-lab-platform-e2e'
+const frontendDistDir = path.join(root, 'apps/frontend/monitor', frontendDistDirName)
 const resultRoot = path.resolve(
     root,
     process.env.ANIMATION_LAB_PLATFORM_OUT_DIR ??
@@ -295,9 +300,13 @@ async function main() {
     if (await isReady(new URL('/api/healthz', monitorBase))) {
         throw new Error(`Refusing to reuse an existing service on isolated Monitor port ${monitorPort}`)
     }
+    if (await isReady(new URL('/login', frontendBase))) {
+        throw new Error(`Refusing to reuse an existing service on isolated frontend port ${frontendPort}`)
+    }
 
     await mkdir(runnerOutDir, { recursive: true, mode: 0o700 })
     await mkdir(platformStorageDir, { recursive: true, mode: 0o700 })
+    await rm(frontendDistDir, { recursive: true, force: true, maxRetries: 3 })
 
     let fixtureProcess = null
     if (!(await isReady(fixtureUrl))) {
@@ -322,12 +331,23 @@ async function main() {
     const monitorState = processes.find(item => item.child === monitorProcess)
     await waitUntilReady('monitor', new URL('/api/healthz', monitorBase), monitorProcess, monitorState.logPath)
 
+    const frontendProcess = startProcess('frontend', 'pnpm', ['--filter', '@condev-monitor/monitor-client', 'start:dev'], {
+        NODE_ENV: 'development',
+        API_PROXY_TARGET: monitorBase.origin,
+        CONDEV_MONITOR_FRONTEND_PORT: String(frontendPort),
+        CONDEV_MONITOR_NEXT_DIST_DIR: frontendDistDirName,
+        NEXT_TELEMETRY_DISABLED: '1',
+    })
+    const frontendState = processes.find(item => item.child === frontendProcess)
+    await waitUntilReady('frontend', new URL('/login', frontendBase), frontendProcess, frontendState.logPath)
+
     const suffix = randomUUID().replaceAll('-', '')
+    const email = `animation-lab-platform-${suffix}@example.invalid`
     const password = `Condev${suffix.slice(0, 8)}Aa1`
     const registration = await jsonRequest('/api/admin/register', {
         method: 'POST',
         expectedStatus: 201,
-        body: { email: `animation-lab-platform-${suffix}@example.invalid`, password },
+        body: { email, password },
     })
     testState.adminId = Number(registration.id)
     assert(Number.isSafeInteger(testState.adminId) && testState.adminId > 0, 'Monitor registration returned an invalid admin id')
@@ -335,7 +355,7 @@ async function main() {
     const login = await jsonRequest('/api/auth/login', {
         method: 'POST',
         expectedStatus: 201,
-        body: { email: `animation-lab-platform-${suffix}@example.invalid`, password },
+        body: { email, password },
     })
     const authorization = `Bearer ${login.access_token}`
     const application = await jsonRequest('/api/application', {
@@ -417,6 +437,15 @@ async function main() {
     )
 
     await verifyAttachedRun(authorization, grant)
+    await run(process.execPath, [frontendUiE2EPath], {
+        environment: {
+            ANIMATION_LAB_UI_BASE_URL: frontendBase.href,
+            ANIMATION_LAB_UI_EMAIL: email,
+            ANIMATION_LAB_UI_PASSWORD: password,
+            ANIMATION_LAB_UI_RUN_ID: testState.runId,
+        },
+        logName: 'frontend-ui.log',
+    })
     const localReport = JSON.parse(await readFile(path.join(runnerOutDir, testState.runId, 'lab-report.json'), 'utf8'))
     assert(localReport.runId === testState.runId, 'Local Runner report returned a mismatched run id')
     assert(localReport.coverage?.totals?.uncovered === 0, 'Local Runner report has uncovered reviewed actions')
@@ -431,6 +460,8 @@ async function main() {
                 runnerContractVersion: RUNNER_CONTRACT_VERSION,
                 browser: 'chromium',
                 target: 'lemon-bureau',
+                authenticatedFrontend: true,
+                frontendTabs: ['overview', 'animation', 'performance', 'lighthouse', 'artifacts'],
                 artifacts: ['animation-report', 'trace-index'],
             },
             null,
@@ -449,6 +480,10 @@ try {
     process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`)
 } finally {
     await Promise.allSettled(processes.reverse().map(stopProcess))
+    await rm(frontendDistDir, { recursive: true, force: true, maxRetries: 3 }).catch(error => {
+        exitCode = 1
+        process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`)
+    })
     await cleanupClickhouse().catch(error => {
         exitCode = 1
         process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`)

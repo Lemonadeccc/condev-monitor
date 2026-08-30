@@ -2,6 +2,7 @@ import type { NextConfig } from 'next'
 
 const nextConfig: NextConfig = {
     /* config options here */
+    distDir: process.env.CONDEV_MONITOR_NEXT_DIST_DIR ?? '.next',
     output: 'standalone',
     async rewrites() {
         // Local dev defaults: Nest APIs run on 8081/8082 (see apps/backend/*/src/main.ts)
