@@ -150,6 +150,8 @@ jobs:
                   path: |
                       lab-results/ci-attached-platform/summary.json
                       lab-results/ci-attached-platform/monitor.log
+                      lab-results/ci-attached-platform/frontend.log
+                      lab-results/ci-attached-platform/frontend-ui.log
                       lab-results/ci-attached-platform/runner.log
                       lab-results/ci-attached-platform/infrastructure-final.log
                   if-no-files-found: warn
