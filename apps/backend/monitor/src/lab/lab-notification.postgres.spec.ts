@@ -8,9 +8,64 @@ import { LabAlertStateEntity } from './entity/lab-alert-state.entity'
 import { LabNotificationDestinationEntity } from './entity/lab-notification-destination.entity'
 import { LabNotificationOutboxEntity } from './entity/lab-notification-outbox.entity'
 import { LabNotificationService, type LabNotificationTransport } from './lab-notification.service'
+import { ANIMATION_LAB_POSTGRES_WRITE_SENTINEL, assertAnimationLabPostgresWriteAccess } from './lab-postgres-test-guard'
 
 const describePostgres = process.env.RUN_POSTGRES_INTEGRATION === '1' ? describe : describe.skip
-const WRITE_SENTINEL = 'condev-animation-lab-postgres-integration'
+
+describe('Animation Lab PostgreSQL write guard', () => {
+    const suiteName = 'guard test'
+
+    it.each(['postgres://user:secret@localhost/test', 'postgresql://user:secret@127.42.0.1/test', 'postgres://user:secret@[::1]/test'])(
+        'allows an explicit write sentinel for loopback URL %s',
+        url => {
+            expect(
+                assertAnimationLabPostgresWriteAccess({
+                    suiteName,
+                    url,
+                    writeSentinel: ANIMATION_LAB_POSTGRES_WRITE_SENTINEL,
+                    allowRemote: undefined,
+                })
+            ).toBe(url)
+        }
+    )
+
+    it('rejects writes without the explicit sentinel', () => {
+        expect(() =>
+            assertAnimationLabPostgresWriteAccess({
+                suiteName,
+                url: 'postgres://user:secret@127.0.0.1/test',
+                writeSentinel: undefined,
+                allowRemote: undefined,
+            })
+        ).toThrow(`TEST_POSTGRES_WRITE_SENTINEL must equal ${ANIMATION_LAB_POSTGRES_WRITE_SENTINEL}`)
+    })
+
+    it('rejects non-loopback databases by default without leaking URL credentials', () => {
+        expect(() =>
+            assertAnimationLabPostgresWriteAccess({
+                suiteName,
+                url: 'postgres://private-user:private-password@database.example.test/integration',
+                writeSentinel: ANIMATION_LAB_POSTGRES_WRITE_SENTINEL,
+                allowRemote: undefined,
+            })
+        ).toThrow(
+            'Refusing non-loopback TEST_POSTGRES_URL host "database.example.test" for guard test; ' +
+                'set TEST_POSTGRES_ALLOW_REMOTE=1 only for an isolated remote test database'
+        )
+    })
+
+    it('allows a non-loopback database only with the additional explicit opt-in', () => {
+        const url = 'postgres://user:secret@database.example.test/integration'
+        expect(
+            assertAnimationLabPostgresWriteAccess({
+                suiteName,
+                url,
+                writeSentinel: ANIMATION_LAB_POSTGRES_WRITE_SENTINEL,
+                allowRemote: '1',
+            })
+        ).toBe(url)
+    })
+})
 
 type Fixture = Readonly<{
     adminId: number
@@ -33,11 +88,12 @@ describePostgres('LabNotificationService PostgreSQL integration', () => {
     let fixture: Fixture | null = null
 
     beforeAll(async () => {
-        const url = process.env.TEST_POSTGRES_URL
-        if (!url) throw new Error('TEST_POSTGRES_URL is required for Animation Lab notification PostgreSQL integration tests')
-        if (process.env.TEST_POSTGRES_WRITE_SENTINEL !== WRITE_SENTINEL) {
-            throw new Error(`TEST_POSTGRES_WRITE_SENTINEL must equal ${WRITE_SENTINEL}`)
-        }
+        const url = assertAnimationLabPostgresWriteAccess({
+            suiteName: 'Animation Lab notification PostgreSQL integration tests',
+            url: process.env.TEST_POSTGRES_URL,
+            writeSentinel: process.env.TEST_POSTGRES_WRITE_SENTINEL,
+            allowRemote: process.env.TEST_POSTGRES_ALLOW_REMOTE,
+        })
         dataSource = new DataSource({
             type: 'postgres',
             url,
@@ -206,6 +262,76 @@ describePostgres('LabNotificationService PostgreSQL integration', () => {
         expect(acknowledgements[0]).toMatchObject({ actorId: current.adminId, action: 'acknowledged' })
     })
 
+    it('rolls back an enqueued delivery when the surrounding transaction aborts', async () => {
+        const current = requiredFixture()
+        const service = createService(deliveredTransport())
+        const event = await eventById(current.eventId)
+
+        await expect(
+            dataSource.transaction(async manager => {
+                await service.enqueueEvent(manager, event)
+                throw new Error('intentional enqueue transaction failure')
+            })
+        ).rejects.toThrow('intentional enqueue transaction failure')
+
+        await expect(deliveriesForApp(current.appId)).resolves.toHaveLength(0)
+    })
+
+    it('serializes duplicate acknowledgement while delivery is processing without returning it to pending', async () => {
+        const current = requiredFixture()
+        let markDeliveryStarted!: () => void
+        let finishDelivery!: () => void
+        const deliveryStarted = new Promise<void>(resolve => (markDeliveryStarted = resolve))
+        const deliveryFinished = new Promise<void>(resolve => (finishDelivery = resolve))
+        const transport: LabNotificationTransport = {
+            deliver: jest.fn().mockImplementation(async () => {
+                markDeliveryStarted()
+                await deliveryFinished
+                return { outcome: 'delivered', code: 'LOCAL_RECORDED' }
+            }),
+        }
+        const service = createService(transport)
+        const event = await eventById(current.eventId)
+        await dataSource.transaction(manager => service.enqueueEvent(manager, event))
+
+        const processing = service.processPendingForApp(current.appId, 1)
+        await deliveryStarted
+        const acknowledgements = await Promise.all([
+            service.acknowledge(current.adminId, current.appId, current.stateId, true),
+            service.acknowledge(current.adminId, current.appId, current.stateId, true),
+        ])
+        expect(acknowledgements).toEqual([
+            expect.objectContaining({ acknowledged: true, notificationCancellationState: 'delivery-in-flight' }),
+            expect.objectContaining({ acknowledged: true, notificationCancellationState: 'delivery-in-flight' }),
+        ])
+
+        finishDelivery()
+        await processing
+        expect(await onlyDelivery(current.appId)).toMatchObject({ state: 'delivered', lastResultCode: 'LOCAL_RECORDED' })
+        const history = await dataSource.getRepository(LabAlertAcknowledgementEntity).find({
+            where: { appId: current.appId, stateId: current.stateId },
+        })
+        expect(history).toHaveLength(1)
+        expect(history[0]).toMatchObject({ actorId: current.adminId, action: 'acknowledged' })
+    })
+
+    it('rolls back every partial fixture row when setup fails', async () => {
+        const suffix = randomUUID().replaceAll('-', '')
+        const email = `animation-lab-notification-${suffix}@example.invalid`
+        const appId = `notify${suffix.slice(0, 12)}`
+
+        await expect(createFixture({ suffix, failAfterApplication: true })).rejects.toThrow('intentional fixture setup failure')
+
+        const [admins, applications] = await Promise.all([
+            dataSource.query<Array<{ count: string }>>('SELECT count(*)::text AS count FROM public.admin WHERE email = $1', [email]),
+            dataSource.query<Array<{ count: string }>>('SELECT count(*)::text AS count FROM public.application WHERE "appId" = $1', [
+                appId,
+            ]),
+        ])
+        expect(admins[0]?.count).toBe('0')
+        expect(applications[0]?.count).toBe('0')
+    })
+
     function createService(transport: LabNotificationTransport): LabNotificationService {
         return new LabNotificationService(
             dataSource.getRepository(LabNotificationDestinationEntity),
@@ -224,8 +350,8 @@ describePostgres('LabNotificationService PostgreSQL integration', () => {
         }
     }
 
-    async function createFixture(): Promise<Fixture> {
-        const suffix = randomUUID().replaceAll('-', '')
+    async function createFixture(options: Readonly<{ suffix?: string; failAfterApplication?: boolean }> = {}): Promise<Fixture> {
+        const suffix = options.suffix ?? randomUUID().replaceAll('-', '')
         const ids = {
             baselineRunId: randomUUID(),
             afterRunId: randomUUID(),
@@ -236,72 +362,75 @@ describePostgres('LabNotificationService PostgreSQL integration', () => {
             eventId: randomUUID(),
             destinationId: randomUUID(),
         }
-        const admins = await dataSource.query<Array<{ id: number }>>(
-            `INSERT INTO public.admin (password, email, role, "isVerified")
+        return dataSource.transaction(async manager => {
+            const admins = await manager.query<Array<{ id: number }>>(
+                `INSERT INTO public.admin (password, email, role, "isVerified")
              VALUES ('fixture', $1, 'admin', true)
              RETURNING id`,
-            [`animation-lab-notification-${suffix}@example.invalid`]
-        )
-        const adminId = Number(admins[0]?.id)
-        const appId = `notify${suffix.slice(0, 12)}`
-        const applications = await dataSource.query<Array<{ id: number }>>(
-            `INSERT INTO public.application ("appId", type, name, "userId", "isDelete")
+                [`animation-lab-notification-${suffix}@example.invalid`]
+            )
+            const adminId = Number(admins[0]?.id)
+            const appId = `notify${suffix.slice(0, 12)}`
+            const applications = await manager.query<Array<{ id: number }>>(
+                `INSERT INTO public.application ("appId", type, name, "userId", "isDelete")
              VALUES ($1, 'vanilla', $2, $3, false)
              RETURNING id`,
-            [appId, `Animation Lab notification ${suffix}`, adminId]
-        )
-        const applicationId = Number(applications[0]?.id)
-        await dataSource.query(
-            `INSERT INTO public.animation_lab_run
+                [appId, `Animation Lab notification ${suffix}`, adminId]
+            )
+            const applicationId = Number(applications[0]?.id)
+            if (options.failAfterApplication) throw new Error('intentional fixture setup failure')
+            await manager.query(
+                `INSERT INTO public.animation_lab_run
                 (id, "appId", "createdBy", name, "scenarioKey", status, phase, progress, config, summary)
              VALUES
                 ($1, $3, $4, 'Baseline', 'notification-scenario', 'completed', 'done', 100, '{}', '{}'),
                 ($2, $3, $4, 'After', 'notification-scenario', 'completed', 'done', 100, '{}', '{}')`,
-            [ids.baselineRunId, ids.afterRunId, appId, adminId]
-        )
-        const digest = digestHex(`policy:${suffix}`)
-        await dataSource.query(
-            `INSERT INTO public.animation_lab_project_policy
+                [ids.baselineRunId, ids.afterRunId, appId, adminId]
+            )
+            const digest = digestHex(`policy:${suffix}`)
+            await manager.query(
+                `INSERT INTO public.animation_lab_project_policy
                 (id, "appId", "createdBy", "policyKey", version, name, "metricCatalogVersion", digest, definition)
              VALUES ($1, $2, $3, 'notification-policy', 1, 'Notification policy', 1, $4, '{}')`,
-            [ids.policyId, appId, adminId, digest]
-        )
-        await dataSource.query(
-            `INSERT INTO public.animation_lab_baseline_binding
+                [ids.policyId, appId, adminId, digest]
+            )
+            await manager.query(
+                `INSERT INTO public.animation_lab_baseline_binding
                 (id, "appId", "createdBy", "bindingKey", version, "scenarioKey", "routeKey", "baselineRunId", "policyId",
                  "comparisonContextDigest", active)
              VALUES ($1, $2, $3, 'notification-binding', 1, 'notification-scenario', '/', $4, $5, $6, true)`,
-            [ids.bindingId, appId, adminId, ids.baselineRunId, ids.policyId, digestHex(`context:${suffix}`)]
-        )
-        await dataSource.query(
-            `INSERT INTO public.animation_lab_policy_evaluation
+                [ids.bindingId, appId, adminId, ids.baselineRunId, ids.policyId, digestHex(`context:${suffix}`)]
+            )
+            await manager.query(
+                `INSERT INTO public.animation_lab_policy_evaluation
                 (id, "appId", "createdBy", "bindingId", "policyId", "beforeRunId", "afterRunId", "policyDigest", verdict, result)
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'breach', '{}')`,
-            [ids.evaluationId, appId, adminId, ids.bindingId, ids.policyId, ids.baselineRunId, ids.afterRunId, digest]
-        )
-        await dataSource.query(
-            `INSERT INTO public.animation_lab_alert_state
+                [ids.evaluationId, appId, adminId, ids.bindingId, ids.policyId, ids.baselineRunId, ids.afterRunId, digest]
+            )
+            await manager.query(
+                `INSERT INTO public.animation_lab_alert_state
                 (id, "appId", "bindingKey", "bindingId", "ruleId", status, severity, "lastEvaluationId", "openedAt")
              VALUES ($1, $2, 'notification-binding', $3, 'frame-regression', 'open', 'critical', $4, now())`,
-            [ids.stateId, appId, ids.bindingId, ids.evaluationId]
-        )
-        await dataSource.query(
-            `INSERT INTO public.animation_lab_alert_event
+                [ids.stateId, appId, ids.bindingId, ids.evaluationId]
+            )
+            await manager.query(
+                `INSERT INTO public.animation_lab_alert_event
                 (id, "appId", "stateId", "evaluationId", "ruleId", "eventType", severity, "fromState", "toState", fingerprint, evidence)
              VALUES ($1, $2, $3, $4, 'frame-regression', 'opened', 'critical', 'healthy', 'open', $5, '{}')`,
-            [ids.eventId, appId, ids.stateId, ids.evaluationId, digestHex(ids.eventId)]
-        )
-        await dataSource.query('UPDATE public.animation_lab_alert_state SET "transitionEventId" = $1 WHERE id = $2', [
-            ids.eventId,
-            ids.stateId,
-        ])
-        await dataSource.query(
-            `INSERT INTO public.animation_lab_notification_destination
+                [ids.eventId, appId, ids.stateId, ids.evaluationId, digestHex(ids.eventId)]
+            )
+            await manager.query('UPDATE public.animation_lab_alert_state SET "transitionEventId" = $1 WHERE id = $2', [
+                ids.eventId,
+                ids.stateId,
+            ])
+            await manager.query(
+                `INSERT INTO public.animation_lab_notification_destination
                 (id, "appId", "createdBy", "destinationKey", kind, enabled, "cooldownSeconds", "maxAttempts", "registryRevision")
              VALUES ($1, $2, $3, 'local-primary', 'local', true, 900, 3, NULL)`,
-            [ids.destinationId, appId, adminId]
-        )
-        return { adminId, applicationId, appId, ...ids }
+                [ids.destinationId, appId, adminId]
+            )
+            return { adminId, applicationId, appId, ...ids }
+        })
     }
 
     async function createOpenedEvent(current: Fixture): Promise<LabAlertEventEntity> {
@@ -320,9 +449,13 @@ describePostgres('LabNotificationService PostgreSQL integration', () => {
     }
 
     async function onlyDelivery(appId: string): Promise<LabNotificationOutboxEntity> {
-        const rows = await dataSource.getRepository(LabNotificationOutboxEntity).find({ where: { appId } })
+        const rows = await deliveriesForApp(appId)
         expect(rows).toHaveLength(1)
         return rows[0]
+    }
+
+    async function deliveriesForApp(appId: string): Promise<LabNotificationOutboxEntity[]> {
+        return dataSource.getRepository(LabNotificationOutboxEntity).find({ where: { appId } })
     }
 
     function requiredFixture(): Fixture {

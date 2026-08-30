@@ -8,9 +8,9 @@ import { LabProjectPolicyEntity } from './entity/lab-project-policy.entity'
 import { LabRunEntity } from './entity/lab-run.entity'
 import { LabPolicyJobService } from './lab-policy-job.service'
 import { LabPolicyWorkerService } from './lab-policy-worker.service'
+import { assertAnimationLabPostgresWriteAccess } from './lab-postgres-test-guard'
 
 const describePostgres = process.env.RUN_POSTGRES_INTEGRATION === '1' ? describe : describe.skip
-const WRITE_SENTINEL = 'condev-animation-lab-postgres-integration'
 
 type Fixture = Readonly<{
     adminId: number
@@ -30,11 +30,12 @@ describePostgres('Animation Lab policy job PostgreSQL integration', () => {
     let fixture: Fixture | null = null
 
     beforeAll(async () => {
-        const url = process.env.TEST_POSTGRES_URL
-        if (!url) throw new Error('TEST_POSTGRES_URL is required for Animation Lab policy job PostgreSQL integration tests')
-        if (process.env.TEST_POSTGRES_WRITE_SENTINEL !== WRITE_SENTINEL) {
-            throw new Error(`TEST_POSTGRES_WRITE_SENTINEL must equal ${WRITE_SENTINEL}`)
-        }
+        const url = assertAnimationLabPostgresWriteAccess({
+            suiteName: 'Animation Lab policy job PostgreSQL integration tests',
+            url: process.env.TEST_POSTGRES_URL,
+            writeSentinel: process.env.TEST_POSTGRES_WRITE_SENTINEL,
+            allowRemote: process.env.TEST_POSTGRES_ALLOW_REMOTE,
+        })
         dataSource = new DataSource({
             type: 'postgres',
             url,
@@ -133,6 +134,38 @@ describePostgres('Animation Lab policy job PostgreSQL integration', () => {
         expect(await onlyJob(current.appId)).toMatchObject({ state: 'completed', leaseOwner: null, leaseUntil: null })
     })
 
+    it('renews a short lease while a slow evaluation is running so another worker cannot reclaim it', async () => {
+        const current = requiredFixture()
+        await enqueue(current)
+        let markEvaluationStarted!: () => void
+        let finishEvaluation!: (value: { evaluationId: string }) => void
+        const evaluationStarted = new Promise<void>(resolve => (markEvaluationStarted = resolve))
+        const evaluationResult = new Promise<{ evaluationId: string }>(resolve => (finishEvaluation = resolve))
+        const slowEvaluation = jest.fn().mockImplementation(async () => {
+            markEvaluationStarted()
+            return evaluationResult
+        })
+        const competingEvaluation = jest.fn().mockResolvedValue({ evaluationId: randomUUID() })
+        const leaseOptions = { leaseMs: 120, leaseHeartbeatMs: 30 }
+        const workerA = createWorker(slowEvaluation, leaseOptions)
+        const workerB = createWorker(competingEvaluation, leaseOptions)
+
+        const firstTick = workerA.tick()
+        await evaluationStarted
+        await new Promise(resolve => setTimeout(resolve, 220))
+        const activeLease = await onlyJob(current.appId)
+        expect(activeLease.leaseOwner).not.toBeNull()
+        expect(activeLease.leaseUntil?.getTime()).toBeGreaterThan(Date.now())
+
+        await workerB.tick()
+        expect(competingEvaluation).not.toHaveBeenCalled()
+        finishEvaluation({ evaluationId: randomUUID() })
+        await firstTick
+
+        expect(slowEvaluation).toHaveBeenCalledTimes(1)
+        expect(await onlyJob(current.appId)).toMatchObject({ state: 'completed', leaseOwner: null, leaseUntil: null })
+    })
+
     it('quarantines the bounded fifth evaluation failure', async () => {
         const current = requiredFixture()
         await enqueue(current)
@@ -196,10 +229,34 @@ describePostgres('Animation Lab policy job PostgreSQL integration', () => {
         logger.mockRestore()
     })
 
-    function createWorker(createEvaluationForSnapshot: jest.Mock): LabPolicyWorkerService {
-        return new LabPolicyWorkerService(dataSource.getRepository(LabPolicyEvaluationJobEntity), {
-            createEvaluationForSnapshot,
-        } as never)
+    it('rolls back every partial fixture row when setup fails', async () => {
+        const suffix = randomUUID().replaceAll('-', '')
+        const email = `animation-lab-policy-job-${suffix}@example.invalid`
+        const appId = `policy${suffix.slice(0, 12)}`
+
+        await expect(createFixture({ suffix, failAfterApplication: true })).rejects.toThrow('intentional fixture setup failure')
+
+        const [admins, applications] = await Promise.all([
+            dataSource.query<Array<{ count: string }>>('SELECT count(*)::text AS count FROM public.admin WHERE email = $1', [email]),
+            dataSource.query<Array<{ count: string }>>('SELECT count(*)::text AS count FROM public.application WHERE "appId" = $1', [
+                appId,
+            ]),
+        ])
+        expect(admins[0]?.count).toBe('0')
+        expect(applications[0]?.count).toBe('0')
+    })
+
+    function createWorker(
+        createEvaluationForSnapshot: jest.Mock,
+        options: Readonly<{ leaseMs?: number; leaseHeartbeatMs?: number }> = {}
+    ): LabPolicyWorkerService {
+        return new LabPolicyWorkerService(
+            dataSource.getRepository(LabPolicyEvaluationJobEntity),
+            {
+                createEvaluationForSnapshot,
+            } as never,
+            options
+        )
     }
 
     async function enqueue(current: Fixture): Promise<void> {
@@ -223,52 +280,55 @@ describePostgres('Animation Lab policy job PostgreSQL integration', () => {
         return jobs[0]
     }
 
-    async function createFixture(): Promise<Fixture> {
-        const suffix = randomUUID().replaceAll('-', '')
+    async function createFixture(options: Readonly<{ suffix?: string; failAfterApplication?: boolean }> = {}): Promise<Fixture> {
+        const suffix = options.suffix ?? randomUUID().replaceAll('-', '')
         const ids = {
             baselineRunId: randomUUID(),
             afterRunId: randomUUID(),
             policyId: randomUUID(),
             bindingId: randomUUID(),
         }
-        const admins = await dataSource.query<Array<{ id: number }>>(
-            `INSERT INTO public.admin (password, email, role, "isVerified")
+        return dataSource.transaction(async manager => {
+            const admins = await manager.query<Array<{ id: number }>>(
+                `INSERT INTO public.admin (password, email, role, "isVerified")
              VALUES ('fixture', $1, 'admin', true)
              RETURNING id`,
-            [`animation-lab-policy-job-${suffix}@example.invalid`]
-        )
-        const adminId = Number(admins[0]?.id)
-        const appId = `policy${suffix.slice(0, 12)}`
-        const applications = await dataSource.query<Array<{ id: number }>>(
-            `INSERT INTO public.application ("appId", type, name, "userId", "isDelete")
+                [`animation-lab-policy-job-${suffix}@example.invalid`]
+            )
+            const adminId = Number(admins[0]?.id)
+            const appId = `policy${suffix.slice(0, 12)}`
+            const applications = await manager.query<Array<{ id: number }>>(
+                `INSERT INTO public.application ("appId", type, name, "userId", "isDelete")
              VALUES ($1, 'vanilla', $2, $3, false)
              RETURNING id`,
-            [appId, `Animation Lab policy job ${suffix}`, adminId]
-        )
-        const applicationId = Number(applications[0]?.id)
-        await dataSource.query(
-            `INSERT INTO public.animation_lab_run
+                [appId, `Animation Lab policy job ${suffix}`, adminId]
+            )
+            const applicationId = Number(applications[0]?.id)
+            if (options.failAfterApplication) throw new Error('intentional fixture setup failure')
+            await manager.query(
+                `INSERT INTO public.animation_lab_run
                 (id, "appId", "createdBy", name, "scenarioKey", status, phase, progress, config, summary)
              VALUES
                 ($1, $3, $4, 'Baseline', 'policy-job-scenario', 'completed', 'done', 100, '{}', '{}'),
                 ($2, $3, $4, 'After', 'policy-job-scenario', 'completed', 'done', 100, '{}', '{}')`,
-            [ids.baselineRunId, ids.afterRunId, appId, adminId]
-        )
-        const policyDigest = digestHex(`policy:${suffix}`)
-        await dataSource.query(
-            `INSERT INTO public.animation_lab_project_policy
+                [ids.baselineRunId, ids.afterRunId, appId, adminId]
+            )
+            const policyDigest = digestHex(`policy:${suffix}`)
+            await manager.query(
+                `INSERT INTO public.animation_lab_project_policy
                 (id, "appId", "createdBy", "policyKey", version, name, "metricCatalogVersion", digest, definition)
              VALUES ($1, $2, $3, 'policy-job', 1, 'Policy job', 1, $4, '{}')`,
-            [ids.policyId, appId, adminId, policyDigest]
-        )
-        await dataSource.query(
-            `INSERT INTO public.animation_lab_baseline_binding
+                [ids.policyId, appId, adminId, policyDigest]
+            )
+            await manager.query(
+                `INSERT INTO public.animation_lab_baseline_binding
                 (id, "appId", "createdBy", "bindingKey", version, "scenarioKey", "routeKey", "baselineRunId", "policyId",
                  "comparisonContextDigest", active)
              VALUES ($1, $2, $3, 'policy-job-binding', 1, 'policy-job-scenario', '/', $4, $5, $6, true)`,
-            [ids.bindingId, appId, adminId, ids.baselineRunId, ids.policyId, digestHex(`context:${suffix}`)]
-        )
-        return { adminId, applicationId, appId, policyDigest, ...ids }
+                [ids.bindingId, appId, adminId, ids.baselineRunId, ids.policyId, digestHex(`context:${suffix}`)]
+            )
+            return { adminId, applicationId, appId, policyDigest, ...ids }
+        })
     }
 
     function requiredFixture(): Fixture {
