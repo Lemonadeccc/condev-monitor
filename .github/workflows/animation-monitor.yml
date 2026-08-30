@@ -1,0 +1,52 @@
+name: Animation monitor
+
+on:
+    pull_request:
+    push:
+        branches: [develop, main]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+concurrency:
+    group: animation-monitor-${{ github.workflow }}-${{ github.ref }}
+    cancel-in-progress: true
+
+jobs:
+    contracts:
+        name: Contracts, platform, and fixtures
+        runs-on: ubuntu-latest
+        timeout-minutes: 45
+        steps:
+            - uses: actions/checkout@v7
+            - uses: pnpm/action-setup@v6
+              with:
+                  version: 10.10.0
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 22
+                  cache: pnpm
+                  cache-dependency-path: pnpm-lock.yaml
+            - run: pnpm install --frozen-lockfile
+            - run: pnpm test:animation
+
+    browser-matrix:
+        name: Five fixtures on Chromium, Firefox, and WebKit
+        runs-on: ubuntu-latest
+        timeout-minutes: 90
+        steps:
+            - uses: actions/checkout@v7
+            - uses: pnpm/action-setup@v6
+              with:
+                  version: 10.10.0
+            - uses: actions/setup-node@v7
+              with:
+                  node-version: 22
+                  cache: pnpm
+                  cache-dependency-path: pnpm-lock.yaml
+            - run: pnpm install --frozen-lockfile
+            - run: pnpm --filter @condev-monitor/animation-lab-runner exec playwright-core install --with-deps chromium firefox webkit
+            - run: pnpm test:animation:browser-driver
+            - run: pnpm test:animation:browser-integration
+            - run: pnpm test:animation:browsers
