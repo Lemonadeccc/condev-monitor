@@ -10,7 +10,7 @@ import { LabNotificationOutboxEntity } from './entity/lab-notification-outbox.en
 import { LabNotificationService, type LabNotificationTransport } from './lab-notification.service'
 
 const describePostgres = process.env.RUN_POSTGRES_INTEGRATION === '1' ? describe : describe.skip
-const WRITE_SENTINEL = 'condev-animation-lab-notification-integration'
+const WRITE_SENTINEL = 'condev-animation-lab-postgres-integration'
 
 type Fixture = Readonly<{
     adminId: number

@@ -18,7 +18,7 @@
         "pretest:animation-rum-v2:postgres": "pnpm --filter @condev-monitor/animation-rum-contract build",
         "test:animation-rum-v2:postgres": "cross-env RUN_POSTGRES_INTEGRATION=1 jest animation/animation-rum-v2-control.postgres.spec.ts animation/animation-rum-v2-pipeline.postgres.spec.ts --runInBand",
         "pretest:animation-lab:postgres": "pnpm --filter @condev-monitor/animation-rum-contract build",
-        "test:animation-lab:postgres": "cross-env RUN_POSTGRES_INTEGRATION=1 jest lab/lab-notification.postgres.spec.ts --runInBand",
+        "test:animation-lab:postgres": "cross-env RUN_POSTGRES_INTEGRATION=1 jest lab/lab-notification.postgres.spec.ts lab/lab-policy-job.postgres.spec.ts --runInBand",
         "pretest:animation-rum-v2:clickhouse": "pnpm --filter @condev-monitor/animation-rum-contract build",
         "test:animation-rum-v2:clickhouse": "cross-env RUN_CLICKHOUSE_INTEGRATION=1 jest animation/animation-rum-v2-query.clickhouse.spec.ts animation/animation-rum-v2-pipeline.clickhouse.spec.ts --runInBand",
         "pretest:animation-rum-v3:clickhouse": "pnpm --filter @condev-monitor/animation-rum-contract build",
