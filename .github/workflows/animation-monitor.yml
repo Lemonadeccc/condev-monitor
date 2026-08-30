@@ -123,6 +123,9 @@ jobs:
               run: pnpm docker:start
             - name: Run Animation Lab PostgreSQL lifecycle tests
               run: pnpm test:animation-lab:postgres
+              env:
+                  TEST_POSTGRES_URL: postgres://postgres:condevPostgres@127.0.0.1:5432/postgres
+                  TEST_POSTGRES_WRITE_SENTINEL: condev-animation-lab-postgres-integration
             - name: Capture Lab PostgreSQL logs
               if: always()
               run: |
