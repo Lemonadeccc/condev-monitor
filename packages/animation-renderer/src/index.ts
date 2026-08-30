@@ -50,13 +50,16 @@ export type {
     PixiObjectTargetInspectionContext,
 } from './pixi-object-target-adapter'
 export {
+    ACTIVE_EXPLORER_RENDERER_OBJECT_BRIDGE_KEY,
     RendererObjectResolverOptionsError,
     createRendererObjectResolverRegistry,
     createThreeRaycastObjectResolver,
 } from './renderer-object-resolver'
 export type {
     RendererObjectClientPoint,
+    RendererObjectDiscoverySurface,
     RendererObjectHostResolution,
+    RendererObjectLabDiscoveryOptions,
     RendererObjectNormalizedPoint,
     RendererObjectResolution,
     RendererObjectResolutionStatus,

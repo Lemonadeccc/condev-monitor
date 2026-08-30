@@ -73,11 +73,13 @@ function AegisR3FObserver() {
 
 function AegisLabRaycastOutcome({ primaryObjectRef }) {
     const camera = useThree(state => state.camera)
-    const canvas = useThree(state => state.gl.domElement)
+    const renderer = useThree(state => state.gl)
+    const canvas = renderer.domElement
+    const backend = rendererBackends.get(renderer)
 
     useEffect(() => {
         const outcomeBridge = window.__CONDEV_ANIMATION_LAB_OUTCOME__
-        if (!outcomeBridge) return undefined
+        if (!outcomeBridge || (backend !== 'webgl2' && backend !== 'webgpu')) return undefined
         const registry = createRendererObjectResolverRegistry()
         const unregister = registry.register(
             'aegis.hero.primary',
@@ -87,7 +89,14 @@ function AegisLabRaycastOutcome({ primaryObjectRef }) {
                 camera,
                 getObjects: () => (primaryObjectRef.current ? [primaryObjectRef.current] : []),
                 recursive: true,
-            })
+            }),
+            {
+                labDiscovery: {
+                    surface: backend === 'webgpu' ? 'webgpu' : 'webgl',
+                    target: canvas,
+                    outcomeKey: 'aegis.hero.raycast-hit',
+                },
+            }
         )
         const onPointerMove = event => {
             const resolution = registry.resolve('aegis.hero.primary', {
@@ -104,7 +113,7 @@ function AegisLabRaycastOutcome({ primaryObjectRef }) {
             unregister()
             registry.dispose()
         }
-    }, [camera, canvas, primaryObjectRef])
+    }, [backend, camera, canvas, primaryObjectRef])
 
     return null
 }

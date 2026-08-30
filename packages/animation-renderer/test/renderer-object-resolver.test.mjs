@@ -1,7 +1,60 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
-import { createRendererObjectResolverRegistry, createThreeRaycastObjectResolver } from '../build/esm/index.mjs'
+import {
+    ACTIVE_EXPLORER_RENDERER_OBJECT_BRIDGE_KEY,
+    createRendererObjectResolverRegistry,
+    createThreeRaycastObjectResolver,
+} from '../build/esm/index.mjs'
+
+test('explicit Lab discovery registration is local-only, bounded, and cleaned up with the resolver', () => {
+    const registrations = []
+    const cleanups = []
+    globalThis[ACTIVE_EXPLORER_RENDERER_OBJECT_BRIDGE_KEY] = {
+        register(input) {
+            registrations.push(input)
+            return () => cleanups.push(input.subjectKey)
+        },
+    }
+    try {
+        const registry = createRendererObjectResolverRegistry()
+        const target = {}
+        const unregister = registry.register('hero.product', () => 'hit', {
+            labDiscovery: {
+                surface: 'webgl',
+                target,
+                outcomeKey: 'hero.product.hit',
+            },
+        })
+
+        assert.equal(registrations.length, 1)
+        assert.equal(registrations[0].subjectKey, 'hero.product')
+        assert.equal(registrations[0].surface, 'webgl')
+        assert.equal(registrations[0].target, target)
+        assert.equal(registrations[0].outcomeKey, 'hero.product.hit')
+        assert.deepEqual(registrations[0].resolve({ clientX: 10, clientY: 20 }), { status: 'hit' })
+
+        unregister()
+        unregister()
+        assert.deepEqual(cleanups, ['hero.product'])
+        registry.dispose()
+    } finally {
+        delete globalThis[ACTIVE_EXPLORER_RENDERER_OBJECT_BRIDGE_KEY]
+    }
+})
+
+test('invalid Lab discovery metadata is rejected before exposing a resolver', () => {
+    const registry = createRendererObjectResolverRegistry()
+    assert.throws(() => registry.register('hero.product', () => 'hit', { labDiscovery: { surface: 'metal', target: {} } }), /labDiscovery/u)
+    assert.throws(
+        () =>
+            registry.register('hero.product', () => 'hit', {
+                labDiscovery: { surface: 'webgl', target: {}, outcomeKey: 'Private Value' },
+            }),
+        /labDiscovery/u
+    )
+    registry.dispose()
+})
 
 test('returns only hit, miss, unavailable, and an explicitly enabled bounded local point', () => {
     const registry = createRendererObjectResolverRegistry()

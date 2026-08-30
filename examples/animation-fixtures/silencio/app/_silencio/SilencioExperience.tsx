@@ -1,22 +1,23 @@
 'use client'
 
-import { CondevAnimationProfiler, useCondevReactComponentScope } from '@condev-monitor/react/animation'
 import {
     createRendererObjectResolverRegistry,
-    createThreeRendererAdapter,
     createThreeRaycastObjectResolver,
+    createThreeRendererAdapter,
     createWebGlGpuTimer,
 } from '@condev-monitor/monitor-sdk-animation-renderer'
-import { Profiler, type ReactNode, useEffect } from 'react'
+import { CondevAnimationProfiler, useCondevReactComponentScope } from '@condev-monitor/react/animation'
 import gsap from 'gsap'
-import { ScrollTrigger } from 'gsap/ScrollTrigger'
 import { ScrollSmoother } from 'gsap/ScrollSmoother'
+import { ScrollTrigger } from 'gsap/ScrollTrigger'
 import { SplitText } from 'gsap/SplitText'
+import { Profiler, type ReactNode, useEffect } from 'react'
 import Swiper from 'swiper'
 import * as THREE from 'three'
 import { DRACOLoader } from 'three/examples/jsm/loaders/DRACOLoader.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { HDRLoader } from 'three/examples/jsm/loaders/HDRLoader.js'
+
 import { condevClient } from '@/instrumentation-client'
 
 type ProductId = 'marco1' | 'marco2' | 'marco3' | 'marco4'
@@ -1386,7 +1387,14 @@ function initThreeScene(isMobile: boolean) {
                       return primaryProduct ? [primaryProduct] : []
                   },
                   recursive: true,
-              })
+              }),
+              {
+                  labDiscovery: {
+                      surface: 'webgl',
+                      target: renderer.domElement,
+                      outcomeKey: 'silencio.product.raycast-hit',
+                  },
+              }
           )
         : () => {}
     const reportProductHit = (event: PointerEvent) => {

@@ -582,8 +582,16 @@ const unregisterProduct = objectResolvers.register(
         object: productGroup,
         recursive: true,
     }),
-    // Off by default. This is Canvas-local NDC only, never a selector or object identity.
-    { includeLocalPoint: true }
+    {
+        // Off by default. This is Canvas-local NDC only, never a selector or object identity.
+        includeLocalPoint: true,
+        // Optional local-only Active Explorer registration. It changes no RUM payload.
+        labDiscovery: {
+            surface: 'webgl',
+            target: canvas,
+            outcomeKey: 'hero.product.raycast-hit',
+        },
+    }
 )
 
 const evidence = objectResolvers.resolve('hero.product', pointerEvent)
@@ -594,6 +602,8 @@ objectResolvers.dispose()
 ```
 
 The Three helper is structurally typed and adds no `three` dependency. It uses only public `getBoundingClientRect()`, `Raycaster.setFromCamera()`, and `intersectObject(s)` APIs. Dynamic hosts may provide `getCamera`, `getObject`, or `getObjects` callbacks. Duplicate live subject keys are rejected, cleanup is idempotent, and callback failures, re-entry, malformed coordinates, unavailable cameras/objects, and malformed intersection lengths fail closed to `unavailable`.
+
+`labDiscovery` is an explicit local-development opt-in. When the Active Explorer preload bridge is present, the registry registers only the opaque subject key, declared surface, host target, optional outcome key, and the closed resolver callback. Unregistering or disposing the registry also removes that bridge registration. Outside Active Explorer the option is a no-op; it does not discover objects, patch Three, retain application objects after cleanup, alter selected-target evidence, or add any production RUM field. A page can pair the optional outcome key with the existing local Lab outcome bridge so a reviewer can require both a spatial hit and the exact application-owned completion signal declared by that adapter before exporting a critical renderer-object coverage item. If a direct bridge callback throws outside the registry's fail-closed wrapper, Active Explorer records only `renderer-adapter-error`; it never retains the exception or turns that failure into a normal miss.
 
 ## Real Chromium WebGL regression
 
