@@ -24,6 +24,28 @@ export type {
     LabExecutionPreflightResult,
     LabExecutionTargetKind,
 } from './execution-preflight'
+export {
+    bindExternalEvidenceAdapter,
+    closeExternalEvidenceSession,
+    collectExternalEvidenceRawSamples,
+    EXTERNAL_EVIDENCE_CAPABILITIES,
+    isBoundExternalEvidenceSession,
+    validateExternalEvidenceAdapterProfile,
+    validateExternalEvidenceManifest,
+    parseUntrustedExternalEvidenceRawSampleBatch,
+} from './external-evidence'
+export type {
+    BoundExternalEvidenceSession,
+    ExternalEvidenceAdapter,
+    ExternalEvidenceAdapterProfileV1,
+    ExternalEvidenceAdapterSessionV1,
+    ExternalEvidenceBindRequestV1,
+    ExternalEvidenceCapability,
+    ExternalEvidenceManifestV1,
+    ExternalEvidenceRawSampleBatchV1,
+    ExternalEvidenceRawSampleV1,
+    ProviderAttestedExternalEvidenceRawSampleBatchV1,
+} from './external-evidence'
 export { aggregateMeasuredAttempts, projectDiagnosticAttemptMetrics } from './aggregate'
 export { createBrowserDriver, validateBrowserDriverScenario } from './browser-driver'
 export type {
