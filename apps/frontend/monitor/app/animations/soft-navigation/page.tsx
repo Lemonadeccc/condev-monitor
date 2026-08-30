@@ -1,7 +1,7 @@
 'use client'
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Activity, ArrowLeft, Database, Gauge, Inbox, type LucideIcon, Radio, Send } from 'lucide-react'
+import { Activity, ArrowLeft, ChevronLeft, ChevronRight, Database, Gauge, Inbox, type LucideIcon, Radio, Send } from 'lucide-react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
 import { type FormEvent, type ReactNode, useMemo, useState } from 'react'
@@ -18,6 +18,7 @@ import { clampAnimationTimeWindow } from '@/lib/animation-metrics'
 import {
     animationRumV3DisclosureLabel,
     animationRumV3MetricStatusLabel,
+    animationRumV3PaginationRange,
     formatAnimationRumV3Count,
     formatAnimationRumV3Metric,
     parseAnimationRumV3CapturesResponse,
@@ -72,6 +73,7 @@ export default function SoftNavigationRumPage() {
     const [dist, setDist] = useState('')
     const [environment, setEnvironment] = useState('development')
     const [controlError, setControlError] = useState<string | null>(null)
+    const [capturePage, setCapturePage] = useState({ scopeKey: '', offset: 0 })
     const enabled = !loading && Boolean(user)
     const { selectedAppId, setSelectedAppId, range, setRange, from, setFrom, to, setTo, clearCustomRange } = useMonitorScope('1d')
     const { listQuery } = useApplications({ enabled })
@@ -82,6 +84,8 @@ export default function SoftNavigationRumPage() {
         () => new URLSearchParams({ appId, from: timeWindow.from, to: timeWindow.to }).toString(),
         [appId, timeWindow.from, timeWindow.to]
     )
+    const captureOffset = capturePage.scopeKey === queryParams ? capturePage.offset : 0
+    const captureLimit = 50
     const summaryQuery = useQuery({
         queryKey: ['animation-rum-v3-soft-navigation-summary', appId, timeWindow.from, timeWindow.to],
         enabled: enabled && Boolean(appId),
@@ -89,11 +93,11 @@ export default function SoftNavigationRumPage() {
             fetchAnimationRumV3(`/api/animation/rum-v3/soft-navigation/summary?${queryParams}`, signal, parseAnimationRumV3SummaryResponse),
     })
     const capturesQuery = useQuery({
-        queryKey: ['animation-rum-v3-soft-navigation-captures', appId, timeWindow.from, timeWindow.to],
+        queryKey: ['animation-rum-v3-soft-navigation-captures', appId, timeWindow.from, timeWindow.to, captureOffset],
         enabled: enabled && Boolean(appId),
         queryFn: ({ signal }): Promise<AnimationRumV3CapturesApiResponse> =>
             fetchAnimationRumV3(
-                `/api/animation/rum-v3/soft-navigation/captures?${queryParams}&limit=50&offset=0`,
+                `/api/animation/rum-v3/soft-navigation/captures?${queryParams}&limit=${captureLimit}&offset=${captureOffset}`,
                 signal,
                 parseAnimationRumV3CapturesResponse
             ),
@@ -133,6 +137,8 @@ export default function SoftNavigationRumPage() {
     }
     const summary = summaryQuery.data?.data
     const captures = capturesQuery.data?.data.captures ?? []
+    const capturePagination = capturesQuery.data?.data.pagination
+    const captureRange = capturePagination ? animationRumV3PaginationRange(capturePagination, captures.length) : null
     const pipeline = pipelineQuery.data
     const pipelineStatus = pipeline ? animationRumV3PipelineStatusMeta(pipeline) : null
 
@@ -271,10 +277,14 @@ export default function SoftNavigationRumPage() {
 
             {summary ? (
                 <AIPanelCard title="投影完整性" description="不完整或身份不一致的 completion marker 不进入指标聚合和最近采集列表。">
-                    <div className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="grid gap-3 text-sm sm:grid-cols-2 xl:grid-cols-3">
                         <div>Completion markers：{formatAnimationRumV3Count(summary.projectionIntegrity.completionMarkers)}</div>
                         <div>已核对：{formatAnimationRumV3Count(summary.projectionIntegrity.verified)}</div>
                         <div>排除：{formatAnimationRumV3Count(summary.projectionIntegrity.excludedFromAnalytics)}</div>
+                        <div>指标数量不一致：{formatAnimationRumV3Count(summary.projectionIntegrity.metricCountMismatches)}</div>
+                        <div>
+                            Provider 数量不一致：{formatAnimationRumV3Count(summary.projectionIntegrity.providerEvidenceCountMismatches)}
+                        </div>
                         <div>子行身份不一致：{formatAnimationRumV3Count(summary.projectionIntegrity.childIdentityMismatches)}</div>
                     </div>
                 </AIPanelCard>
@@ -392,7 +402,9 @@ export default function SoftNavigationRumPage() {
                                 <th className="px-5 py-3">指标</th>
                                 <th className="px-5 py-3 text-right">采集</th>
                                 <th className="px-5 py-3 text-right">已测量</th>
+                                <th className="px-5 py-3 text-right">部分 / 未接入 / 证据不足</th>
                                 <th className="px-5 py-3 text-right">未观测 / 不支持 / 未知</th>
+                                <th className="px-5 py-3 text-right">上报样本</th>
                                 <th className="px-5 py-3 text-right">p50 / p75 / p95</th>
                                 <th className="px-5 py-3">披露状态</th>
                             </tr>
@@ -420,10 +432,16 @@ export default function SoftNavigationRumPage() {
                                     <td className="px-5 py-4 text-right font-mono">{formatAnimationRumV3Count(group.captureCount)}</td>
                                     <td className="px-5 py-4 text-right font-mono">{formatAnimationRumV3Count(group.measuredCount)}</td>
                                     <td className="px-5 py-4 text-right font-mono text-xs">
+                                        {formatAnimationRumV3Count(group.partialCount)} /{' '}
+                                        {formatAnimationRumV3Count(group.notInstrumentedCount)} /{' '}
+                                        {formatAnimationRumV3Count(group.insufficientEvidenceCount)}
+                                    </td>
+                                    <td className="px-5 py-4 text-right font-mono text-xs">
                                         {formatAnimationRumV3Count(group.notObservedCount)} /{' '}
                                         {formatAnimationRumV3Count(group.unsupportedCount)} /{' '}
                                         {formatAnimationRumV3Count(group.unknownCount)}
                                     </td>
+                                    <td className="px-5 py-4 text-right font-mono">{formatAnimationRumV3Count(group.reportedSamples)}</td>
                                     <td className="px-5 py-4 text-right font-mono text-xs">
                                         {formatAnimationRumV3Metric(group.captureValue.p50, group.metric.unit)} /{' '}
                                         {formatAnimationRumV3Metric(group.captureValue.p75, group.metric.unit)} /{' '}
@@ -463,7 +481,15 @@ export default function SoftNavigationRumPage() {
                                 <tr key={capture.captureId} className="align-top hover:bg-muted/10">
                                     <td className="px-5 py-4">
                                         <div>{capture.capturedAt ? formatDateTime(capture.capturedAt) : '未知时间'}</div>
-                                        <div className="mt-1 font-mono text-[11px] text-muted-foreground">{capture.captureId}</div>
+                                        <Link
+                                            className="mt-1 block font-mono text-[11px] text-primary underline-offset-4 hover:underline"
+                                            href={buildMonitorScopeHref(
+                                                `/animations/soft-navigation/${encodeURIComponent(capture.captureId)}?appId=${encodeURIComponent(appId)}`,
+                                                searchParams
+                                            )}
+                                        >
+                                            {capture.captureId}
+                                        </Link>
                                     </td>
                                     <td className="px-5 py-4">
                                         <div className="font-mono text-xs">{capture.context.routeKey ?? '未知 routeKey'}</div>
@@ -503,6 +529,45 @@ export default function SoftNavigationRumPage() {
                     </table>
                 ) : capturesQuery.data ? (
                     <AIStateMessage>当前窗口没有 RUM v3 soft navigation 采集。SDK 需要显式启用 softNavigation 上传。</AIStateMessage>
+                ) : null}
+                {capturePagination && captureRange ? (
+                    <div className="flex flex-wrap items-center justify-between gap-3 border-t px-5 py-4 text-sm">
+                        <span className="text-muted-foreground">
+                            {captureRange.start}–{captureRange.end} / {formatAnimationRumV3Count(capturePagination.total)}
+                        </span>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={capturePagination.offset === 0 || capturesQuery.isFetching}
+                                onClick={() =>
+                                    setCapturePage({
+                                        scopeKey: queryParams,
+                                        offset: Math.max(0, capturePagination.offset - capturePagination.limit),
+                                    })
+                                }
+                            >
+                                <ChevronLeft aria-hidden="true" />
+                                上一页
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={!capturePagination.hasMore || capturesQuery.isFetching}
+                                onClick={() =>
+                                    setCapturePage({
+                                        scopeKey: queryParams,
+                                        offset: capturePagination.offset + capturePagination.limit,
+                                    })
+                                }
+                            >
+                                下一页
+                                <ChevronRight aria-hidden="true" />
+                            </Button>
+                        </div>
+                    </div>
                 ) : null}
             </AIPanelCard>
 

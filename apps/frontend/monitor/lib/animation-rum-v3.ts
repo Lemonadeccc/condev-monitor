@@ -1,9 +1,13 @@
 import type {
+    AnimationRumV3CapabilityState,
     AnimationRumV3Capture,
+    AnimationRumV3CaptureDetail,
+    AnimationRumV3CaptureDetailApiResponse,
     AnimationRumV3CapturesApiResponse,
     AnimationRumV3Count,
     AnimationRumV3MetricStatus,
     AnimationRumV3MetricView,
+    AnimationRumV3QualityReason,
     AnimationRumV3SummaryApiResponse,
     AnimationRumV3SummaryGroup,
 } from '@/types/animation-v3'
@@ -22,7 +26,13 @@ const METRICS = {
     'vital.soft-navigation.inp.latest': { vitalName: 'INP', unit: 'ms' },
     'vital.soft-navigation.lcp.latest': { vitalName: 'LCP', unit: 'ms' },
 } as const
-const STATUSES = new Set<AnimationRumV3MetricStatus>(Object.keys(STATUS_LABELS) as AnimationRumV3MetricStatus[])
+const QUALITY_REASON_LABELS: Record<AnimationRumV3QualityReason, string> = {
+    'provider-rejected-samples': '提供方拒绝了部分源样本',
+    'provider-truncated': '提供方样本被截断或丢弃',
+    'source-field-incomplete': '源字段不完整',
+    'window-capped': '测量窗口达到上限并被截断',
+}
+const STATUSES = new Set<AnimationRumV3MetricStatus>(['measured', 'partial', 'not-observed', 'not-instrumented', 'unsupported', 'unknown'])
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{7,79}$/u
 const ROUTE_PATTERN = /^[a-z][a-z0-9._:-]{0,95}$/u
 const DEPLOYMENT_PATTERN = /^(?:|[A-Za-z0-9][A-Za-z0-9._+-]{0,63})$/u
@@ -34,7 +44,13 @@ const VIEWPORTS = new Set(['tiny', 'small', 'medium', 'large', 'xlarge', 'unknow
 const DPR = new Set(['1', '1.5', '2', '3', '4+', 'unknown'])
 const REFRESH_SOURCES = new Set(['explicit', 'inferred', 'observed', 'unknown'])
 const REFRESH_CONFIDENCES = new Set(['explicit', 'high', 'medium', 'low', 'unknown'])
-const QUALITY_REASONS = new Set(['provider-rejected-samples', 'provider-truncated', 'source-field-incomplete', 'window-capped'])
+const QUALITY_REASONS = new Set<AnimationRumV3QualityReason>([
+    'provider-rejected-samples',
+    'provider-truncated',
+    'source-field-incomplete',
+    'window-capped',
+])
+const CAPABILITY_STATES = new Set<AnimationRumV3CapabilityState>(['supported', 'unsupported', 'unknown', 'disabled'])
 
 type JsonObject = Record<string, unknown>
 
@@ -67,23 +83,28 @@ function timestamp(value: unknown): string | null {
     return typeof value === 'string' && value.length <= 64 && Number.isFinite(Date.parse(value)) ? value : null
 }
 
-function closed(value: unknown, allowed: Set<string>): string | null {
-    return typeof value === 'string' && allowed.has(value) ? value : null
+function closed<T extends string>(value: unknown, allowed: ReadonlySet<T>): T | null {
+    if (typeof value !== 'string') return null
+    for (const candidate of allowed) {
+        if (value === candidate) return candidate
+    }
+    return null
 }
 
 function parseMetric(value: unknown): AnimationRumV3MetricView | null {
     const row = object(value)
     if (!row || typeof row.metricId !== 'string' || !(row.metricId in METRICS)) return null
     const definition = METRICS[row.metricId as keyof typeof METRICS]
+    const status = closed(row.status, STATUSES)
     if (
         row.vitalName !== definition.vitalName ||
         row.unit !== definition.unit ||
-        typeof row.status !== 'string' ||
-        !STATUSES.has(row.status as AnimationRumV3MetricStatus)
+        row.relation !== 'page-window' ||
+        row.owner !== 'web-vitals-runtime' ||
+        !status
     ) {
         return null
     }
-    const status = row.status as AnimationRumV3MetricStatus
     const available = status === 'measured' || status === 'partial'
     const metricValue = finite(row.value)
     const samples = row.samples === 1 ? 1 : row.samples === null ? null : undefined
@@ -92,10 +113,23 @@ function parseMetric(value: unknown): AnimationRumV3MetricView | null {
         metricId: row.metricId,
         vitalName: definition.vitalName,
         unit: definition.unit,
+        relation: 'page-window',
+        owner: 'web-vitals-runtime',
         value: metricValue,
         samples: available ? 1 : null,
         status,
     }
+}
+
+function parseQualityReasons(value: unknown): AnimationRumV3QualityReason[] | null {
+    if (!Array.isArray(value)) return null
+    const reasons: AnimationRumV3QualityReason[] = []
+    for (const item of value) {
+        const reason = closed(item, QUALITY_REASONS)
+        if (!reason) return null
+        if (!reasons.includes(reason)) reasons.push(reason)
+    }
+    return reasons
 }
 
 function parseRuntime(value: unknown): { framework: string; renderer: string; backend: string } | null {
@@ -215,10 +249,7 @@ function parseCapture(value: unknown): AnimationRumV3Capture | null {
         new Set(metrics.map(item => item!.metricId)).size !== 3
     )
         return null
-    const reasons =
-        Array.isArray(quality.reasons) && quality.reasons.every(reason => typeof reason === 'string' && QUALITY_REASONS.has(reason))
-            ? [...new Set(quality.reasons as string[])]
-            : null
+    const reasons = parseQualityReasons(quality.reasons)
     const capturedAt = timestamp(row.capturedAt)
     const receivedAt = timestamp(row.receivedAt)
     const sampleRate = finite(row.sampleRate)
@@ -296,6 +327,76 @@ function parseCapture(value: unknown): AnimationRumV3Capture | null {
         providerEvidenceCount,
         metricCount,
         metrics: metrics as AnimationRumV3MetricView[],
+    }
+}
+
+function parseCaptureDetail(value: unknown): AnimationRumV3CaptureDetail | null {
+    const row = object(value)
+    const capture = parseCapture(value)
+    const capabilities = object(row?.capabilities)
+    const capability = object(capabilities?.['web-vitals-soft-navigation'])
+    const capabilityMetrics = object(capability?.metrics)
+    const coverage = object(row?.coverage)
+    const userOutcome = object(coverage?.userOutcome)
+    const provider = object(row?.providerEvidence)
+    if (!row || !capture || !capabilities || !capability || !capabilityMetrics || !coverage || !userOutcome || !provider) return null
+    const capabilityStatus = closed(capability.status, CAPABILITY_STATES)
+    const cls = closed(capabilityMetrics.CLS, CAPABILITY_STATES)
+    const inp = closed(capabilityMetrics.INP, CAPABILITY_STATES)
+    const lcp = closed(capabilityMetrics.LCP, CAPABILITY_STATES)
+    const coverageStatus = closed(userOutcome.status, STATUSES)
+    const evidenceLevel =
+        userOutcome.evidenceLevel === 'runtime-observation' || userOutcome.evidenceLevel === 'unsupported-or-unknown'
+            ? userOutcome.evidenceLevel
+            : null
+    const accepted = integer(provider.accepted, 0, 3)
+    const retained = integer(provider.retained, 0, 3)
+    const evidence = integer(provider.evidence, 0, 3)
+    const dropped = integer(provider.dropped, 0, 3)
+    const rejected = integer(provider.rejected, 0, 3)
+    if (
+        Object.keys(capabilities).length !== 1 ||
+        Object.keys(capabilityMetrics).length !== 3 ||
+        Object.keys(coverage).length !== 1 ||
+        !capabilityStatus ||
+        !cls ||
+        !inp ||
+        !lcp ||
+        !coverageStatus ||
+        !evidenceLevel ||
+        provider.owner !== 'web-vitals-runtime' ||
+        provider.family !== 'userOutcome' ||
+        typeof provider.version !== 'string' ||
+        !DEPLOYMENT_PATTERN.test(provider.version) ||
+        accepted === null ||
+        retained === null ||
+        evidence === null ||
+        dropped === null ||
+        rejected === null ||
+        typeof provider.truncated !== 'boolean' ||
+        retained !== accepted ||
+        evidence !== retained ||
+        provider.truncated !== dropped > 0
+    ) {
+        return null
+    }
+    return {
+        ...capture,
+        capabilities: {
+            'web-vitals-soft-navigation': { status: capabilityStatus, metrics: { CLS: cls, INP: inp, LCP: lcp } },
+        },
+        coverage: { userOutcome: { status: coverageStatus, evidenceLevel } },
+        providerEvidence: {
+            owner: 'web-vitals-runtime',
+            family: 'userOutcome',
+            version: provider.version,
+            accepted,
+            retained,
+            evidence,
+            dropped,
+            rejected,
+            truncated: provider.truncated,
+        },
     }
 }
 
@@ -420,6 +521,28 @@ export function parseAnimationRumV3CapturesResponse(value: unknown): AnimationRu
             captures: captures as AnimationRumV3Capture[],
         },
     }
+}
+
+export function parseAnimationRumV3CaptureDetailResponse(value: unknown): AnimationRumV3CaptureDetailApiResponse | null {
+    const root = object(value)
+    const data = object(root?.data)
+    const capture = parseCaptureDetail(data?.capture)
+    if (root?.success !== true || !data || data.contractVersion !== 3 || data.snapshotSchemaVersion !== 1 || !capture) {
+        return null
+    }
+    return { success: true, data: { contractVersion: 3, snapshotSchemaVersion: 1, capture } }
+}
+
+export function animationRumV3QualityReasonLabel(reason: AnimationRumV3QualityReason): string {
+    return QUALITY_REASON_LABELS[reason]
+}
+
+export function animationRumV3PaginationRange(
+    pagination: AnimationRumV3CapturesApiResponse['data']['pagination'],
+    visibleCount: number
+): { start: number; end: number } {
+    if (visibleCount <= 0) return { start: 0, end: 0 }
+    return { start: pagination.offset + 1, end: pagination.offset + visibleCount }
 }
 
 export function formatAnimationRumV3Count(value: AnimationRumV3Count | null | undefined): string {

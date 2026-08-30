@@ -1,10 +1,14 @@
 export type AnimationRumV3Count = number | string
 export type AnimationRumV3MetricStatus = 'measured' | 'partial' | 'not-observed' | 'not-instrumented' | 'unsupported' | 'unknown'
+export type AnimationRumV3QualityReason = 'provider-rejected-samples' | 'provider-truncated' | 'source-field-incomplete' | 'window-capped'
+export type AnimationRumV3CapabilityState = 'supported' | 'unsupported' | 'unknown' | 'disabled'
 
 export type AnimationRumV3MetricView = {
     metricId: string
     vitalName: 'CLS' | 'INP' | 'LCP'
     unit: 'ratio' | 'ms'
+    relation: 'page-window'
+    owner: 'web-vitals-runtime'
     value: number | null
     samples: 1 | null
     status: AnimationRumV3MetricStatus
@@ -58,10 +62,40 @@ export type AnimationRumV3Capture = {
         windowDurationCapped: boolean
         runtime: { framework: string; renderer: string; backend: string }
     }
-    quality: { sufficiency: 'sufficient' | 'insufficient'; integrity: 'complete' | 'partial'; reasons: string[] }
+    quality: {
+        sufficiency: 'sufficient' | 'insufficient'
+        integrity: 'complete' | 'partial'
+        reasons: AnimationRumV3QualityReason[]
+    }
     providerEvidenceCount: number | null
     metricCount: number | null
     metrics: AnimationRumV3MetricView[]
+}
+
+export type AnimationRumV3CaptureDetail = AnimationRumV3Capture & {
+    capabilities: {
+        'web-vitals-soft-navigation': {
+            status: AnimationRumV3CapabilityState
+            metrics: Record<'CLS' | 'INP' | 'LCP', AnimationRumV3CapabilityState>
+        }
+    }
+    coverage: {
+        userOutcome: {
+            status: AnimationRumV3MetricStatus
+            evidenceLevel: 'runtime-observation' | 'unsupported-or-unknown'
+        }
+    }
+    providerEvidence: {
+        owner: 'web-vitals-runtime'
+        family: 'userOutcome'
+        version: string
+        accepted: number
+        retained: number
+        evidence: number
+        dropped: number
+        rejected: number
+        truncated: boolean
+    }
 }
 
 export type AnimationRumV3SummaryApiResponse = {
@@ -100,6 +134,15 @@ export type AnimationRumV3CapturesApiResponse = {
         minimumSampleThreshold: number
         pagination: { total: AnimationRumV3Count; limit: number; offset: number; hasMore: boolean }
         captures: AnimationRumV3Capture[]
+    }
+}
+
+export type AnimationRumV3CaptureDetailApiResponse = {
+    success: true
+    data: {
+        contractVersion: 3
+        snapshotSchemaVersion: 1
+        capture: AnimationRumV3CaptureDetail
     }
 }
 

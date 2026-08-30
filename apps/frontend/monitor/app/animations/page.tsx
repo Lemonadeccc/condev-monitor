@@ -4,7 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { Activity, ArrowUpRight, Database, History, Inbox, type LucideIcon, Radio, Send, Settings2 } from 'lucide-react'
 import Link from 'next/link'
 import { useSearchParams } from 'next/navigation'
-import { type ReactNode, useMemo } from 'react'
+import { type ReactNode, useMemo, useState } from 'react'
 
 import { AIMonitorHeader, AIMonitorPage, AIMonitorScopeActions, AIPanelCard, AIStatCard, AIStateMessage } from '@/components/ai/page-shell'
 import {
@@ -34,6 +34,11 @@ import {
     formatAnimationRumV2Metric,
     isAnimationRumV2MediaStageMetric,
 } from '@/lib/animation-rum-v2'
+import {
+    ANIMATION_RUM_V2_CAPTURE_PAGE_SIZE,
+    buildAnimationRumV2CapturesQuery,
+    getAnimationRumV2PaginationState,
+} from '@/lib/animation-rum-v2-pagination'
 import {
     animationRumV2PipelineStatusMeta,
     formatAnimationRumV2PipelineCount,
@@ -179,6 +184,9 @@ export default function AnimationsPage() {
     const applications = useMemo(() => listQuery.data?.data?.applications ?? [], [listQuery.data?.data?.applications])
     const effectiveAppId = resolveMonitorAppId(applications, selectedAppId)
     const timeWindow = useMemo(() => clampAnimationTimeWindow(resolveMonitorTimeWindow(range, from, to)), [from, range, to])
+    const captureFilterKey = `${effectiveAppId}\u0000${timeWindow.from}\u0000${timeWindow.to}\u0000${scope ?? 'all'}`
+    const [capturePage, setCapturePage] = useState({ filterKey: captureFilterKey, offset: 0 })
+    const captureOffset = capturePage.filterKey === captureFilterKey ? capturePage.offset : 0
 
     const queryParams = useMemo(() => {
         const params = new URLSearchParams({ appId: effectiveAppId, from: timeWindow.from, to: timeWindow.to })
@@ -194,10 +202,10 @@ export default function AnimationsPage() {
     })
 
     const capturesQuery = useQuery({
-        queryKey: ['animation-rum-v2-captures', effectiveAppId, timeWindow.from, timeWindow.to, scope ?? 'all', 0],
+        queryKey: ['animation-rum-v2-captures', effectiveAppId, timeWindow.from, timeWindow.to, scope ?? 'all', captureOffset],
         enabled: enabled && Boolean(effectiveAppId),
         queryFn: ({ signal }): Promise<AnimationRumV2CapturesApiResponse> =>
-            fetchAnimationRumV2(`/api/animation/rum-v2/captures?${queryParams}&limit=50&offset=0`, signal),
+            fetchAnimationRumV2(`/api/animation/rum-v2/captures?${buildAnimationRumV2CapturesQuery(queryParams, captureOffset)}`, signal),
     })
 
     const pipelineQuery = useQuery({
@@ -213,6 +221,9 @@ export default function AnimationsPage() {
     const metrics = summary?.metrics ?? []
     const hasMediaStageEvidence = metrics.some(metric => isAnimationRumV2MediaStageMetric(metric.metricId))
     const captures = capturesQuery.data?.data.captures ?? []
+    const capturePagination = capturesQuery.data
+        ? getAnimationRumV2PaginationState(capturesQuery.data.data.pagination, captures.length)
+        : null
     const pageFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'page', 'page-window')
     const targetFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'frame.duration.p95', 'target', 'target-temporal-overlap')
     const pageGpuFrameP95 = findAnimationRumV2SummaryMetric(metrics, 'renderer.gpu-frame.p95', 'page', 'adapter')
@@ -811,7 +822,7 @@ export default function AnimationsPage() {
 
             <AIPanelCard
                 title="最近采集"
-                description={`列表最多显示 50 条；总数 ${formatAnimationRumV2Integer(
+                description={`每页显示 ${ANIMATION_RUM_V2_CAPTURE_PAGE_SIZE} 条；总数 ${formatAnimationRumV2Integer(
                     capturesQuery.data?.data.pagination.total ?? null
                 )}。页面采集可以关联目标子采集。`}
                 contentClassName="px-0"
@@ -923,6 +934,34 @@ export default function AnimationsPage() {
                 ) : (
                     <AIStateMessage>当前窗口没有 RUM v2 采集。SDK 未启用 v2 时，旧版数据仍可在 v1 页面查看。</AIStateMessage>
                 )}
+                {capturePagination && !capturesQuery.isError ? (
+                    <div className="flex flex-col gap-3 border-t px-6 py-4 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-sm text-muted-foreground" aria-live="polite">
+                            第 {capturePagination.currentPage} 页
+                            {capturePagination.totalPages ? ` / 共 ${capturePagination.totalPages} 页` : ''}
+                        </p>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={!capturePagination.hasPrevious || capturesQuery.isFetching}
+                                onClick={() => setCapturePage({ filterKey: captureFilterKey, offset: capturePagination.previousOffset })}
+                            >
+                                上一页
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                disabled={!capturePagination.hasNext || capturesQuery.isFetching}
+                                onClick={() => setCapturePage({ filterKey: captureFilterKey, offset: capturePagination.nextOffset })}
+                            >
+                                下一页
+                            </Button>
+                        </div>
+                    </div>
+                ) : null}
             </AIPanelCard>
         </AIMonitorPage>
     )

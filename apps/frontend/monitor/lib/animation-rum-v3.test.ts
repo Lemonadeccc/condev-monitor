@@ -4,8 +4,11 @@ import { describe, it } from 'node:test'
 import {
     animationRumV3DisclosureLabel,
     animationRumV3MetricStatusLabel,
+    animationRumV3PaginationRange,
+    animationRumV3QualityReasonLabel,
     formatAnimationRumV3Count,
     formatAnimationRumV3Metric,
+    parseAnimationRumV3CaptureDetailResponse,
     parseAnimationRumV3CapturesResponse,
     parseAnimationRumV3SummaryResponse,
 } from './animation-rum-v3'
@@ -62,6 +65,8 @@ const metric = (metricId: string, vitalName: string, unit: string, value: number
     metricId,
     vitalName,
     unit,
+    relation: 'page-window',
+    owner: 'web-vitals-runtime',
     value,
     samples: 1,
     status: 'measured',
@@ -111,9 +116,37 @@ const capturesResponse = {
                     metric('vital.soft-navigation.inp.latest', 'INP', 'ms', 120),
                     metric('vital.soft-navigation.lcp.latest', 'LCP', 'ms', 900),
                 ],
-                selector: '#must-not-copy',
             },
         ],
+    },
+}
+
+const captureDetailResponse = {
+    success: true,
+    data: {
+        contractVersion: 3,
+        snapshotSchemaVersion: 1,
+        capture: {
+            ...capturesResponse.data.captures[0],
+            capabilities: {
+                'web-vitals-soft-navigation': {
+                    status: 'supported',
+                    metrics: { CLS: 'supported', INP: 'supported', LCP: 'supported' },
+                },
+            },
+            coverage: { userOutcome: { status: 'measured', evidenceLevel: 'runtime-observation' } },
+            providerEvidence: {
+                owner: 'web-vitals-runtime',
+                family: 'userOutcome',
+                version: '3.0.0',
+                accepted: 3,
+                retained: 3,
+                evidence: 3,
+                dropped: 0,
+                rejected: 0,
+                truncated: false,
+            },
+        },
     },
 }
 
@@ -129,6 +162,15 @@ describe('animation RUM v3 presentation helpers', () => {
         assert.equal(formatAnimationRumV3Metric(120, 'ms'), '120 ms')
         assert.equal(animationRumV3MetricStatusLabel('not-observed'), '未观测到')
         assert.match(animationRumV3DisclosureLabel('insufficient-samples', 30), /30/u)
+        assert.match(animationRumV3QualityReasonLabel('provider-truncated'), /截断/u)
+        assert.deepEqual(animationRumV3PaginationRange({ total: 80, limit: 50, offset: 50, hasMore: false }, 30), {
+            start: 51,
+            end: 80,
+        })
+        assert.deepEqual(animationRumV3PaginationRange({ total: 0, limit: 50, offset: 0, hasMore: false }, 0), {
+            start: 0,
+            end: 0,
+        })
     })
 
     it('rebuilds only a consistent summary response and rejects contradictory disclosure', () => {
@@ -191,7 +233,13 @@ describe('animation RUM v3 presentation helpers', () => {
     })
 
     it('requires exactly three closed metrics and drops unknown capture fields', () => {
-        const parsed = parseAnimationRumV3CapturesResponse(capturesResponse)
+        const parsed = parseAnimationRumV3CapturesResponse({
+            ...capturesResponse,
+            data: {
+                ...capturesResponse.data,
+                captures: [{ ...capturesResponse.data.captures[0], selector: '#must-not-copy' }],
+            },
+        })
         assert.ok(parsed)
         assert.equal('selector' in parsed.data.captures[0], false)
         assert.equal(
@@ -221,6 +269,23 @@ describe('animation RUM v3 presentation helpers', () => {
                 data: {
                     ...capturesResponse.data,
                     captures: [{ ...capturesResponse.data.captures[0], eventId: 12345678 }],
+                },
+            }),
+            null
+        )
+    })
+
+    it('rebuilds the closed capture detail and rejects inconsistent provider evidence', () => {
+        assert.deepEqual(parseAnimationRumV3CaptureDetailResponse(captureDetailResponse), captureDetailResponse)
+        assert.equal(
+            parseAnimationRumV3CaptureDetailResponse({
+                ...captureDetailResponse,
+                data: {
+                    ...captureDetailResponse.data,
+                    capture: {
+                        ...captureDetailResponse.data.capture,
+                        providerEvidence: { ...captureDetailResponse.data.capture.providerEvidence, retained: 2 },
+                    },
                 },
             }),
             null
