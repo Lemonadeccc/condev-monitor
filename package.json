@@ -32,6 +32,7 @@
         "test:animation:browser-driver": "pnpm --filter @condev-monitor/animation-lab-runner build && node --test apps/backend/lab-runner/test/browser-driver.test.mjs",
         "test:animation:browser-integration": "pnpm --filter @condev-monitor/animation-lab-runner test:browser-sdk-integration && pnpm test:animation-renderer:browser",
         "test:animation:browsers": "pnpm build:sdk && pnpm --filter @condev-monitor/animation-lab-runner build && node scripts/run-animation-fixture-matrix.mjs",
+        "test:animation-lab:platform": "pnpm turbo build --filter=monitor --filter=@condev-monitor/animation-lab-runner --filter=lemon-bureau && ANIMATION_LAB_PLATFORM_E2E_WRITE_SENTINEL=condev-animation-lab-platform-e2e node scripts/run-animation-lab-platform-e2e.mjs",
         "test:animation-renderer:browser": "pnpm --filter @condev-monitor/monitor-sdk-animation-renderer build && node --test apps/backend/lab-runner/test-browser/webgl-gpu-timer.browser.test.mjs",
         "test:animation-rum-v2:release": "pnpm --filter dsn-server test:animation-rum-v2:pipeline && pnpm --filter monitor test:animation-rum-v2:clickhouse",
         "test:animation-rum-v3:release": "pnpm --filter dsn-server test:animation-rum-v3:pipeline && pnpm --filter monitor test:animation-rum-v3:clickhouse",
