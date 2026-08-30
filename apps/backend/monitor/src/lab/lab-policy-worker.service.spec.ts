@@ -23,7 +23,7 @@ function job(overrides: Partial<LabPolicyEvaluationJobEntity> = {}): LabPolicyEv
     }
 }
 
-function harness(evaluation: jest.Mock) {
+function harness(evaluation: jest.Mock, options: Readonly<{ leaseMs?: number; leaseHeartbeatMs?: number }> = {}) {
     const set = jest.fn()
     const execute = jest.fn().mockResolvedValue({ affected: 1 })
     const builder = {
@@ -33,7 +33,7 @@ function harness(evaluation: jest.Mock) {
         execute,
     }
     const jobs = { findOne: jest.fn().mockResolvedValue(job()), createQueryBuilder: jest.fn(() => builder) }
-    const service = new LabPolicyWorkerService(jobs as never, { createEvaluationForSnapshot: evaluation } as never)
+    const service = new LabPolicyWorkerService(jobs as never, { createEvaluationForSnapshot: evaluation } as never, options)
     return { service, jobs, builder, set, execute }
 }
 
@@ -97,6 +97,78 @@ describe('LabPolicyWorkerService', () => {
         empty.jobs.findOne.mockResolvedValue(null)
         await empty.service.tick()
         expect(empty.set).not.toHaveBeenCalled()
+    })
+
+    it('renews a short lease during a slow evaluation and clears its heartbeat timer', async () => {
+        jest.useFakeTimers()
+        try {
+            let release!: () => void
+            const createEvaluation = jest
+                .fn()
+                .mockImplementation(() => new Promise(resolve => (release = () => resolve({ evaluationId: 'evaluation-1' }))))
+            const { service, set } = harness(createEvaluation, { leaseMs: 90, leaseHeartbeatMs: 20 })
+
+            const tick = service.tick()
+            await Promise.resolve()
+            await jest.advanceTimersByTimeAsync(25)
+
+            expect(set.mock.calls.some(([value]) => 'leaseUntil' in value && !('state' in value))).toBe(true)
+            release()
+            await tick
+            expect(jest.getTimerCount()).toBe(0)
+        } finally {
+            jest.useRealTimers()
+        }
+    })
+
+    it('waits for an active evaluation during shutdown without renewing or leaking a timer', async () => {
+        jest.useFakeTimers()
+        try {
+            let release!: () => void
+            const createEvaluation = jest
+                .fn()
+                .mockImplementation(() => new Promise(resolve => (release = () => resolve({ evaluationId: 'evaluation-1' }))))
+            const { service, set } = harness(createEvaluation, { leaseMs: 90, leaseHeartbeatMs: 20 })
+
+            const tick = service.tick()
+            while (createEvaluation.mock.calls.length === 0) await Promise.resolve()
+            const shutdown = service.onApplicationShutdown()
+
+            expect(jest.getTimerCount()).toBe(0)
+            expect(set).toHaveBeenCalledTimes(1)
+            release()
+            await Promise.all([tick, shutdown])
+            expect(set).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'completed' }))
+        } finally {
+            jest.useRealTimers()
+        }
+    })
+
+    it('does not claim new jobs after application shutdown starts', async () => {
+        const { service, jobs } = harness(jest.fn())
+
+        await service.onApplicationShutdown()
+        await service.tick()
+
+        expect(jobs.findOne).not.toHaveBeenCalled()
+    })
+
+    it.each([
+        ['lost', { affected: 0 }, 'LEASE_LOST'],
+        ['renew-failed', new Error('private database details'), 'LEASE_RENEW_FAILED'],
+    ] as const)('stops finalization with a privacy-safe %s heartbeat state', async (_state, renewal, code) => {
+        const { service, execute, set } = harness(jest.fn().mockResolvedValue({ evaluationId: 'evaluation-1' }))
+        execute.mockResolvedValueOnce({ affected: 1 })
+        if (renewal instanceof Error) execute.mockRejectedValueOnce(renewal)
+        else execute.mockResolvedValueOnce(renewal)
+        const logger = jest.spyOn((service as never as { logger: { error(value: unknown): void } }).logger, 'error').mockImplementation()
+
+        await service.tick()
+
+        expect(set).not.toHaveBeenCalledWith(expect.objectContaining({ state: 'completed' }))
+        expect(logger).toHaveBeenCalledWith(expect.objectContaining({ event: 'animation_lab_policy_job_lease_failed', code }))
+        expect(JSON.stringify(logger.mock.calls)).not.toContain('private database details')
+        logger.mockRestore()
     })
 
     it.each([
