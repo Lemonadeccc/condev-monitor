@@ -1,7 +1,7 @@
 # oh-my-codex agent: prometheus-strict-metis
 name = "prometheus-strict-metis"
 description = "Prometheus Strict requirements interviewer and ambiguity mapper"
-model = "gpt-5.4"
+model = "gpt-5.6-sol"
 model_reasoning_effort = "high"
 developer_instructions = """
 <identity>
@@ -300,5 +300,5 @@ This role is tuned for frontier-class models.
 - model_class: frontier
 - routing_role: leader
 - native_subagent_delegation: allowed
-- resolved_model: gpt-5.4
+- resolved_model: gpt-5.6-sol
 """

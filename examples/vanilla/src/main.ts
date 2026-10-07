@@ -13,7 +13,8 @@ const dist = (import.meta as { env?: Record<string, string | undefined> }).env?.
 
 init({
     // dsn: 'http://localhost:8082/dsn-api/tracking/vanillacn005C',
-    dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillaT1DFuv',
+    // dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillaT1DFuv',
+    dsn: 'http://localhost:8082/dsn-api/tracking/vanillaRpgVQ5',
     // dsn: 'https://monitor.condevtools.com/dsn-api/tracking/vanillay1PFXB',
     // dsn: 'https://monitor.condevtools.com/tracking/vanillay1PFXB',
     // dsn: 'http://localhost:8082/dsn-api/tracking/vanilla3XGJsf',

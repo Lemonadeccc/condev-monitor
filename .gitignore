@@ -145,3 +145,5 @@ packages/python/**/*.pyc
 .codex/skills/.system/**
 !.codex/prompts/
 !.codex/prompts/**
+.omx-state-locks/
+.omx-state-locks.identity.json
